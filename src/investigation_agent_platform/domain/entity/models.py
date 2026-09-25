@@ -43,4 +43,6 @@ class InvestigationEntity(BaseModel):
     @property
     def deduplication_key(self) -> str:
         """Composite key ensuring entity identity uniqueness across providers."""
-        return f"{self.tenant_id}:{self.entity_type.value}:{self.provider}:{self.external_identifier}"
+        return (
+            f"{self.tenant_id}:{self.entity_type.value}:{self.provider}:{self.external_identifier}"
+        )

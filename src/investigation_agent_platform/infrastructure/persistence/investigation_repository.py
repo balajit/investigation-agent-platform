@@ -8,7 +8,6 @@ from uuid import UUID
 from sqlalchemy import select, update
 
 from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
-from investigation_agent_platform.infrastructure.persistence.rls import rls_session
 from investigation_agent_platform.domain.investigation.models import (
     Investigation,
     InvestigationContext,
@@ -19,6 +18,7 @@ from investigation_agent_platform.infrastructure.persistence.models import (
     InvestigationFactORM,
     InvestigationORM,
 )
+from investigation_agent_platform.infrastructure.persistence.rls import rls_session
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,9 @@ class SqlAlchemyInvestigationRepository:
             row = result.first()
             return self._from_orm(row) if row else None
 
-    async def save(self, tenant_id: str, investigation: Investigation, expected_version: int) -> None:
+    async def save(
+        self, tenant_id: str, investigation: Investigation, expected_version: int
+    ) -> None:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.execute(
                 update(InvestigationORM)
@@ -150,7 +152,9 @@ class SqlAlchemyInvestigationRepository:
                             fact_type=getattr(fact, "fact_type", "DISCOVERED"),
                             statement=fact.statement,
                             confidence=getattr(fact, "confidence", 1.0),
-                            source_evidence_ids=[str(e) for e in getattr(fact, "source_evidence_ids", [])],
+                            source_evidence_ids=[
+                                str(e) for e in getattr(fact, "source_evidence_ids", [])
+                            ],
                             attributes=getattr(fact, "attributes", {}),
                             observed_at=getattr(fact, "observed_at", investigation.updated_at),
                         )
@@ -170,12 +174,19 @@ class SqlAlchemyInvestigationRepository:
             # Try domain transition to CANCELLED for audit / invariant enforcement.
             try:
                 inv = self._from_orm(row)
-                if inv.status not in {InvestigationStatus.COMPLETED, InvestigationStatus.FAILED, InvestigationStatus.CANCELLED}:
-                    from investigation_agent_platform.domain.investigation.models import ActorType
+                if inv.status not in {
+                    InvestigationStatus.COMPLETED,
+                    InvestigationStatus.FAILED,
+                    InvestigationStatus.CANCELLED,
+                }:
                     from investigation_agent_platform.domain.common.utils import SystemClock
+                    from investigation_agent_platform.domain.investigation.models import ActorType
 
                     updated, _ = inv.transition_to(
-                        InvestigationStatus.CANCELLED, ActorType.ADMIN, "Deleted via repository", clock=SystemClock()
+                        InvestigationStatus.CANCELLED,
+                        ActorType.ADMIN,
+                        "Deleted via repository",
+                        clock=SystemClock(),
                     )
                     await session.execute(
                         update(InvestigationORM)
@@ -195,7 +206,10 @@ class SqlAlchemyInvestigationRepository:
                     )
                     return
             except Exception as exc:
-                logger.warning("delete transition_to CANCELLED failed, falling back to direct update", extra={"error": str(exc)})
+                logger.warning(
+                    "delete transition_to CANCELLED failed, falling back to direct update",
+                    extra={"error": str(exc)},
+                )
             # Fallback: direct soft-delete to CANCELLED (terminal enum value).
             await session.execute(
                 update(InvestigationORM)
@@ -203,7 +217,10 @@ class SqlAlchemyInvestigationRepository:
                     InvestigationORM.id == investigation_id,
                     InvestigationORM.tenant_id == tenant_id,
                 )
-                .values(status=InvestigationStatus.CANCELLED.value, phase=InvestigationStatus.CANCELLED.value)
+                .values(
+                    status=InvestigationStatus.CANCELLED.value,
+                    phase=InvestigationStatus.CANCELLED.value,
+                )
             )
 
     async def exists(self, tenant_id: str, investigation_id: UUID) -> bool:

@@ -1,9 +1,8 @@
 """Extensive infra coverage tests."""
+
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -32,6 +31,7 @@ from investigation_agent_platform.infrastructure.evidence.code.intelligence impo
 )
 from investigation_agent_platform.infrastructure.reasoning.factory import create_llm_gateway
 from investigation_agent_platform.ports.reasoning.llm_gateway import LLMGatewayRequest
+
 
 # Helper to make CodeProfile
 def _make_code_profile(repo: str = "myrepo", source_roots: list[str] | None = None) -> CodeProfile:
@@ -89,12 +89,23 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "myrepo" / "src"
             repo.mkdir(parents=True)
-            (repo / "app.py").write_text("def hello():\n    print('hello world')\n", encoding="utf-8")
+            (repo / "app.py").write_text(
+                "def hello():\n    print('hello world')\n", encoding="utf-8"
+            )
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
-            profile = _make_code_profile(source_roots=["src"])
-            evidences = await provider.search_code("tenant-a", "hello", CodeProfile(
-                provider="git", repository="myrepo", defaultBranch="main", language="python", sourceRoots=["src"], buildSystem="uv", moduleStructure="src"
-            ))
+            evidences = await provider.search_code(
+                "tenant-a",
+                "hello",
+                CodeProfile(
+                    provider="git",
+                    repository="myrepo",
+                    defaultBranch="main",
+                    language="python",
+                    sourceRoots=["src"],
+                    buildSystem="uv",
+                    moduleStructure="src",
+                ),
+            )
             assert len(evidences) >= 1
             assert "hello" in evidences[0].content_snippet.lower()
             assert evidences[0].tenant_id == "tenant-a"
@@ -105,7 +116,9 @@ class TestTreeSitterProvider:
             repo = Path(tmp) / "myrepo"
             src = repo / "src"
             src.mkdir(parents=True)
-            (src / "mod.py").write_text("def my_func():\n    pass\n\nclass MyClass:\n    pass\n", encoding="utf-8")
+            (src / "mod.py").write_text(
+                "def my_func():\n    pass\n\nclass MyClass:\n    pass\n", encoding="utf-8"
+            )
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             profile = _make_code_profile(source_roots=["src"])
             # Need to handle parser may not be available; still test fallback
@@ -118,7 +131,9 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "myrepo" / "src"
             repo.mkdir(parents=True)
-            (repo / "a.py").write_text("def caller():\n    callee()\n\ndef callee():\n    pass\n", encoding="utf-8")
+            (repo / "a.py").write_text(
+                "def caller():\n    callee()\n\ndef callee():\n    pass\n", encoding="utf-8"
+            )
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             profile = _make_code_profile(source_roots=["src"])
             callers = await provider.find_callers("t1", "callee", profile)
@@ -131,7 +146,9 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "myrepo" / "src"
             repo.mkdir(parents=True)
-            (repo / "exc.py").write_text("try:\n    x=1\nexcept ValueError as e:\n    pass\n", encoding="utf-8")
+            (repo / "exc.py").write_text(
+                "try:\n    x=1\nexcept ValueError as e:\n    pass\n", encoding="utf-8"
+            )
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             profile = _make_code_profile(source_roots=["src"])
             locs = await provider.find_exception_handlers("t1", "ValueError", profile)
@@ -144,7 +161,9 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "myrepo" / "src"
             repo.mkdir(parents=True)
-            (repo / "db.py").write_text("query = \"SELECT * FROM orders WHERE id=1\"\n", encoding="utf-8")
+            (repo / "db.py").write_text(
+                'query = "SELECT * FROM orders WHERE id=1"\n', encoding="utf-8"
+            )
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             profile = _make_code_profile(source_roots=["src"])
             locs = await provider.find_database_operations("t1", "orders", profile)
@@ -154,12 +173,28 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             # repo with traversal — bypass validation via model_construct
-            profile = CodeProfile.model_construct(provider="git", repository="../evil", default_branch="main", language="python", source_roots=["src"], build_system="uv", module_structure="src")
+            profile = CodeProfile.model_construct(
+                provider="git",
+                repository="../evil",
+                default_branch="main",
+                language="python",
+                source_roots=["src"],
+                build_system="uv",
+                module_structure="src",
+            )
             roots = provider._resolve_roots(profile)  # type: ignore[attr-defined]
             assert roots == []
             # source root traversal
             Path(tmp, "myrepo").mkdir(parents=True, exist_ok=True)
-            profile2 = CodeProfile.model_construct(provider="git", repository="myrepo", default_branch="main", language="python", source_roots=["../escape"], build_system="uv", module_structure="src")
+            profile2 = CodeProfile.model_construct(
+                provider="git",
+                repository="myrepo",
+                default_branch="main",
+                language="python",
+                source_roots=["../escape"],
+                build_system="uv",
+                module_structure="src",
+            )
             roots2 = provider._resolve_roots(profile2)  # type: ignore[attr-defined]
             # should not include escaped path
             for r in roots2:
@@ -187,7 +222,11 @@ class TestTreeSitterProvider:
         provider = TreeSitterCodeIntelligenceProvider(repo_base_path="/tmp")
         with patch.dict("sys.modules", {}):
             # mock failing import
-            with patch("tree_sitter_language_pack.get_parser", side_effect=ImportError("nope")) if False else patch.object(provider, "_get_parser", wraps=provider._get_parser):
+            with (
+                patch("tree_sitter_language_pack.get_parser", side_effect=ImportError("nope"))
+                if False
+                else patch.object(provider, "_get_parser", wraps=provider._get_parser)
+            ):
                 # Simulate unavailable language
                 p = provider._get_parser("nonexistent_lang_xyz")  # type: ignore[attr-defined]
                 # should return None and cache
@@ -219,7 +258,15 @@ class TestTreeSitterProvider:
             src = repo / "src"
             src.mkdir(parents=True)
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
-            profile = CodeProfile(provider="git", repository="myrepo", defaultBranch="main", language="python", sourceRoots=["src", "src"], buildSystem="uv", moduleStructure="src")
+            profile = CodeProfile(
+                provider="git",
+                repository="myrepo",
+                defaultBranch="main",
+                language="python",
+                sourceRoots=["src", "src"],
+                buildSystem="uv",
+                moduleStructure="src",
+            )
             roots = provider._resolve_roots(profile)  # type: ignore[attr-defined]
             assert len(roots) == 1
 
@@ -230,9 +277,14 @@ class TestTreeSitterProvider:
 class TestOpenAIAdapter:
     @pytest.mark.asyncio
     async def test_complete_with_schema(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway, _estimate_cost
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+            _estimate_cost,
+        )
 
-        config = LLMConfig(api_key=SecretStr("sk-test"), model_name="gpt-4o-mini", provider="openai")
+        config = LLMConfig(
+            api_key=SecretStr("sk-test"), model_name="gpt-4o-mini", provider="openai"
+        )
         gw = OpenAIGateway(config)
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock(message=MagicMock(content='{"key": "value"}'))]
@@ -240,29 +292,39 @@ class TestOpenAIAdapter:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
         gw._client = mock_client  # type: ignore[attr-defined]
+
         # patch _call_with_retry to bypass retry/timeout
         async def fake_call(client: object, kwargs: dict[str, object]) -> object:
             assert kwargs["model"] == "gpt-4o-mini"
             assert kwargs["response_format"] == {"type": "json_object"}
             return mock_resp
+
         gw._call_with_retry = fake_call  # type: ignore[method-assign]
-        req = LLMGatewayRequest(prompt="hi", system_prompt="sys", response_schema={"type": "object"}, temperature=0.1)
+        req = LLMGatewayRequest(
+            prompt="hi", system_prompt="sys", response_schema={"type": "object"}, temperature=0.1
+        )
         resp = await gw.complete("t1", req)
         assert resp.parsed == {"key": "value"}
         assert resp.content == '{"key": "value"}'
         assert resp.metadata.prompt_tokens == 10
-        assert _estimate_cost("gpt-4o-mini", 10, 20) == pytest.approx(resp.metadata.estimated_cost_usd)
+        assert _estimate_cost("gpt-4o-mini", 10, 20) == pytest.approx(
+            resp.metadata.estimated_cost_usd
+        )
 
     @pytest.mark.asyncio
     async def test_complete_without_schema_no_parse(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
 
         config = LLMConfig(api_key=SecretStr("sk-test"), model_name="gpt-4o")
         gw = OpenAIGateway(config)
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock(message=MagicMock(content="hello"))]
         mock_resp.usage = None
-        gw._client = MagicMock(chat=MagicMock(completions=MagicMock(create=AsyncMock(return_value=mock_resp))))
+        gw._client = MagicMock(
+            chat=MagicMock(completions=MagicMock(create=AsyncMock(return_value=mock_resp)))
+        )
         gw._call_with_retry = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
         req = LLMGatewayRequest(prompt="hi")
         resp = await gw.complete("t1", req)
@@ -270,7 +332,9 @@ class TestOpenAIAdapter:
         assert resp.content == "hello"
 
     def test_is_retryable(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
 
         gw = OpenAIGateway(LLMConfig(api_key=SecretStr("k"), model_name="gpt-4o"))
         err429 = MagicMock(status_code=429)
@@ -285,31 +349,45 @@ class TestOpenAIAdapter:
         assert gw._is_retryable_llm_error(err_retry) is True
 
     def test_estimate_cost_unknown_model(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import _estimate_cost
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            _estimate_cost,
+        )
 
         cost = _estimate_cost("unknown-model", 1000, 1000)
         assert cost > 0
 
     @pytest.mark.asyncio
     async def test_anthropic_complete_with_schema(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import AnthropicGateway
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            AnthropicGateway,
+        )
 
-        config = LLMConfig(api_key=SecretStr("sk-ant"), model_name="claude-3-haiku", provider="anthropic")
+        config = LLMConfig(
+            api_key=SecretStr("sk-ant"), model_name="claude-3-haiku", provider="anthropic"
+        )
         gw = AnthropicGateway(config)
         mock_block = MagicMock(text='{"a": 1}')
-        mock_resp = MagicMock(content=[mock_block], usage=MagicMock(input_tokens=5, output_tokens=10))
+        mock_resp = MagicMock(
+            content=[mock_block], usage=MagicMock(input_tokens=5, output_tokens=10)
+        )
         gw._client = MagicMock(messages=MagicMock(create=AsyncMock(return_value=mock_resp)))
         gw._call_with_retry = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
-        req = LLMGatewayRequest(prompt="hi", system_prompt="be helpful", response_schema={"type": "object"})
+        req = LLMGatewayRequest(
+            prompt="hi", system_prompt="be helpful", response_schema={"type": "object"}
+        )
         resp = await gw.complete("t1", req)
         assert resp.parsed == {"a": 1}
         assert resp.metadata.total_tokens == 15
 
     @pytest.mark.asyncio
     async def test_anthropic_complete_invalid_json(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import AnthropicGateway
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            AnthropicGateway,
+        )
 
-        config = LLMConfig(api_key=SecretStr("sk-ant"), model_name="claude-3-haiku", provider="anthropic")
+        config = LLMConfig(
+            api_key=SecretStr("sk-ant"), model_name="claude-3-haiku", provider="anthropic"
+        )
         gw = AnthropicGateway(config)
         mock_block = MagicMock(text="not json")
         mock_resp = MagicMock(content=[mock_block], usage=None)
@@ -322,17 +400,22 @@ class TestOpenAIAdapter:
 
     @pytest.mark.asyncio
     async def test_openai_timeout_path(self) -> None:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
 
         config = LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o")
         gw = OpenAIGateway(config)
         # Make _call_with_retry raise asyncio.TimeoutError via wait_for
         mock_client = MagicMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_client.chat.completions.create = AsyncMock(side_effect=TimeoutError())
         gw._client = mock_client
         # Use real _call_with_retry but patch asyncio.wait_for to timeout quickly
         # Instead test that complete propagates error
-        with patch("investigation_agent_platform.infrastructure.reasoning.openai_adapter.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        with patch(
+            "investigation_agent_platform.infrastructure.reasoning.openai_adapter.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        ):
             req = LLMGatewayRequest(prompt="hi")
             with pytest.raises(asyncio.TimeoutError):
                 await gw.complete("t1", req)
@@ -342,26 +425,40 @@ class TestFactory:
     def test_create_explicit_openai(self) -> None:
         config = LLMConfig(api_key=SecretStr("k"), model_name="gpt-4o", provider="openai")
         gw = create_llm_gateway(config)
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
+
         assert isinstance(gw, OpenAIGateway)
 
     def test_create_explicit_anthropic(self) -> None:
-        config = LLMConfig(api_key=SecretStr("k"), model_name="claude-3-haiku", provider="anthropic")
+        config = LLMConfig(
+            api_key=SecretStr("k"), model_name="claude-3-haiku", provider="anthropic"
+        )
         gw = create_llm_gateway(config)
-        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import AnthropicGateway
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            AnthropicGateway,
+        )
+
         assert isinstance(gw, AnthropicGateway)
 
     def test_infer_claude(self) -> None:
         config = LLMConfig(api_key=SecretStr("k"), model_name="claude-sonnet-4", provider="")
         # provider empty triggers inference
         gw = create_llm_gateway(config)
-        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import AnthropicGateway
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            AnthropicGateway,
+        )
+
         assert isinstance(gw, AnthropicGateway)
 
     def test_infer_gpt(self) -> None:
         config = LLMConfig(api_key=SecretStr("k"), model_name="gpt-4o-mini", provider="")
         gw = create_llm_gateway(config)
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import OpenAIGateway
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
+
         assert isinstance(gw, OpenAIGateway)
 
 
@@ -383,7 +480,16 @@ class TestConfig:
                 load_application_config_from_env()
 
     def test_load_from_env_success(self) -> None:
-        with patch.dict(os.environ, {"IAP_DATABASE_URI": "postgresql+asyncpg://a:b@localhost/db", "IAP_LLM_API_KEY": "sk-test", "IAP_LLM_PROVIDER": "anthropic", "IAP_LLM_MODEL": "claude-3-haiku"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "IAP_DATABASE_URI": "postgresql+asyncpg://a:b@localhost/db",
+                "IAP_LLM_API_KEY": "sk-test",
+                "IAP_LLM_PROVIDER": "anthropic",
+                "IAP_LLM_MODEL": "claude-3-haiku",
+            },
+            clear=False,
+        ):
             cfg = load_application_config_from_env()
             assert cfg.llm.provider == "anthropic"
             assert cfg.database.pool_size == 10
@@ -405,7 +511,11 @@ class TestConfig:
         yaml_content = "platform:\n  name: test\n  environment: dev\n"
         p = tmp_path / "app.yaml"
         p.write_text(yaml_content, encoding="utf-8")
-        with patch.dict(os.environ, {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"},
+            clear=False,
+        ):
             cfg = load_application_config_from_yaml(path=p)
             assert cfg.application_id == "test"
 
@@ -417,15 +527,27 @@ class TestBootstrap:
     def test_build_reasoning_coordinator(self) -> None:
         from investigation_agent_platform.bootstrap import build_reasoning_coordinator
 
-        with patch.dict(os.environ, {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"}, clear=False):
-            from investigation_agent_platform.infrastructure.configuration.config import load_application_config_from_env
+        with patch.dict(
+            os.environ,
+            {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"},
+            clear=False,
+        ):
+            from investigation_agent_platform.infrastructure.configuration.config import (
+                load_application_config_from_env,
+            )
+
             cfg = load_application_config_from_env()
             coord = build_reasoning_coordinator(cfg)
             assert coord is not None
 
     def test_build_app_context_dev(self) -> None:
         from investigation_agent_platform.bootstrap import build_app_context
-        from investigation_agent_platform.infrastructure.configuration.config import ApplicationConfig, DatabaseConfig, BudgetConfig
+        from investigation_agent_platform.infrastructure.configuration.config import (
+            ApplicationConfig,
+            BudgetConfig,
+            DatabaseConfig,
+        )
+
         cfg = ApplicationConfig(
             environment="development",
             application_id="test",
@@ -438,11 +560,19 @@ class TestBootstrap:
 
     def test_build_app_context_production(self) -> None:
         from investigation_agent_platform.bootstrap import build_app_context
-        from investigation_agent_platform.infrastructure.configuration.config import ApplicationConfig, DatabaseConfig, BudgetConfig
+        from investigation_agent_platform.infrastructure.configuration.config import (
+            ApplicationConfig,
+            BudgetConfig,
+            DatabaseConfig,
+            LLMConfig,
+        )
+
         cfg = ApplicationConfig(
             environment="production",
             application_id="test",
-            database=DatabaseConfig(connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db")),
+            database=DatabaseConfig(
+                connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db")
+            ),
             llm=LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o"),
             budget=BudgetConfig(),
         )
@@ -453,14 +583,34 @@ class TestBootstrap:
                 mock_ctx = MagicMock()
                 mock_ctx.engine = mock_engine.return_value
                 MockCtx.return_value = mock_ctx
-                with patch("investigation_agent_platform.bootstrap.set_app_context"):
+                with (
+                    patch("investigation_agent_platform.bootstrap.set_app_context"),
+                    patch(
+                        "investigation_agent_platform.infrastructure.observability.telemetry.OpenTelemetryObservabilityAdapter"
+                    ),
+                    patch("faststream.kafka.KafkaBroker"),
+                    patch(
+                        "investigation_agent_platform.infrastructure.messaging.faststream.KafkaEventPublisher"
+                    ),
+                    patch(
+                        "temporalio.client.Client.connect",
+                        new_callable=AsyncMock,
+                        return_value=MagicMock(),
+                    ),
+                ):
                     ctx = build_app_context(cfg)
                     assert ctx is not None
 
     @pytest.mark.asyncio
     async def test_worker_run(self) -> None:
-        from investigation_agent_platform.bootstrap.worker import build_app_context as w_build, run_temporal_worker
-        from investigation_agent_platform.infrastructure.configuration.config import TemporalConfig, ApplicationConfig, DatabaseConfig, BudgetConfig
+        from investigation_agent_platform.bootstrap.worker import build_app_context as w_build
+        from investigation_agent_platform.bootstrap.worker import run_temporal_worker
+        from investigation_agent_platform.infrastructure.configuration.config import (
+            ApplicationConfig,
+            BudgetConfig,
+            DatabaseConfig,
+            TemporalConfig,
+        )
 
         # build_app_context for worker
         cfg = ApplicationConfig(
@@ -473,13 +623,19 @@ class TestBootstrap:
         ctx = w_build(cfg)
         assert ctx is not None
         # run_temporal_worker with mocked Client/Worker
-        with patch("investigation_agent_platform.bootstrap.worker.Client.connect", new_callable=AsyncMock) as mock_connect:
+        with patch(
+            "investigation_agent_platform.bootstrap.worker.Client.connect", new_callable=AsyncMock
+        ) as mock_connect:
             with patch("investigation_agent_platform.bootstrap.worker.Worker") as MockWorker:
                 mock_worker = MagicMock()
                 mock_worker.run = AsyncMock(return_value=None)
                 MockWorker.return_value = mock_worker
                 mock_connect.return_value = MagicMock()
-                await run_temporal_worker(TemporalConfig(target_host="localhost:7233", namespace="default", task_queue="tq"))
+                await run_temporal_worker(
+                    TemporalConfig(
+                        target_host="localhost:7233", namespace="default", task_queue="tq"
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +644,13 @@ class TestBootstrap:
 class TestMain:
     def test_create_app_import(self) -> None:
         from investigation_agent_platform.main import app
+
         assert app is not None
 
     @pytest.mark.asyncio
     async def test_lifespan(self) -> None:
         from investigation_agent_platform.main import _create_lifespan_app
+
         app2 = _create_lifespan_app()
         assert app2 is not None
         # Check lifespan context is set
@@ -531,10 +689,11 @@ class TestModels:
         from investigation_agent_platform.infrastructure.persistence.models import (
             Base,
             EvidenceORM,
+            HypothesisORM,
             InvestigationORM,
             TimelineEventORM,
-            HypothesisORM,
         )
+
         assert InvestigationORM.__tablename__ == "investigations"
         assert EvidenceORM.__tablename__ == "evidence"
         assert TimelineEventORM.__tablename__ == "timeline_events"
@@ -543,11 +702,21 @@ class TestModels:
         assert hasattr(Base, "metadata")
 
     def test_evidence_dedup_inmemory(self) -> None:
-        from investigation_agent_platform.api.dependencies import InMemoryEvidenceRepository
-        from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType, ClassificationLevel
-        from investigation_agent_platform.domain.provenance.models import EvidenceProvenance, QueryFingerprint, SourceLocation, EvidenceFreshness
-        from datetime import datetime, UTC
         import asyncio
+        from datetime import UTC, datetime
+
+        from investigation_agent_platform.api.dependencies import InMemoryEvidenceRepository
+        from investigation_agent_platform.domain.evidence.models import (
+            ClassificationLevel,
+            Evidence,
+            EvidenceType,
+        )
+        from investigation_agent_platform.domain.provenance.models import (
+            EvidenceFreshness,
+            EvidenceProvenance,
+            QueryFingerprint,
+            SourceLocation,
+        )
 
         async def _run() -> None:
             repo = InMemoryEvidenceRepository()
@@ -560,7 +729,9 @@ class TestModels:
                 actual_provider_id="p",
                 source_system="Code",
                 retrieval_timestamp=now,
-                query_fingerprint=QueryFingerprint(provider_type="CODE", operation="SEARCH", normalized_query_hash="abc"),
+                query_fingerprint=QueryFingerprint(
+                    provider_type="CODE", operation="SEARCH", normalized_query_hash="abc"
+                ),
                 source_location=SourceLocation(system="Code", identifier="id"),
             )
             ev = Evidence(
@@ -590,14 +761,16 @@ class TestModels:
 
     def test_has_traversal_centralized(self) -> None:
         from investigation_agent_platform.application.investigation.validator import _has_traversal
+
         assert _has_traversal("../etc/passwd") is True
         assert _has_traversal("..%2Fetc") is True
         assert _has_traversal("src/app.py") is False
         assert _has_traversal("") is False
 
     def test_idempotency_store(self) -> None:
-        from investigation_agent_platform.api.dependencies import _InMemoryIdempotencyStore
         import asyncio
+
+        from investigation_agent_platform.api.dependencies import _InMemoryIdempotencyStore
 
         async def _run() -> None:
             store = _InMemoryIdempotencyStore(ttl_seconds=10)

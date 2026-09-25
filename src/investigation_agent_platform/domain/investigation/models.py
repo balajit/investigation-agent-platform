@@ -99,9 +99,7 @@ class EvidenceManifest(BaseModel):
     summary: str = Field(..., description="Sanitized structural summary", max_length=2048)
     sanitized: bool = Field(default=True)
     relevance: float = Field(default=1.0, ge=0.0, le=1.0)
-    ingested_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class InvestigationAction(BaseModel):
@@ -124,7 +122,15 @@ class InvestigationAction(BaseModel):
         capability: str = "default",
         provider: str = "default",
     ) -> "InvestigationAction":
-        """Factory deriving deterministic fingerprint server-side."""
+        """Factory deriving deterministic fingerprint server-side.
+
+        F-057: ``action_id`` is derived deterministically (UUIDv5 over the
+        execution hash) so Temporal activity retries of the same logical
+        action resolve to the same idempotency key instead of recording
+        duplicate executions.
+        """
+        from uuid import NAMESPACE_URL, uuid5
+
         exec_hash = generate_execution_hash(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
@@ -134,7 +140,7 @@ class InvestigationAction(BaseModel):
             provider=provider,
         )
         return cls(
-            action_id=uuid4(),
+            action_id=uuid5(NAMESPACE_URL, f"{tenant_id}:{investigation_id}:{exec_hash}"),
             action_type=action_type,
             parameters=parameters,
             execution_hash=exec_hash,
@@ -269,7 +275,7 @@ class Investigation(BaseModel):
         new_status: InvestigationStatus,
         actor: ActorType,
         reason: str,
-        clock: Clock = SystemClock(),
+        clock: Clock = SystemClock(),  # noqa: B008 - stateless clock default, safe to share
     ) -> tuple["Investigation", InvestigationTransition]:
         """Validate and construct new immutable Investigation instance using supplied Clock."""
         valid_transitions: dict[InvestigationStatus, set[InvestigationStatus]] = {
@@ -353,7 +359,11 @@ class Investigation(BaseModel):
         }
         if self.started_at is None and self.status == InvestigationStatus.CREATED:
             updates["started_at"] = now
-        if new_status in {InvestigationStatus.COMPLETED, InvestigationStatus.FAILED, InvestigationStatus.CANCELLED}:
+        if new_status in {
+            InvestigationStatus.COMPLETED,
+            InvestigationStatus.FAILED,
+            InvestigationStatus.CANCELLED,
+        }:
             updates["completed_at"] = now
 
         new_investigation = self.model_copy(update=updates)

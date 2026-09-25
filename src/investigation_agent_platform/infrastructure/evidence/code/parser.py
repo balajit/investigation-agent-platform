@@ -40,16 +40,22 @@ class TreeSitterParser:
         if language not in self._parsers:
             try:
                 from tree_sitter_languages import get_parser  # type: ignore[import-not-found]
+
                 self._parsers[language] = get_parser(language)
             except Exception as exc:
-                logger.error("Tree-sitter parser initialization failed", extra={"context": {"language": language}})
+                logger.error(
+                    "Tree-sitter parser initialization failed",
+                    extra={"context": {"language": language}},
+                )
                 raise ExecutionError(f"Unsupported language parser '{language}': {exc}") from exc
         return self._parsers[language]
 
     async def parse_symbols(self, code_content: str, language: str) -> list[CodeSymbol]:
         with tracer.start_as_current_span("TreeSitterParser.parse_symbols"):
             if len(code_content.encode("utf-8")) > MAX_CODE_SIZE_BYTES:
-                raise ExecutionError(f"Code size exceeds maximum limit of {MAX_CODE_SIZE_BYTES} bytes")
+                raise ExecutionError(
+                    f"Code size exceeds maximum limit of {MAX_CODE_SIZE_BYTES} bytes"
+                )
             return await asyncio.to_thread(self._parse_symbols_sync, code_content, language)
 
     def _parse_symbols_sync(self, code_content: str, language: str) -> list[CodeSymbol]:
@@ -77,7 +83,11 @@ class TreeSitterParser:
                 node = cursor.node
                 if node.type in target_types:
                     name_node = node.child_by_field_name("name")
-                    symbol_name = code_content[name_node.start_byte:name_node.end_byte] if name_node else "anonymous"
+                    symbol_name = (
+                        code_content[name_node.start_byte : name_node.end_byte]
+                        if name_node
+                        else "anonymous"
+                    )
                     symbols.append(
                         CodeSymbol(
                             name=symbol_name,
@@ -86,7 +96,9 @@ class TreeSitterParser:
                             start_column=node.start_point[1],
                             end_line=node.end_point[0] + 1,
                             end_column=node.end_point[1],
-                            signature=code_content[node.start_byte:min(node.end_byte, node.start_byte + 128)].split("\n")[0],
+                            signature=code_content[
+                                node.start_byte : min(node.end_byte, node.start_byte + 128)
+                            ].split("\n")[0],
                         )
                     )
                 if depth < MAX_AST_DEPTH and cursor.goto_first_child():

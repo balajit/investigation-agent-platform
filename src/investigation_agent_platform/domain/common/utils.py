@@ -11,8 +11,7 @@ from uuid import UUID, uuid4
 class Clock(Protocol):
     """Abstract clock protocol for deterministic time retrieval."""
 
-    def utcnow(self) -> datetime:
-        ...
+    def utcnow(self) -> datetime: ...
 
 
 class SystemClock:

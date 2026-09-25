@@ -2,10 +2,12 @@
 
 import pytest
 
-from investigation_agent_platform.api.dependencies import AppContext, InMemoryInvestigationRepository
-from investigation_agent_platform.domain.investigation.models import Investigation, InvestigationRequest, InvestigationContext
-from datetime import datetime, timezone
-from uuid import uuid4
+from investigation_agent_platform.api.dependencies import (
+    AppContext,
+)
+from investigation_agent_platform.domain.investigation.models import (
+    InvestigationRequest,
+)
 
 
 @pytest.mark.asyncio
@@ -29,5 +31,8 @@ async def test_tenancy_isolation_in_memory() -> None:
 @pytest.mark.asyncio
 async def test_rls_migration_exists() -> None:
     import pathlib
-    assert pathlib.Path("migrations/001_add_rls.py").exists()
-    assert pathlib.Path("src/investigation_agent_platform/infrastructure/persistence/rls.py").exists()
+
+    assert pathlib.Path("migrations/versions/001_add_rls.py").exists()
+    assert pathlib.Path(
+        "src/investigation_agent_platform/infrastructure/persistence/rls.py"
+    ).exists()

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,7 +25,12 @@ from investigation_agent_platform.api.dependencies import (
     get_app_context,
     set_app_context,
 )
-from investigation_agent_platform.api.tenant import _extract_tenant_from_jwt, require_tenant
+from investigation_agent_platform.api.tenant import (
+    AuthConfigurationError,
+    _resolve_verified_identity,
+    require_principal,
+    require_tenant,
+)
 from investigation_agent_platform.api.v1.routers.investigations import CreateInvestigationBody
 from investigation_agent_platform.application.investigation.reasoning import ReasoningCoordinator
 from investigation_agent_platform.application.investigation.services import (
@@ -67,16 +70,35 @@ from investigation_agent_platform.ports.reasoning.llm_gateway import LLMGatewayR
 # ---------------------------------------------------------------------------
 
 
-def _jwt_with_tenant(tenant: str) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps({"tenant_id": tenant}).encode()).decode().rstrip("=")
-    return f"{header}.{payload}.sig"
+def _jwt_with_tenant(tenant: str, secret: str = "test-secret", **extra_claims: Any) -> str:
+    """HS256-signed JWT for tests (production uses JWKS/RS256; HS256+shared
+    secret is used purely to exercise the verification code path deterministically)."""
+    import jwt as _jwt
+
+    now = datetime.now(UTC)
+    payload = {
+        "tenant_id": tenant,
+        "sub": "principal-1",
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+        "iss": "test-issuer",
+        **extra_claims,
+    }
+    return _jwt.encode(payload, secret, algorithm="HS256")
 
 
-def _jwt_with_claim(key: str, value: str) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps({key: value}).encode()).decode().rstrip("=")
-    return f"{header}.{payload}.sig"
+def _jwt_with_claim(key: str, value: str, secret: str = "test-secret") -> str:
+    import jwt as _jwt
+
+    now = datetime.now(UTC)
+    payload = {
+        key: value,
+        "sub": "principal-1",
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+        "iss": "test-issuer",
+    }
+    return _jwt.encode(payload, secret, algorithm="HS256")
 
 
 def _make_investigation(tenant_id: str = "tenant-a", app_id: str = "example-app") -> Investigation:
@@ -134,7 +156,9 @@ def _make_evidence(tenant_id: str = "tenant-a", investigation_id: UUID | None = 
             actual_provider_id="test",
             source_system="test",
             retrieval_timestamp=now,
-            query_fingerprint=QueryFingerprint(provider_type="test", operation="test", normalized_query_hash="abc"),
+            query_fingerprint=QueryFingerprint(
+                provider_type="test", operation="test", normalized_query_hash="abc"
+            ),
             source_location=SourceLocation(system="test", identifier="id"),
         ),
         freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
@@ -154,9 +178,17 @@ def _make_timeline_event(tenant_id: str = "tenant-a", investigation_id: UUID | N
     )
 
 
-def _make_hypothesis(tenant_id: str = "tenant-a", investigation_id: UUID | None = None) -> Hypothesis:
+def _make_hypothesis(
+    tenant_id: str = "tenant-a", investigation_id: UUID | None = None
+) -> Hypothesis:
     iid = investigation_id or uuid.uuid4()
-    return Hypothesis(tenant_id=tenant_id, investigation_id=iid, statement="h1", title="h1 title", description="desc")
+    return Hypothesis(
+        tenant_id=tenant_id,
+        investigation_id=iid,
+        statement="h1",
+        title="h1 title",
+        description="desc",
+    )
 
 
 def _llm_meta() -> LLMCallMetadata:
@@ -244,7 +276,9 @@ class TestInMemoryEvidenceRepository:
         # second should be ignored -> still one entry
         assert await repo.get_by_id("tenant-a", ev2.evidence_id) is None
         # but different tenant with same fingerprint is allowed
-        ev3 = ev1.model_copy(update={"evidence_id": uuid.uuid4(), "tenant_id": "tenant-b", "title": "t3"})
+        ev3 = ev1.model_copy(
+            update={"evidence_id": uuid.uuid4(), "tenant_id": "tenant-b", "title": "t3"}
+        )
         await repo.save("tenant-b", ev3)
         assert await repo.get_by_id("tenant-b", ev3.evidence_id) is not None
 
@@ -294,9 +328,13 @@ class TestInMemoryTimelineRepository:
         ev = _make_timeline_event("tenant-a", iid)
         now = ev.timestamp
         await repo.append("tenant-a", ev, investigation_id=iid)
-        res = await repo.find_by_time_range("tenant-a", iid, now - timedelta(seconds=10), now + timedelta(seconds=10))
+        res = await repo.find_by_time_range(
+            "tenant-a", iid, now - timedelta(seconds=10), now + timedelta(seconds=10)
+        )
         assert len(res) == 1
-        res2 = await repo.find_by_time_range("tenant-a", iid, now + timedelta(seconds=10), now + timedelta(seconds=20))
+        res2 = await repo.find_by_time_range(
+            "tenant-a", iid, now + timedelta(seconds=10), now + timedelta(seconds=20)
+        )
         assert len(res2) == 0
 
     @pytest.mark.asyncio
@@ -306,7 +344,9 @@ class TestInMemoryTimelineRepository:
         for i in range(5):
             ev = _make_timeline_event("tenant-a", iid)
             await repo.append("tenant-a", ev, investigation_id=iid)
-        page, total = await repo.find_by_investigation_and_tenant(iid, "tenant-a", offset=1, limit=2)  # type: ignore[attr-defined]
+        page, total = await repo.find_by_investigation_and_tenant(
+            iid, "tenant-a", offset=1, limit=2
+        )  # type: ignore[attr-defined]
         assert total == 5
         assert len(page) == 2
 
@@ -330,7 +370,9 @@ class TestInMemoryHypothesisRepository:
         for i in range(3):
             h = _make_hypothesis("tenant-a", iid)
             await repo.save("tenant-a", h, investigation_id=iid)
-        page, total = await repo.find_by_investigation_and_tenant(iid, "tenant-a", offset=0, limit=2)
+        page, total = await repo.find_by_investigation_and_tenant(
+            iid, "tenant-a", offset=0, limit=2
+        )
         assert total == 3
         assert len(page) == 2
 
@@ -396,79 +438,200 @@ class TestAppContextSeeding:
 # ===========================================================================
 
 
-class TestExtractJwtTenant:
-    def test_extract_tenant_id_claim(self) -> None:
-        assert _extract_tenant_from_jwt(_jwt_with_tenant("tenant-a")) == "tenant-a"
+class _FakeSigningKey:
+    def __init__(self, key: str) -> None:
+        self.key = key
 
-    def test_extract_alternative_claims(self) -> None:
-        assert _extract_tenant_from_jwt(_jwt_with_claim("tenant", "t2")) == "t2"
-        assert _extract_tenant_from_jwt(_jwt_with_claim("tid", "t3")) == "t3"
 
-    def test_malformed_returns_none(self) -> None:
-        assert _extract_tenant_from_jwt("notajwt") is None
-        assert _extract_tenant_from_jwt("a.b.c.d") is None
-        assert _extract_tenant_from_jwt("") is None
+def _patch_jwks(monkeypatch: pytest.MonkeyPatch, secret: str = "test-secret") -> None:
+    """Stub out network JWKS resolution; verification still runs signature/claims checks."""
+    from investigation_agent_platform.api import tenant as tenant_module
 
-    def test_missing_claim_returns_none(self) -> None:
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
-        payload = base64.urlsafe_b64encode(json.dumps({"sub": "123"}).encode()).decode().rstrip("=")
-        assert _extract_tenant_from_jwt(f"{header}.{payload}.sig") is None
+    monkeypatch.setattr(
+        tenant_module,
+        "_get_jwk_client",
+        lambda jwks_url: type(
+            "FakeJWKClient",
+            (),
+            {"get_signing_key_from_jwt": lambda self, token: _FakeSigningKey(secret)},
+        )(),
+    )
+
+
+def _configure_auth_env(monkeypatch: pytest.MonkeyPatch, environment: str = "development") -> None:
+    monkeypatch.setenv("IAP_ENVIRONMENT", environment)
+    monkeypatch.setenv("IAP_AUTH_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json")
+    monkeypatch.setenv("IAP_AUTH_ISSUER", "test-issuer")
+    monkeypatch.setenv("IAP_AUTH_AUDIENCE", "")
+    monkeypatch.setenv("IAP_AUTH_ALGORITHMS", "HS256")
+
+
+class TestVerifiedIdentity:
+    """Covers F-003: JWT signature/issuer/expiry verification, and F-015 principal derivation."""
+
+    @pytest.mark.asyncio
+    async def test_dev_mode_header_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("IAP_AUTH_JWKS_URL", raising=False)
+        monkeypatch.delenv("IAP_AUTH_ISSUER", raising=False)
+        monkeypatch.setenv("IAP_ENVIRONMENT", "development")
+        identity = await _resolve_verified_identity(x_tenant_id="tenant-a", authorization=None)
+        assert identity.tenant_id == "tenant-a"
+        assert identity.principal_id == "dev-principal"
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_header_no_jwt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("IAP_AUTH_JWKS_URL", raising=False)
+        monkeypatch.delenv("IAP_AUTH_ISSUER", raising=False)
+        monkeypatch.setenv("IAP_ENVIRONMENT", "development")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(x_tenant_id="", authorization=None)
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_valid_signed_token_derives_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _configure_auth_env(monkeypatch, environment="development")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_tenant("tenant-a")
+        identity = await _resolve_verified_identity(
+            x_tenant_id=None, authorization=f"Bearer {token}"
+        )
+        assert identity.tenant_id == "tenant-a"
+        assert identity.principal_id == "principal-1"
+
+    @pytest.mark.asyncio
+    async def test_production_requires_bearer_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(x_tenant_id="tenant-a", authorization=None)
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_production_without_jwks_configured_raises_configuration_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IAP_ENVIRONMENT", "production")
+        monkeypatch.delenv("IAP_AUTH_JWKS_URL", raising=False)
+        monkeypatch.delenv("IAP_AUTH_ISSUER", raising=False)
+        token = _jwt_with_tenant("tenant-a")
+        with pytest.raises(AuthConfigurationError):
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_production_valid_token_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_tenant("tenant-a")
+        identity = await _resolve_verified_identity(
+            x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+        )
+        assert identity.tenant_id == "tenant-a"
+        assert identity.principal_id == "principal-1"
+
+    @pytest.mark.asyncio
+    async def test_expired_token_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        import jwt as _jwt
+
+        now = datetime.now(UTC)
+        expired = _jwt.encode(
+            {
+                "tenant_id": "tenant-a",
+                "sub": "principal-1",
+                "iat": now - timedelta(hours=2),
+                "exp": now - timedelta(hours=1),
+                "iss": "test-issuer",
+            },
+            "test-secret",
+            algorithm="HS256",
+        )
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {expired}"
+            )
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_wrong_issuer_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_tenant("tenant-a", iss="someone-else")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+            )
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_forged_unsigned_token_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        # Attacker crafts a token signed with an arbitrary secret, not the real one.
+        forged = _jwt_with_tenant("tenant-a", secret="attacker-controlled-secret")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {forged}"
+            )
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_alg_none_never_permitted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        monkeypatch.setenv("IAP_AUTH_ALGORITHMS", "none")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_tenant("tenant-a")
+        with pytest.raises(AuthConfigurationError):
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_tenant_claim_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_claim("sub", "principal-1")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+            )
+        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_tenant_mismatch_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
+        token = _jwt_with_tenant("tenant-b")
+        with pytest.raises(Exception) as ei:
+            await _resolve_verified_identity(
+                x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+            )
+        assert ei.value.status_code == 403  # type: ignore[attr-defined]
 
 
 class TestRequireTenant:
     @pytest.mark.asyncio
-    async def test_rejects_empty(self) -> None:
-        with pytest.raises(Exception) as ei:
-            await require_tenant(x_tenant_id="", authorization=None)  # type: ignore[call-arg]
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+    async def test_require_tenant_returns_tenant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("IAP_AUTH_JWKS_URL", raising=False)
+        monkeypatch.delenv("IAP_AUTH_ISSUER", raising=False)
+        monkeypatch.setenv("IAP_ENVIRONMENT", "development")
+        identity = await _resolve_verified_identity(x_tenant_id="tenant-a", authorization=None)
+        assert await require_tenant(identity) == "tenant-a"
 
     @pytest.mark.asyncio
-    async def test_rejects_anonymous(self) -> None:
-        with pytest.raises(Exception) as ei:
-            await require_tenant(x_tenant_id="anonymous", authorization=None)  # type: ignore[call-arg]
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
-
-    @pytest.mark.asyncio
-    async def test_rejects_whitespace(self) -> None:
-        with pytest.raises(Exception) as ei:
-            await require_tenant(x_tenant_id="   ", authorization=None)  # type: ignore[call-arg]
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
-
-    @pytest.mark.asyncio
-    async def test_accepts_header(self) -> None:
-        res = await require_tenant(x_tenant_id="tenant-a", authorization=None)  # type: ignore[call-arg]
-        assert res == "tenant-a"
-
-    @pytest.mark.asyncio
-    async def test_strips_whitespace(self) -> None:
-        res = await require_tenant(x_tenant_id="  tenant-a  ", authorization=None)  # type: ignore[call-arg]
-        assert res == "tenant-a"
-
-    @pytest.mark.asyncio
-    async def test_bearer_match_passes(self) -> None:
+    async def test_require_principal_returns_principal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _configure_auth_env(monkeypatch, environment="production")
+        _patch_jwks(monkeypatch)
         token = _jwt_with_tenant("tenant-a")
-        res = await require_tenant(x_tenant_id="tenant-a", authorization=f"Bearer {token}")  # type: ignore[call-arg]
-        assert res == "tenant-a"
-
-    @pytest.mark.asyncio
-    async def test_bearer_mismatch_403(self) -> None:
-        token = _jwt_with_tenant("tenant-b")
-        with pytest.raises(Exception) as ei:
-            await require_tenant(x_tenant_id="tenant-a", authorization=f"Bearer {token}")  # type: ignore[call-arg]
-        assert ei.value.status_code == 403  # type: ignore[attr-defined]
-
-    @pytest.mark.asyncio
-    async def test_bearer_without_tenant_claim_passes(self) -> None:
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
-        payload = base64.urlsafe_b64encode(json.dumps({"sub": "123"}).encode()).decode().rstrip("=")
-        token = f"{header}.{payload}.sig"
-        res = await require_tenant(x_tenant_id="tenant-a", authorization=f"Bearer {token}")  # type: ignore[call-arg]
-        assert res == "tenant-a"
-
-    @pytest.mark.asyncio
-    async def test_non_bearer_auth_ignored(self) -> None:
-        res = await require_tenant(x_tenant_id="tenant-a", authorization="Basic abc")  # type: ignore[call-arg]
-        assert res == "tenant-a"
+        identity = await _resolve_verified_identity(
+            x_tenant_id="tenant-a", authorization=f"Bearer {token}"
+        )
+        assert await require_principal(identity) == "principal-1"
 
 
 # ===========================================================================
@@ -526,7 +689,9 @@ class TestCreateApp:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/_test_validation")
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "DomainValidationException"
+        # F-062: stable public code, never the internal message.
+        assert resp.json()["error"]["code"] == "DOMAIN_VALIDATION_ERROR"
+        assert resp.json()["error"]["message"] != "bad input"
 
     def test_error_mapping_not_found_to_404(self) -> None:
         from investigation_agent_platform.domain.common.exceptions import EntityNotFoundError
@@ -598,7 +763,9 @@ class TestCreateInvestigationBody:
         assert req.requested_by == "user1"
 
     def test_to_request_uses_session_if_provided(self) -> None:
-        body = CreateInvestigationBody(application_id="example-app", problem_description="desc", session_id="my-sess")
+        body = CreateInvestigationBody(
+            application_id="example-app", problem_description="desc", session_id="my-sess"
+        )
         req = body.to_request(requested_by="user1")
         assert req.session_id == "my-sess"
 
@@ -664,7 +831,9 @@ class TestInvestigationsRouter:
         ctx = AppContext()
         # seed tenant-b profile
 
-        profile_b = _DEFAULT_PROFILE.model_copy(update={"tenant_id": "tenant-b", "id": "example-app"})
+        profile_b = _DEFAULT_PROFILE.model_copy(
+            update={"tenant_id": "tenant-b", "id": "example-app"}
+        )
         # need to directly insert into repo
         assert isinstance(ctx.profile_repo, InMemoryApplicationProfileRepository)
         ctx.profile_repo._profiles[("tenant-b", "example-app")] = profile_b
@@ -691,12 +860,16 @@ class TestInvestigationsRouter:
     def test_cancel_not_found(self) -> None:
         client, _ = self._client_with_context()
         fake_id = str(uuid.uuid4())
-        resp = client.post(f"/api/v1/investigations/{fake_id}/cancel", headers={"X-Tenant-ID": "tenant-a"})
+        resp = client.post(
+            f"/api/v1/investigations/{fake_id}/cancel", headers={"X-Tenant-ID": "tenant-a"}
+        )
         assert resp.status_code == 404
 
     def test_start_invalid_uuid(self) -> None:
         client, _ = self._client_with_context()
-        resp = client.post("/api/v1/investigations/not-uuid/start", headers={"X-Tenant-ID": "tenant-a"})
+        resp = client.post(
+            "/api/v1/investigations/not-uuid/start", headers={"X-Tenant-ID": "tenant-a"}
+        )
         assert resp.status_code == 400
 
 
@@ -772,68 +945,146 @@ class TestInvestigationActionValidator:
         )
         with pytest.raises(SecurityPolicyViolationException):
             await v.validate_action(
-                action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry()
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
             )
 
     @pytest.mark.asyncio
     async def test_authorizer_required(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
         with pytest.raises(SecurityPolicyViolationException, match="Authorizer"):
             await v.validate_action(
-                action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", None, None  # type: ignore[arg-type]
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                None,
+                None,  # type: ignore[arg-type]
             )
 
     @pytest.mark.asyncio
     async def test_unauthorized_action(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
         with pytest.raises(SecurityPolicyViolationException, match="unauthorized"):
             await v.validate_action(
-                action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(False), self._make_registry()
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(False),
+                self._make_registry(),
             )
 
     @pytest.mark.asyncio
     async def test_capability_disabled(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
         with pytest.raises(SecurityPolicyViolationException, match="disabled"):
             await v.validate_action(
-                action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(True), self._make_registry(False)
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(True),
+                self._make_registry(False),
             )
 
     @pytest.mark.asyncio
     async def test_budget_tool_calls_exceeded(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
         limits = InvestigationLimits(max_tool_calls=1)
         with pytest.raises(SecurityPolicyViolationException, match="tool call"):
-            await v.validate_action(action, _DEFAULT_PROFILE, limits, 0, 1, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                limits,
+                0,
+                1,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_budget_evidence_exceeded(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
         limits = InvestigationLimits(max_evidence_items=1)
         with pytest.raises(SecurityPolicyViolationException, match="evidence limit"):
-            await v.validate_action(action, _DEFAULT_PROFILE, limits, 1, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                limits,
+                1,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_query_state_requires_valid_template(self) -> None:
         v = InvestigationActionValidator()
         action = InvestigationAction(
-            action_type=ActionType.QUERY_STATE, parameters={"template_key": "bad_key"}, execution_hash="h"
+            action_type=ActionType.QUERY_STATE,
+            parameters={"template_key": "bad_key"},
+            execution_hash="h",
         )
         with pytest.raises(SecurityPolicyViolationException, match="queryTemplate"):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_query_state_valid_template_passes(self) -> None:
         v = InvestigationActionValidator()
         action = InvestigationAction(
-            action_type=ActionType.QUERY_STATE, parameters={"template_key": "find_transaction"}, execution_hash="h"
+            action_type=ActionType.QUERY_STATE,
+            parameters={"template_key": "find_transaction"},
+            execution_hash="h",
         )
-        await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+        await v.validate_action(
+            action,
+            _DEFAULT_PROFILE,
+            InvestigationLimits(),
+            0,
+            0,
+            "tenant-a",
+            self._make_authorizer(),
+            self._make_registry(),
+        )
 
     @pytest.mark.asyncio
     async def test_query_state_dynamic_sql_rejected(self) -> None:
@@ -844,7 +1095,16 @@ class TestInvestigationActionValidator:
             execution_hash="h",
         )
         with pytest.raises(SecurityPolicyViolationException, match="Dynamic SQL"):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_query_state_forbidden_token_in_params(self) -> None:
@@ -855,66 +1115,316 @@ class TestInvestigationActionValidator:
             execution_hash="h",
         )
         with pytest.raises(SecurityPolicyViolationException):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_get_code_traversal_rejected(self) -> None:
         v = InvestigationActionValidator()
-        for path in ["../etc/passwd", "%2e%2e%2fetc", "%252e%252e%2fetc", "..\\windows", "/absolute/path", "~/home"]:
-            action = InvestigationAction(action_type=ActionType.GET_CODE, parameters={"file_path": path}, execution_hash="h")
+        for path in [
+            "../etc/passwd",
+            "%2e%2e%2fetc",
+            "%252e%252e%2fetc",
+            "..\\windows",
+            "/absolute/path",
+            "~/home",
+        ]:
+            action = InvestigationAction(
+                action_type=ActionType.GET_CODE, parameters={"file_path": path}, execution_hash="h"
+            )
             with pytest.raises(SecurityPolicyViolationException, match="traversal|outside|attempt"):
-                await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+                await v.validate_action(
+                    action,
+                    _DEFAULT_PROFILE,
+                    InvestigationLimits(),
+                    0,
+                    0,
+                    "tenant-a",
+                    self._make_authorizer(),
+                    self._make_registry(),
+                )
 
     @pytest.mark.asyncio
     async def test_get_code_outside_roots_rejected(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.GET_CODE, parameters={"file_path": "other/file.py"}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.GET_CODE,
+            parameters={"file_path": "other/file.py"},
+            execution_hash="h",
+        )
         with pytest.raises(SecurityPolicyViolationException, match="outside allowed source roots"):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_get_code_valid_path_passes(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.GET_CODE, parameters={"file_path": "src/app.py"}, execution_hash="h")
-        await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+        action = InvestigationAction(
+            action_type=ActionType.GET_CODE,
+            parameters={"file_path": "src/app.py"},
+            execution_hash="h",
+        )
+        await v.validate_action(
+            action,
+            _DEFAULT_PROFILE,
+            InvestigationLimits(),
+            0,
+            0,
+            "tenant-a",
+            self._make_authorizer(),
+            self._make_registry(),
+        )
 
     @pytest.mark.asyncio
     async def test_get_code_null_byte_rejected(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.GET_CODE, parameters={"file_path": "src/app.py\x00"}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.GET_CODE,
+            parameters={"file_path": "src/app.py\x00"},
+            execution_hash="h",
+        )
         with pytest.raises(SecurityPolicyViolationException):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_search_logs_limit_exceeded(self) -> None:
         v = InvestigationActionValidator()
         # _DEFAULT_PROFILE max_evidence_per_query is 50
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={"limit": 100}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={"limit": 100}, execution_hash="h"
+        )
         with pytest.raises(SecurityPolicyViolationException, match="maximumEvidencePerQuery"):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_correlation_depth_exceeded(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.CORRELATE, parameters={"max_depth": 10}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.CORRELATE, parameters={"max_depth": 10}, execution_hash="h"
+        )
         limits = InvestigationLimits(max_correlation_depth=3)
         with pytest.raises(SecurityPolicyViolationException, match="Correlation depth"):
-            await v.validate_action(action, _DEFAULT_PROFILE, limits, 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                limits,
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_generic_script_tag_rejected(self) -> None:
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={"query": "<script>alert(1)</script>"}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS,
+            parameters={"query": "<script>alert(1)</script>"},
+            execution_hash="h",
+        )
         with pytest.raises(SecurityPolicyViolationException, match="script pattern"):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
 
     @pytest.mark.asyncio
     async def test_forbidden_sql_in_search_logs_via_query_string(self) -> None:
         # SEARCH_LOGS with raw_es_body should be rejected regardless of content
         v = InvestigationActionValidator()
-        action = InvestigationAction(action_type=ActionType.SEARCH_LOGS, parameters={"raw_es_body": "{}"}, execution_hash="h")
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={"raw_es_body": "{}"}, execution_hash="h"
+        )
         with pytest.raises(SecurityPolicyViolationException):
-            await v.validate_action(action, _DEFAULT_PROFILE, InvestigationLimits(), 0, 0, "tenant-a", self._make_authorizer(), self._make_registry())
+            await v.validate_action(
+                action,
+                _DEFAULT_PROFILE,
+                InvestigationLimits(),
+                0,
+                0,
+                "tenant-a",
+                self._make_authorizer(),
+                self._make_registry(),
+            )
+
+
+# ===========================================================================
+# F-004: mandatory action authorization gate
+# ===========================================================================
+
+
+class TestExecuteActionServiceAuthorization:
+    def _make_service(self, authorized: bool = True, capability_enabled: bool = True) -> Any:
+        from investigation_agent_platform.application.investigation.services import (
+            ExecuteActionService,
+        )
+
+        authorizer = MagicMock()
+        authorizer.authorize_action = AsyncMock(return_value=authorized)
+        registry = MagicMock()
+        registry.is_capability_enabled = AsyncMock(return_value=capability_enabled)
+        action_repo = MagicMock()
+        action_repo.record_action = AsyncMock(return_value=None)
+        return ExecuteActionService(
+            action_repo=action_repo,
+            evidence_repo=MagicMock(),
+            authorizer=authorizer,
+            capability_registry=registry,
+        )
+
+    def test_construction_requires_authorizer_and_registry(self) -> None:
+        from investigation_agent_platform.application.investigation.services import (
+            ExecuteActionService,
+        )
+
+        with pytest.raises(SecurityPolicyViolationException):
+            ExecuteActionService(
+                action_repo=MagicMock(),
+                evidence_repo=MagicMock(),
+                authorizer=None,
+                capability_registry=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_denies_when_authorizer_returns_false(self) -> None:
+        service = self._make_service(authorized=False)
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
+        with pytest.raises(SecurityPolicyViolationException):
+            await service.authorize("tenant-a", uuid.uuid4(), action, "principal-1")
+
+    @pytest.mark.asyncio
+    async def test_denies_when_capability_disabled(self) -> None:
+        service = self._make_service(authorized=True, capability_enabled=False)
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
+        with pytest.raises(SecurityPolicyViolationException):
+            await service.authorize("tenant-a", uuid.uuid4(), action, "principal-1")
+
+    @pytest.mark.asyncio
+    async def test_allows_and_records_decision(self) -> None:
+        service = self._make_service(authorized=True, capability_enabled=True)
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
+        decision = await service.authorize("tenant-a", uuid.uuid4(), action, "principal-1")
+        assert decision["authorized"] is True
+        assert decision["policy_version"]
+
+    @pytest.mark.asyncio
+    async def test_execute_records_action(self) -> None:
+        service = self._make_service()
+        action = InvestigationAction(
+            action_type=ActionType.SEARCH_LOGS, parameters={}, execution_hash="h"
+        )
+        inv_id = uuid.uuid4()
+        await service.execute("tenant-a", inv_id, action)
+        service.action_repo.record_action.assert_awaited_once()
+
+
+class TestProfileBasedAuthorizer:
+    def _profile_repo(self, profile: Any) -> MagicMock:
+        repo = MagicMock()
+        repo.get_by_application_id = AsyncMock(return_value=profile)
+        return repo
+
+    @pytest.mark.asyncio
+    async def test_internal_actions_always_allowed(self) -> None:
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+        )
+
+        authorizer = ProfileBasedActionAuthorizer(self._profile_repo(None))
+        assert await authorizer.authorize_action("tenant-a", "CONCLUDE", "", {}) is True
+
+    @pytest.mark.asyncio
+    async def test_denies_without_application_id_in_context(self) -> None:
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+        )
+
+        authorizer = ProfileBasedActionAuthorizer(self._profile_repo(_DEFAULT_PROFILE))
+        assert await authorizer.authorize_action("tenant-a", "SEARCH_LOGS", "", {}) is False
+
+    @pytest.mark.asyncio
+    async def test_denies_when_profile_missing(self) -> None:
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+        )
+
+        authorizer = ProfileBasedActionAuthorizer(self._profile_repo(None))
+        assert (
+            await authorizer.authorize_action(
+                "tenant-a", "SEARCH_LOGS", "", {"application_id": "example-app"}
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_allows_when_evidence_type_enabled(self) -> None:
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+        )
+
+        authorizer = ProfileBasedActionAuthorizer(self._profile_repo(_DEFAULT_PROFILE))
+        assert (
+            await authorizer.authorize_action(
+                "tenant-a", "SEARCH_LOGS", "", {"application_id": "example-app"}
+            )
+            is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_denies_unknown_action_type(self) -> None:
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+        )
+
+        authorizer = ProfileBasedActionAuthorizer(self._profile_repo(_DEFAULT_PROFILE))
+        assert await authorizer.authorize_action("tenant-a", "NOT_A_REAL_ACTION", "", {}) is False
 
 
 # ===========================================================================
@@ -933,8 +1443,9 @@ class TestReasoningCoordinator:
         safety.validate_prompt_safety = AsyncMock(return_value=True)
         coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=None)
         decision = await coord.reason("tenant-a", self._make_state())
-        assert decision.conclusion_readiness == 0.85
-        assert len(decision.observations) > 0
+        # F-006/F-007: no gateway configured must never fabricate a conclusion.
+        assert decision.conclusion_readiness == 0.0
+        assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
 
     @pytest.mark.asyncio
     async def test_prompt_safety_violation_returns_zero_readiness(self) -> None:
@@ -984,7 +1495,9 @@ class TestReasoningCoordinator:
         )
         coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
         decision = await coord.reason("tenant-a", self._make_state())
-        assert decision.conclusion_readiness == 0.85  # stub
+        # F-006/F-007: invalid LLM schema must never fall back to a fabricated stub.
+        assert decision.conclusion_readiness == 0.0
+        assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
 
     @pytest.mark.asyncio
     async def test_llm_gateway_exception_falls_back(self) -> None:
@@ -994,7 +1507,9 @@ class TestReasoningCoordinator:
         gateway.complete = AsyncMock(side_effect=RuntimeError("llm down"))
         coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
         decision = await coord.reason("tenant-a", self._make_state())
-        assert decision.conclusion_readiness == 0.85
+        # F-007: a provider outage must never become false investigative certainty.
+        assert decision.conclusion_readiness == 0.0
+        assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
 
     @pytest.mark.asyncio
     async def test_llm_gateway_no_parsed_falls_back(self) -> None:
@@ -1002,10 +1517,15 @@ class TestReasoningCoordinator:
         safety.validate_prompt_safety = AsyncMock(return_value=True)
         gateway = MagicMock()
         metadata = _llm_meta()
-        gateway.complete = AsyncMock(return_value=LLMGatewayResponse(content="hello", parsed=None, metadata=metadata))
-        coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway, observability=MagicMock())
+        gateway.complete = AsyncMock(
+            return_value=LLMGatewayResponse(content="hello", parsed=None, metadata=metadata)
+        )
+        coord = ReasoningCoordinator(
+            prompt_safety_policy=safety, llm_gateway=gateway, observability=MagicMock()
+        )
         decision = await coord.reason("tenant-a", self._make_state())
-        assert decision.conclusion_readiness == 0.85
+        assert decision.conclusion_readiness == 0.0
+        assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
 
     def test_format_xml_payload_escapes(self) -> None:
         from investigation_agent_platform.application.investigation.reasoning import (
@@ -1037,7 +1557,12 @@ class TestCreateInvestigationService:
         profile_repo = InMemoryApplicationProfileRepository()
         profile_repo._profiles[("tenant-a", "example-app")] = _DEFAULT_PROFILE
         svc = CreateInvestigationService(investigation_repo=repo, profile_repo=profile_repo)
-        req = InvestigationRequest(application_id="example-app", problem_description="incident", session_id="s1", requested_by="tester")
+        req = InvestigationRequest(
+            application_id="example-app",
+            problem_description="incident",
+            session_id="s1",
+            requested_by="tester",
+        )
         inv = await svc.execute(req, tenant_id="tenant-a")
         assert inv.tenant_id == "tenant-a"
         assert inv.status == InvestigationStatus.CREATED
@@ -1050,7 +1575,12 @@ class TestCreateInvestigationService:
         repo = InMemoryInvestigationRepository()
         profile_repo = InMemoryApplicationProfileRepository()
         svc = CreateInvestigationService(investigation_repo=repo, profile_repo=profile_repo)
-        req = InvestigationRequest(application_id="missing", problem_description="incident", session_id="s1", requested_by="tester")
+        req = InvestigationRequest(
+            application_id="missing",
+            problem_description="incident",
+            session_id="s1",
+            requested_by="tester",
+        )
         with pytest.raises(DomainException):
             await svc.execute(req, tenant_id="tenant-a")
 
@@ -1060,8 +1590,15 @@ class TestCreateInvestigationService:
         profile_repo = InMemoryApplicationProfileRepository()
         profile_repo._profiles[("tenant-a", "example-app")] = _DEFAULT_PROFILE
         telemetry = MagicMock()
-        svc = CreateInvestigationService(investigation_repo=repo, profile_repo=profile_repo, telemetry=telemetry)
-        req = InvestigationRequest(application_id="example-app", problem_description="incident", session_id="s1", requested_by="tester")
+        svc = CreateInvestigationService(
+            investigation_repo=repo, profile_repo=profile_repo, telemetry=telemetry
+        )
+        req = InvestigationRequest(
+            application_id="example-app",
+            problem_description="incident",
+            session_id="s1",
+            requested_by="tester",
+        )
         await svc.execute(req, tenant_id="tenant-a")
         telemetry.record_metric.assert_called_once()
 
@@ -1091,7 +1628,9 @@ class TestResumeInvestigationService:
 
         inv = _make_investigation()
         await inv_repo.create("tenant-a", inv)
-        svc = ResumeInvestigationService(inv_repo, profile_repo, ev_repo, tl_repo, _InMemoryCheckpointRepository())
+        svc = ResumeInvestigationService(
+            inv_repo, profile_repo, ev_repo, tl_repo, _InMemoryCheckpointRepository()
+        )
         ctx = await svc.execute("tenant-a", inv.id)
         assert ctx.investigation.id == inv.id
 
@@ -1101,7 +1640,13 @@ class TestResumeInvestigationService:
         profile_repo = InMemoryApplicationProfileRepository()
         from investigation_agent_platform.api.dependencies import _InMemoryCheckpointRepository
 
-        svc = ResumeInvestigationService(inv_repo, profile_repo, InMemoryEvidenceRepository(), InMemoryTimelineRepository(), _InMemoryCheckpointRepository())
+        svc = ResumeInvestigationService(
+            inv_repo,
+            profile_repo,
+            InMemoryEvidenceRepository(),
+            InMemoryTimelineRepository(),
+            _InMemoryCheckpointRepository(),
+        )
         with pytest.raises(DomainException):
             await svc.execute("tenant-a", uuid.uuid4())
 
@@ -1113,7 +1658,13 @@ class TestResumeInvestigationService:
 
         inv = _make_investigation()
         await inv_repo.create("tenant-a", inv)
-        svc = ResumeInvestigationService(inv_repo, profile_repo, InMemoryEvidenceRepository(), InMemoryTimelineRepository(), _InMemoryCheckpointRepository())
+        svc = ResumeInvestigationService(
+            inv_repo,
+            profile_repo,
+            InMemoryEvidenceRepository(),
+            InMemoryTimelineRepository(),
+            _InMemoryCheckpointRepository(),
+        )
         with pytest.raises(DomainException):
             await svc.execute("tenant-a", inv.id)
 
@@ -1126,7 +1677,9 @@ class TestCancelInvestigationService:
 
         inv = _make_investigation()
         await repo.create("tenant-a", inv)
-        svc = CancelInvestigationService(investigation_repo=repo, transition_repo=_InMemoryTransitionRepository())
+        svc = CancelInvestigationService(
+            investigation_repo=repo, transition_repo=_InMemoryTransitionRepository()
+        )
         updated = await svc.execute("tenant-a", inv.id, reason="test cancel")
         assert updated.status == InvestigationStatus.CANCELLED
         assert updated.version == 2
@@ -1136,7 +1689,9 @@ class TestCancelInvestigationService:
         repo = InMemoryInvestigationRepository()
         from investigation_agent_platform.api.dependencies import _InMemoryTransitionRepository
 
-        svc = CancelInvestigationService(investigation_repo=repo, transition_repo=_InMemoryTransitionRepository())
+        svc = CancelInvestigationService(
+            investigation_repo=repo, transition_repo=_InMemoryTransitionRepository()
+        )
         with pytest.raises(DomainException):
             await svc.execute("tenant-a", uuid.uuid4(), reason="x")
 
@@ -1149,7 +1704,9 @@ class TestCancelInvestigationService:
         # manually set to COMPLETED which cannot transition to CANCELLED
         inv_completed = inv.model_copy(update={"status": InvestigationStatus.COMPLETED})
         await repo.create("tenant-a", inv_completed)
-        svc = CancelInvestigationService(investigation_repo=repo, transition_repo=_InMemoryTransitionRepository())
+        svc = CancelInvestigationService(
+            investigation_repo=repo, transition_repo=_InMemoryTransitionRepository()
+        )
         with pytest.raises(DomainException):
             await svc.execute("tenant-a", inv_completed.id, reason="x")
 
@@ -1162,7 +1719,11 @@ class TestCancelInvestigationService:
         await repo.create("tenant-a", inv)
         publisher = MagicMock()
         publisher.publish_domain_event = AsyncMock()
-        svc = CancelInvestigationService(investigation_repo=repo, transition_repo=_InMemoryTransitionRepository(), event_publisher=publisher)
+        svc = CancelInvestigationService(
+            investigation_repo=repo,
+            transition_repo=_InMemoryTransitionRepository(),
+            event_publisher=publisher,
+        )
         await svc.execute("tenant-a", inv.id, reason="cancel reason")
         publisher.publish_domain_event.assert_awaited_once()
 
@@ -1176,11 +1737,15 @@ class TestCancelInvestigationService:
         # force save to raise concurrency error
         orig_save = repo.save
 
-        async def _failing_save(tenant_id: str, investigation: Investigation, expected_version: int) -> None:
+        async def _failing_save(
+            tenant_id: str, investigation: Investigation, expected_version: int
+        ) -> None:
             raise ConcurrencyError("forced conflict")
 
         repo.save = _failing_save  # type: ignore[method-assign]
-        svc = CancelInvestigationService(investigation_repo=repo, transition_repo=_InMemoryTransitionRepository())
+        svc = CancelInvestigationService(
+            investigation_repo=repo, transition_repo=_InMemoryTransitionRepository()
+        )
         with pytest.raises(ConcurrencyError):
             await svc.execute("tenant-a", inv.id, reason="x")
         repo.save = orig_save  # type: ignore[method-assign]
@@ -1189,20 +1754,36 @@ class TestCancelInvestigationService:
 class TestInvestigationStateTransitions:
     def test_valid_transition_created_to_cancelled(self) -> None:
         inv = _make_investigation()
-        new_inv, trans = inv.transition_to(InvestigationStatus.CANCELLED, actor=inv.request.requested_by and __import__("investigation_agent_platform.domain.investigation.models", fromlist=["ActorType"]).ActorType.USER, reason="test")  # type: ignore[arg-type]
+        new_inv, trans = inv.transition_to(
+            InvestigationStatus.CANCELLED,
+            actor=inv.request.requested_by
+            and __import__(
+                "investigation_agent_platform.domain.investigation.models", fromlist=["ActorType"]
+            ).ActorType.USER,
+            reason="test",
+        )  # type: ignore[arg-type]
         assert new_inv.status == InvestigationStatus.CANCELLED
 
     def test_invalid_transition_raises(self) -> None:
         inv = _make_investigation()
         completed = inv.model_copy(update={"status": InvestigationStatus.COMPLETED})
         with pytest.raises(DomainException):
-            completed.transition_to(InvestigationStatus.CANCELLED, actor=__import__("investigation_agent_platform.domain.investigation.models", fromlist=["ActorType"]).ActorType.USER, reason="x")  # type: ignore[arg-type]
+            completed.transition_to(
+                InvestigationStatus.CANCELLED,
+                actor=__import__(
+                    "investigation_agent_platform.domain.investigation.models",
+                    fromlist=["ActorType"],
+                ).ActorType.USER,
+                reason="x",
+            )  # type: ignore[arg-type]
 
     def test_version_increments_on_cancel_via_service(self) -> None:
         # covered above but check domain directly
         inv = _make_investigation()
         from investigation_agent_platform.domain.investigation.models import ActorType
 
-        new_inv, _ = inv.transition_to(InvestigationStatus.CANCELLED, actor=ActorType.USER, reason="r")
+        new_inv, _ = inv.transition_to(
+            InvestigationStatus.CANCELLED, actor=ActorType.USER, reason="r"
+        )
         assert new_inv.version == inv.version + 1
         assert new_inv.completed_at is not None

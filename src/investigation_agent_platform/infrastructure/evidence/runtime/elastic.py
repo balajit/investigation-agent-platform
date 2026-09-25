@@ -36,15 +36,33 @@ from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryRes
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-ALLOWED_LABEL_KEYS: set[str] = {"trace_id", "span_id", "service_name", "user_id", "session_id", "container_id"}
+ALLOWED_LABEL_KEYS: set[str] = {
+    "trace_id",
+    "span_id",
+    "service_name",
+    "user_id",
+    "session_id",
+    "container_id",
+}
 CURSOR_HMAC_SECRET = b"iap-elastic-cursor-binding-key"
+
+# F-043: provider-side bounds enforced regardless of what an authenticated
+# caller requests — the platform must defend against expensive LLM-generated
+# queries, not rely on prompt-level instructions.
+ELASTIC_MAX_HITS = 200
+ELASTIC_MAX_TIME_WINDOW_SECONDS = 7 * 24 * 3600
+ELASTIC_MAX_KEYWORD_TERMS = 20
+ELASTIC_MAX_SERVICES = 10
 
 
 class AsyncElasticAdapter:
     """Asynchronous Elasticsearch adapter for searching and mapping runtime logs and traces."""
 
     def __init__(
-        self, client: AsyncElasticsearch, provider_id: str = "elastic-primary", request_timeout: int = 30
+        self,
+        client: AsyncElasticsearch,
+        provider_id: str = "elastic-primary",
+        request_timeout: int = 30,
     ) -> None:
         self._client = client
         self._provider_id = provider_id
@@ -62,17 +80,26 @@ class AsyncElasticAdapter:
         try:
             token = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
             payload_str, expected_sig = token["p"], token["s"]
-            actual_sig = hmac.new(CURSOR_HMAC_SECRET, payload_str.encode("utf-8"), hashlib.sha256).hexdigest()
+            actual_sig = hmac.new(
+                CURSOR_HMAC_SECRET, payload_str.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
             if not hmac.compare_digest(actual_sig, expected_sig):
-                logger.warning("Cursor signature verification failed", extra={"context": {"tenant_id": tenant_id}})
+                logger.warning(
+                    "Cursor signature verification failed",
+                    extra={"context": {"tenant_id": tenant_id}},
+                )
                 return None
             data = json.loads(payload_str)
             if data.get("tenant_id") != tenant_id or data.get("app_id") != app_id:
-                logger.warning("Cursor tenant/app mismatch", extra={"context": {"tenant_id": tenant_id}})
+                logger.warning(
+                    "Cursor tenant/app mismatch", extra={"context": {"tenant_id": tenant_id}}
+                )
                 return None
             return data.get("sort")  # type: ignore[no-any-return]
         except Exception:
-            logger.warning("Malformed pagination cursor ignored", extra={"context": {"cursor": cursor}})
+            logger.warning(
+                "Malformed pagination cursor ignored", extra={"context": {"cursor": cursor}}
+            )
             return None
 
     async def search_runtime_evidence(
@@ -93,43 +120,83 @@ class AsyncElasticAdapter:
             index_pattern = f"logs-{tenant_id}-*-{request.environment}-*"
             must_clauses: list[dict[str, Any]] = []
 
+            # F-043: clamp every caller-controlled dimension at the provider boundary.
+            effective_limit = min(request.limit, ELASTIC_MAX_HITS)
+            keywords = list(request.keywords or [])[:ELASTIC_MAX_KEYWORD_TERMS]
+            services = list(request.services or [])[:ELASTIC_MAX_SERVICES]
+            severities = [
+                s
+                for s in (request.severities or [])
+                if isinstance(s, str) and re.fullmatch(r"[A-Z_]{1,16}", s)
+            ][:10]
+
             for key, val in request.identifiers.items():
                 sanitized_key = re.sub(r"[^a-zA-Z0-9_]", "", key)
                 if sanitized_key not in ALLOWED_LABEL_KEYS:
                     raise SecurityPolicyViolationException(f"Unauthorized label filter key: {key}")
                 must_clauses.append({"term": {f"labels.{sanitized_key}.keyword": val}})
 
-            if request.severities:
-                must_clauses.append({"terms": {"log.level": request.severities}})
-            if request.services:
-                must_clauses.append({"terms": {"service.name": request.services}})
-            if request.keywords:
+            if severities:
+                must_clauses.append({"terms": {"log.level": severities}})
+            if services:
+                must_clauses.append({"terms": {"service.name": services}})
+            if keywords:
                 must_clauses.append(
-                    {"multi_match": {"query": " ".join(request.keywords), "fields": ["message", "error.message"]}}
+                    {
+                        "multi_match": {
+                            "query": " ".join(keywords),
+                            "fields": ["message", "error.message"],
+                        }
+                    }
                 )
 
             filter_clauses: list[dict[str, Any]] = []
             if request.time_range:
-                filter_clauses.append({
-                    "range": {
-                        "@timestamp": {
-                            "gte": request.time_range.start_time.isoformat(),
-                            "lte": request.time_range.end_time.isoformat(),
+                window_seconds = (
+                    request.time_range.end_time - request.time_range.start_time
+                ).total_seconds()
+                if window_seconds > ELASTIC_MAX_TIME_WINDOW_SECONDS:
+                    raise SecurityPolicyViolationException(
+                        f"Requested time window ({window_seconds:.0f}s) exceeds provider ceiling "
+                        f"({ELASTIC_MAX_TIME_WINDOW_SECONDS}s)"
+                    )
+                if window_seconds <= 0:
+                    raise SecurityPolicyViolationException(
+                        "Invalid time range: end must be after start"
+                    )
+                filter_clauses.append(
+                    {
+                        "range": {
+                            "@timestamp": {
+                                "gte": request.time_range.start_time.isoformat(),
+                                "lte": request.time_range.end_time.isoformat(),
+                            }
                         }
                     }
-                })
+                )
 
             query_body: dict[str, Any] = {
                 "query": {"bool": {"must": must_clauses, "filter": filter_clauses}},
-                "size": request.limit,
+                "size": effective_limit,
                 "sort": [
-                    {"@timestamp": {"order": "desc", "format": "epoch_millis", "unmapped_type": "long"}},
+                    {
+                        "@timestamp": {
+                            "order": "desc",
+                            "format": "epoch_millis",
+                            "unmapped_type": "long",
+                        }
+                    },
                     {"_id": "asc"},
                 ],
+                # Defense against unbounded aggregations/deep pagination via crafted bodies.
+                "track_total_hits": effective_limit,
+                "timeout": "25s",
             }
 
             if request.cursor:
-                sort_values = self._decode_signed_cursor(request.cursor, tenant_id, str(investigation_id))
+                sort_values = self._decode_signed_cursor(
+                    request.cursor, tenant_id, str(investigation_id)
+                )
                 if sort_values is not None:
                     query_body["search_after"] = sort_values
 
@@ -149,16 +216,22 @@ class AsyncElasticAdapter:
             hits = response.get("hits", {}).get("hits", [])
             items = [self._map_hit_to_evidence(hit, tenant_id, investigation_id) for hit in hits]
 
-            has_more = len(hits) == request.limit
+            has_more = len(hits) == effective_limit
             next_cursor: str | None = None
             if has_more:
                 last_hit = hits[-1]
                 sort_values = last_hit.get("sort")
                 if isinstance(sort_values, list) and len(sort_values) >= 2:
-                    next_cursor = self._encode_signed_cursor(sort_values[:2], tenant_id, str(investigation_id))
+                    next_cursor = self._encode_signed_cursor(
+                        sort_values[:2], tenant_id, str(investigation_id)
+                    )
 
             total = response.get("hits", {}).get("total")
-            total_count = total.get("value") if isinstance(total, dict) else (total if isinstance(total, int) else None)
+            total_count = (
+                total.get("value")
+                if isinstance(total, dict)
+                else (total if isinstance(total, int) else None)
+            )
 
             return EvidenceQueryResult(
                 items=items,
@@ -167,11 +240,17 @@ class AsyncElasticAdapter:
                 total_count=total_count if isinstance(total_count, int) else len(items),
             )
 
-    def _map_hit_to_evidence(self, hit: dict[str, Any], tenant_id: str, investigation_id: UUID) -> Evidence:
+    def _map_hit_to_evidence(
+        self, hit: dict[str, Any], tenant_id: str, investigation_id: UUID
+    ) -> Evidence:
         src = hit.get("_source", {})
         ts_str = src.get("@timestamp")
         try:
-            obs_time = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(UTC)
+            obs_time = (
+                datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts_str
+                else datetime.now(UTC)
+            )
         except ValueError:
             obs_time = datetime.now(UTC)
         now = datetime.now(UTC)

@@ -7,6 +7,7 @@ from uuid import UUID
 from investigation_agent_platform.domain.common.exceptions import (
     ApplicationProfileNotFoundException,
     DomainException,
+    SecurityPolicyViolationException,
 )
 from investigation_agent_platform.domain.common.utils import Clock, SystemClock
 from investigation_agent_platform.domain.entity.models import InvestigationEntity
@@ -37,6 +38,10 @@ from investigation_agent_platform.ports.persistence.repositories import (
     InvestigationRepository,
     TimelineRepository,
     TransitionEventRepository,
+)
+from investigation_agent_platform.ports.security.redactor import (
+    ActionAuthorizerPort,
+    CapabilityRegistryPort,
 )
 
 logger = logging.getLogger("iap.application")
@@ -105,7 +110,9 @@ class CreateInvestigationService:
 
         await self.investigation_repo.create(tenant_id, investigation)
         if self.telemetry:
-            self.telemetry.record_metric("investigation_created", 1.0, {"app_id": request.application_id})
+            self.telemetry.record_metric(
+                "investigation_created", 1.0, {"app_id": request.application_id}
+            )
 
         return investigation
 
@@ -133,14 +140,22 @@ class ResumeInvestigationService:
         self.timeline_repo = timeline_repo
         self.checkpoint_repo = checkpoint_repo
 
-    async def execute(self, tenant_id: str, investigation_id: UUID) -> InvestigationExecutionContext:
+    async def execute(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> InvestigationExecutionContext:
         investigation = await self.investigation_repo.get_by_id(tenant_id, investigation_id)
         if not investigation:
-            raise DomainException(f"Investigation {investigation_id} not found", error_code="NOT_FOUND")
+            raise DomainException(
+                f"Investigation {investigation_id} not found", error_code="NOT_FOUND"
+            )
 
-        profile = await self.profile_repo.get_by_application_id(tenant_id, investigation.application_id)
+        profile = await self.profile_repo.get_by_application_id(
+            tenant_id, investigation.application_id
+        )
         if not profile:
-            raise ApplicationProfileNotFoundException(f"Profile {investigation.application_id} not found")
+            raise ApplicationProfileNotFoundException(
+                f"Profile {investigation.application_id} not found"
+            )
 
         evidence = await self.evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
         timeline = await self.timeline_repo.find_by_investigation_id(tenant_id, investigation_id)
@@ -171,7 +186,9 @@ class CancelInvestigationService:
     ) -> Investigation:
         investigation = await self.investigation_repo.get_by_id(tenant_id, investigation_id)
         if not investigation:
-            raise DomainException(f"Investigation {investigation_id} not found", error_code="NOT_FOUND")
+            raise DomainException(
+                f"Investigation {investigation_id} not found", error_code="NOT_FOUND"
+            )
 
         updated_inv, transition = investigation.transition_to(
             new_status=InvestigationStatus.CANCELLED,
@@ -179,7 +196,9 @@ class CancelInvestigationService:
             reason=reason,
         )
 
-        await self.investigation_repo.save(tenant_id, updated_inv, expected_version=investigation.version)
+        await self.investigation_repo.save(
+            tenant_id, updated_inv, expected_version=investigation.version
+        )
         await self.transition_repo.record_transition(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
@@ -203,22 +222,91 @@ class CancelInvestigationService:
 
 
 class ExecuteActionService:
+    """Mandatory authorization gate for every agent-proposed action (F-004).
+
+    No action reaches the evidence gateway or is recorded as executed unless
+    ``authorizer.authorize_action`` explicitly returns ``True`` and the
+    requested capability is enabled for the tenant. Both dependencies are
+    mandatory — construction without them, or a missing decision, denies by
+    default rather than silently allowing execution.
+    """
+
     def __init__(
         self,
         action_repo: ActionExecutionRepository,
         evidence_repo: EvidenceRepository,
+        authorizer: ActionAuthorizerPort,
+        capability_registry: CapabilityRegistryPort,
+        policy_version: str = "v1",
     ) -> None:
+        if authorizer is None or capability_registry is None:
+            raise SecurityPolicyViolationException(
+                "ExecuteActionService requires an authorizer and capability registry"
+            )
         self.action_repo = action_repo
         self.evidence_repo = evidence_repo
+        self.authorizer = authorizer
+        self.capability_registry = capability_registry
+        self.policy_version = policy_version
+
+    async def authorize(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        action: InvestigationAction,
+        principal_id: str,
+        application_id: str | None = None,
+    ) -> dict[str, object]:
+        """Evaluate the mandatory authorization gate and return the recorded decision.
+
+        Raises ``SecurityPolicyViolationException`` (non-retryable) if the
+        action is not explicitly authorized or the capability is disabled.
+        Never returns a permissive result on authorizer failure.
+        """
+        target_resource = str(action.parameters.get("resource", ""))
+        context = {
+            "investigation_id": str(investigation_id),
+            "principal_id": principal_id,
+            "action_id": str(action.action_id),
+            "application_id": application_id,
+        }
+        authorized = await self.authorizer.authorize_action(
+            tenant_id, action.action_type.value, target_resource, context
+        )
+        if not authorized:
+            raise SecurityPolicyViolationException(
+                f"Action '{action.action_type.value}' denied by authorization policy",
+                details={"tenant_id": tenant_id, "action_type": action.action_type.value},
+            )
+        enabled = await self.capability_registry.is_capability_enabled(
+            tenant_id, action.action_type.value
+        )
+        if not enabled:
+            raise SecurityPolicyViolationException(
+                f"Capability '{action.action_type.value}' is disabled for tenant",
+                details={"tenant_id": tenant_id, "action_type": action.action_type.value},
+            )
+        return {
+            "authorized": True,
+            "policy_version": self.policy_version,
+            "action_type": action.action_type.value,
+            "principal_id": principal_id,
+        }
 
     async def execute(
-        self, tenant_id: str, investigation_id: UUID, action: InvestigationAction
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        action: InvestigationAction,
+        principal_id: str = "worker",
     ) -> None:
         await self.action_repo.record_action(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
             action=action,
             result_status="EXECUTED",
+            principal_id=principal_id,
+            policy_version=self.policy_version,
         )
 
 
@@ -231,9 +319,7 @@ class ConcludeInvestigationService:
         self.investigation_repo = investigation_repo
         self.finding_repo = finding_repo
 
-    async def execute(
-        self, tenant_id: str, investigation_id: UUID, finding: Finding
-    ) -> None:
+    async def execute(self, tenant_id: str, investigation_id: UUID, finding: Finding) -> None:
         await self.finding_repo.save_finding(
             tenant_id=tenant_id,
             investigation_id=investigation_id,

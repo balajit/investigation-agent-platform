@@ -73,8 +73,7 @@ class ActionValidationResult(BaseModel):
 class ActionValidator(Protocol):
     def validate_action(
         self, action: InvestigationAction, context: ActionExecutionContext
-    ) -> ActionValidationResult:
-        ...
+    ) -> ActionValidationResult: ...
 
 
 class InvestigationLoopGuard(BaseModel):
@@ -97,17 +96,26 @@ class InvestigationLoopGuard(BaseModel):
             count = self.action_fingerprint_counts.get(fingerprint, 0)
             if count >= self.max_repeated_actions:
                 if force_refresh and is_authorized_refresh:
-                    logger.info("Force refresh bypass authorized for loop guard", extra={"fingerprint": fingerprint})
+                    logger.info(
+                        "Force refresh bypass authorized for loop guard",
+                        extra={"fingerprint": fingerprint},
+                    )
                     return True
                 logger.warning(
                     "Action rejected by loop guard: duplicate threshold reached",
-                    extra={"fingerprint": fingerprint, "count": count, "limit": self.max_repeated_actions},
+                    extra={
+                        "fingerprint": fingerprint,
+                        "count": count,
+                        "limit": self.max_repeated_actions,
+                    },
                 )
                 return False
             return True
 
     def record_execution_outcome(self, fingerprint: str, new_info_discovered: bool) -> None:
-        self.action_fingerprint_counts[fingerprint] = self.action_fingerprint_counts.get(fingerprint, 0) + 1
+        self.action_fingerprint_counts[fingerprint] = (
+            self.action_fingerprint_counts.get(fingerprint, 0) + 1
+        )
         if new_info_discovered:
             self.consecutive_no_info_cycles = 0
         else:
@@ -152,7 +160,11 @@ class InvestigationLoopGuard(BaseModel):
                 return
         raise SecurityPolicyViolationException("File path outside allowed source roots")
 
-    def enforce_query_template_allowlist(self, template_id: str, allowed_templates: dict[str, str]) -> None:
+    def enforce_query_template_allowlist(
+        self, template_id: str, allowed_templates: dict[str, str]
+    ) -> None:
         """Strict queryTemplates allow-list enforcement."""
         if template_id not in allowed_templates:
-            raise SecurityPolicyViolationException(f"Query template '{template_id}' not in allow-list")
+            raise SecurityPolicyViolationException(
+                f"Query template '{template_id}' not in allow-list"
+            )

@@ -59,19 +59,19 @@ __all__ = [
 class InvestigationTriggerPort(Protocol):
     """Inbound port for starting investigation execution."""
 
-    async def trigger(self, tenant_id: str, request: dict[str, Any]) -> UUID:
-        ...
+    async def trigger(self, tenant_id: str, request: dict[str, Any]) -> UUID: ...
 
 
 @runtime_checkable
 class InvestigationContext(Protocol):
     """Aggregate investigation-context port reading tenant-correlated evidence."""
 
-    async def get_application_profile(self, tenant_id: str, application_id: str) -> ApplicationProfile:
-        ...
+    async def get_application_profile(
+        self, tenant_id: str, application_id: str
+    ) -> ApplicationProfile: ...
 
-    async def get_runtime_evidence(self, tenant_id: str, investigation_id: UUID) -> list[Evidence]:
-        ...
+    async def get_runtime_evidence(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[Evidence]: ...
 
-    async def search_evidence(self, tenant_id: str, query: str) -> EvidenceQueryResult:
-        ...
+    async def search_evidence(self, tenant_id: str, query: str) -> EvidenceQueryResult: ...

@@ -14,6 +14,8 @@ dependencies = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "psycopg[binary]>=3.2.0",
     "alembic>=1.13.0",
     "pyyaml>=6.0",
     "rustworkx>=0.18.1",
@@ -30,6 +32,7 @@ dependencies = [
     "faststream[kafka]>=0.7.6",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.53.0",
+    "pyjwt[crypto]>=2.9.0",
 ]
 
 [dependency-groups]
@@ -43,6 +46,8 @@ dev = [
     "pylint>=3.2.0",
     "types-pyyaml>=6.0.12.20260906",
     "pytest-asyncio>=1.4.0",
+    "bandit>=1.8.0",
+    "pip-audit>=2.9.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -51,6 +56,30 @@ packages = ["src/investigation_agent_platform"]
 [tool.ruff]
 target-version = "py313"
 line-length = 100
+
+[tool.ruff.lint]
+# F-072 follow-up: broad `except Exception` (BLE001) and silent
+# try/except-pass/continue (S110/S112) pervade pre-remediation code. They are
+# excluded from the gate ONLY as a documented baseline — new code must use the
+# typed retry taxonomy in application/worker/activities.py instead. The
+# remaining ignores are stylistic patterns grandfathered from the original
+# tree; fix opportunistically, never extend.
+ignore = [
+    "BLE001",
+    "S110",
+    "S112",
+    "SIM102",
+    "SIM113",
+    "SIM117",
+    "PIE810",
+    "C408",
+    "TRY201",
+    "G201",
+    "FURB162",
+    "PERF102",
+    "DTZ001",
+    "RUF059",
+]
 
 [tool.mypy]
 python_version = "3.13"

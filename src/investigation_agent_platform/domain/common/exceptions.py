@@ -155,7 +155,9 @@ class PlatformConfigurationError(DomainException):
 
 
 class ExecutionError(DomainException):
-    def __init__(self, message: str, details: dict[str, Any] | None = None, retryable: bool = True) -> None:
+    def __init__(
+        self, message: str, details: dict[str, Any] | None = None, retryable: bool = True
+    ) -> None:
         super().__init__(
             message=message,
             error_code="EXECUTION_ERROR",
@@ -184,6 +186,32 @@ class VerificationError(DomainException):
             details=details,
             retryable=False,
             http_status_code=422,
+        )
+
+
+class IdempotencyConflictError(DomainException):
+    """Raised when an idempotency key is reused with a different request payload (F-014)."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="IDEMPOTENCY_KEY_CONFLICT",
+            details=details,
+            retryable=False,
+            http_status_code=409,
+        )
+
+
+class IdempotencyInProgressError(DomainException):
+    """Raised when a concurrent request with the same idempotency key is still executing."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            details=details,
+            retryable=True,
+            http_status_code=409,
         )
 
 

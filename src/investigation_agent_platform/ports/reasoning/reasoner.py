@@ -30,5 +30,4 @@ class InvestigationDecision(BaseModel):
 class InvestigationReasoner(Protocol):
     """Port isolating LLM reasoning model from platform execution."""
 
-    async def reason(self, tenant_id: str, state: InvestigationState) -> InvestigationDecision:
-        ...
+    async def reason(self, tenant_id: str, state: InvestigationState) -> InvestigationDecision: ...

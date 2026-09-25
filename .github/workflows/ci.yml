@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Ruff lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - run: uv run ruff check src tests migrations
+      - run: uv run ruff format --check src tests migrations
+
+  typecheck:
+    name: mypy (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - run: uv run mypy src/investigation_agent_platform
+
+  test:
+    name: pytest + coverage (≥70%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - run: uv run pytest -q --cov=src/investigation_agent_platform --cov-report=term-missing --cov-fail-under=70
+
+  migrate:
+    name: Alembic upgrade head (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: iap
+          POSTGRES_PASSWORD: iap
+          POSTGRES_DB: iap_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U iap"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - name: Validate revision chain
+        run: uv run alembic -c alembic.ini history
+      - name: Run migrations to head
+        env:
+          IAP_DATABASE_URI: postgresql+psycopg://iap:iap@localhost:5432/iap_test
+        run: uv run alembic -c alembic.ini upgrade head
+      - name: Downgrade / re-upgrade round-trip
+        env:
+          IAP_DATABASE_URI: postgresql+psycopg://iap:iap@localhost:5432/iap_test
+        run: |
+          uv run alembic -c alembic.ini downgrade base
+          uv run alembic -c alembic.ini upgrade head
+
+  security:
+    name: Bandit + pip-audit + gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - run: uv run bandit -r src -x tests -q -ll
+      - run: uv run pip-audit
+      - uses: gitleaks/gitleaks-action@v2
+
+  build:
+    name: Package build validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv build

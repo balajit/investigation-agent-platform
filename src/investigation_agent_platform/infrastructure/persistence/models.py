@@ -26,7 +26,6 @@ class Base(DeclarativeBase):
     """Base declarative class for all ORM models."""
 
 
-
 class InvestigationORM(Base):
     """Database representation of Investigation aggregate root."""
 
@@ -76,8 +75,12 @@ class CheckpointORM(Base):
     __tablename__ = "investigation_checkpoints"
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     current_phase: Mapped[str] = mapped_column(String(32), nullable=False)
     current_step: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -85,11 +88,19 @@ class CheckpointORM(Base):
     budget_state_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     last_action_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     checkpoint_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # F-025: checkpoint schema versioning — readers validate schema_version and
+    # refuse to hydrate snapshots from incompatible schemas instead of blindly
+    # model_validating across versions.
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    app_version: Mapped[str] = mapped_column(String(64), nullable=False, default="0.1.0")
+    state_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
     investigation: Mapped["InvestigationORM"] = relationship(back_populates="checkpoints")
+
+    __table_args__ = (Index("idx_checkpoint_tenant_inv", "tenant_id", "investigation_id"),)
 
 
 class EvidenceORM(Base):
@@ -99,7 +110,10 @@ class EvidenceORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -114,6 +128,7 @@ class EvidenceORM(Base):
     classification: Mapped[str] = mapped_column(String(32), nullable=False, default="INTERNAL")
     is_sanitized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     evidence_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
@@ -124,6 +139,7 @@ class EvidenceORM(Base):
     __table_args__ = (
         Index("idx_evidence_tenant_inv", "tenant_id", "investigation_id"),
         UniqueConstraint("tenant_id", "evidence_key", name="uq_evidence_tenant_key"),
+        UniqueConstraint("tenant_id", "fingerprint", name="uq_evidence_tenant_fingerprint"),
     )
 
 
@@ -134,7 +150,10 @@ class EvidenceRelationshipORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_node_id: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -159,8 +178,12 @@ class InvestigationTransitionORM(Base):
     __tablename__ = "investigation_transitions"
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     from_status: Mapped[str] = mapped_column(String(32), nullable=False)
     to_status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -170,7 +193,10 @@ class InvestigationTransitionORM(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
     )
 
-    __table_args__ = (Index("idx_transition_inv_time", "investigation_id", "timestamp"),)
+    __table_args__ = (
+        Index("idx_transition_inv_time", "investigation_id", "timestamp"),
+        Index("idx_transition_tenant_inv", "tenant_id", "investigation_id"),
+    )
 
 
 class InvestigationFactORM(Base):
@@ -181,7 +207,10 @@ class InvestigationFactORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     fact_type: Mapped[str] = mapped_column(String(32), nullable=False)
     statement: Mapped[str] = mapped_column(Text, nullable=False)
@@ -207,7 +236,10 @@ class InvestigationEntityORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
     external_identifier: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -228,7 +260,10 @@ class EvidenceReferenceORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     evidence_id: Mapped[str] = mapped_column(String(256), nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -244,16 +279,17 @@ class TimelineEventORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     entity_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
     __table_args__ = (
         Index("idx_timeline_inv_time", "investigation_id", "timestamp"),
@@ -270,7 +306,10 @@ class HypothesisORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -284,7 +323,9 @@ class HypothesisORM(Base):
     supporting_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     refuting_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     required_verification: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    assessments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    assessments_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -305,7 +346,10 @@ class HypothesisEvidenceORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     hypothesis_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("hypotheses.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("hypotheses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     evidence_id: Mapped[str] = mapped_column(String(256), nullable=False)
     assessment: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -321,7 +365,10 @@ class FindingORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     finding_type: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -350,14 +397,21 @@ class InvestigationConclusionORM(Base):
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     status: Mapped[str] = mapped_column(String(64), nullable=False)
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     supporting_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    supporting_hypothesis_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    contradicting_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    supporting_hypothesis_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    contradicting_evidence_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     limitations: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     recommended_next_steps: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
@@ -378,7 +432,10 @@ class InvestigationActionORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
@@ -395,10 +452,16 @@ class InvestigationToolExecutionORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     action_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigation_actions.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigation_actions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -414,7 +477,10 @@ class EvidenceAttributeORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     evidence_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("evidence.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("evidence.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     attribute_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     attribute_value: Mapped[str] = mapped_column(Text, nullable=False)
@@ -432,7 +498,10 @@ class AgentActionORM(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     investigation_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     iteration: Mapped[int] = mapped_column(Integer, nullable=False)
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -465,4 +534,88 @@ class ApplicationProfileORM(Base):
     __table_args__ = (
         Index("idx_app_profile_tenant", "tenant_id"),
         Index("idx_app_profile_tenant_env", "tenant_id", "environment"),
+    )
+
+
+class IdempotencyKeyORM(Base):
+    """Durable idempotency ledger (F-013/F-014): one row per (tenant, key),
+    binding the stored response to a canonical hash of the originating
+    request payload so a reused key with a different body is rejected
+    rather than silently replaying a mismatched response."""
+
+    __tablename__ = "idempotency_keys"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_idempotency_tenant_key"),
+    )
+
+
+class OutboxEventORM(Base):
+    """Transactional outbox (F-058): domain events are written in the same
+    transaction as the state change they describe, then dispatched and
+    marked sent by a separate durable publisher process — never published
+    directly from inside the request/activity transaction."""
+
+    __tablename__ = "outbox_events"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_outbox_tenant_idempotency_key"),
+        Index("idx_outbox_undispatched", "dispatched_at", "created_at"),
+    )
+
+
+class ActionExecutionORM(Base):
+    """Durable authorization + execution audit trail for agent-proposed
+    actions (F-004/F-068): every action must be traceable to an
+    investigation/tenant/principal along with the authorization decision
+    that permitted it."""
+
+    __tablename__ = "action_executions"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    principal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    result_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_action_exec_tenant_inv", "tenant_id", "investigation_id"),
+        UniqueConstraint("action_id", name="uq_action_execution_action_id"),
     )

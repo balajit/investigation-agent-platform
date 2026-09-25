@@ -61,8 +61,7 @@ class CorrelationEngine(Protocol):
 
     async def correlate(
         self, tenant_id: str, seed_identifiers: dict[str, str], profile: CorrelationProfile
-    ) -> CorrelationResult:
-        ...
+    ) -> CorrelationResult: ...
 
 
 @runtime_checkable
@@ -79,5 +78,4 @@ class CorrelationExpander(Protocol):
         application_id: str,
         root_evidence_ids: list[UUID],
         max_depth: int,
-    ) -> CorrelationGraph:
-        ...
+    ) -> CorrelationGraph: ...

@@ -93,11 +93,49 @@ class TreeSitterCodeIntelligenceProvider:
     """
 
     def __init__(
-        self, repo_base_path: str = "/tmp", provider_id: str = "code-intelligence"
+        self,
+        repo_base_path: str = "",
+        provider_id: str = "code-intelligence",
+        tenant_repository_allowlist: dict[str, set[str]] | None = None,
     ) -> None:
+        # No insecure /tmp default: production must inject IAP_CODE_REPO_BASE
+        # explicitly; an empty base fails closed at construction time.
+        if not repo_base_path:
+            from investigation_agent_platform.domain.common.exceptions import (
+                PlatformConfigurationError,
+            )
+
+            raise PlatformConfigurationError(
+                "Code intelligence requires an explicit repo_base_path (IAP_CODE_REPO_BASE)"
+            )
         self._repo_base_path = Path(repo_base_path).resolve()
         self._provider_id = provider_id
         self._parsers: dict[str, Any] = {}
+        # F-040: explicit tenant → authorized-repository mapping. When
+        # configured, a tenant may only scan repositories registered to it;
+        # anything else is denied. When unconfigured (dev), all repositories
+        # under the base path are visible but every access is still logged.
+        self._tenant_allowlist = tenant_repository_allowlist
+
+    def _require_tenant_scope(self, tenant_id: str, profile: CodeProfile) -> None:
+        """Fail closed unless this tenant is authorized for the repository (F-040)."""
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
+
+        if not tenant_id or tenant_id == "anonymous":
+            raise SecurityPolicyViolationException("Code access requires an authenticated tenant")
+        if self._tenant_allowlist is None:
+            logger.warning(
+                "Code repository access without tenant allow-list (dev mode)",
+                extra={"tenant_id": tenant_id, "repository": profile.repository},
+            )
+            return
+        allowed = self._tenant_allowlist.get(tenant_id, set())
+        if profile.repository not in allowed:
+            raise SecurityPolicyViolationException(
+                f"Tenant '{tenant_id}' is not authorized for repository '{profile.repository}'"
+            )
 
     # -- internal helpers -------------------------------------------------
 
@@ -110,41 +148,59 @@ class TreeSitterCodeIntelligenceProvider:
             parser = get_parser(language)  # type: ignore[no-untyped-call]
             self._parsers[language] = parser
             return parser
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("Parser unavailable for language %s: %s", language, exc)
             self._parsers[language] = None
             return None
 
     def _resolve_roots(self, profile: CodeProfile) -> list[Path]:
-        repo_path = (self._repo_base_path / profile.repository).resolve()
-        # traversal guard - if repo_path escapes base, fallback to base/profile.repository without resolve
+        # F-041: centralized, fail-closed path resolution. Every candidate is
+        # canonicalized with resolve() (collapsing `..`, symlinks, and
+        # absolute-path escapes) and must remain under the authorized
+        # repository root. There are no fallback-to-base branches: an
+        # unresolvable source root yields no roots rather than silently
+        # widening the scan boundary.
+        try:
+            base = Path(profile.repository)
+            if base.is_absolute():
+                logger.warning("Absolute repository path rejected: %s", profile.repository)
+                return []
+            repo_path = (self._repo_base_path / base).resolve()
+        except Exception:
+            return []
         try:
             if not repo_path.is_relative_to(self._repo_base_path):
                 logger.warning("Repository path traversal blocked: %s", profile.repository)
                 return []
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
-        if not repo_path.exists():
-            # No filesystem backing - return empty (graceful degradation)
+        # Symlink-escape rejection: the resolved repo root itself must be a
+        # real directory under base, not a symlink pointing elsewhere.
+        if repo_path.is_symlink():
+            logger.warning("Repository root is a symlink; access denied: %s", profile.repository)
+            return []
+        if not repo_path.is_dir():
             return []
         roots: list[Path] = []
         source_roots = profile.source_roots or ["."]
         for sr in source_roots:
-            # guard traversal in source root via centralized check
+            if not sr or sr.startswith("/") or sr.startswith("~"):
+                continue
             if _has_traversal(sr):
                 continue
-            candidate = (repo_path / sr).resolve()
+            try:
+                candidate = (repo_path / sr).resolve()
+            except Exception:
+                continue
             try:
                 if not candidate.is_relative_to(repo_path):
                     continue
-            except Exception:  # noqa: BLE001, S112
+            except Exception:
+                continue
+            if candidate.is_symlink():
                 continue
             if candidate.exists():
                 roots.append(candidate)
-            elif repo_path.exists():
-                roots.append(repo_path)
-        if not roots and repo_path.exists():
-            roots.append(repo_path)
         # deduplicate
         uniq: list[Path] = []
         seen: set[str] = set()
@@ -416,8 +472,6 @@ class TreeSitterCodeIntelligenceProvider:
             # walk to find call nodes
             cursor = tree.walk()
             visited_children = False
-            # stack of enclosing function names
-            func_stack: list[str] = []
             # We track via traversal: push when entering symbol node, pop on exit
             # Simpler: for each call node, scan ancestors for enclosing function name
             depth = 0
@@ -754,33 +808,45 @@ class TreeSitterCodeIntelligenceProvider:
 
     # -- async protocol surface ----------------------------------------
 
-    async def search_code(self, tenant_id: str, query: str, profile: CodeProfile) -> list[Evidence]:
+    async def search_code(
+        self,
+        tenant_id: str,
+        query: str,
+        profile: CodeProfile,
+        investigation_id: UUID | None = None,
+    ) -> list[Evidence]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.search_code"):
-            # synthetic investigation_id for provenance when caller doesn't supply; use deterministic UUID from tenant+query
-            inv_id = UUID(hashlib.sha256(f"{tenant_id}:{query}".encode()).hexdigest()[:32])
+            self._require_tenant_scope(tenant_id, profile)
+            # F-039: a real investigation/run ID is required for provenance.
+            # Ad-hoc searches without one get a fresh random query-run ID that
+            # is recorded as a query run — never a deterministic hash shared
+            # across identical queries masquerading as an investigation.
+            from uuid import uuid4 as _uuid4
+
+            run_id = investigation_id or _uuid4()
             return await asyncio.to_thread(
-                self._search_code_sync, tenant_id, inv_id, query, profile
+                self._search_code_sync, tenant_id, run_id, query, profile
             )
 
     async def find_symbol(
         self, tenant_id: str, symbol_name: str, profile: CodeProfile
     ) -> list[CodeSymbol]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_symbol"):
-            _ = tenant_id
+            self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_symbol_sync, symbol_name, profile)
 
     async def find_callers(
         self, tenant_id: str, symbol_name: str, profile: CodeProfile
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callers"):
-            _ = tenant_id
+            self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callers_sync, symbol_name, profile)
 
     async def find_callees(
         self, tenant_id: str, symbol_name: str, profile: CodeProfile
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callees"):
-            _ = tenant_id
+            self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callees_sync, symbol_name, profile)
 
     async def find_exception_handlers(
@@ -789,7 +855,7 @@ class TreeSitterCodeIntelligenceProvider:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_exception_handlers"
         ):
-            _ = tenant_id
+            self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(
                 self._find_exception_handlers_sync, exception_class, profile
             )
@@ -800,7 +866,7 @@ class TreeSitterCodeIntelligenceProvider:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_database_operations"
         ):
-            _ = tenant_id
+            self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(
                 self._find_database_operations_sync, entity_or_table, profile
             )

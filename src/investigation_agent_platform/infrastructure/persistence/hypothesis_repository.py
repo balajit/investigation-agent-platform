@@ -22,9 +22,12 @@ class SqlAlchemyHypothesisRepository:
         self._session_factory = db_session_factory
 
     @staticmethod
-    def _to_orm(hypothesis: Hypothesis, tenant_id: str, investigation_id: UUID | None) -> HypothesisORM:
+    def _to_orm(
+        hypothesis: Hypothesis, tenant_id: str, investigation_id: UUID | None
+    ) -> HypothesisORM:
         return HypothesisORM(
             id=hypothesis.id,
+            tenant_id=tenant_id,
             investigation_id=investigation_id,
             title=hypothesis.title,
             description=hypothesis.description,
@@ -51,24 +54,32 @@ class SqlAlchemyHypothesisRepository:
     def _from_orm(row: HypothesisORM) -> Hypothesis:
         return Hypothesis(
             id=row.id,
-            tenant_id="unknown",
+            tenant_id=row.tenant_id,
             investigation_id=row.investigation_id or row.id,
             statement=row.statement,
             status=HypothesisStatus(row.status),
             confidence_score=row.confidence_score,
             support_score=row.support_score,
-            assessments=[HypothesisEvidenceAssessment.model_validate(a) for a in row.assessments_json],
+            assessments=[
+                HypothesisEvidenceAssessment.model_validate(a) for a in row.assessments_json
+            ],
             parent_hypothesis_id=row.parent_hypothesis_id,
             created_at=row.created_at,
             updated_at=row.updated_at,
             title=row.title,
             description=row.description,
-            supporting_evidence_ids=[__import__("uuid").UUID(s) for s in (row.supporting_evidence_ids or []) if s],
-            refuting_evidence_ids=[__import__("uuid").UUID(s) for s in (row.refuting_evidence_ids or []) if s],
+            supporting_evidence_ids=[
+                __import__("uuid").UUID(s) for s in (row.supporting_evidence_ids or []) if s
+            ],
+            refuting_evidence_ids=[
+                __import__("uuid").UUID(s) for s in (row.refuting_evidence_ids or []) if s
+            ],
             required_verification=row.required_verification or [],
         )
 
-    async def save(self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None) -> None:
+    async def save(
+        self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
+    ) -> None:
         orm = self._to_orm(hypothesis, tenant_id, investigation_id)
         async with rls_session(self._session_factory, tenant_id) as session:
             if orm.id is not None:
@@ -103,7 +114,9 @@ class SqlAlchemyHypothesisRepository:
             row = result.first()
             return self._from_orm(row) if row else None
 
-    async def find_by_investigation_id(self, tenant_id: str, investigation_id: UUID) -> list[Hypothesis]:
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[Hypothesis]:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
                 select(HypothesisORM).where(

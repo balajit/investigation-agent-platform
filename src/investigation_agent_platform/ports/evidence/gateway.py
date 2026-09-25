@@ -43,41 +43,54 @@ class EvidenceGatewayProtocol(Protocol):
     """Primary asynchronous port abstraction governing all evidence discovery operations."""
 
     async def search_runtime_evidence(
-        self, tenant_id: str, investigation_id: UUID, application_id: str, request: RuntimeEvidenceRequest
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: RuntimeEvidenceRequest,
+    ) -> EvidenceQueryResult: ...
 
     async def get_application_state(
-        self, tenant_id: str, investigation_id: UUID, application_id: str, request: ApplicationStateRequest
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: ApplicationStateRequest,
+    ) -> EvidenceQueryResult: ...
 
     async def search_code(
-        self, tenant_id: str, investigation_id: UUID, application_id: str, request: CodeSearchRequest
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: CodeSearchRequest,
+    ) -> EvidenceQueryResult: ...
 
     async def find_symbol(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SymbolRequest
-    ) -> EvidenceQueryResult:
-        ...
+    ) -> EvidenceQueryResult: ...
 
     async def get_source(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SourceRequest
-    ) -> Evidence:
-        ...
+    ) -> Evidence: ...
 
     async def find_call_graph(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: CallGraphRequest
-    ) -> EvidenceQueryResult:
-        ...
+    ) -> EvidenceQueryResult: ...
 
     async def get_code_history(
-        self, tenant_id: str, investigation_id: UUID, application_id: str, request: CodeHistoryRequest
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: CodeHistoryRequest,
+    ) -> EvidenceQueryResult: ...
 
     async def correlate(
-        self, tenant_id: str, investigation_id: UUID, application_id: str, root_evidence_ids: list[UUID], max_depth: int
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        root_evidence_ids: list[UUID],
+        max_depth: int,
+    ) -> EvidenceQueryResult: ...

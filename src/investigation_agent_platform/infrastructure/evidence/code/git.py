@@ -35,9 +35,50 @@ MAX_SOURCE_BYTE_SIZE = 1_048_576  # 1MB text ceiling
 class PyGit2Adapter:
     """Off-thread PyGit2 adapter for executing non-blocking repository traversals."""
 
-    def __init__(self, repo_base_path: str, provider_id: str = "pygit2-local") -> None:
+    def __init__(
+        self,
+        repo_base_path: str,
+        provider_id: str = "pygit2-local",
+        tenant_repository_allowlist: dict[str, set[str]] | None = None,
+    ) -> None:
         self._repo_base_path = Path(repo_base_path).resolve()
         self._provider_id = provider_id
+        self._tenant_allowlist = tenant_repository_allowlist
+
+    @staticmethod
+    def _validate_tree_path(file_path: str) -> None:
+        """Reject tree paths that could escape the git tree (F-041)."""
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
+
+        if not file_path or "\x00" in file_path:
+            raise SecurityPolicyViolationException("Invalid file path for git tree lookup")
+        if file_path.startswith("/") or file_path.startswith("~"):
+            raise SecurityPolicyViolationException("Absolute file paths are not permitted")
+        normalized = file_path.replace("\\", "/").strip("/")
+        if any(part in ("..", ".") for part in normalized.split("/")):
+            raise SecurityPolicyViolationException(
+                "Path traversal attempt blocked in git tree lookup"
+            )
+
+    def _require_tenant_scope(self, tenant_id: str, profile: CodeProfile) -> None:
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
+
+        if not tenant_id or tenant_id == "anonymous":
+            raise SecurityPolicyViolationException("Code access requires an authenticated tenant")
+        if self._tenant_allowlist is None:
+            logger.warning(
+                "Git repository access without tenant allow-list (dev mode)",
+                extra={"tenant_id": tenant_id, "repository": profile.repository},
+            )
+            return
+        if profile.repository not in self._tenant_allowlist.get(tenant_id, set()):
+            raise SecurityPolicyViolationException(
+                f"Tenant '{tenant_id}' is not authorized for repository '{profile.repository}'"
+            )
 
     async def get_source(
         self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
@@ -47,12 +88,18 @@ class PyGit2Adapter:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("file_path", file_path)
-            return await asyncio.to_thread(self._get_source_sync, tenant_id, investigation_id, file_path, profile)
+            return await asyncio.to_thread(
+                self._get_source_sync, tenant_id, investigation_id, file_path, profile
+            )
 
-    def _get_source_sync(self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile) -> Evidence:
+    def _get_source_sync(
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
+    ) -> Evidence:
+        self._require_tenant_scope(tenant_id, profile)
+        self._validate_tree_path(file_path)
         repository = profile.repository
         repo_path = (self._repo_base_path / repository).resolve()
-        if not repo_path.is_relative_to(self._repo_base_path):
+        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
             raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
 
         try:
@@ -63,13 +110,17 @@ class PyGit2Adapter:
                 raise ExecutionError(f"Path is not a blob: {file_path}")
             blob: pygit2.Blob = entry
             if blob.size > MAX_SOURCE_BYTE_SIZE:
-                raise ExecutionError(f"File size {blob.size} bytes exceeds maximum limit of {MAX_SOURCE_BYTE_SIZE}")
+                raise ExecutionError(
+                    f"File size {blob.size} bytes exceeds maximum limit of {MAX_SOURCE_BYTE_SIZE}"
+                )
             raw_text = blob.data.decode("utf-8", errors="replace")
         except Exception as exc:
             logger.error(
                 "Git source fetch failure",
                 exc_info=exc,
-                extra={"context": {"file": file_path, "repository": repository, "tenant_id": tenant_id}},
+                extra={
+                    "context": {"file": file_path, "repository": repository, "tenant_id": tenant_id}
+                },
             )
             raise ExecutionError(f"Failed to fetch source for {file_path}: {exc}") from exc
 
@@ -80,7 +131,9 @@ class PyGit2Adapter:
         now = datetime.now(UTC)
 
         commit_sha = str(commit.id)
-        query_hash = hashlib.sha256(f"{repository}:{file_path}:{commit_sha}:{start}:{end}".encode()).hexdigest()
+        query_hash = hashlib.sha256(
+            f"{repository}:{file_path}:{commit_sha}:{start}:{end}".encode()
+        ).hexdigest()
 
         prov = EvidenceProvenance(
             tenant_id=tenant_id,
@@ -105,7 +158,9 @@ class PyGit2Adapter:
             ),
         )
 
-        fingerprint = hashlib.sha256(f"{tenant_id}:{repository}:{file_path}:{commit_sha}:{selected_content}".encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            f"{tenant_id}:{repository}:{file_path}:{commit_sha}:{selected_content}".encode()
+        ).hexdigest()
 
         return Evidence(
             tenant_id=tenant_id,
@@ -132,14 +187,18 @@ class PyGit2Adapter:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("file_path", path)
-            return await asyncio.to_thread(self._get_code_history_sync, tenant_id, investigation_id, path, profile)
+            return await asyncio.to_thread(
+                self._get_code_history_sync, tenant_id, investigation_id, path, profile
+            )
 
     def _get_code_history_sync(
         self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile
     ) -> list[Evidence]:
+        self._require_tenant_scope(tenant_id, profile)
+        self._validate_tree_path(path)
         repository = profile.repository
         repo_path = (self._repo_base_path / repository).resolve()
-        if not repo_path.is_relative_to(self._repo_base_path):
+        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
             raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
 
         evidences: list[Evidence] = []
@@ -157,7 +216,9 @@ class PyGit2Adapter:
                 now = datetime.now(UTC)
                 commit_time = datetime.fromtimestamp(commit.commit_time, tz=UTC)
 
-                query_hash = hashlib.sha256(f"{repository}:{path}:{commit_sha}".encode()).hexdigest()
+                query_hash = hashlib.sha256(
+                    f"{repository}:{path}:{commit_sha}".encode()
+                ).hexdigest()
                 prov = EvidenceProvenance(
                     tenant_id=tenant_id,
                     investigation_id=investigation_id,
@@ -179,7 +240,9 @@ class PyGit2Adapter:
                     ),
                 )
 
-                fingerprint = hashlib.sha256(f"{tenant_id}:{repository}:{commit_sha}".encode()).hexdigest()
+                fingerprint = hashlib.sha256(
+                    f"{tenant_id}:{repository}:{commit_sha}".encode()
+                ).hexdigest()
                 evidences.append(
                     Evidence(
                         tenant_id=tenant_id,

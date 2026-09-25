@@ -67,23 +67,46 @@ class Hypothesis(BaseModel):
     @model_validator(mode="after")
     def validate_assessment_consistency(self) -> "Hypothesis":
         for asm in self.assessments:
-            if asm.assessment == AssessmentType.SUPPORTS and asm.evidence_id not in self.supporting_evidence_ids:
-                raise ValueError(f"Supporting assessment evidence {asm.evidence_id} missing from supporting_evidence_ids.")
-            if asm.assessment == AssessmentType.CONTRADICTS and asm.evidence_id not in self.refuting_evidence_ids:
-                raise ValueError(f"Refuting assessment evidence {asm.evidence_id} missing from refuting_evidence_ids.")
+            if (
+                asm.assessment == AssessmentType.SUPPORTS
+                and asm.evidence_id not in self.supporting_evidence_ids
+            ):
+                raise ValueError(
+                    f"Supporting assessment evidence {asm.evidence_id} missing from supporting_evidence_ids."
+                )
+            if (
+                asm.assessment == AssessmentType.CONTRADICTS
+                and asm.evidence_id not in self.refuting_evidence_ids
+            ):
+                raise ValueError(
+                    f"Refuting assessment evidence {asm.evidence_id} missing from refuting_evidence_ids."
+                )
         return self
 
     def transition_status(self, new_status: HypothesisStatus) -> "Hypothesis":
         """Validate state transition graph for hypothesis lifecycle."""
         valid_transitions: dict[HypothesisStatus, set[HypothesisStatus]] = {
-            HypothesisStatus.PROPOSED: {HypothesisStatus.UNDER_INVESTIGATION, HypothesisStatus.REJECTED},
-            HypothesisStatus.UNDER_INVESTIGATION: {HypothesisStatus.SUPPORTED, HypothesisStatus.CONTRADICTED, HypothesisStatus.REJECTED},
-            HypothesisStatus.SUPPORTED: {HypothesisStatus.VERIFIED, HypothesisStatus.CONTRADICTED, HypothesisStatus.REJECTED},
+            HypothesisStatus.PROPOSED: {
+                HypothesisStatus.UNDER_INVESTIGATION,
+                HypothesisStatus.REJECTED,
+            },
+            HypothesisStatus.UNDER_INVESTIGATION: {
+                HypothesisStatus.SUPPORTED,
+                HypothesisStatus.CONTRADICTED,
+                HypothesisStatus.REJECTED,
+            },
+            HypothesisStatus.SUPPORTED: {
+                HypothesisStatus.VERIFIED,
+                HypothesisStatus.CONTRADICTED,
+                HypothesisStatus.REJECTED,
+            },
             HypothesisStatus.CONTRADICTED: {HypothesisStatus.REJECTED, HypothesisStatus.SUPPORTED},
             HypothesisStatus.VERIFIED: set(),
             HypothesisStatus.REJECTED: set(),
         }
         allowed = valid_transitions.get(self.status, set())
         if new_status not in allowed:
-            raise ValueError(f"Invalid hypothesis status transition from {self.status} to {new_status}")
+            raise ValueError(
+                f"Invalid hypothesis status transition from {self.status} to {new_status}"
+            )
         return self.model_copy(update={"status": new_status, "updated_at": datetime.now(UTC)})

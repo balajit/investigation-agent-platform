@@ -50,10 +50,19 @@ class KafkaEventPublisher(EventPublisher):
                 await self._broker.publish(payload, topic=topic, headers=headers)
             else:
                 await self._broker.publish(payload, topic=topic)
-            logger.info("Published investigation event", extra={"context": {"topic": topic, "event_type": envelope.event_type, "tenant_id": envelope.tenant_id, "correlation_id": envelope.correlation_id}})
+            logger.info(
+                "Published investigation event",
+                extra={
+                    "context": {
+                        "topic": topic,
+                        "event_type": envelope.event_type,
+                        "tenant_id": envelope.tenant_id,
+                        "correlation_id": envelope.correlation_id,
+                    }
+                },
+            )
 
     async def publish_domain_event(self, tenant_id: str, event: InvestigationEvent) -> None:
-        envelope = make_envelope(event)
         # Convert to generic envelope
         generic = EventEnvelope(
             event_type=event.event_type,

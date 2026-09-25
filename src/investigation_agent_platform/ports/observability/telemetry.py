@@ -31,6 +31,9 @@ class LLMCallMetadata(BaseModel):
     total_tokens: int = Field(ge=0)
     estimated_cost_usd: float = Field(ge=0.0)
     latency_ms: float = Field(ge=0.0)
+    # F-029: pricing table version that produced estimated_cost_usd — estimates
+    # are telemetry only, never hard spend limits.
+    pricing_version: str = Field(default="2026-09-01")
 
 
 class ToolExecutionMetadata(BaseModel):
@@ -52,14 +55,11 @@ class ObservabilityPort(Protocol):
 
     def start_span(
         self, name: str, context: SpanContext, attributes: dict[str, Any] | None = None
-    ) -> AbstractContextManager[Any]:
-        ...
+    ) -> AbstractContextManager[Any]: ...
 
-    def record_llm_call(self, context: SpanContext, metadata: LLMCallMetadata) -> None:
-        ...
+    def record_llm_call(self, context: SpanContext, metadata: LLMCallMetadata) -> None: ...
 
-    def record_tool_call(self, context: SpanContext, metadata: ToolExecutionMetadata) -> None:
-        ...
+    def record_tool_call(self, context: SpanContext, metadata: ToolExecutionMetadata) -> None: ...
 
     def record_evidence_retrieval(
         self,
@@ -68,8 +68,6 @@ class ObservabilityPort(Protocol):
         query_type: str,
         result_count: int,
         duration_ms: float,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def record_metric(self, metric_name: str, value: float, tags: dict[str, str]) -> None:
-        ...
+    def record_metric(self, metric_name: str, value: float, tags: dict[str, str]) -> None: ...

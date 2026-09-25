@@ -22,18 +22,32 @@ logger = logging.getLogger(__name__)
 _cfg: ApplicationConfig | None = None
 try:
     _cfg = load_application_config_from_env()
-    from investigation_agent_platform.bootstrap import build_app_context
-
-    build_app_context(_cfg)
-    logger.info("Bootstrapped AppContext from environment", extra={"environment": _cfg.environment})
-except PlatformConfigurationError as exc:
-    logger.info(
-        "Running with in-memory AppContext (config not available)", extra={"error": str(exc)}
-    )
 except Exception as exc:  # pragma: no cover - defensive
     logger.warning(
-        "Failed to bootstrap AppContext, using in-memory fallback", extra={"error": str(exc)}
+        "Failed to load application config; using development in-memory AppContext",
+        extra={"error": str(exc)},
     )
+    _cfg = None
+
+if _cfg is not None:
+    from investigation_agent_platform.bootstrap import build_app_context
+
+    if (_cfg.environment or "").lower() == "production":
+        # Production must fail hard on wiring errors (F-001/F-002): never
+        # silently degrade to in-memory/permissive dependencies.
+        build_app_context(_cfg)
+        logger.info("Bootstrapped production AppContext", extra={"environment": _cfg.environment})
+    else:
+        try:
+            build_app_context(_cfg)
+            logger.info(
+                "Bootstrapped AppContext from environment", extra={"environment": _cfg.environment}
+            )
+        except PlatformConfigurationError as exc:
+            logger.info(
+                "Running with in-memory AppContext (non-production, config incomplete)",
+                extra={"error": str(exc)},
+            )
 
 
 def _create_lifespan_app() -> FastAPI:
@@ -79,7 +93,7 @@ def main() -> None:
     """Launches the FastAPI web gateway (``uvicorn investigation_agent_platform.main:app``)."""
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")  # nosec B104 - containerized deployment binds all interfaces by design; network policy enforced outside the process
 
 
 if __name__ == "__main__":

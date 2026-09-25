@@ -19,10 +19,12 @@ class StateEvidenceProviderProtocol(Protocol):
         investigation_id: UUID,
         request: ApplicationStateRequest,
         profile: StateProfile,
-    ) -> EvidenceQueryResult:
-        ...
+    ) -> EvidenceQueryResult: ...
 
     async def search_application_state(
-        self, tenant_id: str, investigation_id: UUID, request: ApplicationStateRequest, profile: StateProfile
-    ) -> EvidenceQueryResult:
-        ...
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        request: ApplicationStateRequest,
+        profile: StateProfile,
+    ) -> EvidenceQueryResult: ...

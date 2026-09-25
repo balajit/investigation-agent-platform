@@ -96,7 +96,9 @@ class InvestigationProfile(BaseModel):
 
     default_time_window: int = Field(default=1800, alias="defaultTimeWindow", ge=60, le=86400)
     max_evidence_per_query: int = Field(default=25, alias="maximumEvidencePerQuery", ge=1, le=500)
-    max_investigation_duration: int = Field(default=1800, alias="maximumInvestigationDuration", ge=60, le=86400)
+    max_investigation_duration: int = Field(
+        default=1800, alias="maximumInvestigationDuration", ge=60, le=86400
+    )
     enabled_evidence_types: list[str] = Field(
         default_factory=lambda: ["LOG", "TRACE", "DATABASE_STATE"],
         alias="enabledEvidenceTypes",

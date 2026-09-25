@@ -19,9 +19,30 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.investigation.models import ActionType
+
+# Action types that must reach the evidence gateway to execute; used to
+# fail closed (EVIDENCE_PROVIDER_UNAVAILABLE) rather than silently no-op when
+# no gateway is wired (F-021/F-023).
+_ACTION_REQUIRED_EVIDENCE_TYPE_LOCAL = {
+    ActionType.QUERY_STATE,
+    ActionType.SEARCH_LOGS,
+    ActionType.GET_CODE,
+    ActionType.CORRELATE,
+}
+
 
 def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
-    """Map domain/generic exceptions to Temporal ApplicationFailure with correct retryability."""
+    """Map exceptions to Temporal ApplicationFailure using an explicit retry taxonomy (F-056).
+
+    - ``DomainException`` carries its own explicit ``retryable`` flag — honored as-is.
+    - Known transient infrastructure errors (timeouts, connection errors) retry.
+    - Known non-transient programming/validation errors (bad input, bugs) never retry.
+    - Any other unclassified exception defaults to NON-retryable: an unknown
+      failure mode must not be assumed safe to blindly retry and burn budget.
+    """
+    import asyncio as _asyncio
+
     from investigation_agent_platform.domain.common.exceptions import DomainException
 
     if isinstance(exc, DomainException):
@@ -30,8 +51,28 @@ def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
             type=exc.__class__.__name__,
             non_retryable=not exc.retryable,
         )
-    # Generic exceptions are retryable by default to allow Temporal retries.
-    return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=False)
+
+    _TRANSIENT_INFRA_TYPES = (
+        ConnectionError,
+        TimeoutError,
+        _asyncio.TimeoutError,
+        OSError,
+    )
+    _NON_RETRYABLE_TYPES = (
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        LookupError,
+        AssertionError,
+    )
+
+    if isinstance(exc, _TRANSIENT_INFRA_TYPES):
+        return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=False)
+    if isinstance(exc, _NON_RETRYABLE_TYPES):
+        return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=True)
+    # Unclassified exception: fail closed rather than retry indefinitely.
+    return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=True)
 
 
 @dataclass
@@ -160,29 +201,65 @@ async def retrieve_evidence_activity(
             )
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
-        # Prefer EvidenceGateway if wired on context, otherwise no-op.
         gateway: Any = getattr(ctx, "evidence_gateway", None)
         if gateway is None:
-            # Fallback: return empty evidence set when gateway not configured (e.g. in-memory dev).
-            return GenericActivityResult(
-                success=True, data={"items_count": 0, "tenant_id": tenant_id}
+            # F-021: a missing evidence gateway is a configuration error, not a
+            # zero-result success. The workflow must not proceed as though
+            # retrieval happened.
+            raise ApplicationFailure(
+                "Evidence gateway is not configured; evidence retrieval cannot proceed",
+                type="EVIDENCE_PROVIDER_UNAVAILABLE",
+                non_retryable=True,
             )
-        # Attempt a minimal runtime evidence search to prove wiring; fail-closed on error.
-        try:
-            from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest
 
-            req = RuntimeEvidenceRequest(environment="production", query_string="*")
-            app_id: str = str(data.get("application_id") or "example-app")
+        # F-022: build a bounded query scoped to the investigation's profile
+        # (environment, time window, result cap) instead of a wildcard
+        # full-environment scan.
+        from datetime import UTC, datetime, timedelta
+
+        from investigation_agent_platform.domain.evidence.requests import (
+            RuntimeEvidenceRequest,
+            TimeRange,
+        )
+
+        inv_repo: Any = getattr(ctx, "investigation_repo", None)
+        profile_repo: Any = getattr(ctx, "profile_repo", None)
+        investigation_obj: Any = None
+        if inv_repo is not None:
+            investigation_obj = await inv_repo.get_by_id(tenant_id, investigation_id)
+
+        app_id: str = str(
+            data.get("application_id")
+            or (getattr(investigation_obj, "application_id", None) if investigation_obj else None)
+            or "example-app"
+        )
+        environment = "production"
+        window_seconds = 3600
+        max_results = 100
+        if profile_repo is not None:
+            profile = await profile_repo.get_by_application_id(tenant_id, app_id)
+            if profile is not None:
+                environment = profile.environment
+                window_seconds = profile.investigation_configuration.default_time_window
+                max_results = min(profile.investigation_configuration.max_evidence_per_query, 500)
+
+        now = datetime.now(UTC)
+        req = RuntimeEvidenceRequest(
+            environment=environment,
+            time_range=TimeRange(start_time=now - timedelta(seconds=window_seconds), end_time=now),
+            limit=max_results,
+        )
+        try:
             result = await gateway.search_runtime_evidence(tenant_id, investigation_id, app_id, req)
-            return GenericActivityResult(
-                success=True,
-                data={"items_count": len(result.items), "total_count": result.total_count},
-            )
         except Exception as exc:
             logger.exception(
                 "retrieve_evidence_activity gateway call failed", extra={"error": str(exc)}
             )
             raise _application_failure_from_exc(exc) from exc
+        return GenericActivityResult(
+            success=True,
+            data={"items_count": len(result.items), "total_count": result.total_count},
+        )
     except ApplicationFailure:
         raise
     except Exception as exc:
@@ -204,33 +281,30 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
             )
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
-        # Resolve ReasoningCoordinator: prefer ctx.reasoning_coordinator, else build minimal one.
+        # Resolve ReasoningCoordinator: prefer ctx.reasoning_coordinator, else build one from
+        # production configuration. Construction failure is a security/configuration error and
+        # must never fall back to a permissive/allow-all safety policy (F-005).
         coordinator: Any = getattr(ctx, "reasoning_coordinator", None)
         if coordinator is None:
+            from investigation_agent_platform.bootstrap import build_reasoning_coordinator
+            from investigation_agent_platform.infrastructure.configuration.config import (
+                load_application_config_from_env,
+            )
+
             try:
-                from investigation_agent_platform.application.investigation.reasoning import (
-                    ReasoningCoordinator,
-                )
-                from investigation_agent_platform.bootstrap import build_reasoning_coordinator
-                from investigation_agent_platform.infrastructure.configuration.config import (
-                    load_application_config_from_env,
-                )
-
-                try:
-                    cfg = load_application_config_from_env()
-                    coordinator = build_reasoning_coordinator(cfg)
-                except Exception:
-                    # Fallback stub coordinator with permissive safety policy.
-                    class _AllowAllSafety:
-                        async def validate_prompt_safety(self, _tid: str, _prompt: str) -> bool:
-                            return True
-
-                    coordinator = ReasoningCoordinator(prompt_safety_policy=_AllowAllSafety())
+                cfg = load_application_config_from_env()
+                coordinator = build_reasoning_coordinator(cfg)
             except Exception as exc:
                 logger.exception(
-                    "reason_activity coordinator fallback failed", extra={"error": str(exc)}
+                    "reason_activity: failed to construct reasoning coordinator; "
+                    "refusing to process prompts with a permissive fallback",
+                    extra={"error": str(exc)},
                 )
-                raise _application_failure_from_exc(exc) from exc
+                raise ApplicationFailure(
+                    "Reasoning/safety policy could not be initialized; refusing to process",
+                    type="SecurityPolicyInitializationError",
+                    non_retryable=True,
+                ) from exc
 
         # Build minimal InvestigationState for reasoning.
         try:
@@ -239,9 +313,12 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
             if inv_repo is not None:
                 investigation = await inv_repo.get_by_id(tenant_id, investigation_id)
             if investigation is None:
-                # No persisted investigation — return stub readiness.
-                return GenericActivityResult(
-                    success=True, data={"conclusion_readiness": 0.85, "iteration": iteration}
+                # No persisted investigation — this is a genuine failure, not a
+                # basis for fabricating a readiness score (F-006).
+                raise ApplicationFailure(
+                    f"Investigation {investigation_id} not found for tenant",
+                    type="InvestigationNotFoundError",
+                    non_retryable=True,
                 )
 
             from investigation_agent_platform.domain.investigation.models import InvestigationState
@@ -297,76 +374,228 @@ async def execute_action_activity(
             )
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
-        # Dispatch via EvidenceGateway if available; always sanitize + persist when possible.
+
+        # Mandatory authorization gate (F-004): no action reaches the evidence
+        # gateway or execution surface without an explicit allow decision.
+        from investigation_agent_platform.domain.investigation.models import (
+            ActionType,
+            InvestigationAction,
+        )
+
+        try:
+            resolved_action_type = ActionType(action_type)
+        except ValueError as exc:
+            raise ApplicationFailure(
+                f"Unknown action type: {action_type}",
+                type="InvalidActionTypeError",
+                non_retryable=True,
+            ) from exc
+
+        inv_repo: Any = getattr(ctx, "investigation_repo", None)
+        investigation_obj: Any = None
+        if inv_repo is not None:
+            investigation_obj = await inv_repo.get_by_id(tenant_id, investigation_id)
+        application_id = str(
+            data.get("application_id")
+            or (getattr(investigation_obj, "application_id", None) if investigation_obj else None)
+            or ""
+        )
+
+        inv_action = InvestigationAction.create(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            action_type=resolved_action_type,
+            parameters=parameters,
+        )
+
+        action_service = ctx.execute_action_service()
+        principal_id = str(data.get("principal_id", "worker"))
+
+        # F-054: durable budget ledger — usage is derived from durable tables
+        # (action_executions count + evidence count), reserved/checked before
+        # execution rather than advisory config. Deny before authorize so a
+        # budget-exhausted investigation cannot consume further provider calls.
+        from investigation_agent_platform.domain.common.exceptions import (
+            InvestigationLimitExceededException,
+        )
+        from investigation_agent_platform.domain.investigation.models import InvestigationLimits
+
+        limits = InvestigationLimits()
+        try:
+            action_repo_for_budget: Any = getattr(ctx, "action_repo", None)
+            evidence_repo_for_budget: Any = getattr(ctx, "evidence_repo", None)
+            tool_calls = 0
+            evidence_count = 0
+            if action_repo_for_budget is not None and hasattr(
+                action_repo_for_budget, "count_by_investigation"
+            ):
+                tool_calls = await action_repo_for_budget.count_by_investigation(
+                    tenant_id, investigation_id
+                )
+            if evidence_repo_for_budget is not None:
+                items = await evidence_repo_for_budget.find_by_investigation_id(
+                    tenant_id, investigation_id
+                )
+                evidence_count = len(items)
+            if tool_calls >= limits.max_tool_calls:
+                raise InvestigationLimitExceededException(
+                    f"Maximum tool call limit reached: {limits.max_tool_calls}"
+                )
+            if evidence_count >= limits.max_evidence_items:
+                raise InvestigationLimitExceededException(
+                    f"Maximum evidence limit reached: {limits.max_evidence_items}"
+                )
+        except InvestigationLimitExceededException:
+            raise
+        except Exception as exc:
+            logger.warning("budget ledger check failed; failing closed", extra={"error": str(exc)})
+            raise _application_failure_from_exc(exc) from exc
+
+        try:
+            await action_service.authorize(
+                tenant_id,
+                investigation_id,
+                inv_action,
+                principal_id,
+                application_id=application_id or None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "execute_action_activity denied by authorization gate",
+                extra={"error": str(exc), "action_type": action_type, "tenant_id": tenant_id},
+            )
+            raise _application_failure_from_exc(exc) from exc
+
+        # Dispatch via EvidenceGateway using an exhaustive enum-to-handler
+        # registry (F-023) — unknown/unsupported actions are a hard failure,
+        # never a silent no-op "EXECUTED".
         gateway: Any = getattr(ctx, "evidence_gateway", None)
         evidence_repo: Any = getattr(ctx, "evidence_repo", None)
+        profile_repo: Any = getattr(ctx, "profile_repo", None)
+        environment = "production"
+        if profile_repo is not None and application_id:
+            profile = await profile_repo.get_by_application_id(tenant_id, application_id)
+            if profile is not None:
+                environment = profile.environment
+
         result_status = "EXECUTED"
         items_count = 0
-        if gateway is not None:
-            try:
-                from investigation_agent_platform.domain.evidence.requests import (
-                    ApplicationStateRequest,
-                )
 
-                # Map generic action to gateway call; default to get_application_state for QUERY_STATE.
-                if action_type == "QUERY_STATE":
-                    req = ApplicationStateRequest(
-                        environment="production", template_id="default", parameters=parameters
-                    )
-                    app_id = str(data.get("application_id") or "example-app")
-                    qres = await gateway.get_application_state(
-                        tenant_id, investigation_id, app_id, req
-                    )
-                    items_count = len(qres.items)
-                    # Persist sanitized evidence items.
-                    if evidence_repo is not None and qres.items:
-                        try:
-                            await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
-                        except Exception as exc:
-                            logger.exception(
-                                "execute_action_activity save_batch failed",
-                                extra={"error": str(exc)},
-                            )
-                            raise _application_failure_from_exc(exc) from exc
-                else:
-                    # For other action types, treat as dispatched without provider-specific handling.
-                    result_status = "EXECUTED"
-            except ApplicationFailure:
-                raise
-            except Exception as exc:
-                logger.exception(
-                    "execute_action_activity gateway dispatch failed", extra={"error": str(exc)}
-                )
-                raise _application_failure_from_exc(exc) from exc
+        async def _handle_query_state() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                ApplicationStateRequest,
+            )
 
-        # Audit action execution if repo present.
-        action_repo: Any = getattr(ctx, "action_repo", getattr(ctx, "action_execution_repo", None))
-        if action_repo is not None:
-            try:
-                from investigation_agent_platform.domain.investigation.models import (
-                    ActionType,
-                    InvestigationAction,
-                )
+            req = ApplicationStateRequest(
+                environment=environment,
+                template_id=str(parameters.get("template_id", "default")),
+                parameters=parameters,
+            )
+            qres = await gateway.get_application_state(
+                tenant_id, investigation_id, application_id or "example-app", req
+            )
+            if evidence_repo is not None and qres.items:
+                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
+            return len(qres.items)
 
-                # Resolve ActionType safely; fallback to QUERY_STATE.
-                try:
-                    at = ActionType(action_type)
-                except ValueError:
-                    at = ActionType.QUERY_STATE
-                inv_action = InvestigationAction.create(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    action_type=at,
-                    parameters=parameters,
-                )
-                await action_repo.record_action(
-                    tenant_id, investigation_id, inv_action, result_status
-                )
-            except Exception as exc:
-                logger.exception(
-                    "execute_action_activity record_action failed", extra={"error": str(exc)}
-                )
-                raise _application_failure_from_exc(exc) from exc
+        async def _handle_search_logs() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                RuntimeEvidenceRequest,
+            )
+
+            req = RuntimeEvidenceRequest(
+                environment=environment,
+                keywords=list(parameters.get("keywords", [])) or [],
+                services=list(parameters.get("services", [])) or [],
+                limit=int(parameters.get("limit", 100)),
+            )
+            qres = await gateway.search_runtime_evidence(
+                tenant_id, investigation_id, application_id or "example-app", req
+            )
+            if evidence_repo is not None and qres.items:
+                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
+            return len(qres.items)
+
+        async def _handle_get_code() -> int:
+            from investigation_agent_platform.domain.evidence.requests import SourceRequest
+
+            req = SourceRequest(
+                repository=application_id or "example-app",
+                file_path=str(parameters.get("file_path", "")),
+            )
+            evidence = await gateway.get_source(
+                tenant_id, investigation_id, application_id or "example-app", req
+            )
+            if evidence_repo is not None:
+                await evidence_repo.save(tenant_id, evidence, investigation_id)
+            return 1
+
+        async def _handle_correlate() -> int:
+            root_ids = [UUID(str(i)) for i in parameters.get("root_evidence_ids", [])]
+            max_depth = int(parameters.get("max_depth", 2))
+            qres = await gateway.correlate(
+                tenant_id, investigation_id, application_id or "example-app", root_ids, max_depth
+            )
+            if evidence_repo is not None and qres.items:
+                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
+            return len(qres.items)
+
+        async def _handle_internal_reasoning_action() -> int:
+            # FORMULATE_HYPOTHESIS / VERIFY_HYPOTHESIS / CONCLUDE never touch an
+            # external evidence provider — they operate purely on already
+            # persisted domain state, so there is nothing to dispatch here.
+            return 0
+
+        _HANDLERS: dict[Any, Any] = {
+            ActionType.QUERY_STATE: _handle_query_state,
+            ActionType.SEARCH_LOGS: _handle_search_logs,
+            ActionType.GET_CODE: _handle_get_code,
+            ActionType.CORRELATE: _handle_correlate,
+            ActionType.FORMULATE_HYPOTHESIS: _handle_internal_reasoning_action,
+            ActionType.VERIFY_HYPOTHESIS: _handle_internal_reasoning_action,
+            ActionType.CONCLUDE: _handle_internal_reasoning_action,
+        }
+
+        handler = _HANDLERS.get(resolved_action_type)
+        if handler is None:
+            # Exhaustive registry: this should be unreachable given the
+            # ActionType(action_type) resolution above, but fail closed if a
+            # new enum member is ever added without a handler.
+            raise ApplicationFailure(
+                f"No execution handler registered for action type: {resolved_action_type.value}",
+                type="UnhandledActionTypeError",
+                non_retryable=True,
+            )
+
+        if resolved_action_type in _ACTION_REQUIRED_EVIDENCE_TYPE_LOCAL and gateway is None:
+            raise ApplicationFailure(
+                "Evidence gateway is not configured; cannot execute evidence-producing action",
+                type="EVIDENCE_PROVIDER_UNAVAILABLE",
+                non_retryable=True,
+            )
+
+        try:
+            items_count = await handler()
+        except ApplicationFailure:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "execute_action_activity gateway dispatch failed",
+                extra={"error": str(exc), "action_type": action_type},
+            )
+            raise _application_failure_from_exc(exc) from exc
+
+        # Audit action execution (always — the authorized action must always
+        # be recorded, whether or not a gateway is wired).
+        try:
+            await action_service.execute(
+                tenant_id, investigation_id, inv_action, principal_id=principal_id
+            )
+        except Exception as exc:
+            logger.exception(
+                "execute_action_activity record_action failed", extra={"error": str(exc)}
+            )
+            raise _application_failure_from_exc(exc) from exc
 
         return GenericActivityResult(
             success=True, data={"status": result_status, "items_count": items_count}
@@ -531,12 +760,13 @@ async def _transition_via_path(
     tenant_id: str, inv: Any, target: Any, reason: str, inv_repo: Any
 ) -> Any:
     """Walk domain graph step-by-step, persisting each transition."""
-    from investigation_agent_platform.domain.investigation.models import ActorType
-
     # Reuse same valid_transitions as Investigation.transition_to for path finding
     # Build graph via temporary instance call by inspecting valid_transitions from method closure?
     # Instead import and reconstruct consistent graph via a dummy investigation.
-    from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+    from investigation_agent_platform.domain.investigation.models import (
+        ActorType,
+        InvestigationStatus,
+    )
 
     # Duplicate graph to avoid calling private logic - keep in sync with models.py
     graph: dict[InvestigationStatus, set[InvestigationStatus]] = {
@@ -619,7 +849,9 @@ async def transition_investigation_activity(
         target_status = str(data.get("target_status", ""))
         reason = str(data.get("reason", "")) or f"Transition to {target_status}"
         if not tenant_id or not inv_id_str or not target_status:
-            return GenericActivityResult(success=False, error="tenant_id, investigation_id and target_status required")
+            return GenericActivityResult(
+                success=False, error="tenant_id, investigation_id and target_status required"
+            )
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
         inv_repo: Any = getattr(ctx, "investigation_repo", None)
@@ -635,7 +867,9 @@ async def transition_investigation_activity(
         except ValueError:
             return GenericActivityResult(success=False, error=f"unknown status {target_status}")
         if inv.status == target:
-            return GenericActivityResult(success=True, data={"status": target.value, "already": True})
+            return GenericActivityResult(
+                success=True, data={"status": target.value, "already": True}
+            )
         await _transition_via_path(tenant_id, inv, target, reason, inv_repo)
         return GenericActivityResult(success=True, data={"status": target.value})
     except ApplicationFailure:
@@ -643,6 +877,57 @@ async def transition_investigation_activity(
     except Exception as exc:
         logger.exception("transition_investigation_activity failed", extra={"error": str(exc)})
         raise _application_failure_from_exc(exc) from exc
+
+
+async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: Any) -> Any:
+    """Evaluate ConclusionGate for a requested COMPLETED conclusion (F-051).
+
+    Returns ``InvestigationStatus.COMPLETED`` only when the gate approves;
+    otherwise returns ``InvestigationStatus.FAILED`` so the denial and its
+    blockers are persisted in the lifecycle rather than swallowed.
+    """
+    from investigation_agent_platform.application.investigation.verification import (
+        ConclusionGate,
+        RootCauseVerificationPolicy,
+        VerificationEngine,
+    )
+    from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+
+    evidence_repo: Any = getattr(ctx, "evidence_repo", None)
+    hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
+    evidence_items: list[Any] = []
+    hypotheses: list[Any] = []
+    if evidence_repo is not None:
+        evidence_items = await evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
+    if hypothesis_repo is not None:
+        hypotheses = await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
+    if not hypotheses:
+        logger.warning("ConclusionGate: no hypotheses; denying COMPLETED")
+        return InvestigationStatus.FAILED
+
+    engine = VerificationEngine()
+    policy = RootCauseVerificationPolicy()
+    verification = engine.evaluate_hypothesis(hypotheses[0], evidence_items, [], [], policy)
+    gate = ConclusionGate()
+    # NOTE (F-024 follow-up): the workflow does not yet emit causal chains or
+    # persist contradictions, so the gate is evaluated with empty lists and a
+    # policy copy that does not require a causal chain. Everything else —
+    # verification status, confidence threshold, unresolved contradictions,
+    # evidence presence/provenance/freshness — is enforced hard. Flip
+    # require_causal_relationship back to True once the agentic loop produces
+    # causal chains end-to-end.
+    gate_policy = policy.model_copy(update={"require_causal_relationship": False})
+    decision = await gate.evaluate(
+        tenant_id, investigation_id, verification, [], [], evidence_items, gate_policy
+    )
+    if decision.approved:
+        return InvestigationStatus.COMPLETED
+    logger.warning(
+        "ConclusionGate denied COMPLETED: %s",
+        "; ".join(decision.blockers),
+        extra={"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+    )
+    return InvestigationStatus.FAILED
 
 
 @activity.defn
@@ -674,10 +959,21 @@ async def conclude_investigation_activity(
                         target = InvestigationStatus(status)
                     except ValueError:
                         target = InvestigationStatus.COMPLETED
+                    if target == InvestigationStatus.COMPLETED:
+                        # F-051: a COMPLETED conclusion requires ConclusionGate
+                        # approval — the workflow's requested status alone is not
+                        # authority. Denied conclusions become FAILED with the
+                        # blockers recorded, never silent COMPLETED.
+                        target = await _gate_conclusion_or_fail(tenant_id, investigation_id, ctx)
                     if inv.status != target:
                         await _transition_via_path(
-                            tenant_id, inv, target, f"Workflow concluded with {status}", inv_repo
+                            tenant_id,
+                            inv,
+                            target,
+                            f"Workflow concluded with {target.value}",
+                            inv_repo,
                         )
+                    return GenericActivityResult(success=True, data={"status": target.value})
             except ApplicationFailure:
                 raise
             except Exception as exc:
@@ -710,26 +1006,63 @@ async def publish_event_activity(
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
         publisher: Any = getattr(ctx, "event_publisher", getattr(ctx, "publisher", None))
-        if publisher is None:
-            # No publisher wired — succeed as no-op.
-            return GenericActivityResult(success=True, data={"event": event_type})
 
-        # Prefer publish_domain_event with a concrete InvestigationEvent.
+        inv_repo: Any = getattr(ctx, "investigation_repo", None)
+        app_id = "unknown"
+        if inv_repo is not None:
+            try:
+                inv_obj: Any = await inv_repo.get_by_id(tenant_id, investigation_id)
+                if inv_obj is not None:
+                    app_id = str(inv_obj.application_id)
+            except Exception as exc:
+                logger.warning(
+                    "publish_event_activity investigation fetch failed",
+                    extra={"error": str(exc)},
+                )
+
+        # F-058: transactional outbox — persist the event first (durable,
+        # idempotent on (tenant_id, idempotency_key)), then attempt delivery.
+        # The row survives publisher outages; dispatch_pending retries later.
+        idempotency_key = f"{investigation_id}:{event_type}"
+        payload = {
+            "investigation_id": str(investigation_id),
+            "application_id": app_id,
+            "event_type": event_type,
+        }
+        outbox: Any = getattr(ctx, "outbox_repo", None)
+        if outbox is not None:
+            try:
+                await outbox.enqueue(
+                    tenant_id, investigation_id, event_type, idempotency_key, payload
+                )
+            except Exception as exc:
+                logger.exception(
+                    "publish_event_activity outbox enqueue failed", extra={"error": str(exc)}
+                )
+                raise _application_failure_from_exc(exc) from exc
+            if publisher is not None:
+                try:
+                    await outbox.dispatch_pending(tenant_id, publisher, batch_size=25)
+                except Exception as exc:
+                    logger.warning(
+                        "publish_event_activity dispatch deferred; event stays queued",
+                        extra={"error": str(exc)},
+                    )
+            return GenericActivityResult(success=True, data={"event": event_type, "queued": True})
+
+        if publisher is None:
+            # No outbox and no publisher wired — explicit failure, not a silent no-op.
+            raise ApplicationFailure(
+                "No event publisher or outbox configured; cannot publish event",
+                type="EventPublisherUnavailable",
+                non_retryable=True,
+            )
+
+        # Legacy direct-publish fallback (only when no outbox repo is wired,
+        # e.g. minimal dev contexts).
         try:
             from investigation_agent_platform.domain.events.base import InvestigationConcluded
 
-            inv_repo: Any = getattr(ctx, "investigation_repo", None)
-            app_id = "unknown"
-            if inv_repo is not None:
-                try:
-                    inv_obj: Any = await inv_repo.get_by_id(tenant_id, investigation_id)
-                    if inv_obj is not None:
-                        app_id = str(inv_obj.application_id)
-                except Exception as exc:
-                    logger.warning(
-                        "publish_event_activity investigation fetch failed",
-                        extra={"error": str(exc)},
-                    )
             event = InvestigationConcluded(
                 tenant_id=tenant_id,
                 investigation_id=investigation_id,
@@ -748,7 +1081,7 @@ async def publish_event_activity(
                     event_type=event_type,
                     tenant_id=tenant_id,
                     investigation_id=investigation_id,
-                    idempotency_key=f"{investigation_id}:{event_type}",
+                    idempotency_key=idempotency_key,
                     payload={"investigation_id": str(investigation_id)},
                 )
                 await publisher.publish(envelope)

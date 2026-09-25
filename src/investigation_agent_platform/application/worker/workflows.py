@@ -96,7 +96,10 @@ class RunInvestigationWorkflow:
             await workflow.execute_activity(
                 transition_investigation_activity,
                 TransitionInvestigationInput(
-                    tenant_id=tenant_id, investigation_id=inv_id, target_status=target, reason=reason
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id,
+                    target_status=target,
+                    reason=reason,
                 ),
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=retry_policy,
@@ -192,7 +195,9 @@ class RunInvestigationWorkflow:
 
             # Loop back: VERIFYING -> HYPOTHESIZING or INVESTIGATING for next iteration
             if iteration < max_iterations - 1 and not self._is_cancelled:
-                await _transition("HYPOTHESIZING", f"Iteration {iteration} loop back to hypothesizing")
+                await _transition(
+                    "HYPOTHESIZING", f"Iteration {iteration} loop back to hypothesizing"
+                )
 
             iteration += 1
 

@@ -114,8 +114,12 @@ class Evidence(BaseModel):
     def validate_redaction_and_payload_invariants(self) -> "Evidence":
         if self.is_redacted and not self.redaction_manifest:
             raise ValueError("is_redacted is True but redaction_manifest is empty.")
-        if len(self.content_snippet) >= 4096 and not (self.content_uri or self.large_payload_pointer):
-            raise ValueError("Large content snippet must have externalized content_uri or large_payload_pointer.")
+        if len(self.content_snippet) >= 4096 and not (
+            self.content_uri or self.large_payload_pointer
+        ):
+            raise ValueError(
+                "Large content snippet must have externalized content_uri or large_payload_pointer."
+            )
         return self
 
 

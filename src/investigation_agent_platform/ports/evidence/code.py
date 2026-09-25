@@ -60,42 +60,41 @@ class CodeEvidenceProviderProtocol(Protocol):
 
     async def get_source(
         self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
-    ) -> Evidence:
-        ...
+    ) -> Evidence: ...
 
     async def get_code_history(
         self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile
-    ) -> list[Evidence]:
-        ...
+    ) -> list[Evidence]: ...
 
     async def compare_versions(
         self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
-    ) -> CodeDiffResult:
-        ...
+    ) -> CodeDiffResult: ...
 
 
 @runtime_checkable
 class CodeIntelligenceProviderProtocol(Protocol):
     """Port for deep code-intelligence operations (AST, symbol graphs, call hierarchies)."""
 
-    async def search_code(self, tenant_id: str, query: str, profile: CodeProfile) -> list[Evidence]:
-        ...
+    async def search_code(
+        self, tenant_id: str, query: str, profile: CodeProfile
+    ) -> list[Evidence]: ...
 
-    async def find_symbol(self, tenant_id: str, symbol_name: str, profile: CodeProfile) -> list[CodeSymbol]:
-        ...
+    async def find_symbol(
+        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+    ) -> list[CodeSymbol]: ...
 
-    async def find_callers(self, tenant_id: str, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
-        ...
+    async def find_callers(
+        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+    ) -> list[CallGraphNode]: ...
 
-    async def find_callees(self, tenant_id: str, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
-        ...
+    async def find_callees(
+        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+    ) -> list[CallGraphNode]: ...
 
     async def find_exception_handlers(
         self, tenant_id: str, exception_class: str, profile: CodeProfile
-    ) -> list[CodeLocation]:
-        ...
+    ) -> list[CodeLocation]: ...
 
     async def find_database_operations(
         self, tenant_id: str, entity_or_table: str, profile: CodeProfile
-    ) -> list[CodeLocation]:
-        ...
+    ) -> list[CodeLocation]: ...

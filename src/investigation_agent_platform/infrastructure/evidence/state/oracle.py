@@ -36,6 +36,13 @@ from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryRes
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
+# F-044: provider-side bounds independent of the caller. Template allow-list
+# validation (SqlglotTemplateValidator) is necessary but not sufficient —
+# production safety additionally requires a hard row ceiling, a database-level
+# statement timeout, and least-privilege execution.
+ORACLE_MAX_ROWS = 200
+ORACLE_STATEMENT_TIMEOUT_SECONDS = 25
+
 
 class SqlglotTemplateValidator:
     """Validates pre-defined SQL templates using sqlglot AST parsing for SELECT-only bounds."""
@@ -47,15 +54,21 @@ class SqlglotTemplateValidator:
         try:
             parsed = sqlglot.parse_one(sql_template, read="oracle")
         except Exception as exc:
-            raise SecurityPolicyViolationException(f"Invalid SQL syntax in template: {exc}") from exc
+            raise SecurityPolicyViolationException(
+                f"Invalid SQL syntax in template: {exc}"
+            ) from exc
 
         if not isinstance(parsed, exp.Select):
-            raise SecurityPolicyViolationException("State queries must strictly be SELECT statements.")
+            raise SecurityPolicyViolationException(
+                "State queries must strictly be SELECT statements."
+            )
 
         tables = {t.name.lower() for t in parsed.find_all(exp.Table) if t.name}
         if self._allowed_tables and not tables.issubset(self._allowed_tables):
             unauthorized = tables - self._allowed_tables
-            raise SecurityPolicyViolationException(f"Template accesses unauthorized tables: {unauthorized}")
+            raise SecurityPolicyViolationException(
+                f"Template accesses unauthorized tables: {unauthorized}"
+            )
 
         return parsed.limit(max_rows).sql(dialect="oracle")
 
@@ -64,12 +77,12 @@ class AsyncOracleStateAdapter:
     """Asynchronous Oracle state evidence adapter executing safe parameterized query templates."""
 
     def __init__(
-            self,
-            engine: AsyncEngine,
-            template_repository: dict[str, str],
-            validator: SqlglotTemplateValidator,
-            provider_id: str = "oracle-primary",
-            query_timeout: float = 30.0,
+        self,
+        engine: AsyncEngine,
+        template_repository: dict[str, str],
+        validator: SqlglotTemplateValidator,
+        provider_id: str = "oracle-primary",
+        query_timeout: float = 30.0,
     ) -> None:
         self._engine = engine
         self._templates = template_repository
@@ -93,36 +106,70 @@ class AsyncOracleStateAdapter:
             span.set_attribute("investigation_id", str(investigation_id))
 
             if request.template_id not in self._templates:
-                raise SecurityPolicyViolationException(f"Unregistered state template ID: {request.template_id}")
+                raise SecurityPolicyViolationException(
+                    f"Unregistered state template ID: {request.template_id}"
+                )
 
+            # F-044: clamp the caller-requested row limit at the provider ceiling.
+            effective_limit = min(request.limit, ORACLE_MAX_ROWS)
             raw_template = self._templates[request.template_id]
-            bounded_sql = self._validator.validate_and_bound_template(raw_template, max_rows=request.limit)
+            bounded_sql = self._validator.validate_and_bound_template(
+                raw_template, max_rows=effective_limit
+            )
 
             params = {**request.parameters, "tenant_id": tenant_id}
 
             try:
                 async with self._engine.connect() as conn:
+                    # Database-level statement timeout as the backstop behind
+                    # the asyncio wait below — a runaway template cannot hold
+                    # a pooled connection indefinitely.
+                    try:
+                        await conn.execute(
+                            text(
+                                f"SET LOCAL statement_timeout = '{ORACLE_STATEMENT_TIMEOUT_SECONDS}s'"
+                            )
+                        )
+                    except Exception:
+                        pass  # non-Postgres backends (e.g. Oracle) may not support SET LOCAL
                     result = await asyncio.wait_for(
                         conn.execute(text(bounded_sql), params),
                         timeout=self._query_timeout,
                     )
-                    rows = [dict(r) for r in result.mappings().all()]
-            except asyncio.TimeoutError as exc:
+                    rows = [dict(r) for r in result.mappings().all()][:effective_limit]
+            except TimeoutError as exc:
                 logger.error(
                     "Database query timed out",
                     exc_info=exc,
-                    extra={"context": {"template_id": request.template_id, "tenant_id": tenant_id, "correlation_id": correlation_id}},
+                    extra={
+                        "context": {
+                            "template_id": request.template_id,
+                            "tenant_id": tenant_id,
+                            "correlation_id": correlation_id,
+                        }
+                    },
                 )
-                raise ExecutionError(f"Database query timed out after {self._query_timeout}s") from exc
+                raise ExecutionError(
+                    f"Database query timed out after {self._query_timeout}s"
+                ) from exc
             except Exception as exc:
                 logger.error(
                     "Database query execution error",
                     exc_info=exc,
-                    extra={"context": {"template_id": request.template_id, "tenant_id": tenant_id, "correlation_id": correlation_id}},
+                    extra={
+                        "context": {
+                            "template_id": request.template_id,
+                            "tenant_id": tenant_id,
+                            "correlation_id": correlation_id,
+                        }
+                    },
                 )
                 raise ExecutionError(f"Database execution failed: {exc}") from exc
 
-            items = [self._map_row_to_evidence(row, request.template_id, tenant_id, investigation_id) for row in rows]
+            items = [
+                self._map_row_to_evidence(row, request.template_id, tenant_id, investigation_id)
+                for row in rows
+            ]
             return EvidenceQueryResult(items=items, total_count=len(items))
 
     async def search_application_state(
@@ -133,12 +180,18 @@ class AsyncOracleStateAdapter:
         profile: StateProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult:
-        return await self.get_application_state(tenant_id, investigation_id, request, profile, correlation_id=correlation_id)
+        return await self.get_application_state(
+            tenant_id, investigation_id, request, profile, correlation_id=correlation_id
+        )
 
-    def _map_row_to_evidence(self, row: dict[str, Any], template_id: str, tenant_id: str, investigation_id: UUID) -> Evidence:
+    def _map_row_to_evidence(
+        self, row: dict[str, Any], template_id: str, tenant_id: str, investigation_id: UUID
+    ) -> Evidence:
         now = datetime.now(UTC)
         serialized_row = json.dumps(row, sort_keys=True, default=str)
-        row_hash = hashlib.sha256(f"{tenant_id}:{template_id}:{serialized_row}".encode()).hexdigest()
+        row_hash = hashlib.sha256(
+            f"{tenant_id}:{template_id}:{serialized_row}".encode()
+        ).hexdigest()
         row_id = str(row.get("id", row_hash[:16]))
 
         prov = EvidenceProvenance(

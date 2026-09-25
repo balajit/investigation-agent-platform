@@ -32,7 +32,9 @@ class PostgresRelationshipRepository:
         max_depth: int,
     ) -> list[dict[str, Any]]:
         """Fetch directed and bidirectional evidence relationship edges up to a bounded recursion depth."""
-        with tracer.start_as_current_span("PostgresRelationshipRepository.fetch_relationships_for_evidence") as span:
+        with tracer.start_as_current_span(
+            "PostgresRelationshipRepository.fetch_relationships_for_evidence"
+        ) as span:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("application_id", application_id)
             span.set_attribute("root_count", len(root_evidence_ids))
@@ -127,4 +129,6 @@ class PostgresRelationshipRepository:
                         }
                     },
                 )
-                raise ExecutionError(f"Relationship query failed for tenant {tenant_id}: {exc}") from exc
+                raise ExecutionError(
+                    f"Relationship query failed for tenant {tenant_id}: {exc}"
+                ) from exc

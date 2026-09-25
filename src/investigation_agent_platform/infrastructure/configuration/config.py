@@ -138,8 +138,12 @@ def load_platform_settings(path: str | Path) -> PlatformSettings:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         return PlatformSettings.model_validate(raw)
     except Exception as exc:
-        logger.exception("Failed to parse YAML configuration", extra={"config_path": str(config_path)})
-        raise PlatformConfigurationError(f"Invalid configuration file {config_path}: {exc}") from exc
+        logger.exception(
+            "Failed to parse YAML configuration", extra={"config_path": str(config_path)}
+        )
+        raise PlatformConfigurationError(
+            f"Invalid configuration file {config_path}: {exc}"
+        ) from exc
 
 
 def load_application_profile_from_file(path: str | Path) -> ApplicationProfile:
@@ -151,7 +155,9 @@ def load_application_profile_from_file(path: str | Path) -> ApplicationProfile:
     try:
         raw = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
     except Exception as exc:
-        logger.exception("Failed to parse YAML profile document", extra={"profile_path": str(profile_path)})
+        logger.exception(
+            "Failed to parse YAML profile document", extra={"profile_path": str(profile_path)}
+        )
         raise PlatformConfigurationError(f"Invalid profile file {profile_path}: {exc}") from exc
 
     application = raw.get("application") or {}
@@ -159,7 +165,9 @@ def load_application_profile_from_file(path: str | Path) -> ApplicationProfile:
     try:
         return ApplicationProfile.model_validate(profile_doc)
     except Exception as exc:
-        logger.exception("Profile schema validation failure", extra={"profile_path": str(profile_path)})
+        logger.exception(
+            "Profile schema validation failure", extra={"profile_path": str(profile_path)}
+        )
         raise PlatformConfigurationError(f"Invalid profile document {profile_path}: {exc}") from exc
 
 
@@ -200,23 +208,31 @@ def load_application_config_from_yaml(
                 ),
                 llm=LLMConfig(
                     api_key=SecretStr(llm_key),
-                    model_name=os.environ.get("IAP_LLM_MODEL", str(reasoning.get("model", "gpt-4o"))),
-                    provider=os.environ.get("IAP_LLM_PROVIDER", str(reasoning.get("provider", "openai"))),
+                    model_name=os.environ.get(
+                        "IAP_LLM_MODEL", str(reasoning.get("model", "gpt-4o"))
+                    ),
+                    provider=os.environ.get(
+                        "IAP_LLM_PROVIDER", str(reasoning.get("provider", "openai"))
+                    ),
                     temperature=float(reasoning.get("temperature", 0.0)),
                     max_tokens=int(reasoning.get("max_tokens", 4096)),
                 ),
                 budget=BudgetConfig(
                     max_tool_calls=int(
-                        os.environ.get("IAP_MAX_TOOL_CALLS", str(investigation.get("max_tool_calls", 50)))
+                        os.environ.get(
+                            "IAP_MAX_TOOL_CALLS", str(investigation.get("max_tool_calls", 50))
+                        )
                     ),
                     max_reasoning_calls=int(
                         os.environ.get(
-                            "IAP_MAX_REASONING_CALLS", str(investigation.get("max_reasoning_calls", 20))
+                            "IAP_MAX_REASONING_CALLS",
+                            str(investigation.get("max_reasoning_calls", 20)),
                         )
                     ),
                     max_duration_seconds=int(
                         os.environ.get(
-                            "IAP_MAX_DURATION_SECONDS", str(investigation.get("max_duration_seconds", 1800))
+                            "IAP_MAX_DURATION_SECONDS",
+                            str(investigation.get("max_duration_seconds", 1800)),
                         )
                     ),
                 ),
@@ -232,7 +248,9 @@ def load_application_config_from_yaml(
                 ),
                 storage=ObjectStorageConfig(
                     endpoint_url=os.environ.get("IAP_STORAGE_ENDPOINT"),
-                    bucket_name=os.environ.get("IAP_STORAGE_BUCKET", "investigation-evidence-payloads"),
+                    bucket_name=os.environ.get(
+                        "IAP_STORAGE_BUCKET", "investigation-evidence-payloads"
+                    ),
                     region=os.environ.get("IAP_STORAGE_REGION", "us-east-1"),
                     access_key=SecretStr(os.environ.get("IAP_STORAGE_ACCESS_KEY", "")),
                     secret_key=SecretStr(os.environ.get("IAP_STORAGE_SECRET_KEY", "")),
@@ -245,7 +263,9 @@ def load_application_config_from_yaml(
             )
         except Exception as exc:
             logger.critical("Boot halted: invalid configuration settings", exc_info=exc)
-            raise PlatformConfigurationError(f"Boot halted: invalid configuration settings: {exc!s}") from exc
+            raise PlatformConfigurationError(
+                f"Boot halted: invalid configuration settings: {exc!s}"
+            ) from exc
 
 
 def load_application_config_from_env() -> ApplicationConfig:
@@ -297,13 +317,17 @@ def load_application_config_from_env() -> ApplicationConfig:
                 ),
                 storage=ObjectStorageConfig(
                     endpoint_url=os.environ.get("IAP_STORAGE_ENDPOINT"),
-                    bucket_name=os.environ.get("IAP_STORAGE_BUCKET", "investigation-evidence-payloads"),
+                    bucket_name=os.environ.get(
+                        "IAP_STORAGE_BUCKET", "investigation-evidence-payloads"
+                    ),
                     region=os.environ.get("IAP_STORAGE_REGION", "us-east-1"),
                     access_key=SecretStr(os.environ.get("IAP_STORAGE_ACCESS_KEY", "")),
                     secret_key=SecretStr(os.environ.get("IAP_STORAGE_SECRET_KEY", "")),
                 ),
                 telemetry=TelemetryConfig(
-                    service_name=os.environ.get("IAP_TELEMETRY_SERVICE", "investigation-agent-platform"),
+                    service_name=os.environ.get(
+                        "IAP_TELEMETRY_SERVICE", "investigation-agent-platform"
+                    ),
                     otlp_endpoint=os.environ.get("IAP_OTLP_ENDPOINT", "http://localhost:4317"),
                     enabled=os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true",
                 ),

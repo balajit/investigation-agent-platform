@@ -2,7 +2,7 @@
 import logging
 import re
 from re import Pattern
-from typing import Any
+from typing import Any, ClassVar
 
 from opentelemetry import trace
 
@@ -21,7 +21,7 @@ tracer = trace.get_tracer(__name__)
 class SensitiveDataRedactor(EvidenceSanitizerPort):
     """Redacts sensitive information (secrets, PII, credentials) recursively across all evidence fields."""
 
-    _PATTERN_SPECS: list[tuple[str, Pattern[str], str]] = [
+    _PATTERN_SPECS: ClassVar[list[tuple[str, Pattern[str], str]]] = [
         (
             "API_KEY",
             re.compile(

@@ -1,4 +1,5 @@
 """Package initialization."""
+
 # src/investigation_agent_platform/ports/reasoning/__init__.py
 """Reasoning engine port and decision contract definitions."""
 

@@ -40,7 +40,9 @@ class CodeSymbol(BaseModel):
     @classmethod
     def validate_file_path_safety(cls, value: str) -> str:
         if ".." in value or "\0" in value:
-            raise ValueError("File path contains unsafe directory traversal sequences or null bytes.")
+            raise ValueError(
+                "File path contains unsafe directory traversal sequences or null bytes."
+            )
         return value
 
     @field_validator("line_end")
@@ -97,7 +99,9 @@ class DatabaseOperation(BaseModel):
     target_entity_or_table: str = Field(..., max_length=256)
     operation_type: str = Field(..., max_length=64)
     source_symbol: CodeSymbol
-    raw_query_snippet: str | None = Field(default=None, max_length=2048, description="Sanitized query snippet")
+    raw_query_snippet: str | None = Field(
+        default=None, max_length=2048, description="Sanitized query snippet"
+    )
     is_classified_sensitive: bool = Field(default=False)
 
     @field_validator("raw_query_snippet")
@@ -105,5 +109,7 @@ class DatabaseOperation(BaseModel):
     def validate_sensitive_snippet(cls, value: str | None, info: ValidationInfo) -> str | None:
         is_sensitive = info.data.get("is_classified_sensitive", False)
         if is_sensitive and value is not None:
-            raise ValueError("Raw query snippet classified as sensitive must be sanitized/redacted before assignment.")
+            raise ValueError(
+                "Raw query snippet classified as sensitive must be sanitized/redacted before assignment."
+            )
         return value

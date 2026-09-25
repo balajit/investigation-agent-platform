@@ -23,7 +23,43 @@ class Contradiction(BaseModel):
     hypothesis_ids: list[UUID] = Field(default_factory=list)
     severity: ContradictionSeverity
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # F-052: durable contradiction lifecycle — every contradiction carries its
+    # resolution state plus who resolved it, why, and when. Unresolved
+    # HIGH/CRITICAL contradictions block conclusion via ConclusionGate.
     resolution_status: str = Field(default="UNRESOLVED")
+    resolved_by: str | None = None
+    resolution_rationale: str | None = None
+    resolved_at: datetime | None = None
+    superseded_by: UUID | None = None
+
+    def resolve(self, resolved_by: str, rationale: str) -> "Contradiction":
+        if self.resolution_status not in ("UNRESOLVED", "INVESTIGATING"):
+            raise ValueError(
+                f"Contradiction {self.contradiction_id} is already {self.resolution_status}"
+            )
+        return self.model_copy(
+            update={
+                "resolution_status": "RESOLVED",
+                "resolved_by": resolved_by,
+                "resolution_rationale": rationale,
+                "resolved_at": datetime.now(UTC),
+            }
+        )
+
+    def accept_risk(self, resolved_by: str, rationale: str) -> "Contradiction":
+        """Explicit risk acceptance — recorded, attributed, and auditable."""
+        if self.resolution_status not in ("UNRESOLVED", "INVESTIGATING"):
+            raise ValueError(
+                f"Contradiction {self.contradiction_id} is already {self.resolution_status}"
+            )
+        return self.model_copy(
+            update={
+                "resolution_status": "ACCEPTED_RISK",
+                "resolved_by": resolved_by,
+                "resolution_rationale": rationale,
+                "resolved_at": datetime.now(UTC),
+            }
+        )
 
 
 class VerificationStatus(str, Enum):
@@ -100,22 +136,119 @@ class VerificationEngine:
                 confidence=confidence,
             )
 
-        sources = {e.evidence_type for e in evidence_items}
-        cross_layer = len(sources) >= 2 if policy.require_cross_layer_evidence else True
-        coverage = 0.9 if cross_layer else 0.5
+        # F-050: cross-layer corroboration requires INDEPENDENT sources — distinct
+        # providers/systems, not merely distinct evidence_type values. Two rows
+        # from the same derived dataset must never count as corroboration.
+        providers = {getattr(e, "provider", "unknown") for e in evidence_items}
+        sources = {getattr(e, "source", "unknown") for e in evidence_items}
+        types = {e.evidence_type for e in evidence_items}
+        independent_layers = len(providers) >= 2 and len(types) >= 2
+        cross_layer = (
+            (independent_layers or len(sources) >= 3)
+            if policy.require_cross_layer_evidence
+            else True
+        )
+
+        # F-049: explicit, auditable scoring inputs instead of magic constants.
+        # Coverage = corroborating evidence breadth capped by hypothesis needs;
+        # reliability = fraction of evidence from sanctioned providers with
+        # provenance; causal = chain completeness. Scores are labeled heuristic
+        # in the explanation and never constitute proof by themselves.
+        corroborating_ids = [e.evidence_id for e in evidence_items]
+        coverage = (
+            min(1.0, len(corroborating_ids) / 4.0)
+            if cross_layer
+            else min(0.5, len(corroborating_ids) / 4.0)
+        )
+        with_provenance = sum(
+            1 for e in evidence_items if getattr(e, "provenance", None) is not None
+        )
+        reliability = (with_provenance / len(evidence_items)) if evidence_items else 0.0
+        causal = min(1.0, len(causal_chain) / 2.0) if causal_chain else 0.0
 
         confidence = InvestigationConfidence(
             coverage_score=coverage,
-            reliability_score=0.85,
-            causal_score=0.8 if causal_chain else 0.0,
+            reliability_score=reliability,
+            causal_score=causal,
             contradiction_penalty=0.0,
         )
 
-        status = VerificationStatus.VERIFIED if confidence.overall_confidence >= policy.min_confidence_threshold else VerificationStatus.INCONCLUSIVE
+        status = (
+            VerificationStatus.VERIFIED
+            if confidence.overall_confidence >= policy.min_confidence_threshold
+            else VerificationStatus.INCONCLUSIVE
+        )
         return VerificationResult(
             hypothesis_id=hypothesis.id,
             status=status,
-            corroborating_evidence_ids=[e.evidence_id for e in evidence_items],
-            explanation="Evidence supports hypothesis across operational layers.",
+            corroborating_evidence_ids=corroborating_ids,
+            explanation=(
+                "Heuristic verification score "
+                f"(coverage={coverage:.2f} from {len(corroborating_ids)} items across "
+                f"{len(providers)} providers, reliability={reliability:.2f}, causal={causal:.2f}). "
+                "Heuristic only — final conclusions require ConclusionGate approval."
+            ),
             confidence=confidence,
         )
+
+
+class ConclusionGateDecision(BaseModel):
+    approved: bool
+    blockers: list[str] = Field(default_factory=list)
+
+
+class ConclusionGate:
+    """Single mandatory gate for conclusion publication (F-051).
+
+    The LLM may RECOMMEND readiness, but only this domain service authorizes
+    finalization — evaluating evidence coverage, contradiction state, causal
+    chain, freshness, and provenance. Any blocker fails closed.
+    """
+
+    async def evaluate(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        verification: VerificationResult,
+        contradictions: list[Contradiction],
+        causal_chain: list[CausalRelationship],
+        evidence_items: list[Evidence],
+        policy: RootCauseVerificationPolicy,
+    ) -> ConclusionGateDecision:
+        blockers: list[str] = []
+        if verification.status != VerificationStatus.VERIFIED:
+            blockers.append(f"hypothesis status is {verification.status.value}, not VERIFIED")
+        if verification.confidence.overall_confidence < policy.min_confidence_threshold:
+            blockers.append(
+                f"confidence {verification.confidence.overall_confidence:.2f} below threshold "
+                f"{policy.min_confidence_threshold:.2f}"
+            )
+        blocking_contradictions = [
+            c
+            for c in contradictions
+            if c.resolution_status == "UNRESOLVED"
+            and c.severity in (ContradictionSeverity.HIGH, ContradictionSeverity.CRITICAL)
+        ]
+        if blocking_contradictions:
+            blockers.append(
+                f"{len(blocking_contradictions)} unresolved HIGH/CRITICAL contradiction(s)"
+            )
+        if policy.require_causal_relationship and not causal_chain:
+            blockers.append("no causal chain established")
+        if not evidence_items:
+            blockers.append("no evidence items bound to the conclusion")
+        else:
+            # Freshness + provenance: every bound evidence item must carry
+            # provenance; stale items (>24h) must be explicitly re-validated.
+            from datetime import timedelta
+
+            now = datetime.now(UTC)
+            for item in evidence_items:
+                if getattr(item, "provenance", None) is None:
+                    blockers.append(f"evidence {item.evidence_id} lacks provenance")
+                    break
+                retrieved = getattr(getattr(item, "freshness", None), "retrieved_at", None)
+                if retrieved is not None and (now - retrieved) > timedelta(hours=24):
+                    blockers.append(f"evidence {item.evidence_id} is stale (>24h since retrieval)")
+                    break
+        return ConclusionGateDecision(approved=not blockers, blockers=blockers)

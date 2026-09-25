@@ -21,6 +21,10 @@ from investigation_agent_platform.application.investigation.services import (
     GetInvestigationService,
     ResumeInvestigationService,
 )
+from investigation_agent_platform.domain.common.exceptions import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+)
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.hypothesis.models import Hypothesis
 from investigation_agent_platform.domain.investigation.models import Investigation
@@ -50,7 +54,13 @@ class ApiSettings(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     environment: str = Field(default="development")
-    enable_docs: bool = Field(default=True)
+    # F-065: docs are opt-in. The app factory additionally forces docs off in
+    # production unless IAP_ENABLE_DOCS=true is set explicitly.
+    enable_docs: bool = Field(default=False)
+    # F-064: CORS allow-list (comma-separated origins). Empty = no CORS.
+    cors_allow_origins: str = Field(default="")
+    # F-064: trusted hosts (comma-separated). Empty = no TrustedHost enforcement.
+    trusted_hosts: str = Field(default="")
 
 
 class Container:
@@ -68,11 +78,17 @@ class Container:
 
 class _InMemoryCheckpointRepository(CheckpointRepository):
     async def save_checkpoint(
-        self, tenant_id: str, investigation_id: UUID, step_number: int, state_snapshot: dict[str, Any]
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        step_number: int,
+        state_snapshot: dict[str, Any],
     ) -> None:
         return None
 
-    async def get_latest_checkpoint(self, tenant_id: str, investigation_id: UUID) -> dict[str, Any] | None:
+    async def get_latest_checkpoint(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> dict[str, Any] | None:
         return None
 
 
@@ -81,6 +97,96 @@ class _InMemoryTransitionRepository(TransitionEventRepository):
         self, tenant_id: str, investigation_id: UUID, from_state: str, to_state: str, reason: str
     ) -> None:
         return None
+
+
+class _InMemoryOutboxRepository:
+    """Process-local outbox (durable Postgres version in production)."""
+
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+
+    async def enqueue(
+        self,
+        tenant_id: str,
+        investigation_id: UUID | None,
+        event_type: str,
+        idempotency_key: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if any(
+            e["tenant_id"] == tenant_id and e["idempotency_key"] == idempotency_key
+            for e in self._events
+        ):
+            return
+        self._events.append(
+            {
+                "tenant_id": tenant_id,
+                "investigation_id": investigation_id,
+                "event_type": event_type,
+                "idempotency_key": idempotency_key,
+                "payload": payload,
+                "dispatched": False,
+            }
+        )
+
+    async def dispatch_pending(self, tenant_id: str, publisher: Any, batch_size: int = 25) -> int:
+        dispatched = 0
+        for event in self._events:
+            if dispatched >= batch_size:
+                break
+            if event["tenant_id"] != tenant_id or event["dispatched"]:
+                continue
+            try:
+                from investigation_agent_platform.ports.messaging.publisher import EventEnvelope
+
+                envelope = EventEnvelope(
+                    event_type=event["event_type"],
+                    tenant_id=event["tenant_id"],
+                    investigation_id=event["investigation_id"],
+                    idempotency_key=event["idempotency_key"],
+                    payload=event["payload"],
+                )
+                await publisher.publish(envelope)
+                event["dispatched"] = True
+                dispatched += 1
+            except Exception:
+                continue
+        return dispatched
+
+
+class _InMemoryActionExecutionRepository:
+    """Process-local action-execution audit log (durable Postgres version in Phase 2 / F-068)."""
+
+    def __init__(self) -> None:
+        self._records: list[dict[str, Any]] = []
+
+    async def record_action(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        action: Any,
+        result_status: str,
+        principal_id: str = "worker",
+        policy_version: str = "v1",
+    ) -> None:
+        self._records.append(
+            {
+                "tenant_id": tenant_id,
+                "investigation_id": investigation_id,
+                "action_id": getattr(action, "action_id", None),
+                "action_type": getattr(getattr(action, "action_type", None), "value", None),
+                "result_status": result_status,
+                "principal_id": principal_id,
+                "policy_version": policy_version,
+            }
+        )
+
+    async def count_by_investigation(self, tenant_id: str, investigation_id: UUID) -> int:
+        return sum(
+            1
+            for r in self._records
+            if r["tenant_id"] == tenant_id and r["investigation_id"] == investigation_id
+        )
 
 
 class InMemoryInvestigationRepository(InvestigationRepository):
@@ -96,7 +202,9 @@ class InMemoryInvestigationRepository(InvestigationRepository):
             return None
         return inv
 
-    async def save(self, tenant_id: str, investigation: Investigation, expected_version: int) -> None:
+    async def save(
+        self, tenant_id: str, investigation: Investigation, expected_version: int
+    ) -> None:
         current = self._store.get((tenant_id, investigation.id))
         if current is None or current.version != expected_version:
             from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
@@ -123,7 +231,14 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
     async def get_by_application_id(
         self, tenant_id: str, application_id: str, version: str | None = None
     ) -> ApplicationProfile | None:
-        return self._profiles.get((tenant_id, application_id))
+        # F-034: honor exact version resolution — a version mismatch is a miss,
+        # not a silent fallback to whatever revision happens to be stored.
+        profile = self._profiles.get((tenant_id, application_id))
+        if profile is None:
+            return None
+        if version is not None and str(profile.version) != str(version):
+            return None
+        return profile
 
     async def list(self, tenant_id: str) -> list[ApplicationProfile]:
         return [p for (t, _), p in self._profiles.items() if t == tenant_id]
@@ -135,7 +250,9 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
 class InMemoryEvidenceRepository(EvidenceRepository):
     def __init__(self) -> None:
         self._store: dict[UUID, Evidence] = {}
-        self._by_investigation: dict[UUID, list[UUID]] = {}
+        # F-036: tenant-scoped composite keys — tenant is a mandatory partition
+        # key, never a post-filter over a globally keyed map.
+        self._by_investigation: dict[tuple[str, UUID], list[UUID]] = {}
         self._by_fingerprint: dict[tuple[str, str], UUID] = {}
 
     def _is_duplicate_fingerprint(self, tenant_id: str, evidence: Evidence) -> bool:
@@ -143,13 +260,15 @@ class InMemoryEvidenceRepository(EvidenceRepository):
         existing = self._by_fingerprint.get(key)
         return existing is not None and existing != evidence.evidence_id
 
-    async def save(self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None) -> None:
+    async def save(
+        self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None
+    ) -> None:
         if self._is_duplicate_fingerprint(tenant_id, evidence):
             return
         self._store[evidence.evidence_id] = evidence
         self._by_fingerprint[(tenant_id, evidence.fingerprint)] = evidence.evidence_id
         if investigation_id is not None:
-            ids = self._by_investigation.setdefault(investigation_id, [])
+            ids = self._by_investigation.setdefault((tenant_id, investigation_id), [])
             if evidence.evidence_id not in ids:
                 ids.append(evidence.evidence_id)
 
@@ -177,20 +296,28 @@ class InMemoryEvidenceRepository(EvidenceRepository):
                 result.append(ev)
         return result
 
-    async def find_by_investigation_id(self, tenant_id: str, investigation_id: UUID) -> list[Evidence]:
-        ids = self._by_investigation.get(investigation_id, [])
-        return [self._store[i] for i in ids if i in self._store and self._store[i].tenant_id == tenant_id]
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[Evidence]:
+        ids = self._by_investigation.get((tenant_id, investigation_id), [])
+        return [
+            self._store[i]
+            for i in ids
+            if i in self._store and self._store[i].tenant_id == tenant_id
+        ]
 
 
 class InMemoryTimelineRepository(TimelineRepository):
     def __init__(self) -> None:
         self._events: list[TimelineEvent] = []
-        self._by_investigation: dict[UUID, list[TimelineEvent]] = {}
+        self._by_investigation: dict[tuple[str, UUID], list[TimelineEvent]] = {}
 
-    async def append(self, tenant_id: str, event: TimelineEvent, investigation_id: UUID | None = None) -> None:
+    async def append(
+        self, tenant_id: str, event: TimelineEvent, investigation_id: UUID | None = None
+    ) -> None:
         self._events.append(event)
         if investigation_id is not None:
-            self._by_investigation.setdefault(investigation_id, []).append(event)
+            self._by_investigation.setdefault((tenant_id, investigation_id), []).append(event)
 
     async def append_batch(
         self, tenant_id: str, events: list[TimelineEvent], investigation_id: UUID | None = None
@@ -198,28 +325,36 @@ class InMemoryTimelineRepository(TimelineRepository):
         for event in events:
             await self.append(tenant_id, event, investigation_id)
 
-    async def find_by_investigation_id(self, tenant_id: str, investigation_id: UUID) -> list[TimelineEvent]:
-        return [e for e in self._by_investigation.get(investigation_id, []) if e.tenant_id == tenant_id]
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[TimelineEvent]:
+        return [
+            e
+            for e in self._by_investigation.get((tenant_id, investigation_id), [])
+            if e.tenant_id == tenant_id
+        ]
 
     async def find_by_time_range(
         self, tenant_id: str, investigation_id: UUID, start: datetime, end: datetime
     ) -> list[TimelineEvent]:
         return [
             e
-            for e in self._by_investigation.get(investigation_id, [])
+            for e in self._by_investigation.get((tenant_id, investigation_id), [])
             if e.tenant_id == tenant_id and start <= e.timestamp <= end
         ]
 
 
 class InMemoryHypothesisRepository(HypothesisRepository):
     def __init__(self) -> None:
-        self._store: dict[UUID, tuple[Hypothesis, UUID | None]] = {}
+        self._store: dict[tuple[str, UUID], tuple[Hypothesis, UUID | None]] = {}
 
-    async def save(self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None) -> None:
-        self._store[hypothesis.id] = (hypothesis, investigation_id)
+    async def save(
+        self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
+    ) -> None:
+        self._store[(tenant_id, hypothesis.id)] = (hypothesis, investigation_id)
 
     async def get_by_id(self, tenant_id: str, hypothesis_id: UUID) -> Hypothesis | None:
-        entry = self._store.get(hypothesis_id)
+        entry = self._store.get((tenant_id, hypothesis_id))
         if entry is None:
             return None
         h, _ = entry
@@ -227,28 +362,48 @@ class InMemoryHypothesisRepository(HypothesisRepository):
             return None
         return h
 
-    async def find_by_investigation_id(self, tenant_id: str, investigation_id: UUID) -> list[Hypothesis]:
-        return [h for h, iid in self._store.values() if iid == investigation_id and h.tenant_id == tenant_id]
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[Hypothesis]:
+        return [
+            h
+            for (t, _), (h, iid) in self._store.items()
+            if t == tenant_id and iid == investigation_id and h.tenant_id == tenant_id
+        ]
 
     async def find_by_investigation_and_tenant(
         self, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 50
     ) -> tuple[list[Hypothesis], int]:
-        filtered = [h for h, iid in self._store.values() if iid == investigation_id and h.tenant_id == tenant_id]
+        filtered = [
+            h
+            for (t, _), (h, iid) in self._store.items()
+            if t == tenant_id and iid == investigation_id and h.tenant_id == tenant_id
+        ]
         total = len(filtered)
         return filtered[offset : offset + limit], total
 
 
 # Extend timeline repo with paginated helper expected by routers
 async def _timeline_find_by_investigation_and_tenant(
-    self: InMemoryTimelineRepository, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 100
+    self: InMemoryTimelineRepository,
+    investigation_id: UUID,
+    tenant_id: str,
+    offset: int = 0,
+    limit: int = 100,
 ) -> tuple[list[TimelineEvent], int]:
-    filtered = [e for e in self._by_investigation.get(investigation_id, []) if e.tenant_id == tenant_id]
+    filtered = [
+        e
+        for e in self._by_investigation.get((tenant_id, investigation_id), [])
+        if e.tenant_id == tenant_id
+    ]
     total = len(filtered)
     return filtered[offset : offset + limit], total
 
 
 # Monkey-patch helper onto class for router compatibility
-InMemoryTimelineRepository.find_by_investigation_and_tenant = _timeline_find_by_investigation_and_tenant  # type: ignore[attr-defined]
+InMemoryTimelineRepository.find_by_investigation_and_tenant = (  # type: ignore[attr-defined]
+    _timeline_find_by_investigation_and_tenant
+)
 
 
 class AppContext:
@@ -269,6 +424,21 @@ class AppContext:
         self.hypothesis_repo: Any = hypothesis_repo or InMemoryHypothesisRepository()
         # Minimal idempotency store for investigations router
         self.idempotency_store: Any = _InMemoryIdempotencyStore()
+        # Shared checkpoint/transition repos so audit records persist for the
+        # lifetime of the process instead of being discarded per-call.
+        self.checkpoint_repo: Any = _InMemoryCheckpointRepository()
+        self.transition_repo: Any = _InMemoryTransitionRepository()
+        self.action_repo: Any = _InMemoryActionExecutionRepository()
+        self.outbox_repo: Any = _InMemoryOutboxRepository()
+        # Mandatory action-authorization gate (F-004): grounded in the tenant's
+        # ApplicationProfile rather than an unconditional allow.
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+            ProfileBasedCapabilityRegistry,
+        )
+
+        self.action_authorizer: Any = ProfileBasedActionAuthorizer(self.profile_repo)
+        self.capability_registry: Any = ProfileBasedCapabilityRegistry(self.profile_repo)
         self._seed_default_profile()
 
     def _seed_default_profile(self) -> None:
@@ -309,13 +479,25 @@ class AppContext:
             profile_repo=self.profile_repo,
             evidence_repo=self.evidence_repo,
             timeline_repo=self.timeline_repo,
-            checkpoint_repo=_InMemoryCheckpointRepository(),
+            checkpoint_repo=self.checkpoint_repo,
         )
 
     def cancel_investigation_service(self) -> CancelInvestigationService:
         return CancelInvestigationService(
             investigation_repo=self.investigation_repo,
-            transition_repo=_InMemoryTransitionRepository(),
+            transition_repo=self.transition_repo,
+        )
+
+    def execute_action_service(self) -> Any:
+        from investigation_agent_platform.application.investigation.services import (
+            ExecuteActionService,
+        )
+
+        return ExecuteActionService(
+            action_repo=self.action_repo,
+            evidence_repo=self.evidence_repo,
+            authorizer=self.action_authorizer,
+            capability_registry=self.capability_registry,
         )
 
 
@@ -380,6 +562,54 @@ class _InMemoryIdempotencyStore:
                 return existing, False
             self.set_under_lock(key, value)
             return value, True
+
+    async def reserve_or_get(
+        self, tenant_id: str, key: str, request_hash: str
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Reserve ownership of ``key`` or return the previously completed response.
+
+        Returns ``(cached_response, reserved)``. ``reserved=True`` means the
+        caller now owns this key and must call ``complete`` after executing
+        the operation. Raises ``IdempotencyConflictError`` if the key was
+        already used with a different request payload (F-014), and
+        ``IdempotencyInProgressError`` if a concurrent request for the same
+        key is still executing.
+        """
+        composite = f"{tenant_id}:{key}"
+        async with self._lock:
+            entry = self._store.get(composite)
+            if entry is None:
+                self._store[composite] = (
+                    {"request_hash": request_hash, "status": "PENDING", "response": None},
+                    time.monotonic() + self._ttl_seconds,
+                )
+                return None, True
+            value, exp = entry
+            if self._is_expired(exp):
+                self._store[composite] = (
+                    {"request_hash": request_hash, "status": "PENDING", "response": None},
+                    time.monotonic() + self._ttl_seconds,
+                )
+                return None, True
+            if value.get("request_hash") != request_hash:
+                raise IdempotencyConflictError(
+                    f"Idempotency key '{key}' already used with a different request payload"
+                )
+            if value.get("status") == "PENDING":
+                raise IdempotencyInProgressError(
+                    f"A request with idempotency key '{key}' is already in progress"
+                )
+            return value.get("response"), False
+
+    async def complete(self, tenant_id: str, key: str, response: dict[str, Any]) -> None:
+        composite = f"{tenant_id}:{key}"
+        async with self._lock:
+            entry = self._store.get(composite)
+            request_hash = entry[0].get("request_hash") if entry else ""
+            self._store[composite] = (
+                {"request_hash": request_hash, "status": "DONE", "response": response},
+                time.monotonic() + self._ttl_seconds,
+            )
 
 
 _context: AppContext | None = None

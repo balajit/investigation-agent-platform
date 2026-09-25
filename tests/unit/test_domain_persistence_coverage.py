@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from investigation_agent_platform.api.app import create_app
 from investigation_agent_platform.api.dependencies import (
@@ -225,7 +226,7 @@ class TestInvestigationTransitions:
         eid = uuid.uuid4()
         iid = uuid.uuid4()
         # missing supporting id should raise
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Hypothesis(
                 tenant_id="t",
                 investigation_id=iid,
@@ -345,7 +346,7 @@ class TestProfileValidation:
         assert p.id == "app1"
 
     def test_forbidden_ddl_rejection(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             StateProfile(
                 provider="pg",
                 database="db",
@@ -358,7 +359,7 @@ class TestProfileValidation:
             )
 
     def test_code_profile_path_traversal(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CodeProfile(
                 provider="git",
                 repository="../etc/passwd",
@@ -368,7 +369,7 @@ class TestProfileValidation:
                 buildSystem="uv",
                 moduleStructure="src/mod",
             )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CodeProfile(
                 provider="git",
                 repository="org/repo",
@@ -488,8 +489,11 @@ class TestSqlAlchemyRepositories:
 
         h = _make_hypothesis()
         orm = SqlAlchemyHypothesisRepository._to_orm(h, "tenant-a", h.investigation_id)
+        # F-032: tenant_id must round-trip through the ORM, never "unknown".
+        assert orm.tenant_id == "tenant-a"
         back = SqlAlchemyHypothesisRepository._from_orm(orm)
         assert back.title == h.title
+        assert back.tenant_id == "tenant-a"
 
     def test_timeline_to_from_orm_invalid_uuid(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.timeline_repository import (
@@ -506,10 +510,13 @@ class TestSqlAlchemyRepositories:
         )
         orm = SqlAlchemyTimelineRepository._to_orm(ev, iid)
         orm.id = uuid.uuid4()
+        # F-032: tenant_id must round-trip through the ORM, never "unknown".
+        assert orm.tenant_id == "tenant-a"
         # inject invalid uuid strings
         orm.entity_ids = ["not-a-uuid", str(uuid.uuid4())]
         back = SqlAlchemyTimelineRepository._from_orm(orm)
         assert len(back.entity_ids) == 1
+        assert back.tenant_id == "tenant-a"
 
     def test_profile_to_from_orm(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.profile_repository import (
@@ -517,7 +524,7 @@ class TestSqlAlchemyRepositories:
         )
 
         repo = SqlAlchemyApplicationProfileRepository(db_session_factory=MagicMock())
-        orm = repo._to_orm(_DEFAULT_PROFILE)
+        orm = repo._to_orm(_DEFAULT_PROFILE, "tenant-a")
         assert orm.id == _DEFAULT_PROFILE.id
         back = repo._from_orm(orm)
         assert back.id == _DEFAULT_PROFILE.id
@@ -575,7 +582,6 @@ class TestMainModule:
         assert lifespan is not None
         async with lifespan(app):
             pass
-            pass
 
 
 # health / profiles / timeline / hypotheses / events / evidence via TestClient
@@ -598,7 +604,10 @@ class TestHealthAndRouters:
         # should be unhealthy because broker/temporal disconnected
         assert resp.status_code in (200, 503)
         body = resp.json()
-        assert "dependencies" in body
+        # F-066: public readiness body is minimal (status only); per-dependency
+        # topology is internal unless IAP_HEALTH_DETAIL=full.
+        assert "status" in body
+        assert "dependencies" not in body
 
     def test_profiles_sanitized(self) -> None:
         client, _ = self._ctx_client()
@@ -710,11 +719,28 @@ class TestHealthAndRouters:
         import asyncio as _asyncio
 
         _asyncio.run(ctx.investigation_repo.create("tenant-a", inv))
+        # F-009/F-010: pause/resume now require a real Temporal client to signal
+        # the running workflow. With no Temporal client wired (test AppContext),
+        # the endpoints must fail explicitly rather than fabricate success.
         for path in ["pause", "resume"]:
             resp = client.post(
                 f"/api/v1/investigations/{inv.id}/{path}", headers={"X-Tenant-ID": "tenant-a"}
             )
+            assert resp.status_code == 503
+
+        # With a Temporal client wired, the signal is delivered and recorded.
+        fake_handle = MagicMock()
+        fake_handle.signal = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.get_workflow_handle = MagicMock(return_value=fake_handle)
+        ctx.temporal_client = fake_client
+        for path, expected_status in [("pause", "PAUSE_REQUESTED"), ("resume", "RESUME_REQUESTED")]:
+            resp = client.post(
+                f"/api/v1/investigations/{inv.id}/{path}", headers={"X-Tenant-ID": "tenant-a"}
+            )
             assert resp.status_code == 202
+            assert resp.json()["status"] == expected_status
+        del ctx.temporal_client
 
     def test_hypotheses_invalid_uuid(self) -> None:
         client, _ = self._ctx_client()

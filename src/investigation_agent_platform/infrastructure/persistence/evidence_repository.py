@@ -36,6 +36,7 @@ class SqlAlchemyEvidenceRepository:
             classification=evidence.classification.value,
             is_sanitized=evidence.is_redacted,
             evidence_key=evidence.evidence_id,
+            fingerprint=evidence.fingerprint,
             payload_json=evidence.model_dump(mode="json"),
         )
 
@@ -43,8 +44,21 @@ class SqlAlchemyEvidenceRepository:
     def _from_orm(row: EvidenceORM) -> Evidence:
         return Evidence.model_validate(row.payload_json)
 
-    async def save(self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None) -> None:
+    async def save(
+        self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None
+    ) -> None:
         async with rls_session(self._session_factory, tenant_id) as session:
+            # F-035: durable (tenant_id, fingerprint) dedup — semantically
+            # identical evidence returns the canonical row instead of silently
+            # inserting a duplicate.
+            existing = await session.scalars(
+                select(EvidenceORM).where(
+                    EvidenceORM.tenant_id == tenant_id,
+                    EvidenceORM.fingerprint == evidence.fingerprint,
+                )
+            )
+            if existing.first() is not None:
+                return
             stmt = insert(EvidenceORM).values(
                 investigation_id=investigation_id,
                 tenant_id=tenant_id,
@@ -58,25 +72,29 @@ class SqlAlchemyEvidenceRepository:
                 classification=evidence.classification.value,
                 is_sanitized=evidence.is_redacted,
                 evidence_key=evidence.evidence_id,
+                fingerprint=evidence.fingerprint,
                 payload_json=evidence.model_dump(mode="json"),
             )
-            stmt = stmt.on_conflict_do_update(
-                constraint="uq_evidence_tenant_key",
-                set_={
-                    "summary": stmt.excluded.summary,
-                    "content_reference": stmt.excluded.content_reference,
-                    "is_sanitized": stmt.excluded.is_sanitized,
-                    "payload_json": stmt.excluded.payload_json,
-                    "retrieved_at": stmt.excluded.retrieved_at,
-                },
-            )
+            stmt = stmt.on_conflict_do_nothing(constraint="uq_evidence_tenant_fingerprint")
             await session.execute(stmt)
 
     async def save_batch(
         self, tenant_id: str, evidence_list: list[Evidence], investigation_id: UUID | None = None
     ) -> None:
         async with rls_session(self._session_factory, tenant_id) as session:
+            seen: set[str] = set()
             for evidence in evidence_list:
+                if evidence.fingerprint in seen:
+                    continue
+                seen.add(evidence.fingerprint)
+                existing = await session.scalars(
+                    select(EvidenceORM).where(
+                        EvidenceORM.tenant_id == tenant_id,
+                        EvidenceORM.fingerprint == evidence.fingerprint,
+                    )
+                )
+                if existing.first() is not None:
+                    continue
                 stmt = insert(EvidenceORM).values(
                     investigation_id=investigation_id,
                     tenant_id=tenant_id,
@@ -90,18 +108,10 @@ class SqlAlchemyEvidenceRepository:
                     classification=evidence.classification.value,
                     is_sanitized=evidence.is_redacted,
                     evidence_key=evidence.evidence_id,
+                    fingerprint=evidence.fingerprint,
                     payload_json=evidence.model_dump(mode="json"),
                 )
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_evidence_tenant_key",
-                    set_={
-                        "summary": stmt.excluded.summary,
-                        "content_reference": stmt.excluded.content_reference,
-                        "is_sanitized": stmt.excluded.is_sanitized,
-                        "payload_json": stmt.excluded.payload_json,
-                        "retrieved_at": stmt.excluded.retrieved_at,
-                    },
-                )
+                stmt = stmt.on_conflict_do_nothing(constraint="uq_evidence_tenant_fingerprint")
                 await session.execute(stmt)
 
     async def get_by_id(self, tenant_id: str, evidence_id: UUID) -> Evidence | None:
@@ -125,7 +135,9 @@ class SqlAlchemyEvidenceRepository:
             )
             return [self._from_orm(row) for row in result.all()]
 
-    async def find_by_investigation_id(self, tenant_id: str, investigation_id: UUID) -> list[Evidence]:
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[Evidence]:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
                 select(EvidenceORM).where(

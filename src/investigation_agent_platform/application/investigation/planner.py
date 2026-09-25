@@ -60,6 +60,10 @@ class InvestigationPlan(BaseModel):
 class InvestigationPlanner:
     """Produces bounded execution plans, validates dependency DAGs, and performs adaptive replanning."""
 
+    MAX_STEPS = 25
+    MAX_REVISIONS = 5
+    MAX_GAPS_PER_REPLAN = 8
+
     @staticmethod
     def validate_dag(plan: InvestigationPlan) -> bool:
         """Validates that step dependencies form a valid Acyclic Directed Graph (DAG)."""
@@ -87,13 +91,18 @@ class InvestigationPlanner:
         for step in plan.steps:
             if step.step_id not in visited:
                 if is_cyclic(step.step_id):
-                    logger.error("Cycle detected in investigation plan DAG", extra={"plan_id": str(plan.plan_id)})
+                    logger.error(
+                        "Cycle detected in investigation plan DAG",
+                        extra={"plan_id": str(plan.plan_id)},
+                    )
                     return False
         return True
 
     def get_next_executable_steps(self, plan: InvestigationPlan) -> list[InvestigationStep]:
         """Returns pending steps whose dependencies are fully COMPLETED."""
-        completed_step_ids: set[UUID] = {s.step_id for s in plan.steps if s.status == StepStatus.COMPLETED}
+        completed_step_ids: set[UUID] = {
+            s.step_id for s in plan.steps if s.status == StepStatus.COMPLETED
+        }
         executable: list[InvestigationStep] = []
 
         for step in plan.steps:
@@ -103,18 +112,49 @@ class InvestigationPlanner:
 
         return executable
 
-    def replan(self, plan: InvestigationPlan, evidence_gaps: list[str], reason: str) -> InvestigationPlan:
-        """Adaptively updates plan steps based on newly identified information gaps."""
+    def replan(
+        self, plan: InvestigationPlan, evidence_gaps: list[str], reason: str
+    ) -> InvestigationPlan:
+        """Adaptively updates plan steps based on newly identified information gaps.
+
+        F-053: hard guards against plan explosion — revision count, per-replan
+        gap count, total step count, and semantic dedup of equivalent gaps.
+        """
+        if plan.revision_count >= self.MAX_REVISIONS:
+            raise ExecutionError(
+                f"Maximum replan revisions ({self.MAX_REVISIONS}) exceeded; refusing to expand plan"
+            )
+        # Deduplicate semantically equivalent gaps (normalized, case-insensitive).
+        seen: set[str] = set()
+        unique_gaps: list[str] = []
+        for gap in evidence_gaps:
+            normalized = " ".join(gap.split()).lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_gaps.append(gap)
+        if len(unique_gaps) > self.MAX_GAPS_PER_REPLAN:
+            raise ExecutionError(
+                f"Replan requested {len(unique_gaps)} new steps; maximum is {self.MAX_GAPS_PER_REPLAN}"
+            )
         new_steps: list[InvestigationStep] = list(plan.steps)
         now = datetime.now(UTC)
 
-        for gap in evidence_gaps:
+        existing_objectives = {" ".join(s.objective.split()).lower() for s in new_steps}
+        for gap in unique_gaps:
+            objective = f"Address gap: {gap}"
+            if " ".join(objective.split()).lower() in existing_objectives:
+                continue
+            if len(new_steps) >= self.MAX_STEPS:
+                raise ExecutionError(
+                    f"Maximum plan steps ({self.MAX_STEPS}) reached; refusing to expand plan"
+                )
             new_step = InvestigationStep(
                 step_type=InvestigationStepType.SEARCH_RUNTIME,
-                objective=f"Address gap: {gap}",
+                objective=objective,
                 dependencies=[plan.active_step_id] if plan.active_step_id else [],
             )
             new_steps.append(new_step)
+            existing_objectives.add(" ".join(objective.split()).lower())
 
         updated_plan = plan.model_copy(
             update={

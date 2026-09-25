@@ -21,6 +21,7 @@ class SqlAlchemyTimelineRepository:
     @staticmethod
     def _to_orm(event: TimelineEvent, investigation_id: UUID | None) -> TimelineEventORM:
         return TimelineEventORM(
+            tenant_id=event.tenant_id,
             investigation_id=investigation_id,
             event_type=event.event_type.value,
             description=event.description,
@@ -45,7 +46,7 @@ class SqlAlchemyTimelineRepository:
 
         return TimelineEvent(
             id=row.id,
-            tenant_id="unknown",
+            tenant_id=row.tenant_id,
             investigation_id=row.investigation_id or row.id,
             timestamp=row.timestamp,
             event_type=TimelineEventType(row.event_type),
@@ -55,7 +56,9 @@ class SqlAlchemyTimelineRepository:
             evidence_ids=_parse_uuids(row.evidence_ids),
         )
 
-    async def append(self, tenant_id: str, event: TimelineEvent, investigation_id: UUID | None = None) -> None:
+    async def append(
+        self, tenant_id: str, event: TimelineEvent, investigation_id: UUID | None = None
+    ) -> None:
         async with rls_session(self._session_factory, tenant_id) as session:
             session.add(self._to_orm(event, investigation_id))
 

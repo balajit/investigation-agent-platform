@@ -40,8 +40,18 @@ class EphemeralCorrelationEngine(CorrelationExpander):
         application_id: str,
         root_evidence_ids: list[UUID],
         max_depth: int,
+        max_nodes: int | None = None,
+        max_edges: int | None = None,
     ) -> CorrelationGraph:
-        """Hydrates relationships from persistence and performs fast rustworkx graph traversal."""
+        """Hydrates relationships from persistence and performs fast rustworkx graph traversal.
+
+        F-037: every relationship record is validated for tenant/application
+        ownership before it enters the graph — inconsistent records are
+        quarantined (counted, logged, skipped), never traversed.
+        F-038: per-call budget overrides (max_nodes/max_edges/max_depth) let
+        callers propagate investigation-specific limits instead of relying on
+        engine-level defaults.
+        """
         with tracer.start_as_current_span("EphemeralCorrelationEngine.expand_correlation") as span:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("application_id", application_id)
@@ -58,16 +68,25 @@ class EphemeralCorrelationEngine(CorrelationExpander):
             )
 
             root_str_ids = [str(rid) for rid in root_evidence_ids]
+            # F-038: effective budget is the tightest of caller-supplied and engine defaults.
+            node_cap = (
+                min(max_nodes, self._max_node_limit)
+                if max_nodes is not None
+                else self._max_node_limit
+            )
+            edge_cap = max_edges if max_edges is not None else self._max_node_limit * 4
+            depth_cap = max(0, max_depth)
             records = await self._relationship_repo.fetch_relationships_for_evidence(
                 tenant_id=tenant_id,
                 application_id=application_id,
                 root_evidence_ids=root_str_ids,
-                max_depth=max_depth,
+                max_depth=depth_cap,
             )
 
             graph: Any = rx.PyDiGraph(multigraph=False)
             node_indices: dict[str, int] = {}
             index_to_id: dict[int, str] = {}
+            quarantined = 0
 
             for root_id in root_str_ids:
                 if root_id not in node_indices:
@@ -75,9 +94,32 @@ class EphemeralCorrelationEngine(CorrelationExpander):
                     node_indices[root_id] = idx
                     index_to_id[idx] = root_id
 
+            edge_count = 0
             for rel in records:
+                # F-037: provenance/ownership check before graph construction.
+                rel_tenant = rel.get("tenant_id", tenant_id)
+                rel_app = rel.get("application_id", application_id)
+                if rel_tenant != tenant_id or rel_app != application_id:
+                    quarantined += 1
+                    continue
+                try:
+                    confidence = float(rel.get("confidence", 1.0))
+                except (TypeError, ValueError):
+                    quarantined += 1
+                    continue
+                if not (0.0 <= confidence <= 1.0):
+                    quarantined += 1
+                    continue
                 src = str(rel["source_id"])
                 tgt = str(rel["target_id"])
+                if (
+                    len(node_indices) >= node_cap
+                    and src not in node_indices
+                    and tgt not in node_indices
+                ):
+                    break
+                if edge_count >= edge_cap:
+                    break
                 if src not in node_indices:
                     idx = graph.add_node(src)
                     node_indices[src] = idx
@@ -89,23 +131,32 @@ class EphemeralCorrelationEngine(CorrelationExpander):
 
                 edge_data: dict[str, Any] = {
                     "relationship_type": rel.get("type", "CORRELATES_WITH"),
-                    "weight": float(rel.get("confidence", 1.0)),
+                    "weight": confidence,
                     "metadata": rel.get("metadata", {}),
                 }
                 graph.add_edge(node_indices[src], node_indices[tgt], edge_data)
+                edge_count += 1
+
+            if quarantined:
+                logger.warning(
+                    "Quarantined inconsistent relationship records",
+                    extra={"quarantined": quarantined, "tenant_id": tenant_id},
+                )
 
             visited_nodes: set[int] = set()
             frontier: set[int] = {node_indices[rid] for rid in root_str_ids if rid in node_indices}
 
             current_depth = 0
-            while frontier and current_depth < max_depth:
+            while frontier and current_depth < depth_cap:
                 next_frontier: set[int] = set()
                 for parent in frontier:
                     neighbors: Any = graph.neighbors(parent)
                     for neighbor in neighbors:
                         if neighbor not in visited_nodes:
-                            if len(visited_nodes) >= self._max_node_limit:
-                                logger.warning("Traversal node limit reached", extra={"limit": self._max_node_limit})
+                            if len(visited_nodes) >= node_cap:
+                                logger.warning(
+                                    "Traversal node limit reached", extra={"limit": node_cap}
+                                )
                                 break
                             visited_nodes.add(neighbor)
                             next_frontier.add(neighbor)

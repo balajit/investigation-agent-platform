@@ -2,6 +2,8 @@
 """Ingress sanitization and payload processing engine."""
 
 import asyncio
+import hashlib
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -14,6 +16,14 @@ from investigation_agent_platform.domain.common.exceptions import ExecutionError
 
 logger = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
+
+SANITIZER_VERSION = "iap-sanitizer-v1"
+SANITIZER_POLICY_VERSION = "iap-sanitize-policy-v1"
+# F-045: sanitized payloads may only land in private, platform-owned buckets.
+# Retrieval always goes through the platform (signed/authorized); objects are
+# never publicly addressable.
+ALLOWED_BUCKET_PREFIXES = ("iap-evidence-", "investigation-evidence-")
+MAX_PAYLOAD_BYTES = 5_242_880  # 5 MiB ceiling per evidence payload
 
 
 class RawEvidencePayload(BaseModel):
@@ -37,6 +47,14 @@ class SanitizedEvidenceArtifact(BaseModel):
     summary: str
     content_reference: str
     is_sanitized: bool
+    # F-046: complete raw→sanitized provenance chain — every downstream
+    # consumer can verify what was transformed, by which sanitizer/policy
+    # version, and that the stored bytes match the recorded hash.
+    raw_content_hash: str = Field(default="", max_length=128)
+    sanitized_content_hash: str = Field(default="", max_length=128)
+    sanitizer_version: str = Field(default=SANITIZER_VERSION, max_length=64)
+    policy_version: str = Field(default=SANITIZER_POLICY_VERSION, max_length=64)
+    processed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     model_config = ConfigDict(frozen=True)
 
@@ -66,6 +84,12 @@ class EvidenceIngressPipeline:
         storage_client: ObjectStorageClientProtocol,
         bucket_name: str = "iap-evidence-sanitized",
     ) -> None:
+        # F-045: fail closed on buckets outside the private platform-owned namespace.
+        if not bucket_name.startswith(ALLOWED_BUCKET_PREFIXES):
+            raise ExecutionError(
+                f"Bucket '{bucket_name}' is outside the private evidence bucket namespace; "
+                "refusing to store sanitized evidence in an unreviewed bucket"
+            )
         self._sanitizer = sanitizer
         self._storage_client = storage_client
         self._bucket_name = bucket_name
@@ -100,16 +124,24 @@ class EvidenceIngressPipeline:
             )
 
             try:
+                raw_bytes = raw_payload.text_content.encode("utf-8")
+                if len(raw_bytes) > MAX_PAYLOAD_BYTES:
+                    raise ExecutionError(
+                        f"Evidence payload ({len(raw_bytes)} bytes) exceeds maximum of {MAX_PAYLOAD_BYTES}"
+                    )
+                raw_hash = hashlib.sha256(raw_bytes).hexdigest()
                 # Offload CPU-bound NLP sanitization to executor pool
                 sanitized_text = await asyncio.to_thread(
                     self._sanitizer.redact_pii_and_secrets,
                     raw_payload.text_content,
                 )
 
+                sanitized_bytes = sanitized_text.encode("utf-8")
+                sanitized_hash = hashlib.sha256(sanitized_bytes).hexdigest()
                 s3_key = f"tenant/{raw_payload.tenant_id}/{raw_payload.investigation_id}/{raw_payload.id}.bin"
                 content_uri = await self._upload_with_retry(
                     key=s3_key,
-                    data_bytes=sanitized_text.encode("utf-8"),
+                    data_bytes=sanitized_bytes,
                 )
 
                 summary = sanitized_text[:500] if len(sanitized_text) > 500 else sanitized_text
@@ -121,6 +153,11 @@ class EvidenceIngressPipeline:
                     summary=summary,
                     content_reference=content_uri,
                     is_sanitized=True,
+                    raw_content_hash=raw_hash,
+                    sanitized_content_hash=sanitized_hash,
+                    sanitizer_version=SANITIZER_VERSION,
+                    policy_version=SANITIZER_POLICY_VERSION,
+                    processed_at=datetime.now(UTC),
                 )
             except Exception as exc:
                 logger.error(

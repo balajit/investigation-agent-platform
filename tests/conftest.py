@@ -9,8 +9,8 @@ the Part 4 test suite is filled in, so no dead/invented object shapes live here.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,7 +27,7 @@ def utc_now_factory() -> Callable[[], datetime]:
     """Returns a callable producing aware UTC timestamps for evidence freshness."""
 
     def _factory() -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     return _factory
 

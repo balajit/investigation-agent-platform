@@ -19,6 +19,7 @@ from investigation_agent_platform.application.worker.activities import (
     verify_root_cause_activity,
 )
 from investigation_agent_platform.application.worker.workflows import RunInvestigationWorkflow
+from investigation_agent_platform.bootstrap import build_app_context as _build_app_context
 from investigation_agent_platform.infrastructure.configuration.config import (
     ApplicationConfig,
     TemporalConfig,
@@ -28,16 +29,14 @@ logger = logging.getLogger(__name__)
 
 
 def build_app_context(config: ApplicationConfig) -> AppContext:
-    """Build AppContext selecting real vs in-memory deps by environment."""
-    env = (config.environment or "").lower()
-    if env == "production":
-        logger.info("Building production AppContext for worker", extra={"environment": env})
-        ctx = AppContext()
-    else:
-        logger.info("Building in-memory AppContext for worker", extra={"environment": env})
-        ctx = AppContext()
-    set_app_context(ctx)
-    return ctx
+    """Build AppContext for the worker using the shared production composition root.
+
+    Delegates to ``investigation_agent_platform.bootstrap.build_app_context`` so
+    API and worker processes share a single authoritative wiring path. In
+    production this raises rather than silently falling back to in-memory
+    dependencies (see PlatformConfigurationError in ``bootstrap/__init__.py``).
+    """
+    return _build_app_context(config)
 
 
 async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> None:
@@ -45,11 +44,16 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
     # Support both ApplicationConfig (preferred) and legacy TemporalConfig
     if isinstance(config, ApplicationConfig):
         temporal_cfg: TemporalConfig = config.temporal
-        # Wire AppContext according to environment
+        # Wire AppContext according to environment via the shared composition root
         build_app_context(config)
     else:
         temporal_cfg = config
-        # No environment info — default to in-memory
+        # Legacy TemporalConfig-only invocation carries no environment info.
+        # Only permitted outside production; production must supply ApplicationConfig.
+        logger.warning(
+            "run_temporal_worker invoked with bare TemporalConfig; using in-memory "
+            "AppContext. This path must never be used in production."
+        )
         ctx = AppContext()
         set_app_context(ctx)
 

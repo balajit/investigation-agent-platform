@@ -66,7 +66,9 @@ class CorrelationGraph(BaseModel):
 
     @field_validator("edges")
     @classmethod
-    def validate_edge_endpoints_exist(cls, edges: list[CorrelationEdge], info: ValidationInfo) -> list[CorrelationEdge]:
+    def validate_edge_endpoints_exist(
+        cls, edges: list[CorrelationEdge], info: ValidationInfo
+    ) -> list[CorrelationEdge]:
         nodes = info.data.get("nodes", [])
         node_ids = {node.node_id for node in nodes}
         if nodes:

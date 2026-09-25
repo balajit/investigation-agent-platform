@@ -1,5 +1,12 @@
 # src/investigation_agent_platform/application/worker/__init__.py
-"""Temporal worker entrypoint configuring workflows and activities."""
+"""Temporal worker entrypoint configuring workflows and activities.
+
+NOTE: production must use ``investigation_agent_platform.bootstrap.worker.run_temporal_worker``,
+which sources ``task_queue``/``target_host``/``namespace`` from the single
+``TemporalConfig`` source of truth (F-020). ``run_worker`` below is a legacy,
+unused, standalone entrypoint retained for compatibility; its defaults are
+kept in sync with ``TemporalConfig`` defaults to avoid queue-name drift.
+"""
 
 import logging
 
@@ -17,14 +24,17 @@ from investigation_agent_platform.application.worker.activities import (
     verify_root_cause_activity,
 )
 from investigation_agent_platform.application.worker.workflows import RunInvestigationWorkflow
+from investigation_agent_platform.infrastructure.configuration.config import TemporalConfig
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_TEMPORAL_CONFIG = TemporalConfig()
+
 
 async def run_worker(
-    task_queue: str = "investigations",
-    address: str = "localhost:7233",
-    namespace: str = "default",
+    task_queue: str = _DEFAULT_TEMPORAL_CONFIG.task_queue,
+    address: str = _DEFAULT_TEMPORAL_CONFIG.target_host,
+    namespace: str = _DEFAULT_TEMPORAL_CONFIG.namespace,
     max_concurrent_activities: int = 100,
 ) -> None:
     """Connects to Temporal server and starts the full investigation worker process."""
