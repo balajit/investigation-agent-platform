@@ -1,0 +1,68 @@
+application:
+  id: payments
+  name: Payment Processing Infrastructure
+  description: Reference profile for the payments service (Oracle state, Java/Maven code).
+  environment: production
+
+observability:
+  provider: elastic
+  indices:
+    - payments-application-logs-*
+  timestampField: "@timestamp"
+  serviceField: service.name
+  environmentField: service.environment
+  sessionField: labels.sessionId
+  requestField: labels.requestId
+  traceField: trace.id
+  logLevelField: log.level
+
+state:
+  provider: oracle
+  database: PAYMENTS_DB
+  schema: APP_PAYMENTS
+  tables:
+    - PAYMENT_TRANSACTION
+    - PAYMENT_SESSION
+  primaryIdentifiers:
+    - PAYMENT_ID
+    - SESSION_ID
+  stateFields:
+    - STATUS
+    - ERROR_CODE
+  timestampFields:
+    - CREATED_AT
+    - UPDATED_AT
+  queryTemplates:
+    get_payment_tx: "SELECT * FROM APP_PAYMENTS.PAYMENT_TRANSACTION WHERE PAYMENT_ID = :payment_id"
+    get_payment_session: "SELECT * FROM APP_PAYMENTS.PAYMENT_SESSION WHERE SESSION_ID = :session_id"
+
+code:
+  provider: git
+  repository: payments-service
+  defaultBranch: main
+  language: java
+  sourceRoots:
+    - src/main/java
+  buildSystem: maven
+  moduleStructure: single-module
+
+correlation:
+  fields:
+    - sessionId
+    - requestId
+    - transactionId
+    - correlationId
+    - orderId
+    - jobId
+
+investigation:
+  defaultTimeWindow: 3600
+  maximumEvidencePerQuery: 30
+  maximumInvestigationDuration: 1800
+  enabledEvidenceTypes:
+    - LOG
+    - TRACE
+    - DATABASE_STATE
+    - SOURCE_CODE
+  correlationDepth: 3
+  maximumHypotheses: 5

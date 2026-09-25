@@ -1,0 +1,15 @@
+version: 1
+
+formatters:
+  json:
+    class: structlog.stdlib.ProcessorFormatter
+    processor: structlog.dev.ConsoleRenderer
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: json
+
+root:
+  level: INFO
+  handlers: [console]

@@ -1,0 +1,63 @@
+application:
+  id: example
+  name: Example Generic Application Configuration
+  description: Reference profile for a generic single-module Python service.
+  environment: production
+
+observability:
+  provider: elastic
+  indices:
+    - example-application-logs-*
+  timestampField: "@timestamp"
+  serviceField: service.name
+  environmentField: service.environment
+  sessionField: labels.sessionId
+  requestField: labels.requestId
+  traceField: trace.id
+  logLevelField: log.level
+
+state:
+  provider: postgresql
+  database: EXAMPLE_DB
+  schema: public
+  tables:
+    - APP_SESSION
+    - APP_TRANSACTION
+  primaryIdentifiers:
+    - SESSION_ID
+    - TRANSACTION_ID
+  stateFields:
+    - STATUS
+  timestampFields:
+    - CREATED_AT
+  queryTemplates:
+    get_session_by_id: "SELECT * FROM APP_SESSION WHERE SESSION_ID = :session_id"
+    get_tx_by_session: "SELECT * FROM APP_TRANSACTION WHERE SESSION_ID = :session_id"
+
+code:
+  provider: git
+  repository: example-service
+  defaultBranch: main
+  language: python
+  sourceRoots:
+    - src
+  buildSystem: uv
+  moduleStructure: single-module
+
+correlation:
+  fields:
+    - sessionId
+    - requestId
+    - traceId
+    - correlationId
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+    - TRACE
+    - DATABASE_STATE
+  correlationDepth: 2
+  maximumHypotheses: 5

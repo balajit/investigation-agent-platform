@@ -1,0 +1,21 @@
+platform:
+  name: investigation-platform
+  environment: production
+
+investigation:
+  default_timeout_seconds: 1800
+  max_tool_calls: 100
+  max_hypotheses: 10
+  max_evidence_items: 25
+
+persistence:
+  provider: postgresql
+  connection_pool_size: 20
+
+reasoning:
+  provider: anthropic
+  model: claude-3-5-sonnet-20241022
+
+observability:
+  tracing_enabled: true
+  otlp_endpoint: "http://otel-collector:4317"
