@@ -39,6 +39,7 @@ dependencies = [
     "mem0ai>=2.2.1",
     "psycopg[binary]>=3.2",
     "graphiti-core>=0.30.2",
+    "cognee[neo4j]>=1.6.1",
 ]
 
 [dependency-groups]

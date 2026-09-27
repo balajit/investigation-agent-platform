@@ -138,6 +138,11 @@ class TopologyConfig(BaseModel):
         description="LRU bound: the N most-recently-ingested READY/SUPERSEDED "
         "snapshots per repository are always kept even if older than the window.",
     )
+    # Part 8: optional Cognee enrichment pilot. Default off; all Cognee
+    # imports stay isolated in infrastructure/topology/cognee_adapter.py so
+    # non-pilot installs never load the dependency.
+    cognee_enabled: bool = Field(default=False)
+    cognee_dataset_salt: SecretStr = Field(default=SecretStr(""))
 
 
 class KnowledgeConfig(BaseModel):
@@ -334,6 +339,8 @@ def _topology_config_from_env() -> TopologyConfig:
         retention_max_snapshots_per_repository=int(
             os.environ.get("IAP_TOPOLOGY_RETENTION_MAX_SNAPSHOTS", "20")
         ),
+        cognee_enabled=os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true",
+        cognee_dataset_salt=SecretStr(os.environ.get("IAP_COGNEE_DATASET_SALT", "")),
     )
 
 

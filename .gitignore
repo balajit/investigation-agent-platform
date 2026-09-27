@@ -11,3 +11,4 @@ wheels/
 
 # Generated LLM source files
 llm_source/
+tmp/
