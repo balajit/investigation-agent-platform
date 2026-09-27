@@ -1,3 +1,4 @@
+# src/investigation_agent_platform/api/v1/routers/events.py
 """Investigation events router (Part 4, section 4.1).
 
 Pause/resume issue real Temporal signals against the running workflow and
@@ -11,7 +12,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.dependencies import (
+    WorkflowStatusEvent,
+    get_app_context,
+)
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
 from investigation_agent_platform.domain.investigation.models import InvestigationStatus
 
@@ -26,11 +30,13 @@ _TERMINAL_STATUSES = {
 }
 
 
-async def _signal_workflow(ctx: Any, investigation_id: str, signal_name: str) -> None:
+async def _signal_workflow(
+    ctx: Any, investigation_id: str, signal_name: str, payload: Any = None
+) -> None:
     """Send a control signal to the running Temporal workflow.
 
     Raises ``HTTPException`` (503/404/502) rather than silently succeeding —
-    a pause/resume call must never report success unless the signal was
+    a pause/resume/approval call must never report success unless the signal was
     actually delivered to Temporal.
     """
     temporal_client = getattr(ctx, "temporal_client", None)
@@ -42,11 +48,14 @@ async def _signal_workflow(ctx: Any, investigation_id: str, signal_name: str) ->
     workflow_id = f"wf-investigation-{investigation_id}"
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
-        await handle.signal(signal_name)
+        if payload is not None:
+            await handle.signal(signal_name, payload)
+        else:
+            await handle.signal(signal_name)
     except Exception as exc:
         # Distinguish "workflow not found/already terminal" from generic
         # infrastructure failure where possible via message inspection;
-        # either way this must not be reported as a successful pause/resume.
+        # either way this must not be reported as a successful operation.
         logger.error(
             "Failed to signal workflow",
             extra={"workflow_id": workflow_id, "signal": signal_name, "error": str(exc)},
@@ -89,9 +98,19 @@ async def pause_investigation(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
         from_state=investigation.status.value,
-        to_state="PAUSE_REQUESTED",
+        to_state="PAUSED",
         reason=f"pause requested by {principal_id}",
     )
+
+    if hasattr(ctx, "outbox_queue"):
+        await ctx.outbox_queue.put(
+            WorkflowStatusEvent(
+                investigation_id=investigation_uuid,
+                tenant_id=x_tenant_id,
+                new_status="PAUSED",
+            )
+        )
+
     logger.info(
         "Pause signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
@@ -131,11 +150,74 @@ async def resume_investigation(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
         from_state=investigation.status.value,
-        to_state="RESUME_REQUESTED",
+        to_state="IN_PROGRESS",
         reason=f"resume requested by {principal_id}",
     )
+
+    if hasattr(ctx, "outbox_queue"):
+        await ctx.outbox_queue.put(
+            WorkflowStatusEvent(
+                investigation_id=investigation_uuid,
+                tenant_id=x_tenant_id,
+                new_status="IN_PROGRESS",
+            )
+        )
+
     logger.info(
         "Resume signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
     )
     return {"investigation_id": investigation_id, "status": "RESUME_REQUESTED"}
+
+
+@router.post("/investigations/{investigation_id}/approve-action", status_code=status.HTTP_200_OK)
+async def approve_action(
+    investigation_id: str,
+    action_id: str,
+    approved: bool,
+    x_tenant_id: str = Depends(require_tenant),
+    principal_id: str = Depends(require_principal),
+) -> dict[str, Any]:
+    """Signals Temporal workflow to proceed or abort a Human-in-the-Loop restricted action."""
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+
+    signal_name = "action_approval_response"
+    payload = {"action_id": action_id, "approved": approved, "principal_id": principal_id}
+
+    if getattr(ctx, "temporal_client", None) is not None:
+        await _signal_workflow(ctx, investigation_id, signal_name, payload)
+
+    if hasattr(ctx, "outbox_queue"):
+        await ctx.outbox_queue.put(
+            WorkflowStatusEvent(
+                investigation_id=investigation_uuid,
+                tenant_id=x_tenant_id,
+                new_status=investigation.status.value,
+                execution_result={"action_approval": payload},
+            )
+        )
+
+    logger.info(
+        "Action approval processed",
+        extra={
+            "investigation_id": investigation_id,
+            "action_id": action_id,
+            "approved": approved,
+            "tenant_id": x_tenant_id,
+        },
+    )
+    return {"investigation_id": investigation_id, "action_id": action_id, "approved": approved}

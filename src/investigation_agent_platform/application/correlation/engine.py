@@ -29,10 +29,12 @@ class EphemeralCorrelationEngine(CorrelationExpander):
         evidence_relationship_repo: EvidenceRelationshipRepository,
         evidence_repository: EvidenceRepository,
         max_node_limit: int = 500,
+        confidence_threshold: float = 0.20,
     ) -> None:
         self._relationship_repo = evidence_relationship_repo
         self._evidence_repo = evidence_repository
         self._max_node_limit = max_node_limit
+        self.confidence_threshold = confidence_threshold
 
     async def expand_correlation(
         self,
@@ -108,6 +110,10 @@ class EphemeralCorrelationEngine(CorrelationExpander):
                     quarantined += 1
                     continue
                 if not (0.0 <= confidence <= 1.0):
+                    quarantined += 1
+                    continue
+                # Probabilistic pruning: discard hypothesis links below threshold
+                if rel.get("type") == "hypothesis" and confidence < self.confidence_threshold:
                     quarantined += 1
                     continue
                 src = str(rel["source_id"])
@@ -196,3 +202,38 @@ class EphemeralCorrelationEngine(CorrelationExpander):
                 edges=result_edges,
                 root_node_ids=root_evidence_ids,
             )
+
+
+class ProbabilisticCorrelationEngine:
+    def __init__(self, confidence_threshold: float = 0.20) -> None:
+        self.graph: Any = rx.PyDiGraph(multigraph=False)
+        self.confidence_threshold = confidence_threshold
+
+    def prune_low_confidence_hypotheses(self, threshold: float | None = None) -> list[int]:
+        """Removes nodes and downstream edges where hypothesis confidence drops below threshold."""
+        effective_threshold = threshold if threshold is not None else self.confidence_threshold
+        removed_nodes = []
+        for node_idx in self.graph.node_indices():
+            node_data = self.graph.get_node_data(node_idx)
+            if isinstance(node_data, dict) and node_data.get("type") == "hypothesis":
+                if float(node_data.get("confidence", 1.0)) < effective_threshold:
+                    removed_nodes.append(node_idx)
+
+        # PyDiGraph allows batch node removal
+        for idx in removed_nodes:
+            self.graph.remove_node(idx)
+
+        return removed_nodes
+
+    async def build_correlation_graph(
+        self, events: list[dict[str, Any]], hypotheses: list[dict[str, Any]]
+    ) -> Any:
+        """Constructs correlation graph and prunes low-confidence hypothesis branches."""
+        for event in events:
+            self.graph.add_node(event)
+
+        for hypothesis in hypotheses:
+            self.graph.add_node(hypothesis)
+
+        self.prune_low_confidence_hypotheses()
+        return self.graph

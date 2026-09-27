@@ -132,9 +132,67 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         idempotency_store = SqlAlchemyIdempotencyStore(session_factory)
         action_repo = SqlAlchemyActionExecutionRepository(session_factory)
         outbox_repo = SqlAlchemyOutboxRepository(session_factory)
+
+        from investigation_agent_platform.infrastructure.persistence.knowledge_repository import (
+            SqlAlchemyArtifactRepository,
+            SqlAlchemyCodeIssueIndex,
+            SqlAlchemySessionRepository,
+        )
+
+        artifact_repo = SqlAlchemyArtifactRepository(session_factory)
+        session_repo = SqlAlchemySessionRepository(session_factory)
+        code_issue_index = SqlAlchemyCodeIssueIndex(session_factory)
     except Exception as exc:
         raise PlatformConfigurationError(
-            f"Failed to wire production SQLAlchemy repositories: {exc}"
+            f"Failed to wire Mem0 knowledge store: {exc}"
+        ) from exc
+
+
+def _wire_graphiti_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Wire Part 6 Slice 2 Graphiti temporal projection.
+
+    Builds GraphitiTemporalKnowledge against Neo4j when
+    `config.knowledge.graphiti_enabled` is true. Neo4j connection fields
+    fall back to the Layer 3 topology settings so both graph consumers
+    share one instance by default. Any wiring failure aborts production
+    startup (F-001 precedent); runtime projection failures later only
+    degrade to envelopes.
+    """
+    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+
+    if not config.knowledge.graphiti_enabled:
+        logger.info("Graphiti projection disabled; envelopes only")
+        return
+
+    from investigation_agent_platform.infrastructure.knowledge.graphiti_adapter import (
+        GraphitiTemporalKnowledge,
+    )
+
+    try:
+        uri = config.knowledge.graphiti_neo4j_uri.get_secret_value()
+        user = config.knowledge.graphiti_neo4j_user.get_secret_value()
+        password = config.knowledge.graphiti_neo4j_password.get_secret_value()
+        if not uri:
+            uri = config.topology.uri.get_secret_value()
+            user = config.topology.username.get_secret_value()
+            password = config.topology.password.get_secret_value()
+        ctx.temporal_port = GraphitiTemporalKnowledge(  # type: ignore[attr-defined]
+            neo4j_uri=uri,
+            neo4j_user=user,
+            neo4j_password=password,
+            neo4j_database=config.knowledge.graphiti_neo4j_database,
+            model=config.knowledge.graphiti_model,
+            api_key=config.llm.api_key.get_secret_value(),
+            embedder_model=config.knowledge.graphiti_embedder_model,
+            semaphore_limit=config.knowledge.graphiti_semaphore_limit,
+        )
+        # Graph-schema migration step (mirrors Layer 3 install_constraints):
+        # create Graphiti indexes/constraints once at startup, never per request.
+        _run_async(ctx.temporal_port.ensure_indices())  # type: ignore[attr-defined]
+        logger.info("Graphiti temporal projection wired")
+    except Exception as exc:
+        raise PlatformConfigurationError(
+            f"Failed to wire Graphiti temporal knowledge: {exc}"
         ) from exc
 
     # Elastic / Oracle / Git adapters — attach to context if available
@@ -152,6 +210,11 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     ctx.idempotency_store = idempotency_store  # type: ignore[attr-defined]
     ctx.action_repo = action_repo  # type: ignore[attr-defined]
     ctx.outbox_repo = outbox_repo  # type: ignore[attr-defined]
+    # Part 6 Slice 0: durable knowledge stores (RLS-scoped envelopes/sessions;
+    # tenant-free coordination index by construction).
+    ctx.artifact_repo = artifact_repo  # type: ignore[attr-defined]
+    ctx.session_repo = session_repo  # type: ignore[attr-defined]
+    ctx.code_issue_index = code_issue_index  # type: ignore[attr-defined]
 
     # Attach engine and observability for health probes. Observability
     # construction failure is fatal in production — it must not silently
@@ -198,7 +261,115 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
 
     ctx.temporal_config = config.temporal  # type: ignore[attr-defined]
 
+    _wire_topology_dependencies(ctx, config)
+    _wire_knowledge_dependencies(ctx, config)
+    _wire_graphiti_dependencies(ctx, config)
+
     return ctx
+
+
+def _wire_knowledge_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Wire Part 6 knowledge adapters onto an already-constructed AppContext.
+
+    Slice 1 (Mem0): builds Mem0KnowledgeStore against pgvector when
+    `config.knowledge.mem0_enabled` is true. Any construction failure aborts
+    production startup (F-001 precedent) instead of silently running without
+    the projection — but a *runtime* projection failure later only degrades
+    to envelopes (see capture/retrieval services).
+    """
+    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+
+    if not config.knowledge.mem0_enabled:
+        logger.info("Mem0 projection disabled; envelopes only")
+        return
+
+    from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
+        Mem0KnowledgeStore,
+    )
+
+    try:
+        pgvector_url = config.knowledge.mem0_pgvector_url.get_secret_value()
+        if not pgvector_url:
+            pgvector_url = config.database.connection_uri.get_secret_value()
+        ctx.knowledge_store = Mem0KnowledgeStore(  # type: ignore[attr-defined]
+            model=config.knowledge.mem0_model,
+            api_key=config.llm.api_key.get_secret_value(),
+            embedder_model=config.knowledge.mem0_embedder_model,
+            embedding_dims=config.knowledge.mem0_embedding_dims,
+            collection_name=config.knowledge.mem0_collection,
+            pgvector_url=pgvector_url,
+        )
+        logger.info("Mem0 knowledge projection wired")
+    except Exception as exc:
+        raise PlatformConfigurationError(f"Failed to wire Mem0 knowledge store: {exc}") from exc
+
+
+def _wire_topology_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Wire Layer 3 topology dependencies onto an already-constructed AppContext.
+
+    Overrides the in-memory topology adapter (set unconditionally in
+    ``AppContext.__init__`` for dev/test) with the Neo4j-backed adapter when
+    ``config.topology.enabled`` is true. If ``config.topology.required`` is
+    also true, any wiring/connectivity failure aborts production startup
+    (F-001 precedent) instead of silently falling back to the in-memory
+    adapter.
+    """
+    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+
+    if not config.topology.enabled:
+        logger.info("Layer 3 topology is disabled; using in-memory adapter (dev/test only)")
+        return
+
+    from investigation_agent_platform.application.topology.attribution import (
+        FailureAttributionService,
+    )
+    from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+        Neo4jTopologyAdapter,
+    )
+    from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+        ProfileBackedRepositoryRegistry,
+    )
+
+    try:
+        adapter = Neo4jTopologyAdapter(config.topology)
+        _run_async(adapter.connect())
+    except Exception as exc:
+        if config.topology.required:
+            raise PlatformConfigurationError(
+                f"Failed to connect to Neo4j topology backend: {exc}"
+            ) from exc
+        logger.warning(
+            "Layer 3 topology backend unavailable and not required; "
+            "continuing with in-memory adapter",
+            extra={"error": str(exc)},
+        )
+        return
+
+    ctx.topology_adapter = adapter  # type: ignore[attr-defined]
+    ctx.repository_registry = ProfileBackedRepositoryRegistry(ctx.profile_repo)  # type: ignore[attr-defined]
+    # ISSUE-6/ISSUE-3 graceful tiers: resolvers degrade gracefully when the
+    # base path is unconfigured (every resolve returns None + debug log).
+    from investigation_agent_platform.infrastructure.evidence.code.codeowners import (
+        CodeownersResolver,
+    )
+    from investigation_agent_platform.infrastructure.evidence.code.micro import (
+        MicroSymbolResolver,
+    )
+
+    codeowners_resolver = CodeownersResolver(
+        repo_base_path=config.topology.code_repo_base_path,
+    )
+    micro_resolver = MicroSymbolResolver(
+        repo_base_path=config.topology.code_repo_base_path,
+    )
+    ctx.failure_attribution_service = FailureAttributionService(  # type: ignore[attr-defined]
+        attribution_port=adapter,
+        evidence_repo=ctx.evidence_repo,
+        repository_registry=ctx.repository_registry,
+        codeowners_resolver=codeowners_resolver,
+        micro_resolver=micro_resolver,
+    )
+    logger.info("Layer 3 topology backend (Neo4j) wired successfully")
 
 
 def build_app_context(config: ApplicationConfig) -> AppContext:

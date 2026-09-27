@@ -33,6 +33,12 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.53.0",
     "pyjwt[crypto]>=2.9.0",
+    "pydeps>=3.0.8",
+    "tiktoken>=0.14.0",
+    "neo4j>=5.26.0",
+    "mem0ai>=2.2.1",
+    "psycopg[binary]>=3.2",
+    "graphiti-core>=0.30.2",
 ]
 
 [dependency-groups]
@@ -48,6 +54,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "bandit>=1.8.0",
     "pip-audit>=2.9.0",
+    "dot>=0.3.0",
 ]
 
 [tool.hatch.build.targets.wheel]

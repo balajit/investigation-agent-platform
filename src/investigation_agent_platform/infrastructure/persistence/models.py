@@ -55,6 +55,9 @@ class InvestigationORM(Base):
     request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     context_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    code_issue_fingerprint: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
 
     checkpoints: Mapped[list["CheckpointORM"]] = relationship(
         back_populates="investigation", cascade="all, delete-orphan", passive_deletes=True
@@ -618,4 +621,154 @@ class ActionExecutionORM(Base):
     __table_args__ = (
         Index("idx_action_exec_tenant_inv", "tenant_id", "investigation_id"),
         UniqueConstraint("action_id", name="uq_action_execution_action_id"),
+    )
+
+
+class KnowledgeArtifactORM(Base):
+    """Write-once interpreted execution knowledge envelope (Part 6 D3).
+
+    Tenant-scoped via RLS with a visibility carve-out: `SHARED_CODE_ISSUE`
+    rows are readable by any tenant holding a session on the same
+    `code_issue_fingerprint` (see migration 005 policy). The policy — not
+    application code — enforces this, so a missing filter cannot leak.
+    """
+
+    __tablename__ = "knowledge_artifacts"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    refresh_policy: Mapped[str] = mapped_column(String(32), nullable=False, default="IMMUTABLE")
+    reverify_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    source_log_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    code_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    supersedes_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE", index=True)
+    store_refs: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    visibility: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="TENANT", index=True
+    )
+    code_issue_fingerprint: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_knowledge_tenant_app_kind_status", "tenant_id", "application_id", "kind", "status"
+        ),
+        Index("idx_knowledge_fingerprint", "code_issue_fingerprint", "status"),
+    )
+
+
+class InvestigationSessionORM(Base):
+    """One occurrence of a code issue within an investigation (Part 6 D8).
+
+    Strictly tenant-scoped (RLS, no visibility carve-out): full rows are
+    readable only by the owning tenant. Cross-tenant redacted placeholders
+    are assembled from the tenant-free `code_issue_index` table, never from
+    these rows.
+    """
+
+    __tablename__ = "investigation_sessions"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    session_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    log_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    trace_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "session_number", name="uq_session_inv_number"),
+        Index("idx_sessions_inv", "investigation_id", "session_number"),
+    )
+
+
+class CodeIssueIndexORM(Base):
+    """Tenant-free coordination index: fingerprint -> sessions (Part 6 D8).
+
+    Intentionally NOT RLS-protected: every column (fingerprint built from
+    static fields only, opaque investigation UUID, session number,
+    timestamp) identifies no tenant by construction. A dedicated test
+    enforces the two-tenant determinism invariant that justifies this.
+    Service-layer only — never exposed directly to callers.
+    """
+
+    __tablename__ = "code_issue_index"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    code_issue_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    investigation_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "code_issue_fingerprint",
+            "session_number",
+            name="uq_code_issue_session",
+        ),
+    )
+
+
+class TopologySnapshotAuditORM(Base):
+    """Tenant-scoped audit/reporting record for one Layer 3 topology ingestion
+    attempt (prompt1_v1.md "PostgreSQL Migration"). This is metadata only —
+    the graph itself lives in Neo4j; no raw AST payload, source, or
+    credentials are stored here."""
+
+    __tablename__ = "topology_snapshots"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    repository_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revision: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    parser_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
+    payload_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    node_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    edge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "repository_id",
+            "revision",
+            "payload_hash",
+            name="uq_topology_snapshot_tenant_repo_rev_hash",
+        ),
+        Index("idx_topology_snapshot_tenant_repo_rev", "tenant_id", "repository_id", "revision"),
     )

@@ -781,3 +781,142 @@ class TestModels:
             assert v2 == "v1"
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# graphify_adapter.py + pipeline.py + schema/sql.py — code↔DB graph wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCodeSchemaGraphIntegration:
+    def _builder(self):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.evidence.code.graphify_adapter import (
+            CodeSymbolGraphBuilder,
+        )
+
+        return CodeSymbolGraphBuilder()
+
+    def _tables(self):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.evidence.schema.sql import (
+            TableColumn,
+            TableSchema,
+        )
+
+        return [
+            TableSchema(
+                name="orders",
+                columns=[
+                    TableColumn(name="id", data_type="UUID", is_primary_key=True),
+                    TableColumn(name="status", data_type="TEXT"),
+                ],
+                foreign_keys=[],
+            )
+        ]
+
+    def test_schema_nodes_ingested_with_columns(self) -> None:
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        assert "db_table::orders" in builder._node_map
+        assert "db_column::orders.id" in builder._node_map
+        assert "db_column::orders.status" in builder._node_map
+
+    def test_schema_ingestion_is_idempotent(self) -> None:
+        builder = self._builder()
+        tables = self._tables()
+        builder.add_database_schema_nodes(tables)
+        before = builder.graph.num_nodes()
+        builder.add_database_schema_nodes(tables)
+        assert builder.graph.num_nodes() == before
+
+    def test_link_exact_qualified_match(self) -> None:
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        # Simulate a symbol node as add_file_symbols would create it.
+        builder._node_map["src/app.py::OrderService.create"] = builder.graph.add_node(
+            {"id": "src/app.py::OrderService.create", "node_type": "code_symbol"}
+        )
+        assert builder.link_code_to_tables("src/app.py", "OrderService.create", "orders") is True
+
+    def test_link_unqualified_suffix_match(self) -> None:
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        builder._node_map["src/app.py::OrderService.create"] = builder.graph.add_node(
+            {"id": "src/app.py::OrderService.create", "node_type": "code_symbol"}
+        )
+        assert builder.link_code_to_tables("src/app.py", "create", "orders") is True
+
+    def test_link_ambiguous_name_refuses(self) -> None:
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        builder._node_map["src/a.py::OrderService.create"] = builder.graph.add_node(
+            {"id": "src/a.py::OrderService.create", "node_type": "code_symbol"}
+        )
+        builder._node_map["src/a.py::PaymentService.create"] = builder.graph.add_node(
+            {"id": "src/a.py::PaymentService.create", "node_type": "code_symbol"}
+        )
+        assert builder.link_code_to_tables("src/a.py", "create", "orders") is False
+
+    def test_link_unknown_table_or_symbol_refuses(self) -> None:
+        builder = self._builder()
+        assert builder.link_code_to_tables("src/a.py", "missing", "nope") is False
+        builder.add_database_schema_nodes(self._tables())
+        assert builder.link_code_to_tables("src/a.py", "missing", "orders") is False
+
+    def test_schema_parser_end_to_end(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.schema.sql import SchemaParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ddl = Path(tmp) / "schema.sql"
+            ddl.write_text(
+                "CREATE TABLE orders (id UUID PRIMARY KEY, status TEXT);",
+                encoding="utf-8",
+            )
+            tables = SchemaParser().parse_ddl_file(ddl)
+            assert [t.name for t in tables] == ["orders"]
+            builder = self._builder()
+            builder.add_database_schema_nodes(tables)
+            assert "db_table::orders" in builder._node_map
+
+    @pytest.mark.asyncio
+    async def test_pipeline_ingests_ddl_paths(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+            ddl = repo / "schema.sql"
+            ddl.write_text("CREATE TABLE orders (id UUID PRIMARY KEY);", encoding="utf-8")
+            pipeline = CodebaseGraphPipeline(parser=TreeSitterParser())
+            graph = await pipeline.build_repository_graph(repo, language="python", ddl_paths=[ddl])
+            node_ids = {
+                data.get("id")
+                for idx in graph.node_indices()
+                if isinstance((data := graph.get_node_data(idx)), dict)
+            }
+            assert "db_table::orders" in node_ids
+
+    @pytest.mark.asyncio
+    async def test_pipeline_without_ddl_paths_unchanged(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+            pipeline = CodebaseGraphPipeline(parser=TreeSitterParser())
+            graph = await pipeline.build_repository_graph(repo, language="python")
+            node_ids = {
+                data.get("id")
+                for idx in graph.node_indices()
+                if isinstance((data := graph.get_node_data(idx)), dict)
+            }
+            assert not any(str(nid).startswith("db_table::") for nid in node_ids)

@@ -1,10 +1,11 @@
 # src/investigation_agent_platform/infrastructure/evidence/code/intelligence.py
-"""Tree-sitter backed CodeIntelligenceProvider scanning filesystem under CodeProfile roots."""
+"""Tree-sitter and Rustworkx backed CodeIntelligenceProvider scanning filesystem under CodeProfile roots."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -12,8 +13,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import rustworkx as rx
 from opentelemetry import trace
-from pydantic import BaseModel  # noqa: F401 - keep for potential future use
+from pydantic import BaseModel, Field  # noqa: F401 - keep for potential future use
 
 from investigation_agent_platform.application.investigation.validator import _has_traversal
 from investigation_agent_platform.domain.evidence.models import (
@@ -84,12 +86,10 @@ ORM_PATTERNS = re.compile(
 
 
 class TreeSitterCodeIntelligenceProvider:
-    """Filesystem-backed implementation of CodeIntelligenceProviderProtocol.
+    """Filesystem and Rustworkx backed implementation of CodeIntelligenceProviderProtocol.
 
-    Scans ``repo_base_path / CodeProfile.repository / sourceRoots`` and uses
-    tree-sitter (via ``tree-sitter-language-pack``) to extract symbols, call graphs,
-    exception handlers and database operations. Falls back to text search when a
-    language parser is unavailable.
+    Scans repo_base_path / CodeProfile.repository / sourceRoots and uses tree-sitter
+    and pre-computed Rustworkx (PyDiGraph) call graph artifacts for high-performance analysis.
     """
 
     def __init__(
@@ -97,6 +97,7 @@ class TreeSitterCodeIntelligenceProvider:
         repo_base_path: str = "",
         provider_id: str = "code-intelligence",
         tenant_repository_allowlist: dict[str, set[str]] | None = None,
+        graphify_artifact_name: str = "call_graph.json",
     ) -> None:
         # No insecure /tmp default: production must inject IAP_CODE_REPO_BASE
         # explicitly; an empty base fails closed at construction time.
@@ -116,9 +117,11 @@ class TreeSitterCodeIntelligenceProvider:
         # anything else is denied. When unconfigured (dev), all repositories
         # under the base path are visible but every access is still logged.
         self._tenant_allowlist = tenant_repository_allowlist
+        self._graphify_artifact_name = graphify_artifact_name
+        self._graph_cache: dict[str, rx.PyDiGraph] = {}
 
     def _require_tenant_scope(self, tenant_id: str, profile: CodeProfile) -> None:
-        """Fail closed unless this tenant is authorized for the repository (F-040)."""
+        """Fail closed unless this tenant is authorized for the repository."""
         from investigation_agent_platform.domain.common.exceptions import (
             SecurityPolicyViolationException,
         )
@@ -137,7 +140,48 @@ class TreeSitterCodeIntelligenceProvider:
                 f"Tenant '{tenant_id}' is not authorized for repository '{profile.repository}'"
             )
 
-    # -- internal helpers -------------------------------------------------
+    # -- Rustworkx Graph Helpers ---------------------------------------
+
+    def _load_graphify_graph(self, profile: CodeProfile) -> rx.PyDiGraph | None:
+        """Attempts to load a Graphify JSON artifact into a rustworkx.PyDiGraph."""
+        repo_path = self._repo_base_path / profile.repository
+        graph_file = repo_path / self._graphify_artifact_name
+
+        if not graph_file.exists():
+            return None
+
+        cache_key = str(graph_file)
+        if cache_key in self._graph_cache:
+            return self._graph_cache[cache_key]
+
+        try:
+            with open(graph_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            graph = rx.PyDiGraph()
+            node_lookup: dict[str, int] = {}
+
+            for node_info in data.get("nodes", []):
+                node_id = node_info.get("id", "")
+                idx = graph.add_node(node_info)
+                if node_id:
+                    node_lookup[node_id] = idx
+
+            for edge in data.get("links", []):
+                src_id = edge.get("source")
+                dst_id = edge.get("target")
+                if src_id in node_lookup and dst_id in node_lookup:
+                    graph.add_edge(node_lookup[src_id], node_lookup[dst_id], edge)
+
+            self._graph_cache[cache_key] = graph
+            return graph
+        except Exception as exc:
+            logger.warning(
+                "Failed to load Graphify artifact at %s with rustworkx: %s", graph_file, exc
+            )
+            return None
+
+    # -- Internal Parser & Path Helpers --------------------------------
 
     def _get_parser(self, language: str) -> Any | None:
         if language in self._parsers:
@@ -154,12 +198,6 @@ class TreeSitterCodeIntelligenceProvider:
             return None
 
     def _resolve_roots(self, profile: CodeProfile) -> list[Path]:
-        # F-041: centralized, fail-closed path resolution. Every candidate is
-        # canonicalized with resolve() (collapsing `..`, symlinks, and
-        # absolute-path escapes) and must remain under the authorized
-        # repository root. There are no fallback-to-base branches: an
-        # unresolvable source root yields no roots rather than silently
-        # widening the scan boundary.
         try:
             base = Path(profile.repository)
             if base.is_absolute():
@@ -369,17 +407,6 @@ class TreeSitterCodeIntelligenceProvider:
                 ),
             )
             fingerprint = hashlib.sha256(f"{tenant_id}:{rel}:{idx}:{query}".encode()).hexdigest()
-            # Try tree-sitter enrichment: verify file parses
-            lang = self._language_for_file(f)
-            if lang:
-                parser = self._get_parser(lang)
-                if parser is not None:
-                    try:
-                        tree = parser.parse(bytes(code, "utf-8"))
-                        # if parse has error, still return result but mark
-                        _ = tree.root_node.has_error
-                    except Exception:
-                        pass
             evidences.append(
                 Evidence(
                     tenant_id=tenant_id,
@@ -414,10 +441,7 @@ class TreeSitterCodeIntelligenceProvider:
             if lang is None:
                 continue
             code = self._read_text(f)
-            if code is None:
-                continue
-            # fast pre-filter: if symbol not in text, skip expensive parse
-            if symbol_name not in code:
+            if code is None or symbol_name not in code:
                 continue
             symbols = self._extract_symbols_from_tree(
                 code,
@@ -432,6 +456,30 @@ class TreeSitterCodeIntelligenceProvider:
         return results
 
     def _find_callers_sync(self, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
+        # Fast path: Check Rustworkx PyDiGraph artifact
+        graph = self._load_graphify_graph(profile)
+        if graph is not None:
+            callers: list[CallGraphNode] = []
+            for node_idx in graph.node_indices():
+                data = graph.get_node_data(node_idx)
+                if isinstance(data, dict) and data.get("name") == symbol_name:
+                    for pred_idx in graph.predecessor_indices(node_idx):
+                        p_data = graph.get_node_data(pred_idx)
+                        if isinstance(p_data, dict):
+                            callers.append(
+                                CallGraphNode(
+                                    caller_symbol=p_data.get("name", str(pred_idx)),
+                                    callee_symbol=symbol_name,
+                                    location=CodeLocation(
+                                        file_path=p_data.get("file_path", ""),
+                                        line_number=p_data.get("start_line", 1),
+                                    ),
+                                )
+                            )
+            if callers:
+                return callers
+
+        # Fallback path: Tree-sitter AST walk across filesystem
         roots = self._resolve_roots(profile)
         if not roots:
             return []
@@ -538,6 +586,30 @@ class TreeSitterCodeIntelligenceProvider:
         return nodes
 
     def _find_callees_sync(self, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
+        # Fast path: Check Rustworkx PyDiGraph artifact
+        graph = self._load_graphify_graph(profile)
+        if graph is not None:
+            callees: list[CallGraphNode] = []
+            for node_idx in graph.node_indices():
+                data = graph.get_node_data(node_idx)
+                if isinstance(data, dict) and data.get("name") == symbol_name:
+                    for succ_idx in graph.successor_indices(node_idx):
+                        s_data = graph.get_node_data(succ_idx)
+                        if isinstance(s_data, dict):
+                            callees.append(
+                                CallGraphNode(
+                                    caller_symbol=symbol_name,
+                                    callee_symbol=s_data.get("name", str(succ_idx)),
+                                    location=CodeLocation(
+                                        file_path=s_data.get("file_path", ""),
+                                        line_number=s_data.get("start_line", 1),
+                                    ),
+                                )
+                            )
+            if callees:
+                return callees
+
+        # Fallback path: Tree-sitter AST walk across filesystem
         roots = self._resolve_roots(profile)
         if not roots:
             return []

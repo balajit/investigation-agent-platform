@@ -81,6 +81,11 @@ class CreateInvestigationInput:
     session_id: str | None = None
     tenant_id: str = ""
     description: str | None = None
+    # Existing investigation ID (F-IDENTITY): when set, the activity MUST load
+    # this investigation rather than creating a new aggregate. This preserves
+    # one investigation_id end-to-end across API, workflow, checkpoints,
+    # evidence, and topology attribution.
+    investigation_id: str | None = None
 
 
 @dataclass
@@ -157,6 +162,19 @@ class PublishEventInput:
     event: str
 
 
+@dataclass
+class RetrieveKnowledgeInput:
+    tenant_id: str
+    investigation_id: str
+    kinds: list[str] | None = None
+
+
+@dataclass
+class CaptureKnowledgeInput:
+    tenant_id: str
+    investigation_id: str
+
+
 def _get_ctx() -> Any:
     from investigation_agent_platform.api.dependencies import get_app_context
 
@@ -170,6 +188,35 @@ async def create_investigation_activity(
     activity.logger.info("create_investigation_activity", extra={"app_id": params.application_id})
     try:
         ctx = _get_ctx()
+
+        # F-IDENTITY: if the caller (API) already created this investigation,
+        # load it instead of creating a second aggregate with a new ID. This
+        # is the single most important identity invariant in the workflow:
+        # the API's investigation_id, the Temporal workflow ID
+        # (`wf-investigation-{investigation_id}`), and every downstream
+        # activity/checkpoint/evidence/attribution record must refer to the
+        # same investigation.
+        if params.investigation_id:
+            inv_repo: Any = getattr(ctx, "investigation_repo", None)
+            if inv_repo is None:
+                raise ApplicationFailure(
+                    "Investigation repository is not configured; cannot load existing investigation",
+                    type="InvestigationRepositoryUnavailable",
+                    non_retryable=True,
+                )
+            existing_inv_id = UUID(params.investigation_id)
+            existing = await inv_repo.get_by_id(params.tenant_id, existing_inv_id)
+            if existing is None:
+                raise ApplicationFailure(
+                    f"Investigation {existing_inv_id} not found for tenant; "
+                    "workflow cannot proceed under a different identity",
+                    type="InvestigationNotFoundError",
+                    non_retryable=True,
+                )
+            return CreateInvestigationOutput(
+                investigation_id=str(existing.id), status=existing.status.value
+            )
+
         from investigation_agent_platform.domain.investigation.models import InvestigationRequest
 
         svc = ctx.create_investigation_service()
@@ -181,6 +228,8 @@ async def create_investigation_activity(
         )
         inv = await svc.execute(req, tenant_id=params.tenant_id)
         return CreateInvestigationOutput(investigation_id=str(inv.id), status=inv.status.value)
+    except ApplicationFailure:
+        raise
     except Exception as exc:
         logger.exception("create_investigation_activity failed", extra={"error": str(exc)})
         raise _application_failure_from_exc(exc) from exc
@@ -818,8 +867,14 @@ async def _transition_via_path(
             InvestigationStatus.FAILED,
             InvestigationStatus.CANCELLED,
         },
-        InvestigationStatus.COMPLETED: set(),
-        InvestigationStatus.FAILED: set(),
+        # Reopen edges mirror domain/investigation/models.py (Part 6 D8:
+        # recurring code issues reopen closed investigations).
+        InvestigationStatus.COMPLETED: {
+            InvestigationStatus.INVESTIGATING,
+        },
+        InvestigationStatus.FAILED: {
+            InvestigationStatus.INVESTIGATING,
+        },
         InvestigationStatus.CANCELLED: set(),
     }
     path = _find_transition_path(inv.status, target, graph)
@@ -1096,4 +1151,122 @@ async def publish_event_activity(
         raise
     except Exception as exc:
         logger.exception("publish_event_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def retrieve_knowledge_activity(
+    params: RetrieveKnowledgeInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Validity-gated knowledge retrieval before reasoning (Part 6 D4, Slice 0).
+
+    Returns verified facts + excluded_stale_count. Never raises on store
+    trouble: an empty context degrades the investigation to unassisted
+    reasoning rather than failing it.
+    """
+    activity.logger.info("retrieve_knowledge_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        inv_id_str = str(data.get("investigation_id", ""))
+        kinds = data.get("kinds")
+        if not tenant_id or not inv_id_str:
+            return GenericActivityResult(
+                success=False, error="tenant_id and investigation_id required"
+            )
+        investigation_id = UUID(inv_id_str)
+        ctx = _get_ctx()
+        try:
+            service = ctx.knowledge_retrieval_service()
+            fingerprints = await _caller_fingerprints_for(ctx, tenant_id, investigation_id)
+            context = await service.retrieve_for_reasoning(
+                tenant_id,
+                await _application_id_for(ctx, tenant_id, investigation_id),
+                investigation_id,
+                kinds=list(kinds) if kinds else None,
+                code_issue_fingerprints=fingerprints,
+            )
+            return GenericActivityResult(
+                success=True,
+                data={
+                    "verified_facts": [v.model_dump(mode="json") for v in context.verified_facts],
+                    "preferences": [v.model_dump(mode="json") for v in context.preferences],
+                    "temporal_summary": [
+                        v.model_dump(mode="json") for v in context.temporal_summary
+                    ],
+                    "excluded_stale_count": context.excluded_stale_count,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "retrieve_knowledge_activity degraded to empty context",
+                extra={"error": str(exc)},
+            )
+            return GenericActivityResult(
+                success=True, data={"verified_facts": [], "excluded_stale_count": -1}
+            )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("retrieve_knowledge_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+async def _caller_fingerprints_for(ctx: Any, tenant_id: str, investigation_id: UUID) -> list[str]:
+    """Membership proof for cross-tenant SHARED reads: fingerprints of code
+    issues this tenant holds a session on, resolved from its own
+    tenant-scoped rows only."""
+    fingerprints: list[str] = []
+    inv_repo: Any = getattr(ctx, "investigation_repo", None)
+    if inv_repo is not None:
+        investigation = await inv_repo.get_by_id(tenant_id, investigation_id)
+        fingerprint = getattr(investigation, "code_issue_fingerprint", None)
+        if fingerprint:
+            fingerprints.append(fingerprint)
+    return fingerprints
+
+
+async def _application_id_for(ctx: Any, tenant_id: str, investigation_id: UUID) -> str:
+    inv_repo: Any = getattr(ctx, "investigation_repo", None)
+    if inv_repo is not None:
+        investigation = await inv_repo.get_by_id(tenant_id, investigation_id)
+        application_id = getattr(investigation, "application_id", None)
+        if application_id:
+            return str(application_id)
+    return "unknown"
+
+
+@activity.defn
+async def capture_knowledge_activity(
+    params: CaptureKnowledgeInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Distill concluded state into envelopes (Part 6 D4, Slice 0).
+
+    Runs after conclusion. Capture failures never fail the investigation.
+    """
+    activity.logger.info("capture_knowledge_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        inv_id_str = str(data.get("investigation_id", ""))
+        if not tenant_id or not inv_id_str:
+            return GenericActivityResult(
+                success=False, error="tenant_id and investigation_id required"
+            )
+        investigation_id = UUID(inv_id_str)
+        ctx = _get_ctx()
+        try:
+            service = ctx.knowledge_capture_service()
+            stored = await service.capture_for_investigation(tenant_id, investigation_id)
+            return GenericActivityResult(success=True, data={"artifacts_stored": len(stored)})
+        except Exception as exc:
+            logger.warning(
+                "capture_knowledge_activity failed; investigation unaffected",
+                extra={"error": str(exc)},
+            )
+            return GenericActivityResult(success=True, data={"artifacts_stored": 0})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("capture_knowledge_activity failed", extra={"error": str(exc)})
         raise _application_failure_from_exc(exc) from exc

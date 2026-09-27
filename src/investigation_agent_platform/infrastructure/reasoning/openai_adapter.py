@@ -14,6 +14,7 @@ from investigation_agent_platform.infrastructure.reasoning.pricing import (
 )
 from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
 from investigation_agent_platform.ports.reasoning.llm_gateway import (
+    LLMGateway,
     LLMGatewayRequest,
     LLMGatewayResponse,
 )
@@ -46,7 +47,20 @@ def _is_unsupported_format_error(exc: BaseException) -> bool:
 _RESTRICTED_CLASSIFICATIONS = frozenset({"RESTRICTED", "SECRET", "TOP_SECRET"})
 
 
-class OpenAIGateway:
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "http_status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status in (429, 503):
+        return True
+    if status in (401, 403):
+        return False
+    return bool(getattr(exc, "retryable", False))
+
+
+class OpenAIGateway(LLMGateway):
     """OpenAI adapter — lazy client init so mypy/test does not require openai."""
 
     def __init__(self, config: LLMConfig) -> None:
@@ -196,7 +210,19 @@ class OpenAIGateway:
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
         except Exception:
-            logger.warning("Failed to parse OpenAI response", extra={"tenant_id": tenant_id})
+            logger.warning("Failed to parse OpenAI usage telemetry", extra={"tenant_id": tenant_id})
+
+        # Extract content safely (second pass overwrites the telemetry parse
+        # above with a defensive getattr chain; `content` is already
+        # initialized, so no re-annotation here).
+        try:
+            choices = getattr(resp, "choices", [])
+            if choices:
+                content = choices[0].message.content or ""
+        except Exception:
+            logger.warning(
+                "Failed to parse OpenAI response content", extra={"tenant_id": tenant_id}
+            )
 
         parsed: dict[str, object] | None = None
         if request.response_schema is not None and content:

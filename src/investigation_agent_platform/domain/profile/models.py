@@ -68,6 +68,10 @@ class CodeProfile(BaseModel):
     source_roots: list[str] = Field(..., alias="sourceRoots", max_length=50)
     build_system: str = Field(..., alias="buildSystem", max_length=128)
     module_structure: str = Field(..., alias="moduleStructure", max_length=128)
+    # Layer 3 topology: canonical repository identity (distinct from the
+    # access/build locator above). Optional so existing profiles remain valid
+    # until a repository is registered in the topology registry.
+    repository_id: str | None = Field(default=None, alias="repositoryId", max_length=128)
 
     @field_validator("repository", "source_roots")
     @classmethod

@@ -1,7 +1,7 @@
 # src/investigation_agent_platform/application/evidence/gateway.py
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from opentelemetry import trace
@@ -37,6 +37,39 @@ from investigation_agent_platform.ports.security.redactor import (
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+if TYPE_CHECKING:
+    from investigation_agent_platform.domain.topology.models import (
+        DomainAttributionResult,
+        StackFrameLocation,
+        StaticOwnershipResult,
+    )
+
+
+class ContextCompressor:
+    """Compresses/truncates telemetry and log items to fit within token budgets."""
+
+    def __init__(self, max_token_budget: int = 4000) -> None:
+        self.max_token_budget = max_token_budget
+
+    def truncate_log_stream(self, raw_logs: list[str], max_tokens: int) -> str:
+        if not raw_logs:
+            return ""
+        formatted = "\n".join(raw_logs)
+        # Approximate 4 characters per token heuristic
+        if len(formatted) / 4 <= max_tokens:
+            return formatted
+
+        head_count = max(1, int(len(raw_logs) * 0.2))
+        tail_count = max(1, int(len(raw_logs) * 0.6))
+
+        head = raw_logs[:head_count]
+        tail = raw_logs[-tail_count:]
+
+        truncated_msg = (
+            f"\n... [TRUNCATED {len(raw_logs) - (head_count + tail_count)} LOG LINES] ...\n"
+        )
+        return "\n".join(head) + truncated_msg + "\n".join(tail)
 
 
 class EvidenceDeduplicator:
@@ -124,6 +157,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         structured_output_validator: Any | None = None,
         evidence_repository: Any | None = None,
         deduplicator: EvidenceDeduplicator | None = None,
+        compressor: ContextCompressor | None = None,
+        max_tokens_per_stream: int = 3000,
+        repository_registry: Any | None = None,
+        failure_attribution_service: Any | None = None,
     ) -> None:
         if sanitizer is None:
             raise ValueError(
@@ -145,6 +182,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self._structured_output_validator = structured_output_validator
         self._evidence_repository = evidence_repository
         self._deduplicator = deduplicator or EvidenceDeduplicator(evidence_repository)
+        self._compressor = compressor or ContextCompressor()
+        self._max_tokens_per_stream = max_tokens_per_stream
+        # Layer 3 topology (prompt1_v1.md): both optional so the gateway
+        # remains fully functional without a topology deployment. Missing
+        # wiring surfaces as an explicit TOPOLOGY_NOT_CONFIGURED error rather
+        # than a silent no-op.
+        self._repository_registry = repository_registry
+        self._failure_attribution_service = failure_attribution_service
 
     async def _enforce_authorization(
         self, tenant_id: str, capability: str, resource: str = ""
@@ -213,6 +258,17 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 await self._sanitizer.sanitize_evidence(tenant_id, item) for item in result.items
             ]
             deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+
+            # Apply token budget compression to log streams in evidence payload
+            for item in deduped:
+                if hasattr(item, "payload") and isinstance(item.payload, dict):
+                    logs = item.payload.get("logs")
+                    if isinstance(logs, list):
+                        item.payload["logs"] = self._compressor.truncate_log_stream(
+                            logs, self._max_tokens_per_stream
+                        )
+                        item.payload["is_compressed"] = True
+
             return EvidenceQueryResult(
                 items=deduped,
                 cursor=result.cursor,
@@ -449,4 +505,98 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 items=[],
                 total_count=len(graph.nodes),
                 provider_metadata={"graph": graph.model_dump()},
+            )
+
+    # -- Layer 3 topology integration (prompt1_v1.md D7) -----------------------
+
+    async def resolve_code_ownership(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        file_path: str,
+        line_number: int,
+        revision: str | None = None,
+    ) -> "StaticOwnershipResult":
+        """Resolve one source location to its static ownership path.
+
+        Authorizes ``QUERY_CODE_TOPOLOGY`` before delegating to the topology
+        port. Raises ``TopologyNotConfiguredError`` if no registry/port is
+        wired for this tenant/application — never silently returns an empty
+        or fabricated result.
+        """
+        from investigation_agent_platform.domain.common.exceptions import (
+            TopologyNotConfiguredError,
+        )
+
+        with tracer.start_as_current_span("AsyncEvidenceGateway.resolve_code_ownership"):
+            await self._enforce_authorization(tenant_id, "QUERY_CODE_TOPOLOGY", file_path)
+            if self._repository_registry is None or self._failure_attribution_service is None:
+                raise TopologyNotConfiguredError(
+                    f"No topology provider configured for tenant={tenant_id}",
+                    details={"tenant_id": tenant_id, "application_id": application_id},
+                )
+            repo = await self._repository_registry.resolve_for_application(
+                tenant_id, application_id
+            )
+            if repo is None:
+                raise TopologyNotConfiguredError(
+                    f"No repository registered for application={application_id}",
+                    details={"tenant_id": tenant_id, "application_id": application_id},
+                )
+            attribution_port = self._failure_attribution_service._attribution_port
+            return await asyncio.wait_for(
+                attribution_port.resolve_source_location(
+                    tenant_id=tenant_id,
+                    application_id=application_id,
+                    investigation_id=investigation_id,
+                    repository_id=repo.repository_id,
+                    revision=revision or repo.default_branch,
+                    file_path=file_path,
+                    line_number=line_number,
+                ),
+                timeout=self._timeout_seconds,
+            )
+
+    async def attribute_failure_frames(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        failure_frame: "StackFrameLocation",
+        caller_frame: "StackFrameLocation | None" = None,
+        supporting_evidence_ids: list[UUID] | None = None,
+        caller_input_violates_contract: bool | None = None,
+    ) -> "DomainAttributionResult":
+        """Resolve dual-frame ownership and persist it as provenanced evidence.
+
+        Authorizes ``RESOLVE_DOMAIN_ATTRIBUTION`` before delegating to
+        ``FailureAttributionService``. This is the only sanctioned path from
+        a Temporal activity to Layer 3 topology — direct Neo4j/driver access
+        from activities is not permitted (D7).
+        """
+        from investigation_agent_platform.domain.common.exceptions import (
+            TopologyNotConfiguredError,
+        )
+
+        with tracer.start_as_current_span("AsyncEvidenceGateway.attribute_failure_frames"):
+            await self._enforce_authorization(
+                tenant_id, "RESOLVE_DOMAIN_ATTRIBUTION", failure_frame.repository_id
+            )
+            if self._failure_attribution_service is None:
+                raise TopologyNotConfiguredError(
+                    f"No failure attribution service configured for tenant={tenant_id}",
+                    details={"tenant_id": tenant_id},
+                )
+            return await asyncio.wait_for(
+                self._failure_attribution_service.attribute_failure(
+                    tenant_id=tenant_id,
+                    application_id=application_id,
+                    investigation_id=investigation_id,
+                    failure_frame=failure_frame,
+                    caller_frame=caller_frame,
+                    supporting_evidence_ids=supporting_evidence_ids,
+                    caller_input_violates_contract=caller_input_violates_contract,
+                ),
+                timeout=self._timeout_seconds,
             )

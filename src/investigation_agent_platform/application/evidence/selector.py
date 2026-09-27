@@ -1,5 +1,6 @@
 # src/investigation_agent_platform/application/evidence/selector.py
 import logging
+from typing import TypeVar
 
 from opentelemetry import trace
 
@@ -13,6 +14,8 @@ from investigation_agent_platform.ports.evidence.state import StateEvidenceProvi
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+T = TypeVar("T")
 
 
 class EvidenceProviderSelector:
@@ -28,52 +31,62 @@ class EvidenceProviderSelector:
     def freeze(self) -> None:
         """Freezes provider registrations to guarantee startup immutability."""
         self._is_frozen = True
+        logger.info("EvidenceProviderSelector frozen. Registrations locked.")
 
+    def _register(
+        self,
+        registry: dict[str, T],
+        key: str,
+        provider: T,
+        protocol_type: type,
+        provider_type_name: str,
+    ) -> None:
+        """Internal generic helper to consolidate registration logic and safely check protocols."""
+        if self._is_frozen:
+            raise RuntimeError("Provider selector is frozen and cannot accept registrations.")
+
+        # Safe protocol verification: runtime_checkable protocol check or fallback
+        if getattr(protocol_type, "_is_runtime_protocol", False):
+            if not isinstance(provider, protocol_type):
+                raise TypeError(
+                    f"Provider '{provider}' does not implement {protocol_type.__name__}"
+                )
+
+        registry[key] = provider
+        logger.info(
+            f"Registered {provider_type_name} provider",
+            extra={"provider_key": key, "provider_type": provider_type_name},
+        )
+
+    # Public Registration Methods
     def register_runtime_provider(
         self, key: str, provider: RuntimeEvidenceProviderProtocol
     ) -> None:
-        if self._is_frozen:
-            raise RuntimeError("Provider selector is frozen and cannot accept registrations.")
-        if not isinstance(provider, RuntimeEvidenceProviderProtocol):
-            raise TypeError(
-                f"Provider does not implement RuntimeEvidenceProviderProtocol: {provider}"
-            )
-        self._runtime_providers[key] = provider
-        logger.info("Registered runtime provider", extra={"provider_key": key})
+        self._register(
+            self._runtime_providers, key, provider, RuntimeEvidenceProviderProtocol, "runtime"
+        )
 
     def register_state_provider(self, key: str, provider: StateEvidenceProviderProtocol) -> None:
-        if self._is_frozen:
-            raise RuntimeError("Provider selector is frozen.")
-        if not isinstance(provider, StateEvidenceProviderProtocol):
-            raise TypeError(
-                f"Provider does not implement StateEvidenceProviderProtocol: {provider}"
-            )
-        self._state_providers[key] = provider
-        logger.info("Registered state provider", extra={"provider_key": key})
+        self._register(self._state_providers, key, provider, StateEvidenceProviderProtocol, "state")
 
     def register_code_provider(self, key: str, provider: CodeEvidenceProviderProtocol) -> None:
-        if self._is_frozen:
-            raise RuntimeError("Provider selector is frozen.")
-        if not isinstance(provider, CodeEvidenceProviderProtocol):
-            raise TypeError(f"Provider does not implement CodeEvidenceProviderProtocol: {provider}")
-        self._code_providers[key] = provider
-        logger.info("Registered code provider", extra={"provider_key": key})
+        self._register(self._code_providers, key, provider, CodeEvidenceProviderProtocol, "code")
 
     def register_code_intelligence_provider(
         self, key: str, provider: CodeIntelligenceProviderProtocol
     ) -> None:
-        if self._is_frozen:
-            raise RuntimeError("Provider selector is frozen.")
-        if not isinstance(provider, CodeIntelligenceProviderProtocol):
-            raise TypeError(
-                f"Provider does not implement CodeIntelligenceProviderProtocol: {provider}"
-            )
-        self._code_intelligence_providers[key] = provider
-        logger.info("Registered code intelligence provider", extra={"provider_key": key})
+        self._register(
+            self._code_intelligence_providers,
+            key,
+            provider,
+            CodeIntelligenceProviderProtocol,
+            "code_intelligence",
+        )
 
+    # Async Getter Methods
     async def get_runtime_provider(
         self, tenant_id: str, application_id: str, environment: str
-    ) -> RuntimeEvidenceProviderProtocol | None:
+    ) -> RuntimeEvidenceProviderProtocol:
         with tracer.start_as_current_span("EvidenceProviderSelector.get_runtime_provider"):
             key = f"{tenant_id}:{application_id}:{environment}"
             provider = self._runtime_providers.get(key)
@@ -91,7 +104,7 @@ class EvidenceProviderSelector:
 
     async def get_state_provider(
         self, tenant_id: str, application_id: str, environment: str
-    ) -> StateEvidenceProviderProtocol | None:
+    ) -> StateEvidenceProviderProtocol:
         with tracer.start_as_current_span("EvidenceProviderSelector.get_state_provider"):
             key = f"{tenant_id}:{application_id}:{environment}"
             provider = self._state_providers.get(key)
@@ -101,7 +114,7 @@ class EvidenceProviderSelector:
 
     async def get_code_provider(
         self, tenant_id: str, application_id: str
-    ) -> CodeEvidenceProviderProtocol | None:
+    ) -> CodeEvidenceProviderProtocol:
         with tracer.start_as_current_span("EvidenceProviderSelector.get_code_provider"):
             key = f"{tenant_id}:{application_id}"
             provider = self._code_providers.get(key)
@@ -111,7 +124,7 @@ class EvidenceProviderSelector:
 
     async def get_code_intelligence_provider(
         self, tenant_id: str, application_id: str
-    ) -> CodeIntelligenceProviderProtocol | None:
+    ) -> CodeIntelligenceProviderProtocol:
         with tracer.start_as_current_span(
             "EvidenceProviderSelector.get_code_intelligence_provider"
         ):

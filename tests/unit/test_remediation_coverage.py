@@ -686,6 +686,9 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "006_pgvector_extension",
+            "005_knowledge_layer",
+            "004_topology_snapshots",
             "003_checkpoint_schema",
             "002_add_phase2_tables",
             "001_add_rls",
@@ -712,3 +715,58 @@ class TestMigrationChain:
         assert tenant_tables.issubset(metadata_tables)
         for table in tenant_tables:
             assert "tenant_id" in Base.metadata.tables[table].columns, table
+
+
+# ===========================================================================
+# approve-action endpoint: explicit failure states, never AttributeError
+# ===========================================================================
+
+
+class TestApproveActionEndpoint:
+    def _client(self):  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from investigation_agent_platform.api.app import create_app
+        from investigation_agent_platform.api.dependencies import AppContext, set_app_context
+
+        ctx = AppContext()
+        set_app_context(ctx)
+        return TestClient(create_app()), ctx
+
+    def test_invalid_uuid_returns_400(self) -> None:
+        client, _ = self._client()
+        resp = client.post(
+            "/api/v1/not-a-uuid/approve-action?action_id=a&approved=true",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 400
+
+    def test_unknown_investigation_returns_404(self) -> None:
+        import uuid as _uuid
+
+        client, _ = self._client()
+        resp = client.post(
+            f"/api/v1/{_uuid.uuid4()}/approve-action?action_id=a&approved=true",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 404
+
+    def test_missing_temporal_client_returns_503(self) -> None:
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.domain.investigation.models import InvestigationRequest
+
+        client, ctx = self._client()
+        req = InvestigationRequest(
+            application_id="example-app",
+            problem_description="approval check",
+            session_id="sess-approval",
+            requested_by="tester",
+        )
+        inv = _asyncio.run(ctx.create_investigation_service().execute(req, tenant_id="tenant-a"))
+        assert getattr(ctx, "temporal_client", None) is None
+        resp = client.post(
+            f"/api/v1/{inv.id}/approve-action?action_id=a&approved=true",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 503

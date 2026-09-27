@@ -169,15 +169,25 @@ class TestInvestigationTransitions:
             )
 
     def test_terminal_immutability(self) -> None:
+        # Part 6 D8: COMPLETED/FAILED support exactly one outgoing edge —
+        # reopen to INVESTIGATING for recurring code issues. CANCELLED stays
+        # terminal (explicit human action; auto-intake must not resurrect it).
         for terminal in [
             InvestigationStatus.COMPLETED,
             InvestigationStatus.FAILED,
-            InvestigationStatus.CANCELLED,
         ]:
             inv = _make_investigation(terminal)
-            for target in [InvestigationStatus.INVESTIGATING, InvestigationStatus.CREATED]:
+            reopened, _ = inv.transition_to(
+                InvestigationStatus.INVESTIGATING, ActorType.SYSTEM, "recurring code issue"
+            )
+            assert reopened.status == InvestigationStatus.INVESTIGATING
+            for target in [InvestigationStatus.CREATED, InvestigationStatus.COMPLETED]:
                 with pytest.raises(InvalidLifecycleTransitionException):
                     inv.transition_to(target, ActorType.SYSTEM, "x")
+        inv = _make_investigation(InvestigationStatus.CANCELLED)
+        for target in [InvestigationStatus.INVESTIGATING, InvestigationStatus.CREATED]:
+            with pytest.raises(InvalidLifecycleTransitionException):
+                inv.transition_to(target, ActorType.SYSTEM, "x")
 
     def test_concluding_to_completed_sets_completed_at(self) -> None:
         inv = _make_investigation(InvestigationStatus.CONCLUDING)

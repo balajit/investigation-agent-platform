@@ -269,6 +269,11 @@ class Investigation(BaseModel):
     conclusion: InvestigationConclusion | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     version: int = Field(default=1, ge=1)
+    code_issue_fingerprint: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Tenant-agnostic code-issue key linking merged sessions (Part 6 D8)",
+    )
 
     def transition_to(
         self,
@@ -327,8 +332,12 @@ class Investigation(BaseModel):
                 InvestigationStatus.FAILED,
                 InvestigationStatus.CANCELLED,
             },
-            InvestigationStatus.COMPLETED: set(),
-            InvestigationStatus.FAILED: set(),
+            InvestigationStatus.COMPLETED: {
+                InvestigationStatus.INVESTIGATING,
+            },
+            InvestigationStatus.FAILED: {
+                InvestigationStatus.INVESTIGATING,
+            },
             InvestigationStatus.CANCELLED: set(),
         }
 

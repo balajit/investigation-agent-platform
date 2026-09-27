@@ -14,18 +14,12 @@ from investigation_agent_platform.infrastructure.reasoning.pricing import (
 )
 from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
 from investigation_agent_platform.ports.reasoning.llm_gateway import (
+    LLMGateway,
     LLMGatewayRequest,
     LLMGatewayResponse,
 )
 
 logger = logging.getLogger(__name__)
-
-_MODEL_RATES: dict[str, tuple[float, float]] = {
-    "claude-3-5-sonnet": (0.003, 0.015),
-    "claude-3-opus": (0.015, 0.075),
-    "claude-3-haiku": (0.00025, 0.00125),
-    "claude-sonnet-4": (0.003, 0.015),
-}
 
 
 def _estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -34,6 +28,19 @@ def _estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) 
 
 
 _RESTRICTED_CLASSIFICATIONS = frozenset({"RESTRICTED", "SECRET", "TOP_SECRET"})
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "http_status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status in (429, 503):
+        return True
+    if status in (401, 403):
+        return False
+    return bool(getattr(exc, "retryable", False))
 
 
 def _enforce_envelope_policy(tenant_id: str, request: LLMGatewayRequest, provider: str) -> None:
@@ -65,7 +72,7 @@ def _enforce_envelope_policy(tenant_id: str, request: LLMGatewayRequest, provide
         )
 
 
-class AnthropicGateway:
+class AnthropicGateway(LLMGateway):
     """Anthropic adapter — lazy client init."""
 
     def __init__(self, config: LLMConfig) -> None:
@@ -87,15 +94,7 @@ class AnthropicGateway:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(
-            lambda e: (
-                getattr(e, "status_code", getattr(e, "http_status_code", None)) in (429, 503)
-                or (
-                    getattr(e, "retryable", False)
-                    and getattr(e, "http_status_code", None) not in (401, 403)
-                )
-            )
-        ),
+        retry=retry_if_exception(_is_retryable_llm_error),
         reraise=True,
     )
     async def _call_with_retry(self, client: object, kwargs: dict[str, object]) -> object:
@@ -117,9 +116,10 @@ class AnthropicGateway:
                 extra={"tenant_id": tenant_id},
             )
 
+        max_tokens = request.max_tokens or self._config.max_tokens or 4096
         kwargs: dict[str, object] = {
             "model": self._config.model_name,
-            "max_tokens": request.max_tokens or self._config.max_tokens,
+            "max_tokens": max_tokens,
             "temperature": request.temperature
             if request.temperature is not None
             else self._config.temperature,
@@ -146,22 +146,33 @@ class AnthropicGateway:
         prompt_tokens = 0
         completion_tokens = 0
         tool_input: dict[str, object] | None = None
+
+        # Extract usage telemetry safely
         try:
-            blocks = getattr(resp, "content", [])
-            for block in blocks:
-                if getattr(block, "type", None) == "tool_use" and hasattr(block, "input"):
-                    tool_input = dict(block.input)
-                    content = json.dumps(block.input)
-                    break
-            else:
-                if blocks and hasattr(blocks[0], "text"):
-                    content = blocks[0].text
             usage = getattr(resp, "usage", None)
             if usage:
                 prompt_tokens = getattr(usage, "input_tokens", 0) or 0
                 completion_tokens = getattr(usage, "output_tokens", 0) or 0
         except Exception:
-            logger.warning("Failed to parse Anthropic response", extra={"tenant_id": tenant_id})
+            logger.warning(
+                "Failed to parse Anthropic usage telemetry", extra={"tenant_id": tenant_id}
+            )
+
+        # Extract content & tool outputs safely
+        try:
+            blocks = getattr(resp, "content", [])
+            for block in blocks:
+                if getattr(block, "type", None) == "tool_use" and hasattr(block, "input"):
+                    tool_input = dict(block.input) if isinstance(block.input, dict) else block.input
+                    content = json.dumps(block.input)
+                    break
+            else:
+                if blocks and hasattr(blocks[0], "text"):
+                    content = blocks[0].text
+        except Exception:
+            logger.warning(
+                "Failed to parse Anthropic response content", extra={"tenant_id": tenant_id}
+            )
 
         parsed: dict[str, object] | None = None
         if request.response_schema is not None and content:

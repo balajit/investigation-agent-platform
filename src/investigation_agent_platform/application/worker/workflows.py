@@ -9,6 +9,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.application.worker.activities import (
+        CaptureKnowledgeInput,
         CheckpointInput,
         ConcludeInvestigationInput,
         CreateInvestigationInput,
@@ -16,8 +17,10 @@ with workflow.unsafe.imports_passed_through():
         PublishEventInput,
         ReasonInput,
         RetrieveEvidenceInput,
+        RetrieveKnowledgeInput,
         TransitionInvestigationInput,
         VerifyRootCauseInput,
+        capture_knowledge_activity,
         checkpoint_activity,
         conclude_investigation_activity,
         create_investigation_activity,
@@ -25,6 +28,7 @@ with workflow.unsafe.imports_passed_through():
         publish_event_activity,
         reason_activity,
         retrieve_evidence_activity,
+        retrieve_knowledge_activity,
         transition_investigation_activity,
         verify_root_cause_activity,
     )
@@ -37,6 +41,13 @@ class RunInvestigationInput:
     tenant_id: str = ""
     description: str | None = None
     correlation_id: str | None = None
+    # The investigation was already created by the API before the workflow was
+    # started (`wf-investigation-{investigation_id}`). This field is the
+    # single source of truth for the investigation identity across the whole
+    # run: API response, workflow ID, activity inputs, checkpoints, evidence,
+    # and topology attribution must all refer to this ID. When absent (legacy
+    # callers / tests), the workflow falls back to creating a new investigation.
+    investigation_id: str | None = None
 
 
 @dataclass
@@ -77,6 +88,8 @@ class RunInvestigationWorkflow:
         )
 
         # 1. Initialize investigation (state authority: persisted via InvestigationRepository).
+        # F-IDENTITY: if the API already created the investigation, load it
+        # instead of creating a second aggregate under a different ID.
         create_res = await workflow.execute_activity(
             create_investigation_activity,
             CreateInvestigationInput(
@@ -84,6 +97,7 @@ class RunInvestigationWorkflow:
                 session_id=input_data.session_id,
                 tenant_id=input_data.tenant_id,
                 description=input_data.description,
+                investigation_id=input_data.investigation_id,
             ),
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,
@@ -125,6 +139,16 @@ class RunInvestigationWorkflow:
             await workflow.wait_condition(lambda: not self._is_paused)
             if self._is_cancelled:
                 break
+
+            # Part 6 Slice 0: validity-gated knowledge retrieval before
+            # reasoning. Degrades to unassisted reasoning on store trouble;
+            # never fails the investigation.
+            await workflow.execute_activity(
+                retrieve_knowledge_activity,
+                RetrieveKnowledgeInput(tenant_id=tenant_id, investigation_id=inv_id),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=retry_policy,
+            )
 
             # Reason — produces next action and readiness score.
             reason_res = await workflow.execute_activity(
@@ -220,6 +244,15 @@ class RunInvestigationWorkflow:
             ConcludeInvestigationInput(
                 tenant_id=tenant_id, investigation_id=inv_id, status=final_status
             ),
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=retry_policy,
+        )
+
+        # Part 6 Slice 0: distill concluded state into knowledge envelopes.
+        # Capture failures never fail the investigation.
+        await workflow.execute_activity(
+            capture_knowledge_activity,
+            CaptureKnowledgeInput(tenant_id=tenant_id, investigation_id=inv_id),
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,
         )

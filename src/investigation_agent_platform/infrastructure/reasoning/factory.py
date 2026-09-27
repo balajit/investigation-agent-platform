@@ -42,6 +42,12 @@ MODEL_REGISTRY: dict[str, ModelPolicy] = {
         max_context_tokens=128000,
         max_cost_usd_per_call=5.0,
     ),
+    "gpt-3.5-turbo": ModelPolicy(
+        provider="openai",
+        model_name="gpt-3.5-turbo",
+        max_context_tokens=16385,
+        max_cost_usd_per_call=1.0,
+    ),
     "claude-3-5-sonnet": ModelPolicy(
         provider="anthropic",
         model_name="claude-3-5-sonnet",

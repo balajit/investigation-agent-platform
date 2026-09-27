@@ -44,5 +44,28 @@ services:
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
 
+  # Part 6 Slice 2 + Layer 3: single shared Neo4j 5.26 Community instance.
+  # Graphiti (group_id namespacing) and Layer 3 topology (label namespaces)
+  # share one database — Community allows exactly one. See docs
+  # (part-6 design, ISSUE-4) for the Enterprise/Aura upgrade trigger.
+  neo4j:
+    image: neo4j:5.26-community
+    ports:
+      - "7474:7474"  # browser
+      - "7687:7687"  # bolt
+    environment:
+      - NEO4J_AUTH=neo4j/iap-neo4j-dev
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neodat:/data
+      - neologs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "iap-neo4j-dev", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
   pgdata:
+  neodat:
+  neologs:

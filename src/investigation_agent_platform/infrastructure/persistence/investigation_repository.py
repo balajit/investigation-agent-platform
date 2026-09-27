@@ -49,6 +49,7 @@ class SqlAlchemyInvestigationRepository:
             request_json=investigation.request.model_dump(mode="json"),
             context_json=investigation.context.model_dump(mode="json"),
             version=investigation.version,
+            code_issue_fingerprint=investigation.code_issue_fingerprint,
         )
 
     @staticmethod
@@ -93,6 +94,7 @@ class SqlAlchemyInvestigationRepository:
             started_at=row.started_at,
             completed_at=row.completed_at,
             version=row.version,
+            code_issue_fingerprint=row.code_issue_fingerprint,
         )
 
     async def create(self, tenant_id: str, investigation: Investigation) -> None:

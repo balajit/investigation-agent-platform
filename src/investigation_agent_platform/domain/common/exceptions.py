@@ -215,6 +215,119 @@ class IdempotencyInProgressError(DomainException):
         )
 
 
+# ---------------------------------------------------------------------------
+# Layer 3 topology error taxonomy (see prompt1_v1.md "Error Taxonomy")
+# ---------------------------------------------------------------------------
+
+
+class TopologyNotConfiguredError(DomainException):
+    """Tenant/application has no topology provider configured. Non-retryable."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_NOT_CONFIGURED",
+            details=details,
+            retryable=False,
+            http_status_code=409,
+        )
+
+
+class TopologySnapshotNotReadyError(DomainException):
+    """Revision snapshot is PENDING/INGESTING/FAILED. Retryable only while ingesting."""
+
+    def __init__(
+        self, message: str, retryable: bool = True, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_SNAPSHOT_NOT_READY",
+            details=details,
+            retryable=retryable,
+            http_status_code=409,
+        )
+
+
+class TopologyNodeNotFoundError(DomainException):
+    """No AST node contains the requested source location. Non-retryable."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_NODE_NOT_FOUND",
+            details=details,
+            retryable=False,
+            http_status_code=404,
+        )
+
+
+class TopologyAmbiguousMatchError(DomainException):
+    """Multiple equally specific nodes matched a source location. Non-retryable."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_AMBIGUOUS_MATCH",
+            details=details,
+            retryable=False,
+            http_status_code=409,
+        )
+
+
+class TopologyAccessDeniedError(DomainException):
+    """Tenant lacks the capability/authorization for this repository/operation. Non-retryable."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_ACCESS_DENIED",
+            details=details,
+            retryable=False,
+            http_status_code=403,
+        )
+
+
+class TopologySchemaMismatchError(DomainException):
+    """Ingestion payload schema/parser version is incompatible. Non-retryable."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_SCHEMA_MISMATCH",
+            details=details,
+            retryable=False,
+            http_status_code=422,
+        )
+
+
+class TopologyProviderUnavailableError(DomainException):
+    """Transient Neo4j/provider failure. Retryable with bounded attempts."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="TOPOLOGY_PROVIDER_UNAVAILABLE",
+            details=details,
+            retryable=True,
+            http_status_code=503,
+        )
+
+
+class AttributionInconclusiveError(DomainException):
+    """Evidence cannot distinguish defect from misuse. Non-retryable investigation
+    result — not an infrastructure failure. Callers should generally catch this
+    and record an INCONCLUSIVE result rather than treating it as an error."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="ATTRIBUTION_INCONCLUSIVE",
+            details=details,
+            retryable=False,
+            http_status_code=422,
+        )
+
+
 # Aliases for API layer compatibility
 ValidationError = DomainValidationException
 EntityNotFoundError = EvidenceNotFoundException

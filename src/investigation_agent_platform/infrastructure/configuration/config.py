@@ -91,6 +91,102 @@ class TelemetryConfig(BaseModel):
     enabled: bool = Field(default=True)
 
 
+class TopologyConfig(BaseModel):
+    """Layer 3 static-code/organizational topology (Neo4j) configuration.
+
+    Credentials are ``SecretStr`` and must never be logged. ``required``
+    controls whether production startup fails hard when topology cannot be
+    wired (F-001 precedent: production must never silently degrade).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=False)
+    required: bool = Field(default=False)
+    uri: SecretStr = Field(default=SecretStr(""))
+    username: SecretStr = Field(default=SecretStr(""))
+    password: SecretStr = Field(default=SecretStr(""))
+    database: str = Field(default="neo4j", min_length=1)
+    encrypted: bool = Field(default=True)
+    connection_timeout_seconds: float = Field(default=10.0, ge=1.0, le=120.0)
+    query_timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
+    max_connection_pool_size: int = Field(default=50, ge=1, le=500)
+    ingestion_batch_size: int = Field(default=500, ge=1, le=10000)
+    max_lookup_nodes: int = Field(default=200, ge=1, le=100000)
+    max_lookup_edges: int = Field(default=1000, ge=1, le=1000000)
+    code_repo_base_path: str = Field(
+        default="",
+        max_length=1024,
+        description="Filesystem base for on-demand tiers (CODEOWNERS, micro "
+        "parse). Empty disables file-based tiers gracefully; same IAP_CODE_REPO_BASE "
+        "convention as the code intelligence provider.",
+    )
+
+
+class KnowledgeConfig(BaseModel):
+    """Execution knowledge layer configuration (Part 6 Slice 0).
+
+    Slice 0 needs no external services: envelopes live in Postgres and the
+    Mem0/Graphiti adapters default to disabled. Later slices flip `mem0` /
+    `graphiti` on with their own connection settings.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=True)
+    max_reverify_attempts: int = Field(default=3, ge=1, le=10)
+    max_episodes_per_investigation: int = Field(default=50, ge=1, le=1000)
+    mem0_enabled: bool = Field(default=False)
+    graphiti_enabled: bool = Field(default=False)
+    # Slice 1 (Mem0): model + embedder + vector-store wiring. pgvector
+    # reuses the application Postgres via connection string override.
+    mem0_model: str = Field(default="gpt-4o-mini", min_length=1)
+    mem0_embedder_model: str = Field(default="text-embedding-3-small", min_length=1)
+    mem0_embedding_dims: int = Field(default=1536, ge=1, le=16384)
+    mem0_collection: str = Field(default="iap_memories", min_length=1)
+    mem0_pgvector_url: SecretStr = Field(default=SecretStr(""))
+    # Slice 2 (Graphiti): self-hosted graphiti-core against Neo4j. Shares
+    # the Layer 3 Neo4j connection settings by default; override only when
+    # the knowledge graph must live on a separate instance.
+    graphiti_model: str = Field(default="gpt-4o-mini", min_length=1)
+    graphiti_embedder_model: str = Field(default="text-embedding-3-small", min_length=1)
+    graphiti_neo4j_uri: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_user: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_password: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_database: str = Field(default="neo4j", min_length=1)
+    graphiti_semaphore_limit: int = Field(default=5, ge=1, le=100)
+
+
+def _knowledge_config_from_env() -> KnowledgeConfig:
+    """Build ``KnowledgeConfig`` from ``IAP_KNOWLEDGE_*`` environment variables."""
+    return KnowledgeConfig(
+        enabled=os.environ.get("IAP_KNOWLEDGE_ENABLED", "true").lower() == "true",
+        max_reverify_attempts=int(os.environ.get("IAP_KNOWLEDGE_MAX_REVERIFY_ATTEMPTS", "3")),
+        max_episodes_per_investigation=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODES", "50")),
+        mem0_enabled=os.environ.get("IAP_KNOWLEDGE_MEM0_ENABLED", "false").lower() == "true",
+        graphiti_enabled=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_ENABLED", "false").lower()
+        == "true",
+        mem0_model=os.environ.get("IAP_KNOWLEDGE_MEM0_MODEL", "gpt-4o-mini"),
+        mem0_embedder_model=os.environ.get("IAP_KNOWLEDGE_MEM0_EMBEDDER", "text-embedding-3-small"),
+        mem0_embedding_dims=int(os.environ.get("IAP_KNOWLEDGE_MEM0_DIMS", "1536")),
+        mem0_collection=os.environ.get("IAP_KNOWLEDGE_MEM0_COLLECTION", "iap_memories"),
+        mem0_pgvector_url=SecretStr(os.environ.get("IAP_KNOWLEDGE_MEM0_PGVECTOR_URL", "")),
+        graphiti_model=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_MODEL", "gpt-4o-mini"),
+        graphiti_embedder_model=os.environ.get(
+            "IAP_KNOWLEDGE_GRAPHITI_EMBEDDER", "text-embedding-3-small"
+        ),
+        graphiti_neo4j_uri=SecretStr(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_URI", "")),
+        graphiti_neo4j_user=SecretStr(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_USER", "")),
+        graphiti_neo4j_password=SecretStr(
+            os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_PASSWORD", "")
+        ),
+        graphiti_neo4j_database=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE", "neo4j"),
+        graphiti_semaphore_limit=int(
+            os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")
+        ),
+    )
+
+
 class ApplicationConfig(BaseModel):
     """Root application runtime configuration."""
 
@@ -105,6 +201,8 @@ class ApplicationConfig(BaseModel):
     kafka: KafkaConfig = Field(default_factory=KafkaConfig)
     storage: ObjectStorageConfig = Field(default_factory=ObjectStorageConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    topology: TopologyConfig = Field(default_factory=TopologyConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 
 
 class PlatformHeader(BaseModel):
@@ -169,6 +267,32 @@ def load_application_profile_from_file(path: str | Path) -> ApplicationProfile:
             "Profile schema validation failure", extra={"profile_path": str(profile_path)}
         )
         raise PlatformConfigurationError(f"Invalid profile document {profile_path}: {exc}") from exc
+
+
+def _topology_config_from_env() -> TopologyConfig:
+    """Build ``TopologyConfig`` from ``IAP_TOPOLOGY_*`` environment variables.
+
+    Defaults to disabled/not-required so existing deployments are unaffected
+    until Neo4j is explicitly configured.
+    """
+    return TopologyConfig(
+        enabled=os.environ.get("IAP_TOPOLOGY_ENABLED", "false").lower() == "true",
+        required=os.environ.get("IAP_TOPOLOGY_REQUIRED", "false").lower() == "true",
+        uri=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_URI", "")),
+        username=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_USERNAME", "")),
+        password=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_PASSWORD", "")),
+        database=os.environ.get("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
+        encrypted=os.environ.get("IAP_TOPOLOGY_NEO4J_ENCRYPTED", "true").lower() == "true",
+        connection_timeout_seconds=float(
+            os.environ.get("IAP_TOPOLOGY_CONNECTION_TIMEOUT_SECONDS", "10.0")
+        ),
+        query_timeout_seconds=float(os.environ.get("IAP_TOPOLOGY_QUERY_TIMEOUT_SECONDS", "15.0")),
+        max_connection_pool_size=int(os.environ.get("IAP_TOPOLOGY_MAX_POOL_SIZE", "50")),
+        ingestion_batch_size=int(os.environ.get("IAP_TOPOLOGY_BATCH_SIZE", "500")),
+        max_lookup_nodes=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_NODES", "200")),
+        max_lookup_edges=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_EDGES", "1000")),
+        code_repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", ""),
+    )
 
 
 def load_application_config_from_yaml(
@@ -260,6 +384,8 @@ def load_application_config_from_yaml(
                     otlp_endpoint=os.environ.get("IAP_OTLP_ENDPOINT", "http://localhost:4317"),
                     enabled=os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true",
                 ),
+                topology=_topology_config_from_env(),
+                knowledge=_knowledge_config_from_env(),
             )
         except Exception as exc:
             logger.critical("Boot halted: invalid configuration settings", exc_info=exc)
@@ -331,6 +457,8 @@ def load_application_config_from_env() -> ApplicationConfig:
                     otlp_endpoint=os.environ.get("IAP_OTLP_ENDPOINT", "http://localhost:4317"),
                     enabled=os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true",
                 ),
+                topology=_topology_config_from_env(),
+                knowledge=_knowledge_config_from_env(),
             )
         except Exception as exc:
             if isinstance(exc, PlatformConfigurationError):

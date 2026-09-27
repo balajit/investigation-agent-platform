@@ -156,6 +156,21 @@ async def start_investigation_workflow(
         "X-Correlation-ID"
     )
 
+    return await _dispatch_workflow(
+        ctx, investigation, x_tenant_id, investigation_id, correlation_id
+    )
+
+
+async def _dispatch_workflow(
+    ctx: Any,
+    investigation: Any,
+    tenant_id: str,
+    investigation_id: str,
+    correlation_id: str | None,
+) -> dict[str, Any]:
+    """Start the Temporal workflow for an existing investigation (shared by
+    manual start and error intake). A failed start is never reported as
+    success (F-008)."""
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         logger.error(
@@ -174,12 +189,13 @@ async def start_investigation_workflow(
         wf_input = RunInvestigationInput(
             application_id=str(investigation.application_id),
             session_id=getattr(investigation, "session_id", None),
-            tenant_id=x_tenant_id,
+            tenant_id=tenant_id,
             description=getattr(investigation, "problem_description", None),
             correlation_id=correlation_id,
+            investigation_id=investigation_id,
         )
         memo = (
-            {"correlation_id": correlation_id, "tenant_id": x_tenant_id} if correlation_id else None
+            {"correlation_id": correlation_id, "tenant_id": tenant_id} if correlation_id else None
         )
         headers = {"X-Correlation-ID": correlation_id} if correlation_id else None
         from datetime import timedelta as _timedelta
@@ -219,7 +235,7 @@ async def start_investigation_workflow(
     logger.info(
         "Dispatched Temporal workflow start for investigation=%s",
         investigation_id,
-        extra={"correlation_id": correlation_id, "tenant_id": x_tenant_id},
+        extra={"correlation_id": correlation_id, "tenant_id": tenant_id},
     )
     return {
         "investigation_id": str(investigation.id),
@@ -227,6 +243,97 @@ async def start_investigation_workflow(
         "workflow_id": f"wf-investigation-{investigation_id}",
         "correlation_id": correlation_id,
         "message": "Workflow started successfully",
+    }
+
+
+class ErrorIntakeBody(BaseModel):
+    """Auto-forwarded error report. Tenant NEVER comes from the body — it is
+    derived exclusively from verified authentication (D8 merge safety)."""
+
+    application_id: str = Field(..., min_length=1, max_length=128)
+    error_class: str = Field(..., min_length=1, max_length=1024)
+    repository: str = Field(default="", max_length=512)
+    revision: str = Field(default="", max_length=128)
+    failing_symbol: str = Field(default="", max_length=1024)
+    caller_symbol: str | None = Field(default=None, max_length=1024)
+    top_frame_file: str | None = Field(default=None, max_length=1024)
+    problem_description: str = Field(default="", max_length=8000)
+    session_id: str | None = Field(default=None, max_length=256)
+    severity: str = Field(default="ERROR", max_length=16)
+    log_refs: list[str] = Field(default_factory=list, max_length=50)
+    trace_refs: list[str] = Field(default_factory=list, max_length=50)
+
+
+def _intake_service_principals() -> set[str]:
+    import os
+
+    raw = os.environ.get("IAP_INTAKE_SERVICE_PRINCIPALS", "")
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+@router.post("/intake/errors", status_code=status.HTTP_202_ACCEPTED)
+async def intake_error(
+    body: ErrorIntakeBody,
+    request: Request,
+    x_tenant_id: str = Depends(require_tenant),
+    principal_id: str = Depends(require_principal),
+) -> dict[str, Any]:
+    """Accept an auto-forwarded error, merge-or-fork by code-issue fingerprint,
+    and dispatch the workflow (Part 6 D4/D8, Slice 0).
+
+    Service-identity auth only: the principal must appear in
+    `IAP_INTAKE_SERVICE_PRINCIPALS` (fail closed when unconfigured).
+    """
+    if principal_id not in _intake_service_principals():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Intake requires an authorized service principal",
+        )
+    ctx = get_app_context()
+    correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
+        "X-Correlation-ID"
+    )
+    try:
+        result = await ctx.error_intake_service().intake(
+            tenant_id=x_tenant_id,
+            application_id=body.application_id,
+            error_class=body.error_class,
+            repository=body.repository,
+            revision=body.revision,
+            failing_symbol=body.failing_symbol or body.error_class,
+            caller_symbol=body.caller_symbol,
+            top_frame_file=body.top_frame_file,
+            problem_description=body.problem_description,
+            session_id=body.session_id,
+            requested_by=principal_id,
+            log_refs=body.log_refs,
+            trace_refs=body.trace_refs,
+        )
+    except Exception as exc:
+        from investigation_agent_platform.domain.common.exceptions import DomainException
+
+        if isinstance(exc, DomainException):
+            raise HTTPException(status_code=exc.http_status_code, detail=exc.message) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Intake failed"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(
+        x_tenant_id, result.investigation_id
+    )
+    if investigation is None:  # pragma: no cover - defensive; intake just created it
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Intake recorded but investigation not found",
+        )
+    dispatch = await _dispatch_workflow(
+        ctx, investigation, x_tenant_id, str(result.investigation_id), correlation_id
+    )
+    return {
+        **dispatch,
+        "session_number": result.session_number,
+        "merged": result.merged,
+        "code_issue_fingerprint": result.code_issue_fingerprint,
     }
 
 
@@ -282,3 +389,49 @@ async def cancel_investigation(
 
     await ctx.cancel_investigation_service().execute(x_tenant_id, investigation_uuid, reason=reason)
     return {"investigation_id": investigation_id, "status": "CANCELLING", "reason": reason}
+
+
+@router.post("/{investigation_id}/approve-action")
+async def approve_remediation_action(
+    investigation_id: str,
+    action_id: str,
+    approved: bool,
+    tenant_id: str = Depends(require_tenant),
+) -> dict[str, Any]:
+    """Signals Temporal workflow to proceed or abort a restricted action."""
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id format"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    if getattr(investigation, "tenant_id", tenant_id) != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+
+    temporal_client = getattr(ctx, "temporal_client", None)
+    if temporal_client is None:
+        logger.error(
+            "Cannot signal workflow: Temporal client is not wired",
+            extra={"investigation_id": investigation_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workflow execution engine is unavailable; approval signal was not sent",
+        )
+
+    signal_name = "action_approval_response"
+    payload = {"action_id": action_id, "approved": approved, "approver_tenant": tenant_id}
+
+    await temporal_client.signal_workflow(
+        workflow_id=f"wf-investigation-{investigation_id}",
+        signal=signal_name,
+        arg=payload,
+    )
+    return {"status": "signal_sent", "approved": approved}

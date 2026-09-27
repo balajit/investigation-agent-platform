@@ -1,3 +1,4 @@
+# src/investigation_agent_platform/api/dependencies.py
 """In-memory dependency wiring for the API layer.
 
 Provides a lightweight, DB-free composition root using in-memory repository
@@ -8,7 +9,10 @@ the production SQLAlchemy session factory is wired into the app context.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -46,6 +50,57 @@ from investigation_agent_platform.ports.persistence.repositories import (
     TimelineRepository,
     TransitionEventRepository,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WorkflowStatusEvent:
+    investigation_id: UUID
+    tenant_id: str
+    new_status: str
+    execution_result: dict[str, Any] | None = None
+
+
+class InvestigationOutboxWorker:
+    """Asynchronous background worker synchronizing Temporal workflow events with domain state."""
+
+    def __init__(
+        self,
+        repository: InvestigationRepository,
+        event_queue: asyncio.Queue[WorkflowStatusEvent],
+    ) -> None:
+        self._repo = repository
+        self._queue = event_queue
+
+    async def start_listening(self) -> None:
+        while True:
+            try:
+                event: WorkflowStatusEvent = await self._queue.get()
+                investigation = await self._repo.get_by_id(event.tenant_id, event.investigation_id)
+                if investigation:
+                    from investigation_agent_platform.domain.investigation.models import (
+                        InvestigationStatus,
+                    )
+
+                    try:
+                        investigation.status = InvestigationStatus(event.new_status)
+                    except ValueError:
+                        pass
+                    if (
+                        event.execution_result
+                        and hasattr(investigation, "metadata")
+                        and isinstance(investigation.metadata, dict)
+                    ):
+                        investigation.metadata.update(event.execution_result)
+                    await self._repo.save(
+                        event.tenant_id, investigation, expected_version=investigation.version
+                    )
+                self._queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as err:
+                logger.error("Outbox worker processing error", extra={"error": str(err)})
 
 
 class ApiSettings(BaseModel):
@@ -97,6 +152,150 @@ class _InMemoryTransitionRepository(TransitionEventRepository):
         self, tenant_id: str, investigation_id: UUID, from_state: str, to_state: str, reason: str
     ) -> None:
         return None
+
+
+class InMemoryArtifactRepository:
+    """Process-local envelope store mirroring the RLS visibility carve-out.
+
+    Reads/writes are tenant-scoped except `list_shared_for_fingerprint`,
+    which returns only SHARED_CODE_ISSUE rows — mirroring the DB policy so
+    dev/test behavior matches production. Callers MUST still verify session
+    membership before cross-tenant use.
+    """
+
+    def __init__(self) -> None:
+        from investigation_agent_platform.domain.knowledge.models import KnowledgeArtifact
+
+        self._store: dict[UUID, KnowledgeArtifact] = {}
+
+    async def save(self, tenant_id: str, artifact: Any) -> None:
+        if artifact.tenant_id != tenant_id:
+            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+            raise ConcurrencyError("Artifact tenant mismatch")
+        self._store[artifact.id] = artifact
+
+    async def get_by_id(self, tenant_id: str, artifact_id: UUID) -> Any | None:
+        from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
+
+        row = self._store.get(artifact_id)
+        if row is None:
+            return None
+        if row.tenant_id == tenant_id:
+            return row
+        if row.visibility == ArtifactVisibility.SHARED_CODE_ISSUE:
+            return row
+        return None
+
+    async def list_for_investigation(self, tenant_id: str, investigation_id: UUID) -> list[Any]:
+        return [
+            a
+            for a in self._store.values()
+            if a.investigation_id == investigation_id and a.tenant_id == tenant_id
+        ]
+
+    async def list_active_for_reuse(
+        self, tenant_id: str, application_id: str, kinds: list[str] | None = None
+    ) -> list[Any]:
+        from investigation_agent_platform.domain.knowledge.models import ArtifactStatus
+
+        return [
+            a
+            for a in self._store.values()
+            if a.tenant_id == tenant_id
+            and a.application_id == application_id
+            and a.status == ArtifactStatus.ACTIVE
+            and (kinds is None or a.kind in kinds)
+        ]
+
+    async def list_shared_for_fingerprint(
+        self, tenant_id: str, code_issue_fingerprint: str
+    ) -> list[Any]:
+        from investigation_agent_platform.domain.knowledge.models import (
+            ArtifactStatus,
+            ArtifactVisibility,
+        )
+
+        _ = tenant_id  # binds the (no-op, in-memory) session scope; see docstring
+        return [
+            a
+            for a in self._store.values()
+            if a.code_issue_fingerprint == code_issue_fingerprint
+            and a.visibility == ArtifactVisibility.SHARED_CODE_ISSUE
+            and a.status == ArtifactStatus.ACTIVE
+        ]
+
+
+class InMemorySessionRepository:
+    """Process-local session store. Strictly tenant-scoped, no carve-out."""
+
+    def __init__(self) -> None:
+        from investigation_agent_platform.domain.knowledge.models import InvestigationSession
+
+        self._store: dict[UUID, InvestigationSession] = {}
+
+    async def append(self, tenant_id: str, session: Any) -> None:
+        if session.tenant_id != tenant_id:
+            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+            raise ConcurrencyError("Session tenant mismatch")
+        self._store[session.id] = session
+
+    async def list_own_sessions(self, tenant_id: str, investigation_id: UUID) -> list[Any]:
+        return sorted(
+            (
+                s
+                for s in self._store.values()
+                if s.investigation_id == investigation_id and s.tenant_id == tenant_id
+            ),
+            key=lambda s: s.session_number,
+        )
+
+    async def count_own_sessions(self, tenant_id: str, investigation_id: UUID) -> int:
+        return len(await self.list_own_sessions(tenant_id, investigation_id))
+
+
+class InMemoryCodeIssueIndex:
+    """Process-local tenant-free coordination index (mirrors SQL advisory-lock numbering)."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._rows: dict[tuple[str, int], tuple[UUID, Any]] = {}
+
+    async def record_session(
+        self,
+        code_issue_fingerprint: str,
+        session_number: int,
+        investigation_id: UUID,
+        occurred_at: Any,
+    ) -> None:
+        async with self._lock:
+            self._rows.setdefault(
+                (code_issue_fingerprint, session_number), (investigation_id, occurred_at)
+            )
+
+    async def sessions_for_fingerprint(
+        self, code_issue_fingerprint: str
+    ) -> list[tuple[int, UUID, Any]]:
+        async with self._lock:
+            rows = [
+                (num, inv_id, ts)
+                for (fp, num), (inv_id, ts) in self._rows.items()
+                if fp == code_issue_fingerprint
+            ]
+        return sorted(rows, key=lambda r: r[0])
+
+    async def latest_investigation(
+        self, code_issue_fingerprint: str, open_only: bool = False
+    ) -> UUID | None:
+        _ = open_only  # status filtering is the caller's job
+        rows = await self.sessions_for_fingerprint(code_issue_fingerprint)
+        return rows[-1][1] if rows else None
+
+    async def next_session_number(self, code_issue_fingerprint: str) -> int:
+        async with self._lock:
+            numbers = [num for (fp, num) in self._rows if fp == code_issue_fingerprint]
+            return (max(numbers) if numbers else 0) + 1
 
 
 class _InMemoryOutboxRepository:
@@ -343,6 +542,17 @@ class InMemoryTimelineRepository(TimelineRepository):
             if e.tenant_id == tenant_id and start <= e.timestamp <= end
         ]
 
+    async def find_by_investigation_and_tenant(
+        self, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 100
+    ) -> tuple[list[TimelineEvent], int]:
+        filtered = [
+            e
+            for e in self._by_investigation.get((tenant_id, investigation_id), [])
+            if e.tenant_id == tenant_id
+        ]
+        total = len(filtered)
+        return filtered[offset : offset + limit], total
+
 
 class InMemoryHypothesisRepository(HypothesisRepository):
     def __init__(self) -> None:
@@ -384,26 +594,26 @@ class InMemoryHypothesisRepository(HypothesisRepository):
 
 
 # Extend timeline repo with paginated helper expected by routers
-async def _timeline_find_by_investigation_and_tenant(
-    self: InMemoryTimelineRepository,
-    investigation_id: UUID,
-    tenant_id: str,
-    offset: int = 0,
-    limit: int = 100,
-) -> tuple[list[TimelineEvent], int]:
-    filtered = [
-        e
-        for e in self._by_investigation.get((tenant_id, investigation_id), [])
-        if e.tenant_id == tenant_id
-    ]
-    total = len(filtered)
-    return filtered[offset : offset + limit], total
-
-
-# Monkey-patch helper onto class for router compatibility
-InMemoryTimelineRepository.find_by_investigation_and_tenant = (  # type: ignore[attr-defined]
-    _timeline_find_by_investigation_and_tenant
-)
+# async def _timeline_find_by_investigation_and_tenant(
+#     self: InMemoryTimelineRepository,
+#     investigation_id: UUID,
+#     tenant_id: str,
+#     offset: int = 0,
+#     limit: int = 100,
+# ) -> tuple[list[TimelineEvent], int]:
+#     filtered = [
+#         e
+#         for e in self._by_investigation.get((tenant_id, investigation_id), [])
+#         if e.tenant_id == tenant_id
+#     ]
+#     total = len(filtered)
+#     return filtered[offset : offset + limit], total
+#
+#
+# # Monkey-patch helper onto class for router compatibility
+# InMemoryTimelineRepository.find_by_investigation_and_tenant = (  # type: ignore[attr-defined]
+#     _timeline_find_by_investigation_and_tenant
+# )
 
 
 class AppContext:
@@ -430,6 +640,23 @@ class AppContext:
         self.transition_repo: Any = _InMemoryTransitionRepository()
         self.action_repo: Any = _InMemoryActionExecutionRepository()
         self.outbox_repo: Any = _InMemoryOutboxRepository()
+        # Part 6 Slice 0: knowledge layer defaults (durable Postgres in production).
+        self.artifact_repo: Any = InMemoryArtifactRepository()
+        self.session_repo: Any = InMemorySessionRepository()
+        self.code_issue_index: Any = InMemoryCodeIssueIndex()
+        # Part 6 Slice 1: Mem0 projection adapter. None = envelopes only
+        # (wired in bootstrap when mem0_enabled).
+        self.knowledge_store: Any = None
+        # Part 6 Slice 2: Graphiti temporal projection. None = envelopes
+        # only (wired in bootstrap when graphiti_enabled).
+        self.temporal_port: Any = None
+
+        self.outbox_queue: asyncio.Queue[WorkflowStatusEvent] = asyncio.Queue()
+        self.outbox_worker = InvestigationOutboxWorker(
+            repository=self.investigation_repo,
+            event_queue=self.outbox_queue,
+        )
+
         # Mandatory action-authorization gate (F-004): grounded in the tenant's
         # ApplicationProfile rather than an unconditional allow.
         from investigation_agent_platform.infrastructure.security.profile_authorizer import (
@@ -439,7 +666,45 @@ class AppContext:
 
         self.action_authorizer: Any = ProfileBasedActionAuthorizer(self.profile_repo)
         self.capability_registry: Any = ProfileBasedCapabilityRegistry(self.profile_repo)
+
+        # Layer 3 topology (prompt1_v1.md): dev/test default is the in-memory
+        # adapter behind the same ports the Neo4j adapter implements.
+        # Production composition (bootstrap/__init__.py) overrides these with
+        # the Neo4j-backed adapter and profile-backed repository registry
+        # when IAP_TOPOLOGY_ENABLED=true.
+        from investigation_agent_platform.application.topology.attribution import (
+            FailureAttributionService,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.codeowners import (
+            CodeownersResolver,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.micro import (
+            MicroSymbolResolver,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        self.topology_adapter: Any = InMemoryTopologyAdapter()
+        self.repository_registry: Any = ProfileBackedRepositoryRegistry(self.profile_repo)
+        # ISSUE-6/ISSUE-3 graceful tiers, same convention as the code
+        # intelligence provider: base path from IAP_CODE_REPO_BASE, empty
+        # means the tiers are gracefully unavailable.
+        _code_repo_base = os.environ.get("IAP_CODE_REPO_BASE", "")
+        self.failure_attribution_service: Any = FailureAttributionService(
+            attribution_port=self.topology_adapter,
+            evidence_repo=self.evidence_repo,
+            repository_registry=self.repository_registry,
+            codeowners_resolver=CodeownersResolver(repo_base_path=_code_repo_base),
+            micro_resolver=MicroSymbolResolver(repo_base_path=_code_repo_base),
+        )
         self._seed_default_profile()
+
+    def get_outbox_queue(self) -> asyncio.Queue[WorkflowStatusEvent]:
+        return self.outbox_queue
 
     def _seed_default_profile(self) -> None:
         repo = self.profile_repo
@@ -448,8 +713,6 @@ class AppContext:
             async def _maybe_seed() -> None:
                 if await repo.get_by_application_id("tenant-a", "example-app") is None:
                     await repo.save("tenant-a", _DEFAULT_PROFILE)
-
-            import asyncio
 
             try:
                 asyncio.get_running_loop()
@@ -498,6 +761,45 @@ class AppContext:
             evidence_repo=self.evidence_repo,
             authorizer=self.action_authorizer,
             capability_registry=self.capability_registry,
+        )
+
+    def error_intake_service(self, clock: Any = None) -> Any:
+        from investigation_agent_platform.application.knowledge.intake import ErrorIntakeService
+
+        return ErrorIntakeService(
+            investigation_repo=self.investigation_repo,
+            session_repo=self.session_repo,
+            code_issue_index=self.code_issue_index,
+            clock=clock,
+        )
+
+    def knowledge_capture_service(self, clock_now: Any = None) -> Any:
+        from investigation_agent_platform.application.knowledge.capture import (
+            KnowledgeCaptureService,
+        )
+
+        return KnowledgeCaptureService(
+            artifact_repo=self.artifact_repo,
+            evidence_repo=self.evidence_repo,
+            investigation_repo=self.investigation_repo,
+            clock_now=clock_now,
+            knowledge_store=self.knowledge_store,
+        )
+
+    def knowledge_retrieval_service(
+        self, checkers: Any = None, max_reverify_attempts: int = 3, clock_now: Any = None
+    ) -> Any:
+        from investigation_agent_platform.application.knowledge.retrieve import (
+            KnowledgeRetrievalService,
+        )
+
+        return KnowledgeRetrievalService(
+            artifact_repo=self.artifact_repo,
+            checkers=checkers,
+            max_reverify_attempts=max_reverify_attempts,
+            clock_now=clock_now,
+            knowledge_store=self.knowledge_store,
+            temporal_port=getattr(self, "temporal_port", None),
         )
 
 

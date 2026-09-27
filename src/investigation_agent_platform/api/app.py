@@ -1,5 +1,7 @@
+# src/investigation_agent_platform/api/app.py
 """FastAPI application factory wiring the v1 routing matrix, security, middleware, and lifecycle bounds (Part 4, section 4.1)."""
 
+import asyncio
 import logging
 import os
 import re
@@ -43,6 +45,7 @@ except Exception:
 from investigation_agent_platform.api.dependencies import (
     ApiSettings,
     Container,
+    get_app_context,
     set_app_context,
 )
 from investigation_agent_platform.api.errors import public_error, sanitize_extra
@@ -54,6 +57,7 @@ from investigation_agent_platform.api.v1.routers.hypotheses import router as hyp
 from investigation_agent_platform.api.v1.routers.investigations import (
     router as investigations_router,
 )
+from investigation_agent_platform.api.v1.routers.knowledge import router as knowledge_router
 from investigation_agent_platform.api.v1.routers.profiles import router as profiles_router
 from investigation_agent_platform.api.v1.routers.timeline import router as timeline_router
 from investigation_agent_platform.domain.common.exceptions import (
@@ -95,7 +99,21 @@ def create_app(
         )
         await app_container.initialize()
         set_app_context(app_container)
+
+        ctx = get_app_context()
+        worker_task = None
+        if hasattr(ctx, "outbox_worker"):
+            worker_task = asyncio.create_task(ctx.outbox_worker.start_listening())
+
         yield
+
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+
         logger.info(
             "Shutting down application dependency container...", extra={"event": "shutdown"}
         )
@@ -325,5 +343,6 @@ def create_app(
     app.include_router(timeline_router, prefix=api_v1)
     app.include_router(profiles_router, prefix=api_v1)
     app.include_router(events_router, prefix=api_v1)
+    app.include_router(knowledge_router, prefix=api_v1)
 
     return app
