@@ -71,6 +71,17 @@ class ArtifactRepository(Protocol):
         """
         ...
 
+    async def list_expired_ttl(
+        self, tenant_id: str, cutoff: Any, limit: int = 500
+    ) -> list[KnowledgeArtifact]:
+        """ACTIVE TTL artifacts with valid_to <= cutoff for a tenant sweep.
+
+        Tenant-scoped paginated sweep for the supersession janitor (ISSUE-9).
+        Implementations MUST return only ACTIVE + TTL rows, ordered by
+        valid_to ascending, capped at `limit`.
+        """
+        ...
+
 
 @runtime_checkable
 class SessionRepository(Protocol):

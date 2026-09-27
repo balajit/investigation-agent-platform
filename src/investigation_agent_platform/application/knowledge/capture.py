@@ -9,8 +9,9 @@ Mem0/Graphiti projection hooks are no-ops until Slices 1–2 land.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -41,6 +42,9 @@ class KnowledgeCaptureService:
         temporal_port: Any = None,
         clock_now: Any = None,
         investigation_repo: Any = None,
+        evidence_summary_ttl_days: int = 90,
+        max_episodes_per_investigation: int = 50,
+        observability: Any = None,
     ) -> None:
         self.artifact_repo = artifact_repo
         self.evidence_repo = evidence_repo
@@ -48,6 +52,10 @@ class KnowledgeCaptureService:
         self.temporal_port = temporal_port
         self._clock_now = clock_now
         self.investigation_repo = investigation_repo
+        self.evidence_summary_ttl_days = evidence_summary_ttl_days
+        self.max_episodes_per_investigation = max_episodes_per_investigation
+        self.observability = observability
+        self._group_locks: dict[str, asyncio.Lock] = {}
 
     def _now(self) -> datetime:
         return self._clock_now() if self._clock_now else datetime.now(UTC)
@@ -76,10 +84,72 @@ class KnowledgeCaptureService:
                     extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
                 )
                 continue
-        # Projection hooks (no-ops until Slices 1–2 provide adapters).
+        # D7 budget: envelopes are always stored; projection to Mem0/Graphiti
+        # degrades to envelopes-only once the per-investigation episode cap
+        # is hit. Prior spend is read before this batch so retries and
+        # concurrent captures share one ceiling.
+        prior_spend = await self._prior_spend(tenant_id, investigation_id, len(stored))
+        budget_remaining = max(self.max_episodes_per_investigation - prior_spend, 0)
+        projected = 0
+        skipped = 0
         for artifact in stored:
+            if budget_remaining <= 0:
+                skipped += 1
+                continue
             await self._project(tenant_id, artifact)
+            budget_remaining -= 1
+            projected += 1
+        self._emit_telemetry(tenant_id, investigation_id, projected, skipped)
+        if skipped:
+            logger.warning(
+                "Episode budget exceeded; degraded to envelopes-only",
+                extra={
+                    "context": {
+                        "tenant_id": tenant_id,
+                        "projected": projected,
+                        "skipped": skipped,
+                    }
+                },
+            )
         return stored
+
+    async def _prior_spend(self, tenant_id: str, investigation_id: UUID, batch_size: int) -> int:
+        """Artifacts already stored for this investigation before this batch."""
+        try:
+            total = await self.artifact_repo.list_for_investigation(tenant_id, investigation_id)
+            return max(len(total) - batch_size, 0)
+        except Exception:
+            return 0
+
+    def _emit_telemetry(
+        self, tenant_id: str, investigation_id: UUID, projected: int, skipped: int
+    ) -> None:
+        obs = self.observability
+        if obs is None:
+            return
+        try:
+            obs.record_metric(
+                "knowledge.episodes_projected",
+                float(projected),
+                {"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+            )
+            obs.record_metric(
+                "knowledge.episodes_skipped_budget",
+                float(skipped),
+                {"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Capture telemetry failed",
+                extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+            )
+
+    def _lock_for(self, group_id: str) -> asyncio.Lock:
+        lock = self._group_locks.get(group_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._group_locks[group_id] = lock
+        return lock
 
     async def _distill(
         self, tenant_id: str, investigation_id: UUID, now: datetime
@@ -140,6 +210,7 @@ class KnowledgeCaptureService:
                     confidence=float(item.confidence),
                     refresh_policy=RefreshPolicy.TTL,
                     valid_from=now,
+                    valid_to=now + timedelta(days=self.evidence_summary_ttl_days),
                     source_evidence_ids=[item.evidence_id],
                     visibility=ArtifactVisibility.TENANT,
                 )
@@ -161,9 +232,12 @@ class KnowledgeCaptureService:
                     investigation_group_id,
                 )
 
-                await self.temporal_port.project_episode(
-                    tenant_id, investigation_group_id(artifact.investigation_id), artifact
-                )
+                group_id = investigation_group_id(artifact.investigation_id)
+                # D7 per-group serialization: concurrent captures for the same
+                # group never interleave project_episode calls (Graphiti
+                # entity-resolution races under concurrent same-group writes).
+                async with self._lock_for(group_id):
+                    await self.temporal_port.project_episode(tenant_id, group_id, artifact)
             except Exception as exc:
                 logger.warning(
                     "Graphiti projection failed; envelope retained",

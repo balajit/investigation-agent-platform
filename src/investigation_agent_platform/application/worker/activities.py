@@ -1273,6 +1273,57 @@ async def capture_knowledge_activity(
 
 
 @dataclass
+class SweepKnowledgeInput:
+    """One janitor sweep pass over a set of tenants (ISSUE-9)."""
+
+    tenants: list[str] = field(default_factory=list)
+    reverify_conditional: bool = False
+
+
+@activity.defn
+async def sweep_knowledge_activity(
+    params: SweepKnowledgeInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Proactive TTL-expiry sweep. Idempotent; never fails a workflow on error."""
+    activity.logger.info("sweep_knowledge_activity")
+    try:
+        from investigation_agent_platform.application.knowledge.janitor import (
+            KnowledgeArtifactJanitor,
+        )
+
+        data = params if isinstance(params, dict) else params.__dict__
+        tenants = list(data.get("tenants", []) or [])
+        reverify = bool(data.get("reverify_conditional", False))
+        ctx = _get_ctx()
+        total_expired = 0
+        per_tenant: dict[str, int] = {}
+        for tenant_id in tenants:
+            try:
+                retrieval = ctx.knowledge_retrieval_service()
+                janitor = KnowledgeArtifactJanitor(ctx.artifact_repo, retrieval)
+                result = await janitor.sweep_tenant(
+                    tenant_id, reverify_conditional=reverify
+                )
+                per_tenant[tenant_id] = result.expired_count
+                total_expired += result.expired_count
+            except Exception as exc:
+                logger.warning(
+                    "Knowledge sweep failed for tenant; continuing",
+                    extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+                )
+                per_tenant[tenant_id] = -1
+        return GenericActivityResult(
+            success=True,
+            data={"expired_total": total_expired, "per_tenant": per_tenant},
+        )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("sweep_knowledge_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
 class CollectSnapshotsInput:
     """One repository's snapshot-retention pass (ISSUE-4)."""
 

@@ -42,6 +42,7 @@ class KnowledgeRetrievalService:
         clock_now: Any = None,
         knowledge_store: Any = None,
         temporal_port: Any = None,
+        attribution_port: Any = None,
     ) -> None:
         self.artifact_repo = artifact_repo
         self.checkers: dict[str, ReverifyChecker] = dict(checkers or {})
@@ -53,6 +54,9 @@ class KnowledgeRetrievalService:
         # Part 6 Slice 2: optional Graphiti projection for temporal recall.
         # None = temporal_summary stays empty; envelope facts unaffected.
         self.temporal_port = temporal_port
+        # ISSUE-11: optional Layer 3 cross-layer join. None = byte-for-byte
+        # legacy behavior (refs stay opaque strings, no ownership attached).
+        self.attribution_port = attribution_port
 
     def _now(self) -> datetime:
         return self._clock_now() if self._clock_now else datetime.now(UTC)
@@ -89,11 +93,12 @@ class KnowledgeRetrievalService:
             if view is None:
                 excluded_stale += 1
             else:
+                view = await self._join_attribution(
+                    tenant_id, application_id, investigation_id, view
+                )
                 verified.append(view)
         preferences = await self._recall_preferences(tenant_id, application_id)
-        temporal_summary = await self._recall_temporal(
-            tenant_id, application_id, investigation_id
-        )
+        temporal_summary = await self._recall_temporal(tenant_id, application_id, investigation_id)
         return KnowledgeContext(
             verified_facts=verified,
             preferences=preferences,
@@ -142,9 +147,7 @@ class KnowledgeRetrievalService:
                 investigation_group_id(investigation_id),
                 baseline_group_id(tenant_id, application_id),
             ):
-                views = await self.temporal_port.search_temporal(
-                    tenant_id, group, query, limit=10
-                )
+                views = await self.temporal_port.search_temporal(tenant_id, group, query, limit=10)
                 for view in views:
                     if view.artifact_id in seen:
                         continue
@@ -182,9 +185,12 @@ class KnowledgeRetrievalService:
             return self._view(artifact, now, "envelope_validity")
         if artifact.refresh_policy == RefreshPolicy.TTL:
             # TTL without explicit valid_to is treated as already elapsed:
-            # fail closed rather than assuming freshness.
-            await self._transition(tenant_id, artifact, ArtifactStatus.EXPIRED)
-            return None
+            # fail closed rather than assuming freshness. A future valid_to
+            # means the window still holds: include as verified.
+            if artifact.valid_to is None:
+                await self._transition(tenant_id, artifact, ArtifactStatus.EXPIRED)
+                return None
+            return self._view(artifact, now, "envelope_ttl_validity")
         return await self._reverify(tenant_id, artifact, now)
 
     async def _reverify(
@@ -258,3 +264,45 @@ class KnowledgeRetrievalService:
             verification_source=source,
             code_refs=list(artifact.code_refs),
         )
+
+    async def _join_attribution(
+        self,
+        tenant_id: str,
+        application_id: str,
+        investigation_id: UUID,
+        view: ArtifactView,
+    ) -> ArtifactView:
+        """ISSUE-11: resolve code_refs against Layer 3. Never fails retrieval."""
+        if self.attribution_port is None or not view.code_refs:
+            return view
+        from investigation_agent_platform.domain.knowledge.models import parse_code_ref
+
+        joined: dict[str, dict[str, str]] = {}
+        for ref in view.code_refs:
+            parsed = parse_code_ref(ref)
+            if parsed is None:
+                continue
+            repo, rev, path, line = parsed
+            try:
+                ownership = await self.attribution_port.resolve_source_location(
+                    tenant_id,
+                    application_id,
+                    investigation_id,
+                    repo,
+                    rev,
+                    path,
+                    line,
+                )
+                joined[ref] = {
+                    "domain_id": str(getattr(ownership, "domain_id", "") or ""),
+                    "fallback_level": str(getattr(ownership, "fallback_level", "") or ""),
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Code-ref join degraded; ref kept without ownership",
+                    extra={"context": {"tenant_id": tenant_id, "ref": ref, "error": str(exc)}},
+                )
+                continue
+        if not joined:
+            return view
+        return view.model_copy(update={"attribution": joined})

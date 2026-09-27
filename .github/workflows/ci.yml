@@ -80,6 +80,51 @@ jobs:
           uv run alembic -c alembic.ini downgrade base
           uv run alembic -c alembic.ini upgrade head
 
+  knowledge-containers:
+    name: Knowledge adapter containers (pgvector + Neo4j)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: iap
+          POSTGRES_PASSWORD: iap
+          POSTGRES_DB: iap_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U iap"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: neo4j/password
+        ports:
+          - 7687:7687
+          - 7474:7474
+        options: >-
+          --health-cmd="cypher-shell -u neo4j -p password 'RETURN 1' || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --group dev
+      - name: Container contract tests
+        env:
+          IAP_RUN_CONTAINER_TESTS: "1"
+          IAP_TEST_PGVECTOR_URL: postgresql://iap:iap@localhost:5432/iap_test
+          IAP_TEST_NEO4J_URI: bolt://localhost:7687
+          IAP_TEST_NEO4J_USER: neo4j
+          IAP_TEST_NEO4J_PASSWORD: password
+        run: uv run pytest tests/integration/test_knowledge_containers.py -q
+
   security:
     name: Bandit + pip-audit + gitleaks
     runs-on: ubuntu-latest

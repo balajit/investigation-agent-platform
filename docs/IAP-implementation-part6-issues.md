@@ -1,4 +1,4 @@
-# IAP Part 6 — Open Issues Needing a Fix
+# IAP Part 6 — Issues (all fixed)
 
 Companion to `docs/IAP-implementation-part6-knowledge-v1.md` (design). Each
 issue below is a self-contained unit of work: background, exact gap, scope,
@@ -20,9 +20,12 @@ TTL handling.
 
 ---
 
-## ISSUE-8 (high, open): TTL artifacts are unusable the moment they're captured
+## ISSUE-8 (high, fixed): TTL artifacts are unusable the moment they're captured
 
-**Status:** Open — a correctness bug, not just a missing hardening pass.
+**Status:** Fixed — `KnowledgeArtifact` validator requires `valid_to` on TTL;
+`_distill` sets `valid_to = now + evidence_summary_ttl_days` (new
+`KnowledgeConfig` field, default 90); `_gate_one` returns a view while the
+window holds. Covered by `tests/unit/test_knowledge_hardening.py::TestIssue8TTL`.
 
 **Background.** `KnowledgeRetrievalService._gate_one`
 (`application/knowledge/retrieve.py:181-187`) treats a `TTL`-policy artifact
@@ -76,10 +79,13 @@ looks like normal staleness exclusion.
 
 ---
 
-## ISSUE-9 (medium, open): No proactive supersession/expiry janitor
+## ISSUE-9 (medium, fixed): No proactive supersession/expiry janitor
 
-**Status:** Open — design gap from the Part 6 doc's Slice 3 scope
-("supersession janitor (marks TTL-elapsed as EXPIRED)").
+**Status:** Fixed — `ArtifactRepository.list_expired_ttl` (port + in-memory +
+SQLAlchemy impls); `KnowledgeArtifactJanitor.sweep_tenant` reusing
+`_transition`/`_reverify`; `KnowledgeArtifactJanitorWorkflow` +
+`sweep_knowledge_activity` registered in `bootstrap/worker.py`. Covered by
+`tests/unit/test_knowledge_hardening.py::TestIssue9Janitor`.
 
 **Background.** `KnowledgeRetrievalService._gate_one`
 (`application/knowledge/retrieve.py:173-188`) only marks an artifact
@@ -146,9 +152,15 @@ reasoner (retrieval still gates correctly), but it does mean:
 
 ---
 
-## ISSUE-10 (medium, open): D7 budget controls are unenforced
+## ISSUE-10 (medium, fixed): D7 budget controls are unenforced
 
-**Status:** Open — `KnowledgeConfig.max_episodes_per_investigation`
+**Status:** Fixed — episode cap enforced in `capture_for_investigation`
+(envelopes always saved, projection degrades to envelopes-only);
+`max_episode_bytes` (default 8192) truncates with pointer in
+`project_episode`; per-`group_id` `asyncio.Lock` serialization; token/cost
+telemetry via the observability port. Covered by
+`tests/unit/test_knowledge_hardening.py::TestIssue10Budgets` (+ ISSUE-12
+container serialization test). `KnowledgeConfig.max_episodes_per_investigation`
 (`infrastructure/configuration/config.py:155`) exists (default 50, matching
 the design doc's D7 number exactly) but is **never read anywhere** —
 confirmed zero references outside its own definition and env-loader
@@ -249,10 +261,13 @@ each:
 
 ---
 
-## ISSUE-11 (low, open): `code_refs` → Layer 3 cross-layer join is not implemented
+## ISSUE-11 (low, fixed): `code_refs` → Layer 3 cross-layer join is not implemented
 
-**Status:** Open — design gap from the Part 6 doc's Slice 3 scope
-("cross-layer join (`code_refs` → Layer 3) in the reasoner context").
+**Status:** Fixed — `parse_code_ref` (`repo@rev:path#line`) + optional
+`attribution_port` on `KnowledgeRetrievalService`; joined ownership on
+`ArtifactView.attribution`, graceful degrade, `None` default keeps legacy
+output byte-identical. Covered by
+`tests/unit/test_knowledge_hardening.py::TestIssue11Join`.
 
 **Background.** `KnowledgeArtifact.code_refs`
 (`domain/knowledge/models.py:86`) and `ArtifactView.code_refs`
@@ -314,11 +329,13 @@ the reasoner receives with no attached ownership/attribution context.
 
 ---
 
-## ISSUE-12 (low, open): Store-contract tests are mocked, not run against real containers
+## ISSUE-12 (low, fixed): Store-contract tests are mocked, not run against real containers
 
-**Status:** Open — design gap from the Part 6 doc's Testing Philosophy
-section ("Mem0 adapter and Graphiti adapter tested against real containers
-(pgvector + Neo4j in CI)").
+**Status:** Fixed — `tests/integration/test_knowledge_containers.py`
+(opt-in via `IAP_RUN_CONTAINER_TESTS=1`, skips cleanly otherwise — the new
+repo convention, documented at the top of the file) plus a
+`knowledge-containers` CI job (`pgvector/pgvector:pg16` + `neo4j:5.26-community`
+services, mirroring the `migrate` job pattern).
 
 **Background.** `tests/unit/test_knowledge_mem0_coverage.py` and the Mem0/
 Graphiti sections of `tests/unit/test_knowledge_coverage.py` exercise

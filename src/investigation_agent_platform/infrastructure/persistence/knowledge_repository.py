@@ -163,6 +163,26 @@ class SqlAlchemyArtifactRepository:
             )
             return [_artifact_from_orm(row) for row in result.all()]
 
+    async def list_expired_ttl(
+        self, tenant_id: str, cutoff: datetime, limit: int = 500
+    ) -> list[KnowledgeArtifact]:
+        from investigation_agent_platform.domain.knowledge.models import RefreshPolicy
+
+        async with rls_session(self._session_factory, tenant_id) as session:
+            result = await session.scalars(
+                select(KnowledgeArtifactORM)
+                .where(
+                    KnowledgeArtifactORM.tenant_id == tenant_id,
+                    KnowledgeArtifactORM.status == ArtifactStatus.ACTIVE.value,
+                    KnowledgeArtifactORM.refresh_policy == RefreshPolicy.TTL.value,
+                    KnowledgeArtifactORM.valid_to.is_not(None),
+                    KnowledgeArtifactORM.valid_to <= cutoff,
+                )
+                .order_by(KnowledgeArtifactORM.valid_to.asc())
+                .limit(limit)
+            )
+            return [_artifact_from_orm(row) for row in result.all()]
+
 
 class SqlAlchemySessionRepository:
     """Strictly tenant-scoped session detail persistence (RLS, no carve-out)."""

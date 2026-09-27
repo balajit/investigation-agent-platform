@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
         ReasonInput,
         RetrieveEvidenceInput,
         RetrieveKnowledgeInput,
+        SweepKnowledgeInput,
         TransitionInvestigationInput,
         VerifyRootCauseInput,
         capture_knowledge_activity,
@@ -32,6 +33,7 @@ with workflow.unsafe.imports_passed_through():
         reason_activity,
         retrieve_evidence_activity,
         retrieve_knowledge_activity,
+        sweep_knowledge_activity,
         transition_investigation_activity,
         verify_root_cause_activity,
     )
@@ -291,6 +293,44 @@ class TopologySnapshotRetentionInput:
 @dataclass
 class TopologySnapshotRetentionResult:
     per_repository: dict[str, CollectSnapshotsOutput]
+
+
+@dataclass
+class KnowledgeArtifactJanitorInput:
+    """Scheduled janitor pass over a set of tenants (ISSUE-9)."""
+
+    tenants: list[str]
+    reverify_conditional: bool = False
+
+
+@dataclass
+class KnowledgeArtifactJanitorResult:
+    per_tenant: dict[str, int]
+
+
+@workflow.defn
+class KnowledgeArtifactJanitorWorkflow:
+    """Scheduled sweep: TTL-elapsed -> EXPIRED via the retrieval transition
+    path. Idempotent; never mutates history, only advances status."""
+
+    @workflow.run
+    async def run(
+        self, input_data: KnowledgeArtifactJanitorInput
+    ) -> KnowledgeArtifactJanitorResult:
+        retry_policy = RetryPolicy(maximum_attempts=3)
+        output = await workflow.execute_activity(
+            sweep_knowledge_activity,
+            SweepKnowledgeInput(
+                tenants=list(input_data.tenants),
+                reverify_conditional=input_data.reverify_conditional,
+            ),
+            start_to_close_timeout=timedelta(seconds=120),
+            retry_policy=retry_policy,
+        )
+        data = output.data if hasattr(output, "data") else {}
+        return KnowledgeArtifactJanitorResult(
+            per_tenant=dict(data.get("per_tenant", {}))
+        )
 
 
 @workflow.defn

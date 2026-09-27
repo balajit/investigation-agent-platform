@@ -153,6 +153,21 @@ class KnowledgeConfig(BaseModel):
     enabled: bool = Field(default=True)
     max_reverify_attempts: int = Field(default=3, ge=1, le=10)
     max_episodes_per_investigation: int = Field(default=50, ge=1, le=1000)
+    evidence_summary_ttl_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description="TTL window for evidence_summary artifacts captured from "
+        "concluded investigations. After this window retrieval excludes them "
+        "as EXPIRED.",
+    )
+    max_episode_bytes: int = Field(
+        default=8192,
+        ge=512,
+        le=1048576,
+        description="Per-episode byte cap for Graphiti projection (D7). "
+        "Oversized bodies are truncated with a recoverable pointer, never rejected.",
+    )
     mem0_enabled: bool = Field(default=False)
     graphiti_enabled: bool = Field(default=False)
     # Slice 1 (Mem0): model + embedder + vector-store wiring. pgvector
@@ -180,6 +195,10 @@ def _knowledge_config_from_env() -> KnowledgeConfig:
         enabled=os.environ.get("IAP_KNOWLEDGE_ENABLED", "true").lower() == "true",
         max_reverify_attempts=int(os.environ.get("IAP_KNOWLEDGE_MAX_REVERIFY_ATTEMPTS", "3")),
         max_episodes_per_investigation=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODES", "50")),
+        evidence_summary_ttl_days=int(
+            os.environ.get("IAP_KNOWLEDGE_EVIDENCE_TTL_DAYS", "90")
+        ),
+        max_episode_bytes=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODE_BYTES", "8192")),
         mem0_enabled=os.environ.get("IAP_KNOWLEDGE_MEM0_ENABLED", "false").lower() == "true",
         graphiti_enabled=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_ENABLED", "false").lower()
         == "true",

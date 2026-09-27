@@ -17,9 +17,11 @@ from investigation_agent_platform.application.worker.activities import (
     publish_event_activity,
     reason_activity,
     retrieve_evidence_activity,
+    sweep_knowledge_activity,
     verify_root_cause_activity,
 )
 from investigation_agent_platform.application.worker.workflows import (
+    KnowledgeArtifactJanitorWorkflow,
     RunInvestigationWorkflow,
     TopologySnapshotRetentionWorkflow,
 )
@@ -65,7 +67,11 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
     worker = Worker(
         client,
         task_queue=temporal_cfg.task_queue,
-        workflows=[RunInvestigationWorkflow, TopologySnapshotRetentionWorkflow],
+        workflows=[
+            RunInvestigationWorkflow,
+            TopologySnapshotRetentionWorkflow,
+            KnowledgeArtifactJanitorWorkflow,
+        ],
         activities=[
             create_investigation_activity,
             retrieve_evidence_activity,
@@ -76,6 +82,7 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
             conclude_investigation_activity,
             publish_event_activity,
             collect_snapshots_activity,
+            sweep_knowledge_activity,
         ],
     )
     logger.info(

@@ -225,6 +225,24 @@ class InMemoryArtifactRepository:
             and a.status == ArtifactStatus.ACTIVE
         ]
 
+    async def list_expired_ttl(self, tenant_id: str, cutoff: Any, limit: int = 500) -> list[Any]:
+        from investigation_agent_platform.domain.knowledge.models import (
+            ArtifactStatus,
+            RefreshPolicy,
+        )
+
+        rows = [
+            a
+            for a in self._store.values()
+            if a.tenant_id == tenant_id
+            and a.status == ArtifactStatus.ACTIVE
+            and a.refresh_policy == RefreshPolicy.TTL
+            and a.valid_to is not None
+            and a.valid_to <= cutoff
+        ]
+        rows.sort(key=lambda a: a.valid_to)
+        return rows[:limit]
+
 
 class InMemorySessionRepository:
     """Process-local session store. Strictly tenant-scoped, no carve-out."""
@@ -787,7 +805,12 @@ class AppContext:
             clock=clock,
         )
 
-    def knowledge_capture_service(self, clock_now: Any = None) -> Any:
+    def knowledge_capture_service(
+        self,
+        clock_now: Any = None,
+        evidence_summary_ttl_days: int = 90,
+        max_episodes_per_investigation: int = 50,
+    ) -> Any:
         from investigation_agent_platform.application.knowledge.capture import (
             KnowledgeCaptureService,
         )
@@ -798,10 +821,18 @@ class AppContext:
             investigation_repo=self.investigation_repo,
             clock_now=clock_now,
             knowledge_store=self.knowledge_store,
+            temporal_port=getattr(self, "temporal_port", None),
+            evidence_summary_ttl_days=evidence_summary_ttl_days,
+            max_episodes_per_investigation=max_episodes_per_investigation,
+            observability=getattr(self, "observability", None),
         )
 
     def knowledge_retrieval_service(
-        self, checkers: Any = None, max_reverify_attempts: int = 3, clock_now: Any = None
+        self,
+        checkers: Any = None,
+        max_reverify_attempts: int = 3,
+        clock_now: Any = None,
+        attribution_port: Any = None,
     ) -> Any:
         from investigation_agent_platform.application.knowledge.retrieve import (
             KnowledgeRetrievalService,
@@ -814,6 +845,9 @@ class AppContext:
             clock_now=clock_now,
             knowledge_store=self.knowledge_store,
             temporal_port=getattr(self, "temporal_port", None),
+            attribution_port=attribution_port
+            if attribution_port is not None
+            else getattr(self, "attribution_port", None),
         )
 
 

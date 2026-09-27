@@ -71,6 +71,7 @@ class GraphitiTemporalKnowledge:
         api_key: str = "",
         embedder_model: str = "text-embedding-3-small",
         semaphore_limit: int = 5,
+        max_episode_bytes: int = 8192,
     ) -> None:
         self._neo4j_uri = neo4j_uri
         self._neo4j_user = neo4j_user
@@ -80,6 +81,7 @@ class GraphitiTemporalKnowledge:
         self._api_key = api_key
         self._embedder_model = embedder_model
         self._semaphore_limit = semaphore_limit
+        self._max_episode_bytes = max_episode_bytes
         self._client: Any | None = None
         self._indices_initialized = False
 
@@ -175,20 +177,42 @@ class GraphitiTemporalKnowledge:
         if artifact.tenant_id != tenant_id:
             raise ValueError("Artifact tenant mismatch: refusing cross-tenant projection")
         client = self._client_or_raise()
-        body = json.dumps(
-            {
-                "statement": artifact.statement,
-                "kind": artifact.kind,
-                "confidence": artifact.confidence,
-                "artifact_id": str(artifact.id),
-                "tenant_id": tenant_id,
-                "application_id": artifact.application_id,
-                "investigation_id": str(artifact.investigation_id),
-                "code_refs": list(artifact.code_refs),
-                "source_evidence_ids": [str(e) for e in artifact.source_evidence_ids],
-            },
-            default=str,
-        )
+        payload: dict[str, Any] = {
+            "statement": artifact.statement,
+            "kind": artifact.kind,
+            "confidence": artifact.confidence,
+            "artifact_id": str(artifact.id),
+            "tenant_id": tenant_id,
+            "application_id": artifact.application_id,
+            "investigation_id": str(artifact.investigation_id),
+            "code_refs": list(artifact.code_refs),
+            "source_evidence_ids": [str(e) for e in artifact.source_evidence_ids],
+        }
+        body = json.dumps(payload, default=str)
+        if len(body.encode("utf-8")) > self._max_episode_bytes:
+            # D7 byte cap: truncate the statement with a recoverable pointer
+            # (mirrors the log-truncation "pointer to Elastic" pattern) rather
+            # than raising.
+            budget = self._max_episode_bytes - len(
+                json.dumps({"_truncated": True, "_pointer": "elastic:evidence-summary"}, default=str).encode(
+                    "utf-8"
+                )
+            )
+            raw = artifact.statement.encode("utf-8")[: max(budget - 1024, 256)].decode(
+                "utf-8", errors="ignore"
+            )
+            payload["statement"] = (
+                raw + f" ...[TRUNCATED at {self._max_episode_bytes}B; "
+                "remainder in Elastic evidence store]"
+            )
+            payload["_truncated"] = True
+            payload["_pointer"] = "elastic:evidence-summary"
+            body = json.dumps(payload, default=str)
+            while len(body.encode("utf-8")) > self._max_episode_bytes and len(
+                payload["statement"]
+            ) > 256:
+                payload["statement"] = payload["statement"][: len(payload["statement"]) // 2]
+                body = json.dumps(payload, default=str)
         result = await client.add_episode(
             name=f"{artifact.kind}:{artifact.id}",
             episode_body=body,

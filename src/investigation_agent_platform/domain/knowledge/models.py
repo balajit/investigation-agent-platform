@@ -94,6 +94,8 @@ class KnowledgeArtifact(BaseModel):
     def _validate_policy_contract(self) -> KnowledgeArtifact:
         if self.refresh_policy == RefreshPolicy.CONDITIONAL and self.reverify is None:
             raise ValueError("CONDITIONAL artifacts require a reverify spec")
+        if self.refresh_policy == RefreshPolicy.TTL and self.valid_to is None:
+            raise ValueError("TTL artifacts require a valid_to")
         if self.visibility == ArtifactVisibility.SHARED_CODE_ISSUE:
             if self.kind in TENANT_ONLY_KINDS:
                 raise ValueError(f"kind '{self.kind}' is runtime content and cannot be shared")
@@ -135,6 +137,33 @@ class ArtifactView(BaseModel):
     verified_at: datetime
     verification_source: str = Field(max_length=128)
     code_refs: list[str] = Field(default_factory=list)
+    # ISSUE-11 cross-layer join: code_ref -> resolved ownership. Empty when
+    # no attribution port is configured or resolution degraded gracefully.
+    attribution: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+def parse_code_ref(ref: str) -> tuple[str, str, str, int] | None:
+    """Parse `repo@rev:path#line` into (repo, rev, path, line).
+
+    Returns None for malformed refs (never guessed) — callers skip them.
+    """
+    try:
+        repo_rev, _, path_line = ref.partition(":")
+        repo, sep, rev = repo_rev.partition("@")
+        path, hash_sep, line_s = path_line.partition("#")
+        if not sep or not hash_sep or not repo or not rev or not path:
+            return None
+        if "/" in repo or ".." in path:
+            # repo is an identifier, not a path; path must stay relative.
+            pass
+        if path.startswith("/") or ".." in path.split("/"):
+            return None
+        line = int(line_s)
+        if line < 1:
+            return None
+        return repo, rev, path, line
+    except (ValueError, AttributeError):
+        return None
 
 
 class KnowledgeContext(BaseModel):
