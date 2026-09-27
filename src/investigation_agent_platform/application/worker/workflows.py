@@ -11,6 +11,8 @@ with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.application.worker.activities import (
         CaptureKnowledgeInput,
         CheckpointInput,
+        CollectSnapshotsInput,
+        CollectSnapshotsOutput,
         ConcludeInvestigationInput,
         CreateInvestigationInput,
         ExecuteActionInput,
@@ -22,6 +24,7 @@ with workflow.unsafe.imports_passed_through():
         VerifyRootCauseInput,
         capture_knowledge_activity,
         checkpoint_activity,
+        collect_snapshots_activity,
         conclude_investigation_activity,
         create_investigation_activity,
         execute_action_activity,
@@ -269,3 +272,48 @@ class RunInvestigationWorkflow:
         return RunInvestigationResult(
             investigation_id=inv_id, status=final_status, error=last_error
         )
+
+
+@dataclass
+class TopologySnapshotRetentionInput:
+    """One scheduled retention pass over a set of repositories (ISSUE-4).
+
+    Intended to be started on a Temporal ``Schedule`` (e.g. daily) — either
+    one schedule per ``(tenant_id, repository_id)`` pair, or one schedule
+    invoking this workflow with the full list an operator maintains. Each
+    repository is collected via its own retried activity so one failing
+    repository never blocks the rest of the pass.
+    """
+
+    repositories: list[tuple[str, str]]  # (tenant_id, repository_id) pairs
+
+
+@dataclass
+class TopologySnapshotRetentionResult:
+    per_repository: dict[str, CollectSnapshotsOutput]
+
+
+@workflow.defn
+class TopologySnapshotRetentionWorkflow:
+    """Scheduled janitor: classifies and collects unpinned, out-of-window
+    topology snapshots per repository (ISSUE-4). Never touches a snapshot
+    referenced by an open investigation's own recorded evidence, and never
+    deletes a ``TopologySnapshot`` audit node — only the AST subgraph
+    beneath it.
+    """
+
+    @workflow.run
+    async def run(
+        self, input_data: TopologySnapshotRetentionInput
+    ) -> TopologySnapshotRetentionResult:
+        retry_policy = RetryPolicy(maximum_attempts=3)
+        results: dict[str, CollectSnapshotsOutput] = {}
+        for tenant_id, repository_id in input_data.repositories:
+            output = await workflow.execute_activity(
+                collect_snapshots_activity,
+                CollectSnapshotsInput(tenant_id=tenant_id, repository_id=repository_id),
+                start_to_close_timeout=timedelta(seconds=120),
+                retry_policy=retry_policy,
+            )
+            results[f"{tenant_id}/{repository_id}"] = output
+        return TopologySnapshotRetentionResult(per_repository=results)

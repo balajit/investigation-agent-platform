@@ -72,6 +72,11 @@ class CodeProfile(BaseModel):
     # access/build locator above). Optional so existing profiles remain valid
     # until a repository is registered in the topology registry.
     repository_id: str | None = Field(default=None, alias="repositoryId", max_length=128)
+    # ISSUE-5: the runtime service/queue name this repository's deployed
+    # workload is identified by in distributed traces (OTel `service.name`).
+    # Optional — cross-repository trace hops are simply unavailable for a
+    # profile without one, never guessed from `repository`/`application_id`.
+    service_name: str | None = Field(default=None, alias="serviceName", max_length=256)
 
     @field_validator("repository", "source_roots")
     @classmethod

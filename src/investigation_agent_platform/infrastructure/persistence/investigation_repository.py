@@ -234,3 +234,19 @@ class SqlAlchemyInvestigationRepository:
                 )
             )
             return result.first() is not None
+
+    async def list_open_ids(self, tenant_id: str) -> list[UUID]:
+        """IDs of investigations not yet in a terminal status (ISSUE-4)."""
+        terminal = {
+            InvestigationStatus.COMPLETED.value,
+            InvestigationStatus.FAILED.value,
+            InvestigationStatus.CANCELLED.value,
+        }
+        async with rls_session(self._session_factory, tenant_id) as session:
+            result = await session.scalars(
+                select(InvestigationORM.id).where(
+                    InvestigationORM.tenant_id == tenant_id,
+                    InvestigationORM.status.notin_(terminal),
+                )
+            )
+            return list(result.all())

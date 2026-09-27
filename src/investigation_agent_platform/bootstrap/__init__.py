@@ -346,7 +346,12 @@ def _wire_topology_dependencies(ctx: AppContext, config: ApplicationConfig) -> N
         return
 
     ctx.topology_adapter = adapter  # type: ignore[attr-defined]
-    ctx.repository_registry = ProfileBackedRepositoryRegistry(ctx.profile_repo)  # type: ignore[attr-defined]
+    ctx.topology_config = config.topology  # type: ignore[attr-defined]
+    ctx.repository_registry = ProfileBackedRepositoryRegistry(  # type: ignore[attr-defined]
+        ctx.profile_repo,
+        ownership_registry=adapter,
+        repo_base_path=config.topology.code_repo_base_path,
+    )
     # ISSUE-6/ISSUE-3 graceful tiers: resolvers degrade gracefully when the
     # base path is unconfigured (every resolve returns None + debug log).
     from investigation_agent_platform.infrastructure.evidence.code.codeowners import (

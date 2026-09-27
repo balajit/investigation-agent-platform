@@ -12,6 +12,7 @@ invariant regression test.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1409,3 +1410,1397 @@ class TestGracefulFallbackChain:
             caller_frame=None,
         )
         assert result.attribution_rule_version == "v2"
+
+
+# ===========================================================================
+# ISSUE-7: Neo4j domain ownership (git org + CODEOWNERS)
+# ===========================================================================
+
+
+class TestOwnershipDerivation:
+    def test_derive_git_org_from_https_url(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_git_organization,
+        )
+
+        org = derive_git_organization("tenant-a", "https://github.com/acme/checkout-service.git")
+        assert org is not None
+        assert org.git_org_id == "github:acme"
+        assert org.name == "acme"
+        assert org.provider == "github"
+        assert org.domain_id is None
+
+    def test_derive_git_org_from_scp_locator(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_git_organization,
+        )
+
+        org = derive_git_organization("tenant-a", "git@github.com:acme/checkout-service.git")
+        assert org is not None
+        assert org.git_org_id == "github:acme"
+
+    def test_derive_git_org_from_bare_org_repo(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_git_organization,
+        )
+
+        org = derive_git_organization("tenant-a", "acme/checkout-service")
+        assert org is not None
+        assert org.name == "acme"
+        assert org.provider == "git"
+
+    def test_derive_git_org_rejects_filesystem_paths(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_git_organization,
+        )
+
+        assert derive_git_organization("tenant-a", "/repos/checkout-service") is None
+        assert derive_git_organization("tenant-a", "~/repos/checkout-service") is None
+        assert derive_git_organization("tenant-a", "checkout-service") is None
+        assert derive_git_organization("tenant-a", "") is None
+
+    def test_derive_repository_domain_from_codeowners_catchall(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_repository_domain,
+        )
+
+        (tmp_path / "CODEOWNERS").write_text(
+            "* @team-platform\n/payments/ @team-payments\n", encoding="utf-8"
+        )
+        assert derive_repository_domain(tmp_path) == "team-platform"
+
+    def test_derive_repository_domain_none_without_catchall(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_repository_domain,
+        )
+
+        (tmp_path / "CODEOWNERS").write_text("/payments/ @team-payments\n", encoding="utf-8")
+        assert derive_repository_domain(tmp_path) is None
+
+    def test_derive_repository_domain_none_without_codeowners_file(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_repository_domain,
+        )
+
+        assert derive_repository_domain(tmp_path) is None
+
+
+class TestNeo4jOwnershipWrite:
+    def _adapter(self):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.configuration.config import TopologyConfig
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        return Neo4jTopologyAdapter(TopologyConfig(enabled=True))
+
+    def _mock_driver(self, session: AsyncMock) -> MagicMock:
+        session_context = MagicMock()
+        session_context.__aenter__ = AsyncMock(return_value=session)
+        session_context.__aexit__ = AsyncMock(return_value=None)
+        driver = MagicMock()
+        driver.session = MagicMock(return_value=session_context)
+        return driver
+
+    @pytest.mark.asyncio
+    async def test_register_ownership_writes_repository_org_and_domain(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            GitOrganizationIdentity,
+            RepositoryIdentity,
+            RepositoryType,
+        )
+
+        adapter = self._adapter()
+        session = AsyncMock()
+        session.execute_write = AsyncMock(side_effect=lambda fn, *a: fn(AsyncMock(), *a))
+        adapter._driver = self._mock_driver(session)
+
+        repository = RepositoryIdentity(
+            tenant_id="tenant-a",
+            repository_id="repo-1",
+            name="checkout-service",
+            locator="https://github.com/acme/checkout-service",
+            git_org_id="github:acme",
+            repository_type=RepositoryType.SERVICE,
+        )
+        git_org = GitOrganizationIdentity(
+            tenant_id="tenant-a", git_org_id="github:acme", name="acme", provider="github"
+        )
+        await adapter.register_ownership(repository, git_org, "team-platform")
+        session.execute_write.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_ownership_no_org_no_domain_still_registers_repo(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            RepositoryIdentity,
+            RepositoryType,
+        )
+
+        adapter = self._adapter()
+        session = AsyncMock()
+        write_calls: list[object] = []
+
+        async def _capture(fn, *a):  # type: ignore[no-untyped-def]
+            tx = AsyncMock()
+            write_calls.append((fn, a))
+            return await fn(tx, *a)
+
+        session.execute_write = AsyncMock(side_effect=_capture)
+        adapter._driver = self._mock_driver(session)
+
+        repository = RepositoryIdentity(
+            tenant_id="tenant-a",
+            repository_id="repo-1",
+            name="checkout-service",
+            locator="/repos/checkout-service",
+            git_org_id="tenant-a:unassigned",
+            repository_type=RepositoryType.UNKNOWN,
+        )
+        await adapter.register_ownership(repository, None, None)
+        assert len(write_calls) == 1
+        # Only the Repository MERGE ran; git_org is None so no further
+        # `tx.run` for GitOrganization/Domain should have been reached.
+        fn, args = write_calls[0]
+        tx = AsyncMock()
+        await fn(tx, *args)
+        assert tx.run.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_ownership_path_traverses_repo_org_domain(self) -> None:
+        adapter = self._adapter()
+        session = AsyncMock()
+        result = AsyncMock()
+        result.single = AsyncMock(
+            return_value={"git_org_id": "github:acme", "domain_id": "team-platform"}
+        )
+        session.run = AsyncMock(return_value=result)
+        adapter._driver = self._mock_driver(session)
+
+        path, domain_id, git_org_id = await adapter._resolve_ownership_path("tenant-a", "repo-1")
+        assert git_org_id == "github:acme"
+        assert domain_id == "team-platform"
+        assert path == ["github:acme", "team-platform"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_ownership_path_partial_chain(self) -> None:
+        """GitOrganization registered but no Domain link — domain_id stays None."""
+        adapter = self._adapter()
+        session = AsyncMock()
+        result = AsyncMock()
+        result.single = AsyncMock(return_value={"git_org_id": "github:acme", "domain_id": None})
+        session.run = AsyncMock(return_value=result)
+        adapter._driver = self._mock_driver(session)
+
+        path, domain_id, git_org_id = await adapter._resolve_ownership_path("tenant-a", "repo-1")
+        assert git_org_id == "github:acme"
+        assert domain_id is None
+        assert path == ["github:acme"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_source_location_no_match_includes_ownership_and_real_snapshot(
+        self,
+    ) -> None:
+        """REPOSITORY fallback (no AST match) must return the real snapshot_id
+        and traverse the ownership chain, not nil/empty values."""
+        from investigation_agent_platform.domain.topology.models import AttributionFallbackLevel
+
+        adapter = self._adapter()
+        snapshot_id = str(uuid.uuid4())
+
+        async def _execute_read(fn, *args):  # type: ignore[no-untyped-def]
+            if fn is adapter._read_snapshot:
+                return {
+                    "status": "READY",
+                    "payload_hash": "h1",
+                    "snapshot_id": snapshot_id,
+                }
+            if fn is adapter._match_source_location:
+                return []
+            raise AssertionError("unexpected execute_read call")
+
+        session = AsyncMock()
+        session.execute_read = AsyncMock(side_effect=_execute_read)
+
+        ownership_result = AsyncMock()
+        ownership_result.single = AsyncMock(
+            return_value={"git_org_id": "github:acme", "domain_id": "team-platform"}
+        )
+        repo_type_result = AsyncMock()
+        repo_type_result.single = AsyncMock(return_value={"repository_type": "SERVICE"})
+        session.run = AsyncMock(side_effect=[repo_type_result, ownership_result])
+        adapter._driver = self._mock_driver(session)
+
+        result = await adapter.resolve_source_location(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            repository_id="repo-1",
+            revision="rev1",
+            file_path="a.py",
+            line_number=1,
+        )
+        assert result.fallback_level == AttributionFallbackLevel.REPOSITORY
+        assert result.domain_id == "team-platform"
+        assert result.git_org_id == "github:acme"
+        assert result.ownership_path == ["github:acme", "team-platform"]
+        assert result.snapshot_id == uuid.UUID(snapshot_id)
+
+
+class TestInMemoryOwnershipParity:
+    @pytest.mark.asyncio
+    async def test_register_ownership_populates_domain_and_git_org(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            AttributionFallbackLevel,
+            GitOrganizationIdentity,
+            RepositoryIdentity,
+            RepositoryType,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        repository = RepositoryIdentity(
+            tenant_id="tenant-a",
+            repository_id="repo-1",
+            name="svc",
+            locator="acme/svc",
+            git_org_id="git:acme",
+            repository_type=RepositoryType.SERVICE,
+        )
+        git_org = GitOrganizationIdentity(
+            tenant_id="tenant-a", git_org_id="git:acme", name="acme", provider="git"
+        )
+        await adapter.register_ownership(repository, git_org, "team-platform")
+
+        payload = _payload(tenant_id="tenant-a", repository_id="repo-1", revision="rev1")
+        await adapter.ingest(payload)
+        result = await adapter.resolve_source_location(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            repository_id="repo-1",
+            revision="rev1",
+            file_path="no/such/file.py",
+            line_number=1,
+        )
+        assert result.fallback_level == AttributionFallbackLevel.REPOSITORY
+        assert result.git_org_id == "git:acme"
+        assert result.domain_id == "team-platform"
+        assert result.ownership_path == ["git:acme", "team-platform"]
+
+    @pytest.mark.asyncio
+    async def test_register_ownership_org_only_no_domain(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            GitOrganizationIdentity,
+            RepositoryIdentity,
+            RepositoryType,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        repository = RepositoryIdentity(
+            tenant_id="tenant-a",
+            repository_id="repo-1",
+            name="svc",
+            locator="acme/svc",
+            git_org_id="git:acme",
+            repository_type=RepositoryType.SERVICE,
+        )
+        git_org = GitOrganizationIdentity(
+            tenant_id="tenant-a", git_org_id="git:acme", name="acme", provider="git"
+        )
+        await adapter.register_ownership(repository, git_org, None)
+
+        payload = _payload(tenant_id="tenant-a", repository_id="repo-1", revision="rev1")
+        await adapter.ingest(payload)
+        result = await adapter.resolve_source_location(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            repository_id="repo-1",
+            revision="rev1",
+            file_path="no/such/file.py",
+            line_number=1,
+        )
+        assert result.git_org_id == "git:acme"
+        assert result.domain_id is None
+
+
+class TestProfileRegistryOwnershipWriteThrough:
+    @pytest.mark.asyncio
+    async def test_derives_git_org_id_from_locator(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile_repo = MagicMock()
+        profile = MagicMock()
+        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
+        profile.code_configuration.repository_id = "repo-1"
+        profile.code_configuration.default_branch = "main"
+        profile_repo.get_by_application_id = AsyncMock(return_value=profile)
+
+        registry = ProfileBackedRepositoryRegistry(profile_repo)
+        repo = await registry.resolve_for_application("tenant-a", "app-1")
+        assert repo is not None
+        assert repo.git_org_id == "github:acme"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_unassigned_for_unparseable_locator(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile_repo = MagicMock()
+        profile = MagicMock()
+        profile.code_configuration.repository = "/local/checkout-service"
+        profile.code_configuration.repository_id = "repo-1"
+        profile.code_configuration.default_branch = "main"
+        profile_repo.get_by_application_id = AsyncMock(return_value=profile)
+
+        registry = ProfileBackedRepositoryRegistry(profile_repo)
+        repo = await registry.resolve_for_application("tenant-a", "app-1")
+        assert repo is not None
+        assert repo.git_org_id == "tenant-a:unassigned"
+
+    @pytest.mark.asyncio
+    async def test_writes_through_to_ownership_registry_when_configured(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile_repo = MagicMock()
+        profile = MagicMock()
+        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
+        profile.code_configuration.repository_id = "repo-1"
+        profile.code_configuration.default_branch = "main"
+        profile_repo.get_by_application_id = AsyncMock(return_value=profile)
+
+        ownership_registry = MagicMock()
+        ownership_registry.register_ownership = AsyncMock()
+
+        registry = ProfileBackedRepositoryRegistry(
+            profile_repo, ownership_registry=ownership_registry
+        )
+        await registry.resolve_for_application("tenant-a", "app-1")
+        ownership_registry.register_ownership.assert_awaited_once()
+        _, kwargs = ownership_registry.register_ownership.await_args
+        assert kwargs["git_org"].git_org_id == "github:acme"
+
+    @pytest.mark.asyncio
+    async def test_no_ownership_registry_configured_is_a_noop(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile_repo = MagicMock()
+        profile = MagicMock()
+        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
+        profile.code_configuration.repository_id = "repo-1"
+        profile.code_configuration.default_branch = "main"
+        profile_repo.get_by_application_id = AsyncMock(return_value=profile)
+
+        registry = ProfileBackedRepositoryRegistry(profile_repo)
+        # Should not raise even though no ownership_registry is configured.
+        repo = await registry.resolve_for_application("tenant-a", "app-1")
+        assert repo is not None
+
+    @pytest.mark.asyncio
+    async def test_derives_domain_from_repo_checkout_codeowners(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        repo_dir = tmp_path / "acme-checkout-service"
+        repo_dir.mkdir()
+        (repo_dir / "CODEOWNERS").write_text("* @team-platform\n", encoding="utf-8")
+
+        profile_repo = MagicMock()
+        profile = MagicMock()
+        profile.code_configuration.repository = "acme-checkout-service"
+        profile.code_configuration.repository_id = "repo-1"
+        profile.code_configuration.default_branch = "main"
+        profile_repo.get_by_application_id = AsyncMock(return_value=profile)
+
+        ownership_registry = MagicMock()
+        ownership_registry.register_ownership = AsyncMock()
+
+        registry = ProfileBackedRepositoryRegistry(
+            profile_repo,
+            ownership_registry=ownership_registry,
+            repo_base_path=str(tmp_path),
+        )
+        await registry.resolve_for_application("tenant-a", "app-1")
+        _, kwargs = ownership_registry.register_ownership.await_args
+        assert kwargs["domain_id"] == "team-platform"
+
+
+# ===========================================================================
+# ISSUE-4: snapshot retention and garbage collection
+# ===========================================================================
+
+
+def _descriptor(
+    tenant_id: str = "tenant-a",
+    repository_id: str = "repo-1",
+    revision: str = "rev-1",
+    status=None,  # type: ignore[no-untyped-def]
+    ingested_at=None,  # type: ignore[no-untyped-def]
+):
+    from investigation_agent_platform.domain.topology.models import (
+        SnapshotDescriptor,
+        TopologySnapshotStatus,
+    )
+
+    return SnapshotDescriptor(
+        tenant_id=tenant_id,
+        repository_id=repository_id,
+        revision=revision,
+        status=status or TopologySnapshotStatus.READY,
+        ingested_at=ingested_at or datetime.now(UTC),
+    )
+
+
+class TestRetentionClassification:
+    def test_pinned_revision_never_collectible_even_if_old(self) -> None:
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+
+        old = datetime.now(UTC) - timedelta(days=365)
+        snapshots = [_descriptor(revision="rev-old", ingested_at=old)]
+        result = classify_snapshots(
+            snapshots,
+            pinned_revisions={"rev-old"},
+            now=datetime.now(UTC),
+            retention_window_days=30,
+            retention_max_snapshots_per_repository=1,
+        )
+        assert result.collectible == []
+        assert result.pinned == snapshots
+
+    def test_non_ready_or_superseded_status_never_collectible(self) -> None:
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+        from investigation_agent_platform.domain.topology.models import TopologySnapshotStatus
+
+        old = datetime.now(UTC) - timedelta(days=365)
+        snapshots = [
+            _descriptor(revision="pending", status=TopologySnapshotStatus.PENDING, ingested_at=old),
+            _descriptor(
+                revision="ingesting", status=TopologySnapshotStatus.INGESTING, ingested_at=old
+            ),
+            _descriptor(revision="failed", status=TopologySnapshotStatus.FAILED, ingested_at=old),
+            _descriptor(
+                revision="collected", status=TopologySnapshotStatus.COLLECTED, ingested_at=old
+            ),
+        ]
+        result = classify_snapshots(
+            snapshots,
+            pinned_revisions=set(),
+            now=datetime.now(UTC),
+            retention_window_days=30,
+            retention_max_snapshots_per_repository=1,
+        )
+        assert result.collectible == []
+        assert len(result.pinned) == 4
+
+    def test_within_window_kept_regardless_of_lru_bound(self) -> None:
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+
+        now = datetime.now(UTC)
+        # 5 snapshots all within the 30-day window, LRU bound of 1 — the
+        # window rule keeps all of them.
+        snapshots = [
+            _descriptor(revision=f"rev-{i}", ingested_at=now - timedelta(days=i)) for i in range(5)
+        ]
+        result = classify_snapshots(
+            snapshots,
+            pinned_revisions=set(),
+            now=now,
+            retention_window_days=30,
+            retention_max_snapshots_per_repository=1,
+        )
+        assert result.collectible == []
+        assert len(result.pinned) == 5
+
+    def test_lru_bound_keeps_newest_n_beyond_window(self) -> None:
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+
+        now = datetime.now(UTC)
+        # All older than the window (60 days); LRU bound of 2 keeps the 2
+        # most recent, the rest are collectible.
+        snapshots = [
+            _descriptor(revision=f"rev-{i}", ingested_at=now - timedelta(days=60 + i))
+            for i in range(5)
+        ]
+        result = classify_snapshots(
+            snapshots,
+            pinned_revisions=set(),
+            now=now,
+            retention_window_days=30,
+            retention_max_snapshots_per_repository=2,
+        )
+        collected_revisions = {s.revision for s in result.collectible}
+        assert collected_revisions == {"rev-2", "rev-3", "rev-4"}
+        kept_revisions = {s.revision for s in result.pinned}
+        assert kept_revisions == {"rev-0", "rev-1"}
+
+    def test_combination_pinned_window_and_lru_all_respected(self) -> None:
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+
+        now = datetime.now(UTC)
+        snapshots = [
+            _descriptor(revision="pinned-old", ingested_at=now - timedelta(days=400)),
+            _descriptor(revision="recent", ingested_at=now - timedelta(days=1)),
+            _descriptor(revision="lru-kept", ingested_at=now - timedelta(days=60)),
+            _descriptor(revision="collectible-1", ingested_at=now - timedelta(days=61)),
+            _descriptor(revision="collectible-2", ingested_at=now - timedelta(days=62)),
+        ]
+        result = classify_snapshots(
+            snapshots,
+            pinned_revisions={"pinned-old"},
+            now=now,
+            retention_window_days=30,
+            retention_max_snapshots_per_repository=2,
+        )
+        collectible = {s.revision for s in result.collectible}
+        pinned = {s.revision for s in result.pinned}
+        assert collectible == {"collectible-1", "collectible-2"}
+        assert pinned == {"pinned-old", "recent", "lru-kept"}
+
+
+class TestNeo4jSnapshotCollection:
+    def _adapter(self):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.configuration.config import TopologyConfig
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        return Neo4jTopologyAdapter(TopologyConfig(enabled=True))
+
+    def _mock_driver(self, session: AsyncMock) -> MagicMock:
+        session_context = MagicMock()
+        session_context.__aenter__ = AsyncMock(return_value=session)
+        session_context.__aexit__ = AsyncMock(return_value=None)
+        driver = MagicMock()
+        driver.session = MagicMock(return_value=session_context)
+        return driver
+
+    @pytest.mark.asyncio
+    async def test_list_snapshots_maps_records(self) -> None:
+        from investigation_agent_platform.domain.topology.models import TopologySnapshotStatus
+
+        adapter = self._adapter()
+        session = AsyncMock()
+        result = AsyncMock()
+        now_iso = datetime.now(UTC).isoformat()
+
+        async def _aiter():  # type: ignore[no-untyped-def]
+            for row in (
+                {"revision": "rev-1", "status": "READY", "ingested_at": now_iso},
+                {"revision": "rev-2", "status": "SUPERSEDED", "ingested_at": None},
+            ):
+                yield row
+
+        result.__aiter__ = lambda self: _aiter()
+        session.run = AsyncMock(return_value=result)
+        adapter._driver = self._mock_driver(session)
+
+        descriptors = await adapter.list_snapshots("tenant-a", "repo-1")
+        assert {d.revision for d in descriptors} == {"rev-1", "rev-2"}
+        by_rev = {d.revision: d for d in descriptors}
+        assert by_rev["rev-1"].status == TopologySnapshotStatus.READY
+        assert by_rev["rev-2"].status == TopologySnapshotStatus.SUPERSEDED
+        # Missing ingested_at (legacy snapshot) fails closed to "now", never crashes.
+        assert by_rev["rev-2"].ingested_at is not None
+
+    @pytest.mark.asyncio
+    async def test_collect_snapshot_deletes_subgraph_and_marks_collected(self) -> None:
+        adapter = self._adapter()
+        session = AsyncMock()
+        session.execute_read = AsyncMock(
+            return_value={"status": "READY", "payload_hash": "h", "snapshot_id": str(uuid.uuid4())}
+        )
+
+        delete_result = AsyncMock()
+        delete_result.single = AsyncMock(return_value={"deleted_nodes": 12, "deleted_edges": 20})
+
+        async def _execute_write(fn, *args):  # type: ignore[no-untyped-def]
+            tx = AsyncMock()
+            tx.run = AsyncMock(return_value=delete_result)
+            return await fn(tx, *args)
+
+        session.execute_write = AsyncMock(side_effect=_execute_write)
+        adapter._driver = self._mock_driver(session)
+
+        result = await adapter.collect_snapshot("tenant-a", "repo-1", "rev-1")
+        assert result.already_collected is False
+        assert result.deleted_node_count == 12
+        assert result.deleted_edge_count == 20
+
+    @pytest.mark.asyncio
+    async def test_collect_snapshot_is_idempotent(self) -> None:
+        adapter = self._adapter()
+        session = AsyncMock()
+        session.execute_read = AsyncMock(
+            return_value={"status": "COLLECTED", "payload_hash": "h", "snapshot_id": None}
+        )
+        session.execute_write = AsyncMock()
+        adapter._driver = self._mock_driver(session)
+
+        result = await adapter.collect_snapshot("tenant-a", "repo-1", "rev-1")
+        assert result.already_collected is True
+        assert result.deleted_node_count == 0
+        session.execute_write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_collect_snapshot_unknown_raises(self) -> None:
+        adapter = self._adapter()
+        session = AsyncMock()
+        session.execute_read = AsyncMock(return_value=None)
+        adapter._driver = self._mock_driver(session)
+
+        with pytest.raises(TopologyNotConfiguredError):
+            await adapter.collect_snapshot("tenant-a", "repo-1", "nope")
+
+
+class TestInMemorySnapshotCollectionParity:
+    @pytest.mark.asyncio
+    async def test_list_and_collect_snapshot(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            AttributionFallbackLevel,
+            TopologySnapshotStatus,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        payload = _payload(tenant_id="tenant-a", repository_id="repo-1", revision="rev-1")
+        await adapter.ingest(payload)
+
+        descriptors = await adapter.list_snapshots("tenant-a", "repo-1")
+        assert len(descriptors) == 1
+        assert descriptors[0].status == TopologySnapshotStatus.READY
+        assert descriptors[0].ingested_at is not None
+
+        result = await adapter.collect_snapshot("tenant-a", "repo-1", "rev-1")
+        assert result.already_collected is False
+        assert result.deleted_node_count == 1
+
+        # Idempotent retry.
+        retry = await adapter.collect_snapshot("tenant-a", "repo-1", "rev-1")
+        assert retry.already_collected is True
+        assert retry.deleted_node_count == 0
+
+        # Live queries against the collected revision fail (not silently
+        # reused) — the caller must rely on embedded evidence instead.
+        with pytest.raises(TopologySnapshotNotReadyError):
+            await adapter.resolve_source_location(
+                tenant_id="tenant-a",
+                application_id="app-1",
+                investigation_id=uuid.uuid4(),
+                repository_id="repo-1",
+                revision="rev-1",
+                file_path="src/mod.py",
+                line_number=2,
+            )
+        descriptors_after = await adapter.list_snapshots("tenant-a", "repo-1")
+        assert descriptors_after[0].status == TopologySnapshotStatus.COLLECTED
+        assert AttributionFallbackLevel.AST_NODE  # sanity import retained
+
+    @pytest.mark.asyncio
+    async def test_collect_unknown_snapshot_raises(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        with pytest.raises(TopologyNotConfiguredError):
+            await adapter.collect_snapshot("tenant-a", "repo-1", "nope")
+
+
+class TestPinnedRevisionsProvider:
+    @pytest.mark.asyncio
+    async def test_pins_only_revisions_referenced_by_open_investigations(self) -> None:
+        from investigation_agent_platform.application.topology.pinned_revisions import (
+            EvidenceBackedPinnedRevisionsProvider,
+        )
+
+        open_id = uuid.uuid4()
+        investigation_repo = MagicMock()
+        investigation_repo.list_open_ids = AsyncMock(return_value=[open_id])
+
+        topo_evidence = MagicMock()
+        topo_evidence.provider = "TOPOLOGY_ATTRIBUTION"
+        topo_evidence.source = "topology://repo-1/rev-abc"
+        other_evidence = MagicMock()
+        other_evidence.provider = "LOG_SEARCH"
+        other_evidence.source = "elastic://logs/1"
+
+        evidence_repo = MagicMock()
+        evidence_repo.find_by_investigation_id = AsyncMock(
+            return_value=[topo_evidence, other_evidence]
+        )
+
+        provider = EvidenceBackedPinnedRevisionsProvider(investigation_repo, evidence_repo)
+        pinned = await provider.list_pinned_revisions("tenant-a", "repo-1")
+        assert pinned == {"rev-abc"}
+
+    @pytest.mark.asyncio
+    async def test_ignores_evidence_for_a_different_repository(self) -> None:
+        from investigation_agent_platform.application.topology.pinned_revisions import (
+            EvidenceBackedPinnedRevisionsProvider,
+        )
+
+        open_id = uuid.uuid4()
+        investigation_repo = MagicMock()
+        investigation_repo.list_open_ids = AsyncMock(return_value=[open_id])
+
+        other_repo_evidence = MagicMock()
+        other_repo_evidence.provider = "TOPOLOGY_ATTRIBUTION"
+        other_repo_evidence.source = "topology://repo-OTHER/rev-xyz"
+
+        evidence_repo = MagicMock()
+        evidence_repo.find_by_investigation_id = AsyncMock(return_value=[other_repo_evidence])
+
+        provider = EvidenceBackedPinnedRevisionsProvider(investigation_repo, evidence_repo)
+        pinned = await provider.list_pinned_revisions("tenant-a", "repo-1")
+        assert pinned == set()
+
+    @pytest.mark.asyncio
+    async def test_no_open_investigations_pins_nothing(self) -> None:
+        from investigation_agent_platform.application.topology.pinned_revisions import (
+            EvidenceBackedPinnedRevisionsProvider,
+        )
+
+        investigation_repo = MagicMock()
+        investigation_repo.list_open_ids = AsyncMock(return_value=[])
+        evidence_repo = MagicMock()
+        evidence_repo.find_by_investigation_id = AsyncMock(return_value=[])
+
+        provider = EvidenceBackedPinnedRevisionsProvider(investigation_repo, evidence_repo)
+        pinned = await provider.list_pinned_revisions("tenant-a", "repo-1")
+        assert pinned == set()
+
+
+class TestPostCollectionReadability:
+    """Acceptance criterion: a concluded investigation's attribution evidence
+    still resolves after its snapshot is collected — because the evidence
+    embeds its own snapshot_id/revision/ownership path rather than depending
+    on a live query."""
+
+    def test_attribution_evidence_is_self_contained(self) -> None:
+        from investigation_agent_platform.application.topology.attribution import (
+            FailureAttributionService,
+        )
+        from investigation_agent_platform.domain.topology.models import (
+            AttributionClassification,
+            AttributionFallbackLevel,
+            DomainAttributionResult,
+        )
+
+        result = DomainAttributionResult(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            repository_id="repo-1",
+            revision="rev-1",
+            matched_file_path="src/mod.py",
+            classification=AttributionClassification.LIBRARY_DEFECT,
+            confidence=0.9,
+            snapshot_id=uuid.uuid4(),
+            ownership_path=["github:acme", "team-platform"],
+            fallback_level=AttributionFallbackLevel.AST_NODE,
+        )
+        evidence = FailureAttributionService._to_evidence(result)
+
+        # The full attribution payload — including snapshot_id, revision,
+        # and ownership_path — is embedded in content_snippet. A collected
+        # (deleted) live snapshot never needs to be re-queried to interpret
+        # this evidence.
+        assert str(result.snapshot_id) in evidence.content_snippet
+        assert "team-platform" in evidence.content_snippet
+        assert evidence.provenance.source_location.revision == "rev-1"
+        assert evidence.provenance.source_location.identifier == "repo-1@rev-1"
+
+
+class TestCollectSnapshotsActivity:
+    @pytest.mark.asyncio
+    async def test_disabled_retention_reports_error_not_exception(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            CollectSnapshotsInput,
+            collect_snapshots_activity,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        ctx = AppContext()
+        ctx.topology_adapter = InMemoryTopologyAdapter()  # type: ignore[attr-defined]
+
+        class _Cfg:
+            retention_enabled = False
+
+        ctx.topology_config = _Cfg()  # type: ignore[attr-defined]
+        set_app_context(ctx)
+
+        output = await collect_snapshots_activity(
+            CollectSnapshotsInput(tenant_id="tenant-a", repository_id="repo-1")
+        )
+        assert output.error == "retention is not enabled"
+        assert output.collected_revisions == []
+
+    @pytest.mark.asyncio
+    async def test_no_topology_adapter_reports_error(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            CollectSnapshotsInput,
+            collect_snapshots_activity,
+        )
+
+        ctx = AppContext()
+        ctx.topology_adapter = None  # type: ignore[attr-defined]
+        set_app_context(ctx)
+        output = await collect_snapshots_activity(
+            CollectSnapshotsInput(tenant_id="tenant-a", repository_id="repo-1")
+        )
+        assert output.error == "topology_adapter is not configured"
+
+    @pytest.mark.asyncio
+    async def test_missing_ids_reports_error(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            CollectSnapshotsInput,
+            collect_snapshots_activity,
+        )
+
+        output = await collect_snapshots_activity(
+            CollectSnapshotsInput(tenant_id="", repository_id="")
+        )
+        assert output.error == "tenant_id and repository_id required"
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_collects_unpinned_old_snapshot(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            CollectSnapshotsInput,
+            collect_snapshots_activity,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        payload = _payload(tenant_id="tenant-a", repository_id="repo-1", revision="rev-old")
+        await adapter.ingest(payload)
+        # Force the snapshot to look old enough to be beyond both the
+        # window and the (default) LRU bound.
+        key = ("tenant-a", "repo-1", "rev-old")
+        adapter._snapshots[key]["ingested_at"] = datetime.now(UTC) - timedelta(days=90)
+
+        ctx = AppContext()
+        ctx.topology_adapter = adapter  # type: ignore[attr-defined]
+
+        class _Cfg:
+            retention_enabled = True
+            retention_window_days = 30
+            retention_max_snapshots_per_repository = 0
+
+        ctx.topology_config = _Cfg()  # type: ignore[attr-defined]
+        set_app_context(ctx)
+
+        output = await collect_snapshots_activity(
+            CollectSnapshotsInput(tenant_id="tenant-a", repository_id="repo-1")
+        )
+        assert output.error is None
+        assert output.collected_revisions == ["rev-old"]
+        assert output.deleted_node_count >= 1
+
+        # Second pass is idempotent: nothing left to collect.
+        output2 = await collect_snapshots_activity(
+            CollectSnapshotsInput(tenant_id="tenant-a", repository_id="repo-1")
+        )
+        assert output2.collected_revisions == []
+
+
+# ===========================================================================
+# ISSUE-5: cross-repository hops via runtime trace evidence
+# ===========================================================================
+
+
+def _route_node(
+    tenant_id: str = "tenant-a",
+    repository_id: str = "repo-1",
+    revision: str = "abc123",
+    file_path: str = "src/client.py",
+):
+    from investigation_agent_platform.domain.topology.models import (
+        ASTNodeIdentity,
+        TopologyNodeType,
+    )
+
+    return ASTNodeIdentity.create(
+        tenant_id=tenant_id,
+        repository_id=repository_id,
+        revision=revision,
+        name="checkout_route",
+        qualified_name="checkout.route",
+        node_type=TopologyNodeType.ROUTE,
+        file_path=file_path,
+        start_line=1,
+        end_line=10,
+    )
+
+
+class _FakeTraceHopResolver:
+    """Only ever resolves a target for the exact ``allowed_tenant_id`` —
+    simulates tenant-scoped evidence retrieval without a real gateway."""
+
+    def __init__(self, target, allowed_tenant_id: str = "tenant-a"):  # type: ignore[no-untyped-def]
+        self._target = target
+        self._allowed_tenant_id = allowed_tenant_id
+
+    async def resolve_target_service(
+        self,
+        tenant_id,
+        investigation_id,
+        application_id,
+        environment,
+        trace_id,
+        source_span_id,
+    ):  # type: ignore[no-untyped-def]
+        if tenant_id != self._allowed_tenant_id:
+            return None
+        return self._target
+
+
+class _FakeServiceRegistry:
+    def __init__(self, mapping: dict[tuple[str, str], object]) -> None:
+        self._mapping = mapping
+
+    async def resolve_for_application(self, tenant_id, application_id):  # type: ignore[no-untyped-def]
+        return None
+
+    async def resolve_for_service_name(self, tenant_id, service_name):  # type: ignore[no-untyped-def]
+        return self._mapping.get((tenant_id, service_name))
+
+
+class TestCrossRepositoryHop:
+    async def _service_with_hop(self, target, allowed_tenant_id: str = "tenant-a"):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.application.topology.attribution import (
+            FailureAttributionService,
+        )
+        from investigation_agent_platform.domain.topology.models import RepositoryIdentity
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        route_node = _route_node()
+        await adapter.ingest(_payload(ast_nodes=[route_node]))
+        _seed_repo(adapter, repository_id="repo-1", ownership=["org-1", "domain-checkout"])
+
+        # repo-2 (payments-library): no ingested AST nodes, only ownership —
+        # the hop resolves the target's REPOSITORY-tier domain, not a
+        # symbol-precise location.
+        payments_payload = _payload(
+            tenant_id="tenant-a", repository_id="repo-2", revision="main", ast_nodes=[]
+        )
+        await adapter.ingest(payments_payload)
+        payments_repo = _seed_repo(
+            adapter, repository_id="repo-2", ownership=["org-1", "team-payments"]
+        )
+
+        registry = _FakeServiceRegistry({("tenant-a", "payments"): payments_repo})
+        resolver = _FakeTraceHopResolver(target, allowed_tenant_id=allowed_tenant_id)
+        service = FailureAttributionService(
+            attribution_port=adapter,
+            evidence_repo=None,
+            repository_registry=registry,
+            trace_hop_resolver=resolver,
+        )
+        return service, adapter, RepositoryIdentity, route_node
+
+    @pytest.mark.asyncio
+    async def test_hop_corroborated_by_trace_resolves_target_domain(self) -> None:
+        from investigation_agent_platform.domain.topology.models import TraceHopTarget
+
+        target = TraceHopTarget(
+            target_service="payments", target_span_id="span-2", parent_span_id="span-1"
+        )
+        service, _adapter, _RepositoryIdentity, _route_node_obj = await self._service_with_hop(
+            target
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(repository_id="repo-1", file_path="src/client.py", line_number=2),
+            caller_frame=None,
+            trace_id="trace-abc",
+            span_id="span-1",
+        )
+
+        assert len(result.hops) == 1
+        hop = result.hops[0]
+        assert hop.target_service == "payments"
+        assert hop.target_repository_id == "repo-2"
+        assert hop.target_revision == "main"
+        assert hop.target_domain_id == "team-payments"
+        assert hop.trace_id == "trace-abc"
+        assert hop.target_span_id == "span-2"
+        assert any("cross-repository hop" in limitation for limitation in result.limitations)
+
+    @pytest.mark.asyncio
+    async def test_no_trace_id_stays_single_repository(self) -> None:
+        from investigation_agent_platform.domain.topology.models import TraceHopTarget
+
+        target = TraceHopTarget(
+            target_service="payments", target_span_id="span-2", parent_span_id="span-1"
+        )
+        service, _adapter, _RepositoryIdentity, _route_node_obj = await self._service_with_hop(
+            target
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(repository_id="repo-1", file_path="src/client.py", line_number=2),
+            caller_frame=None,
+            # No trace_id supplied at all.
+        )
+        assert result.hops == []
+
+    @pytest.mark.asyncio
+    async def test_no_corroborating_evidence_no_hop(self) -> None:
+        service, _adapter, _RepositoryIdentity, _route_node_obj = await self._service_with_hop(
+            None  # resolver finds no other-service span
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(repository_id="repo-1", file_path="src/client.py", line_number=2),
+            caller_frame=None,
+            trace_id="trace-abc",
+            span_id="span-1",
+        )
+        assert result.hops == []
+        assert not any("cross-repository hop" in limitation for limitation in result.limitations)
+
+    @pytest.mark.asyncio
+    async def test_non_route_node_never_attempts_hop(self) -> None:
+        """A FUNCTION node (not ROUTE/MESSAGE_HANDLER) never triggers a hop
+        attempt, even with a trace_id and a resolver that would happily hop."""
+        from investigation_agent_platform.domain.topology.models import TraceHopTarget
+
+        target = TraceHopTarget(
+            target_service="payments", target_span_id="span-2", parent_span_id="span-1"
+        )
+        from investigation_agent_platform.application.topology.attribution import (
+            FailureAttributionService,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        await adapter.ingest(_payload(ast_nodes=[_node()]))  # plain FUNCTION node
+        _seed_repo(adapter, repository_id="repo-1", ownership=["org-1", "domain-checkout"])
+        registry = _FakeServiceRegistry({})
+        resolver = _FakeTraceHopResolver(target)
+        service = FailureAttributionService(
+            attribution_port=adapter,
+            evidence_repo=None,
+            repository_registry=registry,
+            trace_hop_resolver=resolver,
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(),
+            caller_frame=None,
+            trace_id="trace-abc",
+            span_id="span-1",
+        )
+        assert result.hops == []
+
+    @pytest.mark.asyncio
+    async def test_wrong_tenant_trace_evidence_never_triggers_hop(self) -> None:
+        """Trace evidence resolvable only for a different tenant must never
+        produce a hop for this tenant (tenant isolation)."""
+        from investigation_agent_platform.domain.topology.models import TraceHopTarget
+
+        target = TraceHopTarget(
+            target_service="payments", target_span_id="span-2", parent_span_id="span-1"
+        )
+        service, _adapter, _RepositoryIdentity, _route_node_obj = await self._service_with_hop(
+            target, allowed_tenant_id="tenant-OTHER"
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(repository_id="repo-1", file_path="src/client.py", line_number=2),
+            caller_frame=None,
+            trace_id="trace-abc",
+            span_id="span-1",
+        )
+        assert result.hops == []
+
+    @pytest.mark.asyncio
+    async def test_no_target_repository_mapping_no_hop(self) -> None:
+        """Trace evidence corroborates a target service, but no repository
+        is registered under that service name — no hop, no fabrication."""
+        from investigation_agent_platform.application.topology.attribution import (
+            FailureAttributionService,
+        )
+        from investigation_agent_platform.domain.topology.models import TraceHopTarget
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        await adapter.ingest(_payload(ast_nodes=[_route_node()]))
+        _seed_repo(adapter, repository_id="repo-1", ownership=["org-1", "domain-checkout"])
+        registry = _FakeServiceRegistry({})  # empty: "payments" never registered
+        target = TraceHopTarget(
+            target_service="payments", target_span_id="span-2", parent_span_id="span-1"
+        )
+        service = FailureAttributionService(
+            attribution_port=adapter,
+            evidence_repo=None,
+            repository_registry=registry,
+            trace_hop_resolver=_FakeTraceHopResolver(target),
+        )
+
+        result = await service.attribute_failure(
+            tenant_id="tenant-a",
+            application_id="app-1",
+            investigation_id=uuid.uuid4(),
+            failure_frame=_frame(repository_id="repo-1", file_path="src/client.py", line_number=2),
+            caller_frame=None,
+            trace_id="trace-abc",
+            span_id="span-1",
+        )
+        assert result.hops == []
+
+
+class TestGatewayTraceHopResolver:
+    @pytest.mark.asyncio
+    async def test_resolves_single_other_service_span(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        item1 = MagicMock()
+        item1.attributes = {"span": {"id": "span-1"}, "service": {"name": "checkout"}}
+        item2 = MagicMock()
+        item2.attributes = {
+            "span": {"id": "span-2"},
+            "service": {"name": "payments"},
+            "parent": {"id": "span-1"},
+        }
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock(return_value=MagicMock(items=[item1, item2]))
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="trace-abc",
+            source_span_id="span-1",
+        )
+        assert target is not None
+        assert target.target_service == "payments"
+        assert target.target_span_id == "span-2"
+        assert target.parent_span_id == "span-1"
+
+    @pytest.mark.asyncio
+    async def test_flat_dotted_attribute_keys_also_resolve(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        item = MagicMock()
+        item.attributes = {"span.id": "span-2", "service.name": "payments"}
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock(return_value=MagicMock(items=[item]))
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="trace-abc",
+            source_span_id="span-1",
+        )
+        assert target is not None
+        assert target.target_service == "payments"
+
+    @pytest.mark.asyncio
+    async def test_no_other_service_span_returns_none(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        item = MagicMock()
+        item.attributes = {"span": {"id": "span-1"}, "service": {"name": "checkout"}}
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock(return_value=MagicMock(items=[item]))
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="trace-abc",
+            source_span_id="span-1",
+        )
+        assert target is None
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_multiple_target_spans_returns_none(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        item2 = MagicMock()
+        item2.attributes = {"span": {"id": "span-2"}, "service": {"name": "payments"}}
+        item3 = MagicMock()
+        item3.attributes = {"span": {"id": "span-3"}, "service": {"name": "notifications"}}
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock(return_value=MagicMock(items=[item2, item3]))
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="trace-abc",
+            source_span_id="span-1",
+        )
+        assert target is None
+
+    @pytest.mark.asyncio
+    async def test_empty_trace_id_returns_none_without_querying(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock()
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="",
+            source_span_id=None,
+        )
+        assert target is None
+        gateway.search_runtime_evidence.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_gateway_failure_returns_none_not_raises(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.trace_hop import (
+            GatewayTraceHopResolver,
+        )
+
+        gateway = MagicMock()
+        gateway.search_runtime_evidence = AsyncMock(side_effect=RuntimeError("es down"))
+        resolver = GatewayTraceHopResolver(gateway)
+
+        target = await resolver.resolve_target_service(
+            tenant_id="tenant-a",
+            investigation_id=uuid.uuid4(),
+            application_id="app-1",
+            environment="production",
+            trace_id="trace-abc",
+            source_span_id="span-1",
+        )
+        assert target is None
+
+
+class TestServiceNameRepositoryMapping:
+    @pytest.mark.asyncio
+    async def test_profile_backed_registry_resolves_by_service_name(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile = MagicMock()
+        profile.id = "app-1"
+        profile.code_configuration.repository = "https://github.com/acme/payments-library"
+        profile.code_configuration.repository_id = "repo-2"
+        profile.code_configuration.default_branch = "main"
+        profile.code_configuration.service_name = "payments"
+
+        profile_repo = MagicMock()
+        profile_repo.list = AsyncMock(return_value=[profile])
+
+        registry = ProfileBackedRepositoryRegistry(profile_repo)
+        repo = await registry.resolve_for_service_name("tenant-a", "payments")
+        assert repo is not None
+        assert repo.repository_id == "repo-2"
+
+    @pytest.mark.asyncio
+    async def test_unknown_service_name_returns_none(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+            ProfileBackedRepositoryRegistry,
+        )
+
+        profile_repo = MagicMock()
+        profile_repo.list = AsyncMock(return_value=[])
+
+        registry = ProfileBackedRepositoryRegistry(profile_repo)
+        repo = await registry.resolve_for_service_name("tenant-a", "payments")
+        assert repo is None
+
+    @pytest.mark.asyncio
+    async def test_in_memory_adapter_service_name_parity(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            RepositoryIdentity,
+            RepositoryType,
+        )
+        from investigation_agent_platform.infrastructure.topology.in_memory import (
+            InMemoryTopologyAdapter,
+        )
+
+        adapter = InMemoryTopologyAdapter()
+        repo = RepositoryIdentity(
+            tenant_id="tenant-a",
+            repository_id="repo-2",
+            name="payments-library",
+            locator="acme/payments-library",
+            git_org_id="git:acme",
+            repository_type=RepositoryType.SHARED_LIBRARY,
+        )
+        adapter.register_service_repository("tenant-a", "payments", repo)
+
+        resolved = await adapter.resolve_for_service_name("tenant-a", "payments")
+        assert resolved is not None
+        assert resolved.repository_id == "repo-2"
+        assert await adapter.resolve_for_service_name("tenant-b", "payments") is None

@@ -422,6 +422,20 @@ class InMemoryInvestigationRepository(InvestigationRepository):
     async def exists(self, tenant_id: str, investigation_id: UUID) -> bool:
         return (tenant_id, investigation_id) in self._store
 
+    async def list_open_ids(self, tenant_id: str) -> list[UUID]:
+        from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+
+        terminal = {
+            InvestigationStatus.COMPLETED,
+            InvestigationStatus.FAILED,
+            InvestigationStatus.CANCELLED,
+        }
+        return [
+            inv_id
+            for (t, inv_id), inv in self._store.items()
+            if t == tenant_id and inv.status not in terminal
+        ]
+
 
 class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
     def __init__(self) -> None:

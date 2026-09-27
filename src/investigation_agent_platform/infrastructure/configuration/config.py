@@ -121,6 +121,23 @@ class TopologyConfig(BaseModel):
         "parse). Empty disables file-based tiers gracefully; same IAP_CODE_REPO_BASE "
         "convention as the code intelligence provider.",
     )
+    # ISSUE-4: snapshot retention / garbage collection. Disabled by default —
+    # an operator opts in explicitly once a cleanup schedule is wired.
+    retention_enabled: bool = Field(default=False)
+    retention_window_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Snapshots ingested within this many days are always kept, "
+        "regardless of the LRU bound (D9/ISSUES_0926 risk 2).",
+    )
+    retention_max_snapshots_per_repository: int = Field(
+        default=20,
+        ge=1,
+        le=10000,
+        description="LRU bound: the N most-recently-ingested READY/SUPERSEDED "
+        "snapshots per repository are always kept even if older than the window.",
+    )
 
 
 class KnowledgeConfig(BaseModel):
@@ -292,6 +309,12 @@ def _topology_config_from_env() -> TopologyConfig:
         max_lookup_nodes=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_NODES", "200")),
         max_lookup_edges=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_EDGES", "1000")),
         code_repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", ""),
+        retention_enabled=os.environ.get("IAP_TOPOLOGY_RETENTION_ENABLED", "false").lower()
+        == "true",
+        retention_window_days=int(os.environ.get("IAP_TOPOLOGY_RETENTION_WINDOW_DAYS", "30")),
+        retention_max_snapshots_per_repository=int(
+            os.environ.get("IAP_TOPOLOGY_RETENTION_MAX_SNAPSHOTS", "20")
+        ),
     )
 
 

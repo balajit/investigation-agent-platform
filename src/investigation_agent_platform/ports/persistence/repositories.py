@@ -31,6 +31,11 @@ class InvestigationRepository(Protocol):
 
     async def exists(self, tenant_id: str, investigation_id: UUID) -> bool: ...
 
+    async def list_open_ids(self, tenant_id: str) -> list[UUID]:
+        """IDs of investigations not yet in a terminal status (ISSUE-4:
+        feeds the snapshot-retention janitor's pinned-revision lookup)."""
+        ...
+
 
 @runtime_checkable
 class EvidenceRepository(Protocol):

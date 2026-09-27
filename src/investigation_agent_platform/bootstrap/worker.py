@@ -10,6 +10,7 @@ from temporalio.worker import Worker
 from investigation_agent_platform.api.dependencies import AppContext, set_app_context
 from investigation_agent_platform.application.worker.activities import (
     checkpoint_activity,
+    collect_snapshots_activity,
     conclude_investigation_activity,
     create_investigation_activity,
     execute_action_activity,
@@ -18,7 +19,10 @@ from investigation_agent_platform.application.worker.activities import (
     retrieve_evidence_activity,
     verify_root_cause_activity,
 )
-from investigation_agent_platform.application.worker.workflows import RunInvestigationWorkflow
+from investigation_agent_platform.application.worker.workflows import (
+    RunInvestigationWorkflow,
+    TopologySnapshotRetentionWorkflow,
+)
 from investigation_agent_platform.bootstrap import build_app_context as _build_app_context
 from investigation_agent_platform.infrastructure.configuration.config import (
     ApplicationConfig,
@@ -61,7 +65,7 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
     worker = Worker(
         client,
         task_queue=temporal_cfg.task_queue,
-        workflows=[RunInvestigationWorkflow],
+        workflows=[RunInvestigationWorkflow, TopologySnapshotRetentionWorkflow],
         activities=[
             create_investigation_activity,
             retrieve_evidence_activity,
@@ -71,6 +75,7 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
             checkpoint_activity,
             conclude_investigation_activity,
             publish_event_activity,
+            collect_snapshots_activity,
         ],
     )
     logger.info(

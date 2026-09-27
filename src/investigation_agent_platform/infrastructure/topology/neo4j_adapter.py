@@ -14,6 +14,7 @@ administration step, never executed implicitly on a request path.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -26,9 +27,14 @@ from investigation_agent_platform.domain.common.exceptions import (
 from investigation_agent_platform.domain.topology.models import (
     ASTTopologyPayload,
     AttributionFallbackLevel,
+    GitOrganizationIdentity,
+    RepositoryIdentity,
     RepositoryType,
+    SnapshotCollectionResult,
+    SnapshotDescriptor,
     StaticOwnershipResult,
     TopologyIngestionResult,
+    TopologyNodeType,
     TopologySnapshotStatus,
 )
 from investigation_agent_platform.infrastructure.configuration.config import TopologyConfig
@@ -138,6 +144,70 @@ class Neo4jTopologyAdapter:
         async with driver.session(database=self._config.database) as session:
             for stmt in statements:
                 await session.run(stmt)
+
+    # -- OwnershipRegistryPort (ISSUE-7) --------------------------------------
+
+    async def register_ownership(
+        self,
+        repository: RepositoryIdentity,
+        git_org: GitOrganizationIdentity | None,
+        domain_id: str | None,
+    ) -> None:
+        """Write the Repository -> GitOrganization -> Domain chain.
+
+        Idempotent MERGE on tenant-qualified keys. ``git_org``/``domain_id``
+        may be ``None`` when unresolvable (see ``infrastructure.topology.
+        ownership``); the Repository node is still registered so the
+        REPOSITORY fallback tier and repository_type lookups keep working.
+        """
+        driver = self._require_driver()
+        async with driver.session(database=self._config.database) as session:
+            await session.execute_write(self._write_ownership, repository, git_org, domain_id)
+
+    @staticmethod
+    async def _write_ownership(
+        tx: Any,
+        repository: RepositoryIdentity,
+        git_org: GitOrganizationIdentity | None,
+        domain_id: str | None,
+    ) -> None:
+        await tx.run(
+            "MERGE (r:Repository {tenant_id: $tenant_id, repository_id: $repository_id}) "
+            "SET r.name = $name, r.locator = $locator, r.repository_type = $repository_type, "
+            "r.default_branch = $default_branch, r.is_active = $is_active",
+            tenant_id=repository.tenant_id,
+            repository_id=repository.repository_id,
+            name=repository.name,
+            locator=repository.locator,
+            repository_type=repository.repository_type.value,
+            default_branch=repository.default_branch,
+            is_active=repository.is_active,
+        )
+        if git_org is None:
+            return
+        await tx.run(
+            "MERGE (g:GitOrganization {tenant_id: $tenant_id, git_org_id: $git_org_id}) "
+            "SET g.name = $name, g.provider = $provider "
+            "WITH g "
+            "MATCH (r:Repository {tenant_id: $tenant_id, repository_id: $repository_id}) "
+            "MERGE (r)-[:BELONGS_TO]->(g)",
+            tenant_id=git_org.tenant_id,
+            git_org_id=git_org.git_org_id,
+            name=git_org.name,
+            provider=git_org.provider,
+            repository_id=repository.repository_id,
+        )
+        if not domain_id:
+            return
+        await tx.run(
+            "MERGE (d:Domain {tenant_id: $tenant_id, domain_id: $domain_id}) "
+            "WITH d "
+            "MATCH (g:GitOrganization {tenant_id: $tenant_id, git_org_id: $git_org_id}) "
+            "MERGE (g)-[:PART_OF]->(d)",
+            tenant_id=git_org.tenant_id,
+            git_org_id=git_org.git_org_id,
+            domain_id=domain_id,
+        )
 
     async def ingest(self, payload: ASTTopologyPayload) -> TopologyIngestionResult:
         driver = self._require_driver()
@@ -260,7 +330,8 @@ class Neo4jTopologyAdapter:
             "revision: $revision}) "
             "SET s.snapshot_id = $snapshot_id, s.status = $status, "
             "s.payload_hash = $payload_hash, s.schema_version = $schema_version, "
-            "s.parser_version = $parser_version, s.error_summary = $error_summary "
+            "s.parser_version = $parser_version, s.error_summary = $error_summary, "
+            "s.ingested_at = CASE WHEN $status = 'READY' THEN $ingested_at ELSE s.ingested_at END "
             "MERGE (repo:Repository {tenant_id: $tenant_id, repository_id: $repository_id}) "
             "MERGE (s)-[:OF_REPOSITORY]->(repo)",
             tenant_id=payload.tenant_id,
@@ -272,6 +343,7 @@ class Neo4jTopologyAdapter:
             schema_version=payload.schema_version,
             parser_version=payload.parser_version,
             error_summary=error_summary,
+            ingested_at=datetime.now(UTC).isoformat(),
         )
 
     @staticmethod
@@ -366,6 +438,110 @@ class Neo4jTopologyAdapter:
                 status=TopologySnapshotStatus.SUPERSEDED.value,
             )
 
+    # -- SnapshotRetentionPort (ISSUE-4) ---------------------------------------
+
+    async def list_snapshots(self, tenant_id: str, repository_id: str) -> list[SnapshotDescriptor]:
+        driver = self._require_driver()
+        async with driver.session(database=self._config.database) as session:
+            result = await session.run(
+                "MATCH (s:TopologySnapshot {tenant_id: $tenant_id, repository_id: $repository_id}) "
+                "RETURN s.revision AS revision, s.status AS status, "
+                "s.ingested_at AS ingested_at",
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+            )
+            records = [dict(record) async for record in result]
+
+        descriptors = []
+        for record in records:
+            ingested_at_raw = record.get("ingested_at")
+            # Snapshots ingested before this field existed have no
+            # timestamp; treat as "now" so they are never mistakenly aged
+            # out by a null comparison (fail closed: keep, don't collect).
+            ingested_at = (
+                datetime.fromisoformat(ingested_at_raw) if ingested_at_raw else datetime.now(UTC)
+            )
+            descriptors.append(
+                SnapshotDescriptor(
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    revision=record["revision"],
+                    status=TopologySnapshotStatus(record["status"]),
+                    ingested_at=ingested_at,
+                )
+            )
+        return descriptors
+
+    async def collect_snapshot(
+        self, tenant_id: str, repository_id: str, revision: str
+    ) -> SnapshotCollectionResult:
+        driver = self._require_driver()
+        async with driver.session(database=self._config.database) as session:
+            status = await session.execute_read(
+                self._read_snapshot, tenant_id, repository_id, revision
+            )
+            if status is None:
+                raise TopologyNotConfiguredError(
+                    f"No topology snapshot for repository={repository_id} revision={revision}"
+                )
+            if status.get("status") == TopologySnapshotStatus.COLLECTED.value:
+                return SnapshotCollectionResult(
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    revision=revision,
+                    already_collected=True,
+                )
+            counts = await session.execute_write(
+                self._delete_snapshot_subgraph, tenant_id, repository_id, revision
+            )
+        return SnapshotCollectionResult(
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            revision=revision,
+            deleted_node_count=counts["deleted_node_count"],
+            deleted_edge_count=counts["deleted_edge_count"],
+        )
+
+    @staticmethod
+    async def _delete_snapshot_subgraph(
+        tx: Any, tenant_id: str, repository_id: str, revision: str
+    ) -> dict[str, int]:
+        """Delete the orphan ASTNode/SourceFile/Package subgraph for one
+        revision and mark the ``TopologySnapshot`` audit node ``COLLECTED``.
+
+        The ``TopologySnapshot`` node itself is never deleted — only the
+        subgraph beneath it — so historical attribution evidence (which
+        already embeds its own snapshot_id/revision/ownership path) remains
+        interpretable after collection.
+        """
+        result = await tx.run(
+            "MATCH (n) WHERE (n:ASTNode OR n:SourceFile OR n:Package) "
+            "AND n.tenant_id = $tenant_id AND n.repository_id = $repository_id "
+            "AND n.revision = $revision "
+            "WITH n, count{ (n)--() } AS deg "
+            "DETACH DELETE n "
+            "RETURN count(n) AS deleted_nodes, sum(deg) AS deleted_edges",
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            revision=revision,
+        )
+        record = await result.single()
+        deleted_nodes = (
+            int(record["deleted_nodes"]) if record and record.get("deleted_nodes") else 0
+        )
+        deleted_edges = (
+            int(record["deleted_edges"]) if record and record.get("deleted_edges") else 0
+        )
+        await tx.run(
+            "MATCH (s:TopologySnapshot {tenant_id: $tenant_id, repository_id: $repository_id, "
+            "revision: $revision}) SET s.status = $status",
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            revision=revision,
+            status=TopologySnapshotStatus.COLLECTED.value,
+        )
+        return {"deleted_node_count": deleted_nodes, "deleted_edge_count": deleted_edges}
+
     async def resolve_source_location(
         self,
         tenant_id: str,
@@ -400,13 +576,20 @@ class Neo4jTopologyAdapter:
 
         if not result:
             repo_type = await self._get_repository_type(tenant_id, repository_id)
+            ownership_path, domain_id, git_org_id = await self._resolve_ownership_path(
+                tenant_id, repository_id
+            )
+            snapshot_id = await self._get_snapshot_id(tenant_id, repository_id, revision)
             return StaticOwnershipResult(
                 tenant_id=tenant_id,
                 repository_id=repository_id,
                 revision=revision,
-                snapshot_id=UUID(int=0),
+                snapshot_id=snapshot_id,
                 matched_file_path=file_path,
                 repository_type=repo_type,
+                domain_id=domain_id,
+                git_org_id=git_org_id,
+                ownership_path=ownership_path,
                 fallback_level=AttributionFallbackLevel.REPOSITORY,
             )
 
@@ -418,19 +601,31 @@ class Neo4jTopologyAdapter:
             )
         matched = tied[0]
         repo_type = await self._get_repository_type(tenant_id, repository_id)
+        ownership_path, domain_id, git_org_id = await self._resolve_ownership_path(
+            tenant_id, repository_id
+        )
+        snapshot_id = await self._get_snapshot_id(tenant_id, repository_id, revision)
+        matched_node_type: TopologyNodeType | None = None
+        try:
+            matched_node_type = TopologyNodeType(matched["node_type"])
+        except (KeyError, ValueError):
+            matched_node_type = None
         return StaticOwnershipResult(
             tenant_id=tenant_id,
             repository_id=repository_id,
             revision=revision,
-            snapshot_id=UUID(matched["snapshot_id"]) if matched.get("snapshot_id") else UUID(int=0),
+            snapshot_id=snapshot_id,
             matched_node_id=UUID(matched["node_id"]),
             matched_node_qualified_name=matched["qualified_name"],
             matched_file_path=matched["file_path"],
             matched_start_line=matched["start_line"],
             matched_end_line=matched["end_line"],
             repository_type=repo_type,
-            ownership_path=matched.get("ownership_path", []),
+            domain_id=domain_id,
+            git_org_id=git_org_id,
+            ownership_path=ownership_path,
             fallback_level=AttributionFallbackLevel.AST_NODE,
+            node_type=matched_node_type,
         )
 
     @staticmethod
@@ -448,6 +643,7 @@ class Neo4jTopologyAdapter:
             "WHERE n.start_line <= $line_number AND $line_number <= n.end_line "
             "RETURN n.node_id AS node_id, n.qualified_name AS qualified_name, "
             "n.file_path AS file_path, n.start_line AS start_line, n.end_line AS end_line, "
+            "n.node_type AS node_type, "
             "(n.end_line - n.start_line) AS range_size "
             "ORDER BY range_size ASC, n.node_id ASC "
             "LIMIT 50",
@@ -475,3 +671,41 @@ class Neo4jTopologyAdapter:
             return RepositoryType(record["repository_type"])
         except ValueError:
             return RepositoryType.UNKNOWN
+
+    async def _resolve_ownership_path(
+        self, tenant_id: str, repository_id: str
+    ) -> tuple[list[str], str | None, str | None]:
+        """Traverse Repository -[:BELONGS_TO]-> GitOrganization -[:PART_OF]-> Domain.
+
+        Returns ``(ownership_path, domain_id, git_org_id)``; each element is
+        absent (empty list / ``None``) rather than fabricated when the
+        chain (or part of it) was never registered via
+        ``register_ownership`` (ISSUE-7).
+        """
+        driver = self._require_driver()
+        async with driver.session(database=self._config.database) as session:
+            result = await session.run(
+                "MATCH (r:Repository {tenant_id: $tenant_id, repository_id: $repository_id}) "
+                "OPTIONAL MATCH (r)-[:BELONGS_TO]->(g:GitOrganization) "
+                "OPTIONAL MATCH (g)-[:PART_OF]->(d:Domain) "
+                "RETURN g.git_org_id AS git_org_id, d.domain_id AS domain_id",
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+            )
+            record = await result.single()
+        if record is None:
+            return [], None, None
+        git_org_id = record.get("git_org_id")
+        domain_id = record.get("domain_id")
+        ownership_path = [p for p in (git_org_id, domain_id) if p]
+        return ownership_path, domain_id, git_org_id
+
+    async def _get_snapshot_id(self, tenant_id: str, repository_id: str, revision: str) -> UUID:
+        driver = self._require_driver()
+        async with driver.session(database=self._config.database) as session:
+            record = await session.execute_read(
+                self._read_snapshot, tenant_id, repository_id, revision
+            )
+        if record is None or not record.get("snapshot_id"):
+            return UUID(int=0)
+        return UUID(record["snapshot_id"])

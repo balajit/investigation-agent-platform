@@ -34,10 +34,12 @@ from investigation_agent_platform.domain.provenance.models import (
 from investigation_agent_platform.domain.topology.models import (
     AttributionClassification,
     AttributionFallbackLevel,
+    CrossRepositoryHop,
     DomainAttributionResult,
     RepositoryType,
     StackFrameLocation,
     StaticOwnershipResult,
+    TopologyNodeType,
 )
 from investigation_agent_platform.ports.persistence.repositories import EvidenceRepository
 from investigation_agent_platform.ports.topology.ports import DomainAttributionPort
@@ -98,6 +100,7 @@ class FailureAttributionService:
         repository_registry: Any | None = None,
         codeowners_resolver: Any | None = None,
         micro_resolver: Any | None = None,
+        trace_hop_resolver: Any | None = None,
     ) -> None:
         self._attribution_port = attribution_port
         self._evidence_repo = evidence_repo
@@ -107,6 +110,10 @@ class FailureAttributionService:
         self._repository_registry = repository_registry
         self._codeowners_resolver = codeowners_resolver
         self._micro_resolver = micro_resolver
+        # ISSUE-5: cross-repository trace hop. Absent resolver simply
+        # disables hopping — a ROUTE/MESSAGE_HANDLER boundary then resolves
+        # exactly as it did before ISSUE-5 (single-repository result).
+        self._trace_hop_resolver = trace_hop_resolver
 
     async def attribute_failure(
         self,
@@ -117,6 +124,9 @@ class FailureAttributionService:
         caller_frame: StackFrameLocation | None,
         supporting_evidence_ids: list[UUID] | None = None,
         caller_input_violates_contract: bool | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        environment: str = "production",
     ) -> DomainAttributionResult:
         """Resolve static ownership for both frames and apply the dual-frame policy.
 
@@ -130,6 +140,13 @@ class FailureAttributionService:
           invariant/uncaught defect) -> ``LIBRARY_DEFECT``.
         - ``None``: insufficient runtime evidence -> ``INCONCLUSIVE``. This
           service never guesses.
+
+        ``trace_id``/``span_id`` (ISSUE-5): when the failure frame resolves
+        to a ``ROUTE``/``MESSAGE_HANDLER`` boundary node and a
+        ``trace_hop_resolver`` is configured, attempts a corroborated
+        cross-repository hop using distributed trace evidence. Without a
+        ``trace_id``, or without corroborating trace evidence, attribution
+        stays single-repository — a hop is never fabricated.
         """
         supporting_evidence_ids = supporting_evidence_ids or []
 
@@ -274,6 +291,33 @@ class FailureAttributionService:
             )
         resolution_tier = failure.tier
 
+        # ISSUE-5: static traversal reached an API/queue boundary. Attempt a
+        # trace-corroborated cross-repository hop; a boundary with no
+        # trace_id, no configured resolver, or no corroborating evidence
+        # simply yields no hop — the single-repository result is unchanged.
+        hops: list[CrossRepositoryHop] = []
+        if failure_ownership.node_type in (
+            TopologyNodeType.ROUTE,
+            TopologyNodeType.MESSAGE_HANDLER,
+        ):
+            hop = await self._try_cross_repo_hop(
+                tenant_id=tenant_id,
+                application_id=application_id,
+                investigation_id=investigation_id,
+                environment=environment,
+                failure_frame=failure_frame,
+                failure_ownership=failure_ownership,
+                trace_id=trace_id,
+                span_id=span_id,
+            )
+            if hop is not None:
+                hops.append(hop)
+                limitations.append(
+                    f"cross-repository hop to service '{hop.target_service}' "
+                    f"({hop.target_repository_id}@{hop.target_revision}) corroborated "
+                    f"by trace {hop.trace_id} span {hop.target_span_id}"
+                )
+
         result = DomainAttributionResult(
             tenant_id=tenant_id,
             application_id=application_id,
@@ -303,6 +347,7 @@ class FailureAttributionService:
             fallback_level=fallback_level,
             ownership_source=ownership_source,
             resolution_tier=resolution_tier,
+            hops=hops,
         )
 
         if self._evidence_repo is not None:
@@ -426,6 +471,94 @@ class FailureAttributionService:
                 extra={"tenant_id": tenant_id, "repository_id": frame.repository_id},
             )
             return None
+
+    async def _try_cross_repo_hop(
+        self,
+        tenant_id: str,
+        application_id: str,
+        investigation_id: UUID,
+        environment: str,
+        failure_frame: StackFrameLocation,
+        failure_ownership: StaticOwnershipResult,
+        trace_id: str | None,
+        span_id: str | None,
+    ) -> CrossRepositoryHop | None:
+        """ISSUE-5: corroborate and record one cross-repository hop.
+
+        Every step degrades to "no hop" on any missing dependency, missing
+        trace evidence, or lookup failure — a hop is never taken without
+        trace corroboration, and a corroboration/lookup error never fails
+        the surrounding attribution.
+        """
+        if not trace_id or self._trace_hop_resolver is None or self._repository_registry is None:
+            return None
+
+        try:
+            target = await self._trace_hop_resolver.resolve_target_service(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                application_id=application_id,
+                environment=environment,
+                trace_id=trace_id,
+                source_span_id=span_id,
+            )
+        except Exception:
+            logger.warning(
+                "Trace hop target resolution failed; no hop attempted",
+                extra={"tenant_id": tenant_id, "trace_id": trace_id},
+            )
+            return None
+        if target is None:
+            return None
+
+        try:
+            target_repo = await self._repository_registry.resolve_for_service_name(
+                tenant_id, target.target_service
+            )
+        except Exception:
+            logger.warning(
+                "Target repository lookup failed for hop; no hop attempted",
+                extra={"tenant_id": tenant_id, "target_service": target.target_service},
+            )
+            return None
+        if target_repo is None:
+            return None
+
+        try:
+            # No file/line is known from a service-boundary trace alone;
+            # this resolves the target repository's REPOSITORY-tier domain
+            # (same mechanism as the existing REPOSITORY fallback), not a
+            # symbol-precise location. Uses the target's current
+            # default-branch snapshot — without deployment/version tracking,
+            # this may not be the exact revision that served the trace.
+            target_ownership = await self._attribution_port.resolve_source_location(
+                tenant_id=tenant_id,
+                application_id=application_id,
+                investigation_id=investigation_id,
+                repository_id=target_repo.repository_id,
+                revision=target_repo.default_branch,
+                file_path="__service_boundary__",
+                line_number=1,
+            )
+        except Exception:
+            logger.warning(
+                "Target repository ownership resolution failed for hop; no hop attempted",
+                extra={"tenant_id": tenant_id, "target_repository_id": target_repo.repository_id},
+            )
+            return None
+
+        return CrossRepositoryHop(
+            source_repository_id=failure_frame.repository_id,
+            source_revision=failure_frame.revision,
+            source_node_id=failure_ownership.matched_node_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            target_span_id=target.target_span_id,
+            target_service=target.target_service,
+            target_repository_id=target_repo.repository_id,
+            target_revision=target_repo.default_branch,
+            target_domain_id=target_ownership.domain_id,
+        )
 
     def _inconclusive(
         self,

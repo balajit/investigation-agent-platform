@@ -920,3 +920,219 @@ class TestCodeSchemaGraphIntegration:
                 if isinstance((data := graph.get_node_data(idx)), dict)
             }
             assert not any(str(nid).startswith("db_table::") for nid in node_ids)
+
+    def _access_edges(self, graph):  # type: ignore[no-untyped-def]
+        edges = []
+        for src_idx, dst_idx, edata in graph.weighted_edge_list():
+            if isinstance(edata, dict) and edata.get("relation") == "ACCESSES_TABLE":
+                src = graph.get_node_data(src_idx)
+                dst = graph.get_node_data(dst_idx)
+                edges.append((src.get("id"), dst.get("id")))
+        return edges
+
+    # --- ISSUE-1: link_evidence_to_tables (unambiguous linking from runtime evidence) ---
+
+    def test_link_evidence_links_location_inside_function(self) -> None:
+        from investigation_agent_platform.ports.evidence.code import CodeLocation
+
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        builder._node_map["src/app.py::create_order"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::create_order",
+                "name": "create_order",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 1,
+                "end_line": 5,
+            }
+        )
+        locations = [
+            CodeLocation(file_path="src/app.py", line_number=3, snippet="INSERT INTO orders")
+        ]
+        linked = builder.link_evidence_to_tables(locations, "orders")
+        assert linked == 1
+        assert ("src/app.py::create_order", "db_table::orders") in self._access_edges(builder.graph)
+
+    def test_link_evidence_picks_innermost_enclosing_symbol(self) -> None:
+        """A method nested inside a class both enclose the same line; the
+        innermost (smallest range) symbol is the real match, not ambiguity."""
+        from investigation_agent_platform.ports.evidence.code import CodeLocation
+
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        builder._node_map["src/app.py::OrderService"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::OrderService",
+                "name": "OrderService",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 1,
+                "end_line": 20,
+            }
+        )
+        builder._node_map["src/app.py::OrderService.create"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::OrderService.create",
+                "name": "OrderService.create",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 5,
+                "end_line": 10,
+            }
+        )
+        locations = [
+            CodeLocation(file_path="src/app.py", line_number=7, snippet="INSERT INTO orders")
+        ]
+        linked = builder.link_evidence_to_tables(locations, "orders")
+        assert linked == 1
+        assert ("src/app.py::OrderService.create", "db_table::orders") in self._access_edges(
+            builder.graph
+        )
+
+    def test_link_evidence_ambiguous_same_named_symbols_refuses(self) -> None:
+        from investigation_agent_platform.ports.evidence.code import CodeLocation
+
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        # Two same-named, same-range symbols enclosing the same location.
+        builder._node_map["src/app.py::create"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::create",
+                "name": "create",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 1,
+                "end_line": 10,
+            }
+        )
+        builder._node_map["src/app.py::Other.create"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::Other.create",
+                "name": "Other.create",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 1,
+                "end_line": 10,
+            }
+        )
+        locations = [
+            CodeLocation(file_path="src/app.py", line_number=5, snippet="INSERT INTO orders")
+        ]
+        linked = builder.link_evidence_to_tables(locations, "orders")
+        assert linked == 0
+        assert self._access_edges(builder.graph) == []
+
+    def test_link_evidence_unknown_table_no_edge(self) -> None:
+        from investigation_agent_platform.ports.evidence.code import CodeLocation
+
+        builder = self._builder()
+        builder._node_map["src/app.py::create_order"] = builder.graph.add_node(
+            {
+                "id": "src/app.py::create_order",
+                "name": "create_order",
+                "node_type": "code_symbol",
+                "file_path": "src/app.py",
+                "start_line": 1,
+                "end_line": 5,
+            }
+        )
+        locations = [
+            CodeLocation(file_path="src/app.py", line_number=3, snippet="INSERT INTO ghosts")
+        ]
+        linked = builder.link_evidence_to_tables(locations, "ghosts")
+        assert linked == 0
+
+    def test_link_evidence_unmatched_location_no_edge(self) -> None:
+        from investigation_agent_platform.ports.evidence.code import CodeLocation
+
+        builder = self._builder()
+        builder.add_database_schema_nodes(self._tables())
+        locations = [
+            CodeLocation(file_path="src/nowhere.py", line_number=3, snippet="INSERT INTO orders")
+        ]
+        linked = builder.link_evidence_to_tables(locations, "orders")
+        assert linked == 0
+
+    # --- ISSUE-2: production caller wiring in the default pipeline path ---
+
+    @pytest.mark.asyncio
+    async def test_pipeline_links_runtime_evidence_to_known_table(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.py").write_text(
+                "def create_order(conn):\n"
+                '    conn.execute("INSERT INTO orders (id) VALUES (1)")\n'
+                "    return True\n",
+                encoding="utf-8",
+            )
+            ddl = repo / "schema.sql"
+            ddl.write_text("CREATE TABLE orders (id UUID PRIMARY KEY);", encoding="utf-8")
+            pipeline = CodebaseGraphPipeline(parser=TreeSitterParser())
+            graph = await pipeline.build_repository_graph(repo, language="python", ddl_paths=[ddl])
+            edges = self._access_edges(graph)
+            assert ("app.py::create_order", "db_table::orders") in edges
+
+    @pytest.mark.asyncio
+    async def test_pipeline_unknown_table_reference_produces_no_edge(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "app.py").write_text(
+                "def create_order(conn):\n"
+                '    conn.execute("INSERT INTO ghosts (id) VALUES (1)")\n'
+                "    return True\n",
+                encoding="utf-8",
+            )
+            ddl = repo / "schema.sql"
+            ddl.write_text("CREATE TABLE orders (id UUID PRIMARY KEY);", encoding="utf-8")
+            pipeline = CodebaseGraphPipeline(parser=TreeSitterParser())
+            graph = await pipeline.build_repository_graph(repo, language="python", ddl_paths=[ddl])
+            assert self._access_edges(graph) == []
+
+    @pytest.mark.asyncio
+    async def test_pipeline_multi_table_files_link_independently(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "orders.py").write_text(
+                'def create_order(conn):\n    conn.execute("INSERT INTO orders (id) VALUES (1)")\n',
+                encoding="utf-8",
+            )
+            (repo / "payments.py").write_text(
+                "def create_payment(conn):\n"
+                '    conn.execute("INSERT INTO payments (id) VALUES (1)")\n',
+                encoding="utf-8",
+            )
+            ddl = repo / "schema.sql"
+            ddl.write_text(
+                "CREATE TABLE orders (id UUID PRIMARY KEY);\n"
+                "CREATE TABLE payments (id UUID PRIMARY KEY);\n",
+                encoding="utf-8",
+            )
+            pipeline = CodebaseGraphPipeline(parser=TreeSitterParser())
+            graph = await pipeline.build_repository_graph(repo, language="python", ddl_paths=[ddl])
+            edges = self._access_edges(graph)
+            assert ("orders.py::create_order", "db_table::orders") in edges
+            assert ("payments.py::create_payment", "db_table::payments") in edges
+            assert ("orders.py::create_order", "db_table::payments") not in edges
+            assert ("payments.py::create_payment", "db_table::orders") not in edges

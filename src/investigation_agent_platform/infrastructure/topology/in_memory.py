@@ -11,6 +11,7 @@ application-layer contracts are proven before a Neo4j deployment is required
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -24,8 +25,11 @@ from investigation_agent_platform.domain.topology.models import (
     ASTNodeIdentity,
     ASTTopologyPayload,
     AttributionFallbackLevel,
+    GitOrganizationIdentity,
     RepositoryIdentity,
     RepositoryType,
+    SnapshotCollectionResult,
+    SnapshotDescriptor,
     StaticOwnershipResult,
     TopologyIngestionResult,
     TopologySnapshotStatus,
@@ -50,6 +54,8 @@ class InMemoryTopologyAdapter:
         self._repositories: dict[tuple[str, str], RepositoryIdentity] = {}
         # (tenant_id, repository_id) -> RepositoryIdentity (secondary index)
         self._repositories_by_id: dict[tuple[str, str], RepositoryIdentity] = {}
+        # (tenant_id, service_name) -> RepositoryIdentity (ISSUE-5)
+        self._repositories_by_service: dict[tuple[str, str], RepositoryIdentity] = {}
         # tenant_id -> domain_id -> ownership path (git_org_id, domain_id)
         self._ownership: dict[tuple[str, str], list[str]] = {}
 
@@ -110,6 +116,7 @@ class InMemoryTopologyAdapter:
             self._nodes[key] = macro_nodes
             self._snapshots[key]["status"] = TopologySnapshotStatus.READY
             self._snapshots[key]["edge_count"] = len(kept_calls) + len(payload.references)
+            self._snapshots[key]["ingested_at"] = datetime.now(UTC)
         except Exception as exc:
             self._snapshots[key]["status"] = TopologySnapshotStatus.FAILED
             self._snapshots[key]["error_summary"] = str(exc)[:2000]
@@ -146,6 +153,51 @@ class InMemoryTopologyAdapter:
         entry = self._snapshots.get((tenant_id, repository_id, revision))
         if entry is not None:
             entry["status"] = TopologySnapshotStatus.SUPERSEDED
+
+    # -- SnapshotRetentionPort (ISSUE-4) --------------------------------------
+
+    async def list_snapshots(self, tenant_id: str, repository_id: str) -> list[SnapshotDescriptor]:
+        descriptors = []
+        for (t, r, revision), entry in self._snapshots.items():
+            if t != tenant_id or r != repository_id:
+                continue
+            descriptors.append(
+                SnapshotDescriptor(
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    revision=revision,
+                    status=entry["status"],
+                    ingested_at=entry.get("ingested_at", datetime.now(UTC)),
+                )
+            )
+        return descriptors
+
+    async def collect_snapshot(
+        self, tenant_id: str, repository_id: str, revision: str
+    ) -> SnapshotCollectionResult:
+        key = (tenant_id, repository_id, revision)
+        entry = self._snapshots.get(key)
+        if entry is None:
+            raise TopologyNotConfiguredError(
+                f"No topology snapshot for repository={repository_id} revision={revision}",
+                details={"tenant_id": tenant_id, "repository_id": repository_id},
+            )
+        if entry["status"] == TopologySnapshotStatus.COLLECTED:
+            return SnapshotCollectionResult(
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                revision=revision,
+                already_collected=True,
+            )
+        deleted_nodes = self._nodes.pop(key, [])
+        entry["status"] = TopologySnapshotStatus.COLLECTED
+        return SnapshotCollectionResult(
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            revision=revision,
+            deleted_node_count=len(deleted_nodes),
+            deleted_edge_count=entry.get("edge_count", 0),
+        )
 
     # -- DomainAttributionPort --------------------------------------------------
 
@@ -190,7 +242,7 @@ class InMemoryTopologyAdapter:
                 snapshot_id=self._snapshots[key]["snapshot_id"],
                 matched_file_path=file_path,
                 repository_type=repo.repository_type if repo else RepositoryType.UNKNOWN,
-                domain_id=ownership_path[-1] if ownership_path else None,
+                domain_id=ownership_path[1] if len(ownership_path) > 1 else None,
                 git_org_id=ownership_path[0] if ownership_path else None,
                 ownership_path=ownership_path,
                 fallback_level=AttributionFallbackLevel.REPOSITORY,
@@ -222,10 +274,11 @@ class InMemoryTopologyAdapter:
             matched_start_line=matched.start_line,
             matched_end_line=matched.end_line,
             repository_type=repo.repository_type if repo else RepositoryType.UNKNOWN,
-            domain_id=ownership_path[-1] if ownership_path else None,
+            domain_id=ownership_path[1] if len(ownership_path) > 1 else None,
             git_org_id=ownership_path[0] if ownership_path else None,
             ownership_path=ownership_path,
             fallback_level=AttributionFallbackLevel.AST_NODE,
+            node_type=matched.node_type,
         )
 
     # -- RepositoryRegistryPort ---------------------------------------------
@@ -242,6 +295,30 @@ class InMemoryTopologyAdapter:
         # ``register_application_repository``.
         self._repositories_by_id[(repository.tenant_id, repository.repository_id)] = repository
 
+    async def resolve_for_service_name(
+        self, tenant_id: str, service_name: str
+    ) -> RepositoryIdentity | None:
+        return self._repositories_by_service.get((tenant_id, service_name))
+
+    # -- OwnershipRegistryPort (ISSUE-7) --------------------------------------
+
+    async def register_ownership(
+        self,
+        repository: RepositoryIdentity,
+        git_org: GitOrganizationIdentity | None,
+        domain_id: str | None,
+    ) -> None:
+        """Mirrors ``Neo4jTopologyAdapter.register_ownership`` for parity:
+        registers the repository and, when resolvable, records the
+        git-org/domain ownership path."""
+        self._repositories_by_id[(repository.tenant_id, repository.repository_id)] = repository
+        if git_org is None:
+            return
+        path = [git_org.git_org_id]
+        if domain_id:
+            path.append(domain_id)
+        self._ownership[(repository.tenant_id, repository.repository_id)] = path
+
     # -- Test/dev helpers (not part of any port) -----------------------------
 
     def register_application_repository(
@@ -253,6 +330,19 @@ class InMemoryTopologyAdapter:
                 details={"tenant_id": tenant_id},
             )
         self._repositories[(tenant_id, application_id)] = repository
+        self._repositories_by_id[(tenant_id, repository.repository_id)] = repository
+
+    def register_service_repository(
+        self, tenant_id: str, service_name: str, repository: RepositoryIdentity
+    ) -> None:
+        """ISSUE-5 test/dev helper: seeds the service-name -> repository
+        mapping ``resolve_for_service_name`` reads."""
+        if repository.tenant_id != tenant_id:
+            raise SecurityPolicyViolationException(
+                "Repository tenant does not match requested tenant",
+                details={"tenant_id": tenant_id},
+            )
+        self._repositories_by_service[(tenant_id, service_name)] = repository
         self._repositories_by_id[(tenant_id, repository.repository_id)] = repository
 
     def set_ownership_path(self, tenant_id: str, repository_id: str, path: list[str]) -> None:

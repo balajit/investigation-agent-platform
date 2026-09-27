@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -10,8 +11,13 @@ import rustworkx as rx
 from investigation_agent_platform.infrastructure.evidence.code.graphify_adapter import (
     CodeSymbolGraphBuilder,
 )
+from investigation_agent_platform.infrastructure.evidence.code.intelligence import (
+    ORM_PATTERNS,
+    SQL_KEYWORDS,
+)
 from investigation_agent_platform.infrastructure.evidence.code.parser import TreeSitterParser
 from investigation_agent_platform.infrastructure.evidence.schema.sql import SchemaParser
+from investigation_agent_platform.ports.evidence.code import CodeLocation
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +37,12 @@ class CodebaseGraphPipeline:
 
         When ``ddl_paths`` is provided, each SQL DDL file is parsed with
         ``SchemaParser`` and its tables/columns are ingested into the same
-        graph via ``CodeSymbolGraphBuilder.add_database_schema_nodes``,
-        enabling ``link_code_to_tables`` to connect code symbols to the
-        database resources they access. Defaults to ``None`` so existing
+        graph via ``CodeSymbolGraphBuilder.add_database_schema_nodes``. Each
+        source file is then scanned for lines that reference a known table in
+        a SQL or ORM context (runtime evidence, not name-similarity
+        guessing), and unambiguous hits are linked to their enclosing code
+        symbol via ``CodeSymbolGraphBuilder.link_evidence_to_tables``,
+        producing ``ACCESSES_TABLE`` edges. Defaults to ``None`` so existing
         callers are unaffected.
         """
 
@@ -44,6 +53,23 @@ class CodebaseGraphPipeline:
         file_paths = list(repo_root.rglob(glob_pattern))
         logger.info(f"Starting AST parsing for {len(file_paths)} files via TreeSitterParser...")
 
+        table_names: list[str] = []
+        if ddl_paths:
+            for ddl_path in ddl_paths:
+                try:
+                    tables = self.schema_parser.parse_ddl_file(ddl_path)
+                    self.builder.add_database_schema_nodes(tables)
+                    table_names.extend(table.name for table in tables)
+                    logger.info(
+                        "Ingested %d database tables from %s",
+                        len(tables),
+                        ddl_path,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to ingest schema file {ddl_path}: {e}")
+
+        locations_by_table: dict[str, list[CodeLocation]] = defaultdict(list)
+
         async def _process_file(file_path: Path) -> None:
             try:
                 content = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -53,24 +79,35 @@ class CodebaseGraphPipeline:
                 # Update Graph Builder
                 self.builder.add_file_symbols(rel_path, symbols)
                 self.builder.build_call_graph_edges(content.encode("utf-8"), rel_path, symbols)
+
+                if table_names:
+                    for line_no, line in enumerate(content.splitlines(), start=1):
+                        if not (SQL_KEYWORDS.search(line) or ORM_PATTERNS.search(line)):
+                            continue
+                        low = line.lower()
+                        for table_name in table_names:
+                            if table_name.lower() in low:
+                                locations_by_table[table_name].append(
+                                    CodeLocation(
+                                        file_path=rel_path,
+                                        line_number=line_no,
+                                        snippet=line.strip()[:500],
+                                    )
+                                )
             except Exception as e:
                 logger.warning(f"Failed to process file {file_path}: {e}")
 
         # Process AST parsing concurrently off-thread using gather
         await asyncio.gather(*[_process_file(fp) for fp in file_paths])
 
-        if ddl_paths:
-            for ddl_path in ddl_paths:
-                try:
-                    tables = self.schema_parser.parse_ddl_file(ddl_path)
-                    self.builder.add_database_schema_nodes(tables)
-                    logger.info(
-                        "Ingested %d database tables from %s",
-                        len(tables),
-                        ddl_path,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to ingest schema file {ddl_path}: {e}")
+        for table_name, locations in locations_by_table.items():
+            linked = self.builder.link_evidence_to_tables(locations, table_name)
+            if linked:
+                logger.info(
+                    "Linked %d code locations to table %s via ACCESSES_TABLE",
+                    linked,
+                    table_name,
+                )
 
         logger.info("AST parsing complete. Graph node count: %d", self.builder.graph.num_nodes())
         return self.builder.graph

@@ -6,6 +6,7 @@ import rustworkx as rx
 
 from investigation_agent_platform.infrastructure.evidence.code.parser import CodeSymbol
 from investigation_agent_platform.infrastructure.evidence.schema.sql import TableSchema
+from investigation_agent_platform.ports.evidence.code import CodeLocation
 
 logger = logging.getLogger(__name__)
 
@@ -175,3 +176,78 @@ class CodeSymbolGraphBuilder:
             {"relation": "ACCESSES_TABLE"},
         )
         return True
+
+    def link_evidence_to_tables(self, locations: Sequence[CodeLocation], table_name: str) -> int:
+        """Link runtime-evidenced database operations to a known table.
+
+        For each ``CodeLocation`` (a provenanced observation that some line of
+        code accesses ``table_name``, e.g. from
+        ``TreeSitterCodeIntelligenceProvider.find_database_operations``),
+        finds the enclosing code-symbol node in the same file whose
+        ``[start_line, end_line]`` range contains ``location.line_number``.
+
+        Links only on an unambiguous match — exactly one enclosing symbol.
+        Ambiguous (multiple enclosing candidates) or unmatched (no enclosing
+        symbol, or unknown table) locations are skipped and debug-logged,
+        never linked opportunistically. Returns the number of
+        ``ACCESSES_TABLE`` edges created.
+        """
+        tbl_node_id = f"db_table::{table_name}"
+        if tbl_node_id not in self._node_map:
+            logger.debug("link_evidence_to_tables: unknown table %s", table_name)
+            return 0
+
+        linked = 0
+        for location in locations:
+            candidates = [
+                node_id
+                for node_id, idx in self._node_map.items()
+                if isinstance(data := self.graph.get_node_data(idx), dict)
+                and data.get("node_type") == "code_symbol"
+                and data.get("file_path") == location.file_path
+                and data.get("start_line") is not None
+                and data.get("end_line") is not None
+                and data["start_line"] <= location.line_number <= data["end_line"]
+            ]
+            if not candidates:
+                logger.debug(
+                    "link_evidence_to_tables: no enclosing symbol for %s:%d; skipping",
+                    location.file_path,
+                    location.line_number,
+                )
+                continue
+
+            # Nesting (e.g. a method inside a class) means multiple symbols
+            # legitimately enclose the same line; the innermost (smallest
+            # range) is the real match. Only a tie at the smallest range is
+            # genuine ambiguity (e.g. two same-named symbols) and refused.
+            def _range_size(node_id: str) -> int:
+                data = self.graph.get_node_data(self._node_map[node_id])
+                return int(data["end_line"]) - int(data["start_line"])
+
+            candidates.sort(key=_range_size)
+            smallest = _range_size(candidates[0])
+            innermost = [c for c in candidates if _range_size(c) == smallest]
+            if len(innermost) != 1:
+                logger.debug(
+                    "link_evidence_to_tables: %d ambiguous innermost symbols for %s:%d; skipping",
+                    len(innermost),
+                    location.file_path,
+                    location.line_number,
+                )
+                continue
+
+            node_id = innermost[0]
+            # node_id is "{file_path}::{qualified_name}"; passing the
+            # qualified suffix through guarantees link_code_to_tables's
+            # exact-match resolves to *this* node, not a same-named symbol
+            # elsewhere in the file (the ambiguity case link_code_to_tables
+            # itself refuses).
+            qualified_name = node_id.split("::", 1)[1] if "::" in node_id else None
+            if not qualified_name:
+                continue
+
+            if self.link_code_to_tables(location.file_path, qualified_name, table_name):
+                linked += 1
+
+        return linked

@@ -81,6 +81,11 @@ class TopologySnapshotStatus(StrEnum):
     READY = "READY"
     FAILED = "FAILED"
     SUPERSEDED = "SUPERSEDED"
+    #: ISSUE-4: the AST/SourceFile/Package subgraph has been deleted by the
+    #: retention janitor; the ``TopologySnapshot`` audit node itself is kept
+    #: (never deleted) so historical attribution evidence — which embeds its
+    #: own ``snapshot_id``/``revision``/ownership path — stays interpretable.
+    COLLECTED = "COLLECTED"
 
 
 class CallResolutionStatus(StrEnum):
@@ -126,7 +131,14 @@ class DomainIdentity(BaseModel):
 
 
 class GitOrganizationIdentity(BaseModel):
-    """A Git organization/group, owned by exactly one domain at a time."""
+    """A Git organization/group, owned by exactly one domain at a time.
+
+    ``domain_id`` is optional: the org/domain relationship is derived from
+    the repository's CODEOWNERS catch-all rule (ISSUE-7) at registration
+    time and may be unresolvable (no CODEOWNERS file, no catch-all rule).
+    An org without a resolvable domain is still registered — the git
+    identity is not manufactured from ownership data, and vice versa.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -134,7 +146,7 @@ class GitOrganizationIdentity(BaseModel):
     git_org_id: str = Field(..., max_length=128)
     name: str = Field(..., max_length=256)
     provider: str = Field(default="github", max_length=64)
-    domain_id: str = Field(..., max_length=128)
+    domain_id: str | None = Field(default=None, max_length=128)
 
 
 class RepositoryIdentity(BaseModel):
@@ -488,8 +500,43 @@ class TopologyIngestionResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Attribution result
+# Snapshot retention / garbage collection (ISSUE-4)
 # ---------------------------------------------------------------------------
+
+
+class SnapshotDescriptor(BaseModel):
+    """One repository-revision snapshot's retention-relevant metadata.
+
+    Produced by ``SnapshotRetentionPort.list_snapshots``; consumed by the
+    pure ``classify_snapshots`` policy function. Deliberately does not carry
+    node/edge counts — only what the *policy* needs to decide pinned vs.
+    collectible.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tenant_id: str = Field(..., max_length=128)
+    repository_id: str = Field(..., max_length=128)
+    revision: str = Field(..., max_length=128)
+    status: TopologySnapshotStatus
+    ingested_at: datetime = Field(
+        description="When this snapshot last reached READY; drives the age-based window."
+    )
+
+
+class SnapshotCollectionResult(BaseModel):
+    """Outcome of one ``collect_snapshot`` call."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tenant_id: str = Field(..., max_length=128)
+    repository_id: str = Field(..., max_length=128)
+    revision: str = Field(..., max_length=128)
+    already_collected: bool = Field(
+        default=False, description="True when this call was a no-op retry (idempotent)."
+    )
+    deleted_node_count: int = Field(default=0, ge=0)
+    deleted_edge_count: int = Field(default=0, ge=0)
 
 
 class StaticOwnershipResult(BaseModel):
@@ -511,6 +558,12 @@ class StaticOwnershipResult(BaseModel):
     git_org_id: str | None = Field(default=None, max_length=128)
     ownership_path: list[str] = Field(default_factory=list, max_length=10)
     fallback_level: AttributionFallbackLevel = AttributionFallbackLevel.AST_NODE
+    node_type: TopologyNodeType | None = Field(
+        default=None,
+        description="Matched AST node's type when an AST match was found "
+        "(ISSUE-5: lets the attribution service detect ROUTE/MESSAGE_HANDLER "
+        "boundaries where a cross-repository trace hop may be attempted).",
+    )
 
 
 class MicroSymbolMatch(BaseModel):
@@ -541,6 +594,44 @@ class StackFrameLocation(BaseModel):
     revision: str = Field(..., max_length=128)
     file_path: str = Field(..., max_length=1024)
     line_number: int = Field(..., ge=1)
+
+
+class TraceHopTarget(BaseModel):
+    """A corroborated cross-service hop target, derived from runtime trace
+    evidence (ISSUE-5) — never guessed from static name similarity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_service: str = Field(..., max_length=256)
+    target_span_id: str = Field(..., max_length=128)
+    parent_span_id: str | None = Field(default=None, max_length=128)
+
+
+class CrossRepositoryHop(BaseModel):
+    """One traced hop from a ``ROUTE``/``MESSAGE_HANDLER`` boundary in the
+    source repository to a domain resolved in a different repository
+    (ISSUE-5). Always corroborated by trace evidence — a hop that cannot be
+    corroborated is never recorded, and attribution falls back to the
+    single-repository result instead.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source_repository_id: str = Field(..., max_length=128)
+    source_revision: str = Field(..., max_length=128)
+    source_node_id: UUID | None = None
+    trace_id: str = Field(..., max_length=128)
+    span_id: str | None = Field(default=None, max_length=128)
+    target_span_id: str = Field(..., max_length=128)
+    target_service: str = Field(..., max_length=256)
+    target_repository_id: str = Field(..., max_length=128)
+    target_revision: str = Field(..., max_length=128)
+    target_domain_id: str | None = Field(default=None, max_length=128)
+    corroborated: bool = Field(
+        default=True,
+        description="Always True for a recorded hop — uncorroborated hops "
+        "are never stored, per the fail-closed cross-repo policy.",
+    )
 
 
 class DomainAttributionResult(BaseModel):
@@ -586,4 +677,13 @@ class DomainAttributionResult(BaseModel):
         default="macro",
         max_length=16,
         description="macro (graph lookup) or micro (on-demand parse). Recorded in provenance (ISSUE-3).",
+    )
+    hops: list[CrossRepositoryHop] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Cross-repository trace hops taken during attribution "
+        "(ISSUE-5). Empty when the failure resolved within a single "
+        "repository, or when a boundary was reached but no corroborating "
+        "trace evidence was found — the primary classification is never "
+        "based on an uncorroborated hop.",
     )

@@ -1270,3 +1270,99 @@ async def capture_knowledge_activity(
     except Exception as exc:
         logger.exception("capture_knowledge_activity failed", extra={"error": str(exc)})
         raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class CollectSnapshotsInput:
+    """One repository's snapshot-retention pass (ISSUE-4)."""
+
+    tenant_id: str
+    repository_id: str
+
+
+@dataclass
+class CollectSnapshotsOutput:
+    collected_revisions: list[str] = field(default_factory=list)
+    pinned_count: int = 0
+    deleted_node_count: int = 0
+    deleted_edge_count: int = 0
+    error: str | None = None
+
+
+@activity.defn
+async def collect_snapshots_activity(
+    params: CollectSnapshotsInput | dict[str, Any],
+) -> CollectSnapshotsOutput:
+    """Classify one repository's topology snapshots and collect the
+    unpinned, out-of-window ones (ISSUE-4 janitor).
+
+    Never deletes a ``TopologySnapshot`` audit node, only the AST subgraph
+    beneath it, and never touches anything pinned by an open investigation's
+    own recorded evidence. Collection failures are reported, not raised —
+    a transient Neo4j hiccup on one repository must not fail the whole
+    scheduled pass (the workflow retries this activity per repository).
+    """
+    activity.logger.info("collect_snapshots_activity")
+    data = params if isinstance(params, dict) else params.__dict__
+    tenant_id = str(data.get("tenant_id", ""))
+    repository_id = str(data.get("repository_id", ""))
+    if not tenant_id or not repository_id:
+        return CollectSnapshotsOutput(error="tenant_id and repository_id required")
+
+    try:
+        from datetime import UTC, datetime
+
+        from investigation_agent_platform.application.topology.pinned_revisions import (
+            EvidenceBackedPinnedRevisionsProvider,
+        )
+        from investigation_agent_platform.application.topology.retention import (
+            classify_snapshots,
+        )
+
+        ctx = _get_ctx()
+        topology_adapter: Any = getattr(ctx, "topology_adapter", None)
+        if topology_adapter is None:
+            return CollectSnapshotsOutput(error="topology_adapter is not configured")
+        topology_config: Any = getattr(ctx, "topology_config", None)
+        if topology_config is None or not getattr(topology_config, "retention_enabled", False):
+            return CollectSnapshotsOutput(error="retention is not enabled")
+
+        pinned_provider = EvidenceBackedPinnedRevisionsProvider(
+            investigation_repo=ctx.investigation_repo,
+            evidence_repo=ctx.evidence_repo,
+        )
+        pinned_revisions = await pinned_provider.list_pinned_revisions(tenant_id, repository_id)
+        snapshots = await topology_adapter.list_snapshots(tenant_id, repository_id)
+        classification = classify_snapshots(
+            snapshots,
+            pinned_revisions,
+            now=datetime.now(UTC),
+            retention_window_days=topology_config.retention_window_days,
+            retention_max_snapshots_per_repository=(
+                topology_config.retention_max_snapshots_per_repository
+            ),
+        )
+
+        collected: list[str] = []
+        deleted_nodes = 0
+        deleted_edges = 0
+        for snapshot in classification.collectible:
+            result = await topology_adapter.collect_snapshot(
+                tenant_id, repository_id, snapshot.revision
+            )
+            if not result.already_collected:
+                collected.append(snapshot.revision)
+                deleted_nodes += result.deleted_node_count
+                deleted_edges += result.deleted_edge_count
+
+        return CollectSnapshotsOutput(
+            collected_revisions=collected,
+            pinned_count=len(classification.pinned),
+            deleted_node_count=deleted_nodes,
+            deleted_edge_count=deleted_edges,
+        )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("collect_snapshots_activity failed", extra={"error": str(exc)})
+        return CollectSnapshotsOutput(error=str(exc))
