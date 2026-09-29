@@ -1,0 +1,102 @@
+{
+  "index": "logz-gen-fault-alerts-es-000245",
+  "properties": {
+    "@timestamp": {
+      "type": "date"
+    },
+    "@version": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "Action": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "Method": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "Percent_increase_threshhold": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "Service": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "ServiceOperationName": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "Tracking": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "TransactionKey": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "appName": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "category": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "code": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "customerInfo": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "hubble": {
+      "properties": {
+        "ingester": {
+          "properties": {
+            "hostname": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "type": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "version": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "message": {
+      "ignore_above": 1024,
+      "type": "keyword"
+    },
+    "minimum_count": {
+      "type": "long"
+    },
+    "mute": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "pythonsource": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "requestStartTimestampText": {
+      "type": "date"
+    },
+    "sourceSystemId": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "system": {
+      "ignore_above": 128,
+      "type": "keyword"
+    }
+  }
+}

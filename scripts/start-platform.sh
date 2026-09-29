@@ -51,7 +51,7 @@ command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 2; 
 
 mkdir -p tmp
 echo "Starting infrastructure: $COMPOSE_FILE"
-docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal elasticsearch kafka
+docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka 
 
 echo "Waiting for services (timeout ${TIMEOUT}s)..."
 deadline=$((SECONDS + TIMEOUT))

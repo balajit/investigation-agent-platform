@@ -1,0 +1,24 @@
+services:
+  oracle-sqlcl-mcp-tolam-stg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: oracle-sqlcl-mcp:26.2
+    stdin_open: true
+    tty: false
+    volumes:
+      - ./connections:/config:ro
+      - ./secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro
+    restart: "no"
+
+  # Per-database instances share the image; each mounts its own
+  # connections + secret (see the Part 3 Oracle/MCP addendum):
+  #
+  # oracle-sqlcl-mcp-prodreplica:
+  #   image: oracle-sqlcl-mcp:26.2
+  #   stdin_open: true
+  #   tty: false
+  #   volumes:
+  #     - ./connections-prod:/config:ro
+  #     - ./secrets/prod-key:/run/secrets/sqlcl-encryption-key:ro
+  #   restart: "no"

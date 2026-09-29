@@ -21,7 +21,7 @@ class PaymentService:
     """Primary service class."""
 
     def charge(self, payment_id: str, amount_cents: int) -> str:
-        row = db.session.execute(
+        row = db.session.execute(  # noqa: F821 - fixture intentionally references an unresolved ORM handle
             "SELECT * FROM payments WHERE id = :id", {"id": payment_id}
         ).fetchone()
         if row is None:

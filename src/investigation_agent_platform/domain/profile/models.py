@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from investigation_agent_platform.domain.observability.mapping import GENERIC_ECS_SOURCE_ID
+
 
 class ProfileStatus(StrEnum):
     DRAFT = "DRAFT"
@@ -28,6 +30,14 @@ class ObservabilityProfile(BaseModel):
     request_field: str = Field(..., alias="requestField", max_length=128)
     trace_field: str = Field(..., alias="traceField", max_length=128)
     log_level_field: str = Field(..., alias="logLevelField", max_length=128)
+    # Part 10: links this profile to an ObservabilitySourceMapping
+    # (config/observability-mappings/<source_id>.yaml). Defaults to the
+    # built-in generic-ECS mapping, which reproduces pre-Part-10 behavior.
+    # The legacy singular *Field attributes above are superseded for the
+    # Elastic runtime path but left untouched for other consumers.
+    mapping_source_id: str = Field(
+        default=GENERIC_ECS_SOURCE_ID, alias="mappingSourceId", max_length=128
+    )
 
 
 class StateProfile(BaseModel):

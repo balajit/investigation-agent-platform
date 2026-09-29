@@ -11,6 +11,9 @@ Cases (exact-ownership weighted above recall, per Part 8 risk mitigation):
 2. overload — same-name methods in two classes resolve to their own owners.
 3. cross-repo — same-name symbols in two repos resolve repo-scoped with own domains.
 4. revision reproducibility — historical revision resolves against its own snapshot.
+5. call chain — intra-payload CALLS edge links caller to callee (multi-hop data present).
+6. blast radius — reverse CALLS index answers "who calls X".
+7. sql hop — ACCESSES_TABLE edge links the SQL-enclosing symbol to its table.
 """
 
 from __future__ import annotations
@@ -147,6 +150,28 @@ async def test_enrichment_benchmark(tmp_path: Path) -> None:
     ms = (time.perf_counter() - t) * 1000
     record("revision", old.snapshot_id != new.snapshot_id
            and old.matched_node_qualified_name == new.matched_node_qualified_name, ms)
+
+    # 5-7. multi-hop data present in the payload edge lists (same questions the
+    # pilot answers from Cognee points; adapter traversal APIs consume these).
+    pay_payload, _ = await module.build_payload_for_repo(
+        pay_root, tenant, f"{tenant}-{rid_pay}", rid_pay, sha_a)
+    quals = {n.node_id: n.qualified_name for n in pay_payload.ast_nodes}
+    t = time.perf_counter()
+    chain = {(quals.get(c.caller_node_id), quals.get(c.callee_node_id))
+             for c in pay_payload.calls}
+    ms = (time.perf_counter() - t) * 1000
+    record("call_chain", ("process_payment", "process_payment.validate") in chain, ms,
+           f"{len(chain)} call edges")
+    t = time.perf_counter()
+    callers = {quals.get(c.caller_node_id) for c in pay_payload.calls
+               if quals.get(c.callee_node_id) == "process_payment.validate"}
+    ms = (time.perf_counter() - t) * 1000
+    record("blast_radius", callers == {"process_payment"}, ms, str(sorted(callers)))
+    t = time.perf_counter()
+    sql = [(quals.get(d.source_node_id), d.target_entity_or_table)
+           for d in pay_payload.database_accesses]
+    ms = (time.perf_counter() - t) * 1000
+    record("sql_hop", ("PaymentService.charge", "payments") in sql, ms, str(sql))
 
     total_ms = (time.perf_counter() - t0) * 1000
     passed = sum(1 for c in cases if c["pass"])

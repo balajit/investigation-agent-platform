@@ -42,6 +42,27 @@ def _load_loader():  # type: ignore[no-untyped-def]
     return module
 
 
+def _ownership_for(checkout: Path, tenant_id: str, clone_url: str) -> list[str]:
+    """Derive the ownership path without writing anything (read-only).
+
+    Org from the clone URL when known, domain from the checkout's CODEOWNERS
+    catch-all; unresolvable stays unset, never manufactured.
+    """
+    from investigation_agent_platform.infrastructure.topology.ownership import (
+        derive_git_organization,
+        derive_repository_domain,
+    )
+
+    path: list[str] = []
+    org = derive_git_organization(tenant_id, clone_url) if clone_url else None
+    if org is not None:
+        path.append(org.git_org_id)
+    domain = derive_repository_domain(checkout)
+    if domain:
+        path.append(domain)
+    return path
+
+
 def _cognee_env_from_topology() -> None:
     """Map IAP_TOPOLOGY_NEO4J_* to the GRAPH_DATABASE_* vars Cognee reads."""
     mapping = {
@@ -85,6 +106,7 @@ async def run(args: argparse.Namespace) -> int:
             return 2
         repository_id, sha = args.repository_id, args.revision
         full_name = repository_id
+        clone_url = ""
     elif args.repo:
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
         if not token:
@@ -93,18 +115,23 @@ async def run(args: argparse.Namespace) -> int:
         repo = loader.get_single_repo(args.repo, token)
         owner, _, name = repo.full_name.partition("/")
         sha = loader.resolve_sha(owner, name, repo.default_branch, token)
-        workdir = Path(args.workdir or os.environ.get("IAP_CODE_REPO_BASE", "./tmp/repos")).resolve()
+        workdir = Path(
+            args.workdir or os.environ.get("IAP_CODE_REPO_BASE", "./tmp/repos")
+        ).resolve()
         workdir.mkdir(parents=True, exist_ok=True)
         checkout = await asyncio.to_thread(
-            loader.fetch_repo_at_sha, repo, sha, workdir, token, False)
+            loader.fetch_repo_at_sha, repo, sha, workdir, token, False
+        )
         repository_id, full_name = loader.repository_id_for(repo.full_name), repo.full_name
+        clone_url = repo.clone_url
     else:
         print("error: one of --repo, --checkout, or --drop is required", file=sys.stderr)
         return 2
 
     app_id = args.application_id or f"{tenant_id}-{repository_id}"
     payload, truncated = await loader.build_payload_for_repo(
-        checkout, tenant_id, app_id, repository_id, sha)
+        checkout, tenant_id, app_id, repository_id, sha
+    )
     if truncated:
         print(f"error: payload truncated for {full_name}; refusing to project", file=sys.stderr)
         return 1
@@ -114,16 +141,21 @@ async def run(args: argparse.Namespace) -> int:
         enabled=os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true",
         dataset_salt=os.environ.get("IAP_COGNEE_DATASET_SALT", ""),
     )
-    result = await adapter.project_snapshot(payload)
-    print(f"COGNEE-PILOT {full_name}@{sha[:12]} dataset={result.dataset} "
-          f"points={result.point_count} edges={result.edge_count} hash={result.projection_hash[:12]}")
+    ownership_path = _ownership_for(checkout, tenant_id, clone_url)
+    result = await adapter.project_snapshot(payload, ownership_path=ownership_path)
+    print(
+        f"COGNEE-PILOT {full_name}@{sha[:12]} dataset={result.dataset} "
+        f"points={result.point_count} edges={result.edge_count} hash={result.projection_hash[:12]}"
+    )
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Project a repo payload into Cognee (pilot).")
     p.add_argument("--repo", help="Single repository OWNER/NAME (fetches at HEAD SHA)")
-    p.add_argument("--checkout", help="Local checkout dir (offline; needs --repository-id/--revision)")
+    p.add_argument(
+        "--checkout", help="Local checkout dir (offline; needs --repository-id/--revision)"
+    )
     p.add_argument("--drop", action="store_true", help="Drop one projection instead of projecting")
     p.add_argument("--tenant-id", default="")
     p.add_argument("--repository-id", default="")

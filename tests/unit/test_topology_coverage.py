@@ -2804,3 +2804,90 @@ class TestServiceNameRepositoryMapping:
         assert resolved is not None
         assert resolved.repository_id == "repo-2"
         assert await adapter.resolve_for_service_name("tenant-b", "payments") is None
+
+
+# ===========================================================================
+# Neo4j batch writers: REFERENCES + ACCESSES_TABLE (D5 ISSUE-1/2)
+# ===========================================================================
+
+
+class TestNeo4jEdgeBatches:
+    def _two_nodes(self):  # type: ignore[no-untyped-def]
+        return _node(), _node(
+            qualified_name="mod.bar",
+            name="bar",
+            start_line=20,
+            end_line=25,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reference_batch_writes_merge(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.domain.topology.models import ReferenceEdgeInput
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        a, b = self._two_nodes()
+        payload = _payload(ast_nodes=[a, b])
+        ref = ReferenceEdgeInput(
+            source_node_id=a.node_id,
+            target_node_id=b.node_id,
+            reference_type="IMPORTS",
+            file_path="src/mod.py",
+            line_number=1,
+            confidence=0.8,
+        )
+        tx = AsyncMock()
+        await Neo4jTopologyAdapter._write_reference_batch(tx, payload, [ref])
+        stmt = tx.run.call_args[0][0]
+        assert "MERGE (source)-[r:REFERENCES]->(target)" in stmt
+        assert "tenant_id" in stmt and "revision" in stmt
+
+    @pytest.mark.asyncio
+    async def test_reference_batch_empty_noop(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        tx = AsyncMock()
+        await Neo4jTopologyAdapter._write_reference_batch(tx, _payload(), [])
+        tx.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_db_access_batch_writes_merge(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.domain.topology.models import DatabaseAccessEdgeInput
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        (a, _) = self._two_nodes()
+        payload = _payload(ast_nodes=[a])
+        edge = DatabaseAccessEdgeInput(
+            source_node_id=a.node_id,
+            target_entity_or_table="orders",
+            operation_type="SELECT",
+            query_fingerprint="fp",
+        )
+        tx = AsyncMock()
+        await Neo4jTopologyAdapter._write_db_access_batch(tx, payload, [edge])
+        stmt = tx.run.call_args[0][0]
+        assert "MERGE (t:DatabaseTable {tenant_id: $tenant_id, table_name: row.table_name})" in stmt
+        assert "MERGE (source)-[e:ACCESSES_TABLE]->(t)" in stmt
+
+    @pytest.mark.asyncio
+    async def test_db_access_batch_empty_noop(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.infrastructure.topology.neo4j_adapter import (
+            Neo4jTopologyAdapter,
+        )
+
+        tx = AsyncMock()
+        await Neo4jTopologyAdapter._write_db_access_batch(tx, _payload(), [])
+        tx.run.assert_not_called()

@@ -1,0 +1,70 @@
+{
+  "index": "logz-gen-root_cause-prod-es-000164",
+  "properties": {
+    "XCOSSessionId": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "_class": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "createdAt": {
+      "type": "long"
+    },
+    "errorDetails": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "errorReason": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "errorSource": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "failedServices": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "hubble": {
+      "properties": {
+        "ingester": {
+          "properties": {
+            "hostname": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "type": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "version": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "itemLevelException": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "message": {
+      "type": "match_only_text"
+    },
+    "requestId": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "triageToolException": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "updatedAt": {
+      "type": "long"
+    }
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "index": "logz-gen-buyflow-order-details-es-000030",
+  "properties": {
+    "@timestamp": {
+      "type": "date"
+    },
+    "@version": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "account_number": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "affiliate_name": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "buyflow_intent": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "channel_name": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "creation_date": {
+      "type": "date"
+    },
+    "current_tiers": {
+      "ignore_above": 256,
+      "type": "keyword"
+    },
+    "derived_intent": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "division": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "document_id": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "error_code": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "error_description": {
+      "fields": {
+        "keyword": {
+          "ignore_above": 32766,
+          "type": "keyword"
+        }
+      },
+      "norms": false,
+      "type": "text"
+    },
+    "existing_lobs": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "existing_mrc": {
+      "type": "float"
+    },
+    "hubble": {
+      "properties": {
+        "ingester": {
+          "properties": {
+            "hostname": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "type": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            },
+            "version": {
+              "ignore_above": 1024,
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "indexid": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "last_update": {
+      "type": "date"
+    },
+    "location_id": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "location_status": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "market": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "message": {
+      "type": "match_only_text"
+    },
+    "new_lobs": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "new_mrc": {
+      "type": "float"
+    },
+    "new_tiers": {
+      "ignore_above": 256,
+      "type": "keyword"
+    },
+    "one_time_charge": {
+      "type": "float"
+    },
+    "order_ref_id": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "order_type": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "promo_codes": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "removed_lobs": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "sales_intent": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "session_id": {
+      "ignore_above": 256,
+      "type": "keyword"
+    },
+    "status": {
+      "ignore_above": 128,
+      "type": "keyword"
+    },
+    "sub_order_type": {
+      "ignore_above": 128,
+      "type": "keyword"
+    }
+  }
+}

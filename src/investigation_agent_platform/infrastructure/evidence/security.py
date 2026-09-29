@@ -141,6 +141,38 @@ class SensitiveDataRedactor(EvidenceSanitizerPort):
 class QuerySafetyPolicy(QueryPolicyPort):
     """Enforces execution policies and parameter validation on runtime and state queries."""
 
+    async def validate_generated_sql(self, tenant_id: str, sql: str, max_bytes: int = 8192) -> str:
+        """Gate agent-generated SQL to read-only statements (MCP/Oracle path).
+
+        Returns the normalized statement. Rejects everything that is not a
+        top-level ``SELECT`` (including ``WITH ... SELECT``, which parses as
+        one) — DML, DDL, and PL/SQL never reach a connection. This is one of
+        four compensating controls (read-only grants, timeout/row caps, audit
+        are the others); no prompt text is trusted.
+        """
+        import sqlglot
+        import sqlglot.expressions as exp
+
+        if not sql or len(sql.encode("utf-8")) > max_bytes:
+            raise SecurityPolicyViolationException("Generated SQL is empty or oversized")
+        # Structural stacked-statement ban (do not rely on parser behavior):
+        # exactly one statement, so strip harmless trailing semicolons, then
+        # reject any remaining statement separator.
+        core = sql.strip().rstrip(";").strip()
+        if not core or ";" in core:
+            raise SecurityPolicyViolationException(
+                "Exactly one SELECT statement per execution; stacked statements rejected"
+            )
+        try:
+            parsed = sqlglot.parse_one(core, read="oracle")
+        except Exception as exc:
+            raise SecurityPolicyViolationException(f"Generated SQL does not parse: {exc}") from exc
+        if parsed is None or not isinstance(parsed, exp.Select):
+            raise SecurityPolicyViolationException(
+                "Only SELECT (including WITH ... SELECT) statements may execute"
+            )
+        return parsed.sql(dialect="oracle")
+
     async def validate_runtime_request(self, tenant_id: str, request: Any) -> None:
         qs: str | None = getattr(request, "query_string", None)
         if qs:

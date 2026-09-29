@@ -55,6 +55,8 @@ class EvidenceFreshness(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    observed_at: datetime
+    # Nullable since Part 9: mirrors `Evidence.observed_at` — unknown
+    # observation time is represented as `None`, never as retrieval time.
+    observed_at: datetime | None
     retrieved_at: datetime
     source_last_updated_at: datetime | None = None

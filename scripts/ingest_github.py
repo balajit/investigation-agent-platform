@@ -51,10 +51,27 @@ logger = logging.getLogger("iap.ingest_github")
 GITHUB_API = "https://api.github.com"
 SKIP_DIRS = frozenset(
     {
-        ".git", ".hg", ".svn", "node_modules", "vendor", "third_party",
-        "third-party", "bower_components", "__pycache__", ".venv", "venv",
-        ".tox", "dist", "build", "out", "target", ".next", ".nuxt",
-        "coverage", ".pytest_cache", ".mypy_cache",
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "vendor",
+        "third_party",
+        "third-party",
+        "bower_components",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        "dist",
+        "build",
+        "out",
+        "target",
+        ".next",
+        ".nuxt",
+        "coverage",
+        ".pytest_cache",
+        ".mypy_cache",
     }
 )
 SKIP_SUFFIXES = (".min.js", ".bundle.js", ".map", ".pb.go", ".d.ts")
@@ -77,7 +94,9 @@ _EXTRA_EXT_TO_LANGUAGE = {
     ".kt": "kotlin",
 }
 
-_IMPORT_RE = re.compile(r"^\s*(?:import\s+([\w.]+)|from\s+([\w.]+)\s+import\s+)", re.MULTILINE)
+_IMPORT_RE = re.compile(
+    r"^\s*(?:import\s+(?:static\s+)?([\w.*]+)|from\s+([\w.]+)\s+import\s+)", re.MULTILINE
+)
 _JS_IMPORT_RE = re.compile(r"""^\s*import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]""", re.MULTILINE)
 _FROM_TABLE_RE = re.compile(r"\bFROM\s+[\"'`\[]?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
@@ -93,6 +112,7 @@ class RepoListing:
     disabled: bool
     size_kb: int
     language: str | None
+    pushed_at: str | None = None
 
 
 class IngestManifestRow(BaseModel):
@@ -149,8 +169,14 @@ def _github_request(path: str, token: str, max_attempts: int = 5) -> tuple[objec
                 pass
             if exc.code in (403, 429) and attempts < max_attempts:
                 wait = _rate_limit_wait(exc.headers, attempts)
-                logger.warning("GitHub API %s for %s; retry %d/%d in %.0fs",
-                               exc.code, path, attempts, max_attempts, wait)
+                logger.warning(
+                    "GitHub API %s for %s; retry %d/%d in %.0fs",
+                    exc.code,
+                    path,
+                    attempts,
+                    max_attempts,
+                    wait,
+                )
                 time.sleep(wait)
                 continue
             raise RuntimeError(f"GitHub API {exc.code} for {path}: {body}") from exc
@@ -169,11 +195,12 @@ def _rate_limit_wait(headers: object, attempts: int) -> float:
                 return min(max(float(reset) - datetime.now(UTC).timestamp(), 1.0), 300.0)
     except (TypeError, ValueError):
         pass
-    return min(2.0 ** attempts, 60.0)
+    return min(2.0**attempts, 60.0)
 
 
-def list_org_repos(org: str, token: str, include_forks: bool,
-                   include_archived: bool) -> tuple[list[RepoListing], list[tuple[str, str]]]:
+def list_org_repos(
+    org: str, token: str, include_forks: bool, include_archived: bool, include_private: bool = True
+) -> tuple[list[RepoListing], list[tuple[str, str]]]:
     """List org repos; returns (repos, skipped) where skipped is (full_name, reason)."""
     repos: list[RepoListing] = []
     skipped: list[tuple[str, str]] = []
@@ -192,6 +219,9 @@ def list_org_repos(org: str, token: str, include_forks: bool,
             if item.get("fork") and not include_forks:
                 skipped.append((name, "fork"))
                 continue
+            if item.get("private") and not include_private:
+                skipped.append((name, "private"))
+                continue
             if not item.get("size"):
                 skipped.append((name, "empty"))
                 continue
@@ -206,6 +236,7 @@ def list_org_repos(org: str, token: str, include_forks: bool,
                     disabled=bool(item.get("disabled")),
                     size_kb=int(item.get("size") or 0),
                     language=item.get("language"),
+                    pushed_at=item.get("pushed_at"),
                 )
             )
         link = headers.get("link", "")
@@ -234,6 +265,7 @@ def get_single_repo(full_name: str, token: str) -> RepoListing:
         disabled=bool(data.get("disabled")),
         size_kb=int(data.get("size") or 0),
         language=data.get("language"),
+        pushed_at=data.get("pushed_at"),
     )
 
 
@@ -245,8 +277,12 @@ def resolve_sha(owner: str, repo: str, branch: str, token: str) -> str:
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
     proc = subprocess.run(
-        ["git", *args], cwd=str(cwd) if cwd else None,
-        capture_output=True, text=True, timeout=600, check=False,
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:1000]}")
@@ -258,7 +294,9 @@ def authed_clone_url(clone_url: str, token: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(netloc=f"oauth2:{token}@{parsed.hostname}"))
 
 
-def fetch_repo_at_sha(repo: RepoListing, sha: str, workdir: Path, token: str, full_clone: bool) -> Path:
+def fetch_repo_at_sha(
+    repo: RepoListing, sha: str, workdir: Path, token: str, full_clone: bool
+) -> Path:
     """Clone/fetch with C git only; assert HEAD == sha. Returns checkout dir."""
     dest = workdir / repo.full_name.replace("/", "--")
     if dest.exists() and not (dest / ".git").exists():
@@ -332,20 +370,27 @@ async def _build_adapter():  # type: ignore[no-untyped-def]
         Neo4jTopologyAdapter,
     )
 
-    adapter = Neo4jTopologyAdapter(TopologyConfig(
-        uri=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_URI", "")),
-        username=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_USERNAME", "")),
-        password=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_PASSWORD", "")),
-        database=os.environ.get("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
-        encrypted=os.environ.get("IAP_TOPOLOGY_NEO4J_ENCRYPTED", "true").lower() == "true",
-    ))
+    adapter = Neo4jTopologyAdapter(
+        TopologyConfig(
+            uri=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_URI", "")),
+            username=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_USERNAME", "")),
+            password=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_PASSWORD", "")),
+            database=os.environ.get("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
+            encrypted=os.environ.get("IAP_TOPOLOGY_NEO4J_ENCRYPTED", "true").lower() == "true",
+        )
+    )
     await adapter.connect()
     return adapter
 
 
-async def register_identities(checkout: Path, tenant_id: str, repo: RepoListing,
-                              repository_id: str, repo_type: str,
-                              adapter: object) -> dict[str, str | None]:
+async def register_identities(
+    checkout: Path,
+    tenant_id: str,
+    repo: RepoListing,
+    repository_id: str,
+    repo_type: str,
+    adapter: object,
+) -> dict[str, str | None]:
     """Upsert org + repository + CODEOWNERS domain before any graph write.
 
     Returns {"git_org_id", "domain_id"} for manifest logging. An unresolvable
@@ -362,11 +407,18 @@ async def register_identities(checkout: Path, tenant_id: str, repo: RepoListing,
     )
 
     git_org = derive_git_organization(tenant_id, repo.clone_url)
-    git_org_id = git_org.git_org_id if git_org is not None else f"github:{repo.full_name.split('/')[0]}".lower()
+    git_org_id = (
+        git_org.git_org_id
+        if git_org is not None
+        else f"github:{repo.full_name.split('/')[0]}".lower()
+    )
     domain_id = await asyncio.to_thread(derive_repository_domain, checkout)
     identity = RepositoryIdentity(
-        tenant_id=tenant_id, repository_id=repository_id, name=repo.full_name,
-        locator=repo.clone_url, git_org_id=git_org_id,
+        tenant_id=tenant_id,
+        repository_id=repository_id,
+        name=repo.full_name,
+        locator=repo.clone_url,
+        git_org_id=git_org_id,
         repository_type=RepositoryType(repo_type),
         default_branch=repo.default_branch,
     )
@@ -410,8 +462,11 @@ def _parser_version() -> str:
 
 
 async def build_payload_for_repo(
-    checkout: Path, tenant_id: str, application_id: str,
-    repository_id: str, sha: str,
+    checkout: Path,
+    tenant_id: str,
+    application_id: str,
+    repository_id: str,
+    sha: str,
 ) -> tuple[object, bool]:
     """Build one real `ASTTopologyPayload` for a checked-out repo revision.
 
@@ -457,7 +512,7 @@ async def build_payload_for_repo(
     # Per-file symbol tables for parent linkage and edge resolution.
     file_lines: dict[str, list[str]] = {}
     file_qual_index: dict[str, dict[str, ASTNodeIdentity]] = {}
-    module_index: dict[str, ASTNodeIdentity] = {}
+    module_index: dict[str, object] = {}
 
     for path in files:
         rel = path.relative_to(checkout).as_posix()
@@ -465,17 +520,24 @@ async def build_payload_for_repo(
             raw = path.read_bytes()
             text = raw.decode("utf-8", errors="replace")
         except OSError as exc:
-            diagnostics.append(ParseDiagnostic(file_path=rel[:1024], message=f"unreadable: {exc}"[:1024]))
+            diagnostics.append(
+                ParseDiagnostic(file_path=rel[:1024], message=f"unreadable: {exc}"[:1024])
+            )
             continue
         lines = text.splitlines()
         file_lines[rel] = lines
         content_hash = hashlib.sha256(raw).hexdigest()
         language = ext_map.get(path.suffix.lower(), "unknown")
-        source_files.append(SourceFileIdentity(
-            tenant_id=tenant_id, repository_id=repository_id, revision=sha,
-            path=rel, language=language[:64] if language != "unknown" else "unknown",
-            content_hash=content_hash[:128],
-        ))
+        source_files.append(
+            SourceFileIdentity(
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                revision=sha,
+                path=rel,
+                language=language[:64] if language != "unknown" else "unknown",
+                content_hash=content_hash[:128],
+            )
+        )
         qual_index: dict[str, ASTNodeIdentity] = {}
         file_qual_index[rel] = qual_index
 
@@ -483,12 +545,18 @@ async def build_payload_for_repo(
         dotted = rel.rsplit(".", 1)[0].replace("/", ".").replace("-", "_")
         try:
             module_node = ASTNodeIdentity.create(
-                tenant_id=tenant_id, repository_id=repository_id, revision=sha,
-                name=path.stem, qualified_name=dotted,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                revision=sha,
+                name=path.stem,
+                qualified_name=dotted,
                 node_type=__import__(
-                    "investigation_agent_platform.domain.topology.models", fromlist=["TopologyNodeType"]
+                    "investigation_agent_platform.domain.topology.models",
+                    fromlist=["TopologyNodeType"],
                 ).TopologyNodeType.MODULE,
-                file_path=rel, start_line=1, end_line=max(1, len(lines)),
+                file_path=rel,
+                start_line=1,
+                end_line=max(1, len(lines)),
                 parser_version=parser_version[:64],
             )
         except ValueError as exc:
@@ -497,6 +565,7 @@ async def build_payload_for_repo(
         ast_nodes.append(module_node)
         module_index[dotted] = module_node
         module_index[dotted.replace(".", "/")] = module_node
+        module_index.setdefault(f"stem:{path.stem}", []).append(module_node)
         qual_index[dotted] = module_node
 
         if language == "unknown":
@@ -514,25 +583,38 @@ async def build_payload_for_repo(
 
             node_type: TopologyNodeType | None = _TREE_SITTER_KIND_MAP.get(sym.symbol_type)  # type: ignore[assignment]
             if node_type is None:
-                diagnostics.append(ParseDiagnostic(
-                    file_path=rel[:1024],
-                    message=f"unmapped grammar kind '{sym.symbol_type}' for '{sym.name}'; skipped"[:1024],
-                    severity="WARNING",
-                ))
+                diagnostics.append(
+                    ParseDiagnostic(
+                        file_path=rel[:1024],
+                        message=f"unmapped grammar kind '{sym.symbol_type}' for '{sym.name}'; skipped"[
+                            :1024
+                        ],
+                        severity="WARNING",
+                    )
+                )
                 continue
             qualified = f"{sym.parent_symbol}.{sym.name}" if sym.parent_symbol else sym.name
             parent_id = None
             if sym.parent_symbol:
                 parent = qual_index.get(sym.parent_symbol) or next(
-                    (n for q, n in qual_index.items() if q.endswith(f".{sym.parent_symbol}")), None)
+                    (n for q, n in qual_index.items() if q.endswith(f".{sym.parent_symbol}")), None
+                )
                 parent_id = parent.node_id if parent is not None else None
             try:
                 node = ASTNodeIdentity.create(
-                    tenant_id=tenant_id, repository_id=repository_id, revision=sha,
-                    name=sym.name, qualified_name=qualified, node_type=node_type,
-                    file_path=rel, start_line=sym.start_line, end_line=sym.end_line,
-                    start_column=sym.start_column, end_column=sym.end_column,
-                    signature=sym.signature, parent_node_id=parent_id,
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    revision=sha,
+                    name=sym.name,
+                    qualified_name=qualified,
+                    node_type=node_type,
+                    file_path=rel,
+                    start_line=sym.start_line,
+                    end_line=sym.end_line,
+                    start_column=sym.start_column,
+                    end_column=sym.end_column,
+                    signature=sym.signature,
+                    parent_node_id=parent_id,
                     parser_version=parser_version[:64],
                 )
             except ValueError as exc:
@@ -558,7 +640,7 @@ async def build_payload_for_repo(
                 if len(calls) + len(references) >= MAX_EDGES_PER_REPO:
                     truncated = True
                     break
-                body = "\n".join(lines[caller.start_line - 1: caller.end_line])
+                body = "\n".join(lines[caller.start_line - 1 : caller.end_line])
                 seen: set[str] = set()
                 for callee_name, callee in unique.items():
                     if callee_name == caller_name or callee_name in seen:
@@ -568,43 +650,69 @@ async def build_payload_for_repo(
                         continue
                     seen.add(callee_name)
                     line_no = caller.start_line + body[: match.start()].count("\n")
-                    calls.append(CallEdgeInput(
-                        caller_node_id=caller.node_id, callee_node_id=callee.node_id,
-                        callee_qualified_name=callee.qualified_name,
-                        call_site_file=rel, call_site_line=line_no,
-                        resolution_status=CallResolutionStatus.RESOLVED, confidence=0.7,
-                    ))
+                    calls.append(
+                        CallEdgeInput(
+                            caller_node_id=caller.node_id,
+                            callee_node_id=callee.node_id,
+                            callee_qualified_name=callee.qualified_name,
+                            call_site_file=rel,
+                            call_site_line=line_no,
+                            resolution_status=CallResolutionStatus.RESOLVED,
+                            confidence=0.7,
+                        )
+                    )
                     if len(calls) + len(references) >= MAX_EDGES_PER_REPO:
                         truncated = True
                         break
 
         # REFERENCES from imports, resolved to unique same-repo MODULE nodes only.
-        module_node = next((n for n in ast_nodes
-                            if n.file_path == rel and n.node_type.value == "MODULE"), None)  # type: ignore[union-attr]
+        module_node = next(
+            (n for n in ast_nodes if n.file_path == rel and n.node_type.value == "MODULE"), None
+        )  # type: ignore[union-attr]
         if module_node is None:
             continue
         imported: dict[str, int] = {}
-        for m in _IMPORT_RE.finditer("\n".join(lines)):
-            mod = (m.group(1) or m.group(2) or "").split(".")[0]
-            if mod:
-                imported[mod] = m.group(0).count("\n", 0, m.start()) + 1
-        for m in _JS_IMPORT_RE.finditer("\n".join(lines)):
+        full_text = "\n".join(lines)
+        for m in _IMPORT_RE.finditer(full_text):
+            mod = (m.group(1) or m.group(2) or "").strip().rstrip(";")
+            if mod and mod != "static":
+                imported[mod] = full_text.count("\n", 0, m.start()) + 1
+        for m in _JS_IMPORT_RE.finditer(full_text):
             spec = m.group(1)
             if spec.startswith("."):
                 mod = Path(rel).parent.joinpath(spec).as_posix().replace("/", ".").replace("-", "_")
                 mod = re.sub(r"\.+$", "", mod.rsplit(".", 1)[0] if "." in spec else mod)
-                imported[mod.split(".")[-1]] = m.group(0).count("\n", 0, m.start()) + 1
+                imported[mod.split(".")[-1]] = full_text.count("\n", 0, m.start()) + 1
         for mod, line_no in imported.items():
             if len(calls) + len(references) >= MAX_EDGES_PER_REPO:
                 truncated = True
                 break
-            target = module_index.get(mod) or module_index.get(mod.replace(".", "/"))
+            # Resolution order: exact dotted/slashed module path, then a
+            # unique same-stem file — first segment (Python package root),
+            # then last segment (Java imported class). External packages and
+            # ambiguous stems are skipped, never guessed.
+            candidate = module_index.get(mod) or module_index.get(mod.replace(".", "/"))
+            target = candidate if not isinstance(candidate, list) else None
+            if target is None:
+                parts = mod.split(".")
+                for stem in dict.fromkeys([parts[0], parts[-1]]):
+                    stems = module_index.get(f"stem:{stem}", [])
+                    stems = [n for n in stems if isinstance(n, ASTNodeIdentity)]
+                    if len(stems) == 1:
+                        target = stems[0]
+                        break
             if target is None or target.node_id == module_node.node_id:
                 continue
-            references.append(ReferenceEdgeInput(
-                source_node_id=module_node.node_id, target_node_id=target.node_id,
-                reference_type="IMPORTS", file_path=rel, line_number=line_no, confidence=0.8,
-            ))
+            references.append(
+                ReferenceEdgeInput(
+                    source_node_id=module_node.node_id,
+                    target_node_id=target.node_id,
+                    reference_type="IMPORTS",
+                    file_path=rel,
+                    line_number=line_no,
+                    confidence=0.8,
+                )
+            )
 
         # ACCESSES_TABLE from SQL/ORM-context lines, enclosed-symbol resolution.
         for idx, line in enumerate(lines, start=1):
@@ -616,10 +724,14 @@ async def build_payload_for_repo(
             table = tm.group(1).lower()[:256]
             enclosing = None
             for node in ast_nodes:
-                if (node.file_path == rel and node.node_id in macro_ids
-                        and node.start_line <= idx <= node.end_line):
+                if (
+                    node.file_path == rel
+                    and node.node_id in macro_ids
+                    and node.start_line <= idx <= node.end_line
+                ):
                     if enclosing is None or (node.end_line - node.start_line) < (
-                            enclosing.end_line - enclosing.start_line):
+                        enclosing.end_line - enclosing.start_line
+                    ):
                         enclosing = node
             if enclosing is None:
                 continue
@@ -627,25 +739,39 @@ async def build_payload_for_repo(
                 truncated = True
                 break
             op = "SELECT" if "SELECT" in line.upper() else "READ"
-            db_accesses.append(DatabaseAccessEdgeInput(
-                source_node_id=enclosing.node_id, target_entity_or_table=table,
-                operation_type=op[:64],
-                query_fingerprint=hashlib.sha256(line.encode()).hexdigest()[:64],
-            ))
+            db_accesses.append(
+                DatabaseAccessEdgeInput(
+                    source_node_id=enclosing.node_id,
+                    target_entity_or_table=table,
+                    operation_type=op[:64],
+                    query_fingerprint=hashlib.sha256(line.encode()).hexdigest()[:64],
+                )
+            )
 
-    canonical = json.dumps({
-        "files": sorted(f.path for f in source_files),
-        "nodes": sorted(str(n.node_id) for n in ast_nodes),
-        "edges": sorted([f"{c.caller_node_id}>{c.callee_node_id}" for c in calls]
-                        + [f"{r.source_node_id}>{r.target_node_id}" for r in references]),
-        "revision": sha,
-    }, sort_keys=True)
+    canonical = json.dumps(
+        {
+            "files": sorted(f.path for f in source_files),
+            "nodes": sorted(str(n.node_id) for n in ast_nodes),
+            "edges": sorted(
+                [f"{c.caller_node_id}>{c.callee_node_id}" for c in calls]
+                + [f"{r.source_node_id}>{r.target_node_id}" for r in references]
+            ),
+            "revision": sha,
+        },
+        sort_keys=True,
+    )
     payload = ASTTopologyPayload(
-        schema_version="v1", parser_version=parser_version[:64],
-        tenant_id=tenant_id, application_id=application_id,
-        repository_id=repository_id, revision=sha, snapshot_id=uuid4(),
-        source_files=source_files[:20000], ast_nodes=ast_nodes[:200000],
-        calls=calls[:200000], references=references[:200000],
+        schema_version="v1",
+        parser_version=parser_version[:64],
+        tenant_id=tenant_id,
+        application_id=application_id,
+        repository_id=repository_id,
+        revision=sha,
+        snapshot_id=uuid4(),
+        source_files=source_files[:20000],
+        ast_nodes=ast_nodes[:200000],
+        calls=calls[:200000],
+        references=references[:200000],
         database_accesses=db_accesses[:20000],
         diagnostics=diagnostics[:1000],
         payload_hash=hashlib.sha256(canonical.encode()).hexdigest(),
@@ -654,8 +780,11 @@ async def build_payload_for_repo(
 
 
 async def parse_repo_to_payload(
-    checkout: Path, tenant_id: str, application_id: str,
-    repository_id: str, sha: str,
+    checkout: Path,
+    tenant_id: str,
+    application_id: str,
+    repository_id: str,
+    sha: str,
 ) -> dict:
     """Legacy dict-shape wrapper kept for backward compatibility.
 
@@ -664,7 +793,8 @@ async def parse_repo_to_payload(
     the Phase 0 dict shape.
     """
     payload, truncated = await build_payload_for_repo(
-        checkout, tenant_id, application_id, repository_id, sha)
+        checkout, tenant_id, application_id, repository_id, sha
+    )
     return {
         "schema_version": payload.schema_version,
         "parser_version": payload.parser_version,
@@ -673,11 +803,15 @@ async def parse_repo_to_payload(
         "repository_id": payload.repository_id,
         "revision": payload.revision,
         "snapshot_id": str(payload.snapshot_id),
-        "source_files": [{"path": f.path, "language": f.language,
-                          "content_hash": f.content_hash} for f in payload.source_files],
+        "source_files": [
+            {"path": f.path, "language": f.language, "content_hash": f.content_hash}
+            for f in payload.source_files
+        ],
         "symbol_count": len(payload.ast_nodes),
-        "diagnostics": [{"file_path": d.file_path, "message": d.message,
-                         "severity": d.severity} for d in payload.diagnostics],
+        "diagnostics": [
+            {"file_path": d.file_path, "message": d.message, "severity": d.severity}
+            for d in payload.diagnostics
+        ],
         "payload_hash": payload.payload_hash,
         "truncated": truncated,
     }
@@ -699,25 +833,45 @@ async def ingest_payload(payload: object, adapter: object, max_attempts: int = 3
         attempts += 1
         try:
             result = await adapter.ingest(payload)  # type: ignore[union-attr]
-            return {"status": result.status.value, "snapshot_id": str(result.snapshot_id),
-                    "node_count": result.node_count, "edge_count": result.edge_count,
-                    "micro_skipped": result.micro_skipped_count,
-                    "error": result.error_summary}
+            return {
+                "status": result.status.value,
+                "snapshot_id": str(result.snapshot_id),
+                "node_count": result.node_count,
+                "edge_count": result.edge_count,
+                "micro_skipped": result.micro_skipped_count,
+                "error": result.error_summary,
+            }
         except TopologyProviderUnavailableError as exc:
             if attempts >= max_attempts:
-                return {"status": "FAILED", "error": f"provider unavailable after {attempts} attempts: {exc}"}
-            await asyncio.sleep(2 ** attempts)
+                return {
+                    "status": "FAILED",
+                    "error": f"provider unavailable after {attempts} attempts: {exc}",
+                }
+            await asyncio.sleep(2**attempts)
 
 
-def manifest_row(tenant_id: str, org: str, repo: RepoListing, repository_id: str,
-                 sha: str, status: Literal["LISTED", "FETCHING", "READY", "FAILED", "SKIPPED"],
-                 counts: dict, error: str | None = None) -> IngestManifestRow:
+def manifest_row(
+    tenant_id: str,
+    org: str,
+    repo: RepoListing,
+    repository_id: str,
+    sha: str,
+    status: Literal["LISTED", "FETCHING", "READY", "FAILED", "SKIPPED"],
+    counts: dict,
+    error: str | None = None,
+) -> IngestManifestRow:
     return IngestManifestRow(
-        tenant_id=tenant_id, git_org=org,
-        repository_full_name=repo.full_name, repository_id=repository_id,
-        default_branch=repo.default_branch, revision_sha=sha, status=status,
-        node_count=counts.get("node_count", 0), edge_count=counts.get("edge_count", 0),
-        file_count=counts.get("file_count", 0), truncated=counts.get("truncated", False),
+        tenant_id=tenant_id,
+        git_org=org,
+        repository_full_name=repo.full_name,
+        repository_id=repository_id,
+        default_branch=repo.default_branch,
+        revision_sha=sha,
+        status=status,
+        node_count=counts.get("node_count", 0),
+        edge_count=counts.get("edge_count", 0),
+        file_count=counts.get("file_count", 0),
+        truncated=counts.get("truncated", False),
         error_summary=(error or "")[:2000] or None,
     )
 
@@ -756,15 +910,26 @@ async def run(args: argparse.Namespace) -> int:
 
     if args.repo:
         skipped: list[tuple[str, str]] = []
-        repos = [get_single_repo(args.repo, token)] if not args.dry_run else [
-            RepoListing(args.repo, "main", "", False, False, False, False, 0, None)]
+        repos = (
+            [get_single_repo(args.repo, token)]
+            if not args.dry_run
+            else [RepoListing(args.repo, "main", "", False, False, False, False, 0, None)]
+        )
         org = args.repo.split("/")[0]
     else:
         org = args.org
-        repos, skipped = list_org_repos(org, token, args.include_forks, args.include_archived)
+        repos, skipped = list_org_repos(
+            org,
+            token,
+            args.include_forks,
+            args.include_archived,
+            include_private=not args.exclude_private,
+        )
     if args.max_repos:
         repos = repos[: args.max_repos]
-    print(f"org={org} tenant={tenant_id} repos={len(repos)} skipped={len(skipped)} workdir={workdir}")
+    print(
+        f"org={org} tenant={tenant_id} repos={len(repos)} skipped={len(skipped)} workdir={workdir}"
+    )
 
     if manifest_path is None:
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -797,9 +962,18 @@ async def run(args: argparse.Namespace) -> int:
         for name, reason in skipped:
             skipped_count += 1
             placeholder = RepoListing(name, "main", "", False, False, False, False, 0, None)
-            emit(manifest_row(tenant_id, org, placeholder,
-                              repository_id_for(name, args.repository_id_prefix),
-                              "", "SKIPPED", {}, f"skipped: {reason}"))
+            emit(
+                manifest_row(
+                    tenant_id,
+                    org,
+                    placeholder,
+                    repository_id_for(name, args.repository_id_prefix),
+                    "",
+                    "SKIPPED",
+                    {},
+                    f"skipped: {reason}",
+                )
+            )
             print(f"SKIPPED {name} ({reason})")
         for repo in repos:
             owner, _, name = repo.full_name.partition("/")
@@ -812,10 +986,15 @@ async def run(args: argparse.Namespace) -> int:
                 print(f"FAILED {repo.full_name}: {exc}", file=sys.stderr)
                 continue
             try:
-                sha = repo.full_name and (resolve_sha(owner, name, repo.default_branch, token)
-                                          if not args.dry_run else "dry-run-sha")
+                sha = repo.full_name and (
+                    resolve_sha(owner, name, repo.default_branch, token)
+                    if not args.dry_run
+                    else "dry-run-sha"
+                )
                 assert sha
-                if (repo.full_name, sha) in resume_done and resume_done[(repo.full_name, sha)] == "READY":
+                if (repo.full_name, sha) in resume_done and resume_done[
+                    (repo.full_name, sha)
+                ] == "READY":
                     print(f"READY {repo.full_name}@{sha[:12]} (resume skip)")
                     continue
                 if args.dry_run:
@@ -823,45 +1002,79 @@ async def run(args: argparse.Namespace) -> int:
                     print(f"LISTED {repo.full_name} branch={repo.default_branch}")
                     continue
                 emit(manifest_row(tenant_id, org, repo, rid, sha, "FETCHING", {}))
-                checkout = await asyncio.to_thread(fetch_repo_at_sha, repo, sha, workdir, token, args.full_clone)
-                registration = await register_identities(checkout, tenant_id, repo, rid, rtype, adapter)
+                checkout = await asyncio.to_thread(
+                    fetch_repo_at_sha, repo, sha, workdir, token, args.full_clone
+                )
+                registration = await register_identities(
+                    checkout, tenant_id, repo, rid, rtype, adapter
+                )
                 if registration["domain_id"]:
-                    print(f"registered {repo.full_name} org={registration['git_org_id']} "
-                          f"domain={registration['domain_id']}")
+                    print(
+                        f"registered {repo.full_name} org={registration['git_org_id']} "
+                        f"domain={registration['domain_id']}"
+                    )
                 else:
-                    print(f"registered {repo.full_name} org={registration['git_org_id']} "
-                          f"(no CODEOWNERS domain; attribution falls back)")
+                    print(
+                        f"registered {repo.full_name} org={registration['git_org_id']} "
+                        f"(no CODEOWNERS domain; attribution falls back)"
+                    )
                 app_id = args.application_id or f"{tenant_id}-{rid}"
-                payload, truncated = await build_payload_for_repo(checkout, tenant_id, app_id, rid, sha)
-                counts = {"node_count": len(payload.ast_nodes),
-                          "edge_count": len(payload.calls) + len(payload.references),
-                          "file_count": len(payload.source_files), "truncated": truncated}
+                payload, truncated = await build_payload_for_repo(
+                    checkout, tenant_id, app_id, rid, sha
+                )
+                counts = {
+                    "node_count": len(payload.ast_nodes),
+                    "edge_count": len(payload.calls) + len(payload.references),
+                    "file_count": len(payload.source_files),
+                    "truncated": truncated,
+                }
                 if truncated:
                     failures += 1
-                    emit(manifest_row(
-                        tenant_id, org, repo, rid, sha, "FAILED", counts,
-                        "truncated: payload caps exceeded; snapshot not marked READY"))
-                    print(f"FAILED {repo.full_name}@{sha[:12]} truncated "
-                          f"files={counts['file_count']} symbols={counts['node_count']}")
+                    emit(
+                        manifest_row(
+                            tenant_id,
+                            org,
+                            repo,
+                            rid,
+                            sha,
+                            "FAILED",
+                            counts,
+                            "truncated: payload caps exceeded; snapshot not marked READY",
+                        )
+                    )
+                    print(
+                        f"FAILED {repo.full_name}@{sha[:12]} truncated "
+                        f"files={counts['file_count']} symbols={counts['node_count']}"
+                    )
                     continue
                 result = await ingest_payload(payload, adapter)
                 status = result["status"]
-                counts = {"node_count": result.get("node_count", counts["node_count"]),
-                          "edge_count": result.get("edge_count", counts["edge_count"]),
-                          "file_count": counts["file_count"], "truncated": False}
+                counts = {
+                    "node_count": result.get("node_count") or counts["node_count"],
+                    "edge_count": result.get("edge_count") or counts["edge_count"],
+                    "file_count": counts["file_count"],
+                    "truncated": False,
+                }
                 if status != "READY":
                     failures += 1
-                emit(manifest_row(tenant_id, org, repo, rid, sha, status, counts,
-                                  result.get("error")))
-                print(f"{status} {repo.full_name}@{sha[:12]} files={counts['file_count']} "
-                      f"symbols={counts['node_count']} snapshot={result.get('snapshot_id', '-')[:8]}")
+                emit(
+                    manifest_row(
+                        tenant_id, org, repo, rid, sha, status, counts, result.get("error")
+                    )
+                )
+                print(
+                    f"{status} {repo.full_name}@{sha[:12]} files={counts['file_count']} "
+                    f"symbols={counts['node_count']} snapshot={result.get('snapshot_id', '-')[:8]}"
+                )
             except Exception as exc:  # per-repo containment: rest of org continues
                 failures += 1
                 safe = _redacted(str(exc), token)[:1000]
                 emit(manifest_row(tenant_id, org, repo, rid, "unresolved", "FAILED", {}, safe))
                 print(f"FAILED {repo.full_name}: {safe}", file=sys.stderr)
-    print(f"done: {len(repos) - failures} READY, {failures} FAILED, "
-          f"{skipped_count} SKIPPED — manifest: {manifest_path}")
+    print(
+        f"done: {len(repos) - failures} READY, {failures} FAILED, "
+        f"{skipped_count} SKIPPED — manifest: {manifest_path}"
+    )
     close = getattr(adapter, "close", None)
     if callable(close):
         await close()
@@ -869,25 +1082,45 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Batch-load a GitHub org or single repo into IAP Layer 3.")
+    p = argparse.ArgumentParser(
+        description="Batch-load a GitHub org or single repo into IAP Layer 3."
+    )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--org", help="GitHub organization login")
     src.add_argument("--repo", help="Single repository OWNER/NAME")
-    p.add_argument("--resume", default="",
-                   help="Prior manifest path: READY SHAs skip, FAILED retry")
+    p.add_argument(
+        "--resume", default="", help="Prior manifest path: READY SHAs skip, FAILED retry"
+    )
     p.add_argument("--tenant-id", default="", help="Tenant partition (or IAP_TENANT_ID)")
     p.add_argument("--workdir", default="", help="Checkout root (or IAP_CODE_REPO_BASE)")
-    p.add_argument("--manifest", default="", help="Manifest JSONL path (default ./tmp/ingest-<org>-<ts>.jsonl)")
-    p.add_argument("--application-id", default="", help="Payload application_id (default <tenant>-<repo>)")
+    p.add_argument(
+        "--manifest", default="", help="Manifest JSONL path (default ./tmp/ingest-<org>-<ts>.jsonl)"
+    )
+    p.add_argument(
+        "--application-id", default="", help="Payload application_id (default <tenant>-<repo>)"
+    )
     p.add_argument("--repository-id-prefix", default="", help="Prefix for derived repository_id")
-    p.add_argument("--repo-type", default="UNKNOWN", help="RepositoryType for all repos (unless --repo-types overrides)")
-    p.add_argument("--repo-types", action="append", default=[],
-                   help="Repeatable per-repo override OWNER/NAME=TYPE")
+    p.add_argument(
+        "--repo-type",
+        default="UNKNOWN",
+        help="RepositoryType for all repos (unless --repo-types overrides)",
+    )
+    p.add_argument(
+        "--repo-types",
+        action="append",
+        default=[],
+        help="Repeatable per-repo override OWNER/NAME=TYPE",
+    )
     p.add_argument("--include-forks", action="store_true")
     p.add_argument("--include-archived", action="store_true")
+    p.add_argument(
+        "--exclude-private", action="store_true", help="Skip private repos (included by default)"
+    )
     p.add_argument("--full-clone", action="store_true", help="Full clone instead of blobless")
     p.add_argument("--max-repos", type=int, default=0, help="Cap repos for smoke tests (0 = all)")
-    p.add_argument("--dry-run", action="store_true", help="List + pin SHAs only, no fetch/parse/ingest")
+    p.add_argument(
+        "--dry-run", action="store_true", help="List + pin SHAs only, no fetch/parse/ingest"
+    )
     return p
 
 

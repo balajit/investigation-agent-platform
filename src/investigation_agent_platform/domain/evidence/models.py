@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investigation_agent_platform.domain.evidence.completeness import EvidenceDataQuality
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -20,6 +21,23 @@ class ClassificationLevel(StrEnum):
     CONFIDENTIAL = "CONFIDENTIAL"
     RESTRICTED = "RESTRICTED"
     SECRET = "SECRET"
+
+
+class LogSeverity(StrEnum):
+    """Closed severity vocabulary for runtime evidence filtering.
+
+    Unknown values are rejected at the request boundary (never silently
+    dropped): an invalid severity must not broaden a query into an unfiltered
+    one. Values mirror the MCP `severities` enum contract.
+    """
+
+    TRACE = "TRACE"
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARN = "WARN"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    FATAL = "FATAL"
 
 
 class EvidenceType(StrEnum):
@@ -97,11 +115,17 @@ class Evidence(BaseModel):
     summary: str = Field(..., max_length=2048)
     content_snippet: str = Field(default="", max_length=4096)
     attributes: dict[str, Any] = Field(default_factory=dict)
-    observed_at: datetime
+    # Nullable since Part 9: a missing/invalid provider timestamp must never be
+    # fabricated from retrieval time. `None` means observation time unknown;
+    # consumers must consult provenance/freshness data-quality state.
+    observed_at: datetime | None
     retrieved_at: datetime
     provenance: EvidenceProvenance
     freshness: EvidenceFreshness
     classification: ClassificationLevel = ClassificationLevel.INTERNAL
+    # Part 9: interpretation-relevant quality flags (why observed_at is None,
+    # whether attributes were reduced). Empty in the common clean case.
+    data_quality: list[EvidenceDataQuality] = Field(default_factory=list, max_length=10)
     is_redacted: bool = False
     fingerprint: str = Field(..., max_length=128)
     content_uri: str | None = Field(default=None, max_length=1024)
@@ -129,7 +153,8 @@ class EvidencePage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     items: list[Evidence] = Field(default_factory=list, max_length=100)
-    next_cursor: str | None = Field(default=None, max_length=256)
+    # Signed pagination cursors are base64url tokens that exceed 256 chars.
+    next_cursor: str | None = Field(default=None, max_length=4096)
     has_more: bool = False
     total_count: int | None = Field(default=None, ge=0)
 

@@ -77,6 +77,97 @@ class TestPointMapping:
     def test_micro_tier_excluded(self) -> None:
         assert all(p.node_id for p in map_payload_to_points(_payload()))
 
+    def test_edges_mapped_with_exact_labels(self) -> None:
+        from investigation_agent_platform.domain.topology.models import (
+            CallEdgeInput,
+            CallResolutionStatus,
+            ReferenceEdgeInput,
+        )
+
+        payload = _payload()
+        (node,) = payload.ast_nodes
+        other = _node_like(payload, "mod.other", "other")
+        payload = payload.model_copy(update={"ast_nodes": [node, other]})
+        calls = [CallEdgeInput(caller_node_id=node.node_id, callee_node_id=other.node_id,
+                               callee_qualified_name="mod.other", call_site_file="src/payments.py",
+                               call_site_line=1, resolution_status=CallResolutionStatus.RESOLVED)]
+        refs = [ReferenceEdgeInput(source_node_id=node.node_id, target_node_id=other.node_id,
+                                   reference_type="IMPORTS", file_path="src/payments.py",
+                                   line_number=1)]
+        dangling = CallEdgeInput(caller_node_id=node.node_id,
+                                 callee_node_id=uuid.uuid4(), callee_qualified_name="ghost",
+                                 call_site_file="src/payments.py", call_site_line=2,
+                                 resolution_status=CallResolutionStatus.UNRESOLVED)
+        points = map_payload_to_points(payload, calls + [dangling], refs)
+        by_id = {p.node_id: p for p in points}
+        linked = _linked_rels(by_id[str(node.node_id)])
+        assert "CALLS" in [rel for rel, _ in linked]
+        assert "REFERENCES" in [rel for rel, _ in linked]
+        assert all("ghost" not in tgt for _, tgt in linked)
+
+    def test_guardrail_constant_off(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            ALLOW_COMPLETION,
+        )
+
+        assert ALLOW_COMPLETION is False
+
+    def test_ownership_population(self) -> None:
+        assert map_payload_to_points(_payload())[0].ownership_path in ((), [])
+        owned = map_payload_to_points(_payload(), ownership_path=["github:acme", "team-pay"])
+        assert list(owned[0].ownership_path) == ["github:acme", "team-pay"]
+
+    def test_reader_requires_package(self) -> None:
+        import uuid
+
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            CogneeAttributionReader,
+        )
+
+        reader = CogneeAttributionReader(enabled=True, dataset_salt="s")
+        if COGNEE_AVAILABLE:
+            pytest.skip("cognee installed; live reader covered by integration test")
+        with pytest.raises(TopologyNotConfiguredError, match="not installed"):
+            import asyncio as _aio
+
+            _aio.run(reader.resolve_source_location("t", "a", uuid.uuid4(), "r", "v", "f", 1))
+
+    def test_reader_construction_guards(self) -> None:
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            CogneeAttributionReader,
+        )
+
+        with pytest.raises(TopologyNotConfiguredError, match="disabled"):
+            CogneeAttributionReader(enabled=False, dataset_salt="s")
+        with pytest.raises(TopologyNotConfiguredError, match="SALT"):
+            CogneeAttributionReader(enabled=True, dataset_salt="")
+
+
+def _node_like(payload, qualified: str, name: str):  # type: ignore[no-untyped-def]
+    from investigation_agent_platform.domain.topology.models import (
+        ASTNodeIdentity,
+        TopologyNodeType,
+    )
+
+    return ASTNodeIdentity.create(
+        tenant_id=payload.tenant_id, repository_id=payload.repository_id,
+        revision=payload.revision, name=name, qualified_name=qualified,
+        node_type=TopologyNodeType.FUNCTION, file_path="src/other.py",
+        start_line=1, end_line=5,
+    )
+
+
+def _linked_rels(point):  # type: ignore[no-untyped-def]
+    """Normalize linked edges across the DataPoint and mirror shapes."""
+    out = []
+    for item in point.linked:
+        if isinstance(item, tuple) and len(item) == 2:
+            rel, target = item
+            rel_name = getattr(rel, "relationship_type", rel)
+            target_id = getattr(target, "node_id", target)
+            out.append((rel_name, str(target_id)))
+    return out
+
 
 class TestCompletionContainment:
     @pytest.mark.parametrize("allowed", ["CHUNKS", "SUMMARIES", "CHUNKS_LEXICAL", "CYPHER", "CODE"])

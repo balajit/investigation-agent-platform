@@ -39,6 +39,7 @@ class InvestigationStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    PAUSED = "PAUSED"
 
 
 class FactType(StrEnum):
@@ -287,6 +288,7 @@ class Investigation(BaseModel):
             InvestigationStatus.CREATED: {
                 InvestigationStatus.CONTEXTUALIZING,
                 InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
@@ -295,6 +297,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.CORRELATING,
                 InvestigationStatus.HYPOTHESIZING,
                 InvestigationStatus.CONCLUDING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
@@ -302,6 +305,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.CORRELATING,
                 InvestigationStatus.HYPOTHESIZING,
                 InvestigationStatus.CONCLUDING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
@@ -309,6 +313,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.HYPOTHESIZING,
                 InvestigationStatus.INVESTIGATING,
                 InvestigationStatus.CONCLUDING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
@@ -316,6 +321,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.VERIFYING,
                 InvestigationStatus.INVESTIGATING,
                 InvestigationStatus.CONCLUDING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
@@ -324,12 +330,14 @@ class Investigation(BaseModel):
                 InvestigationStatus.HYPOTHESIZING,
                 InvestigationStatus.INVESTIGATING,
                 InvestigationStatus.CORRELATING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },
             InvestigationStatus.CONCLUDING: {
                 InvestigationStatus.COMPLETED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
             },
             InvestigationStatus.COMPLETED: {
@@ -337,6 +345,11 @@ class Investigation(BaseModel):
             },
             InvestigationStatus.FAILED: {
                 InvestigationStatus.INVESTIGATING,
+            },
+            InvestigationStatus.PAUSED: {
+                InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.CANCELLED,
+                InvestigationStatus.FAILED,
             },
             InvestigationStatus.CANCELLED: set(),
         }

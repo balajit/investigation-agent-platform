@@ -24,6 +24,7 @@ from investigation_agent_platform.domain.provenance.models import (
     QueryFingerprint,
     SourceLocation,
 )
+from investigation_agent_platform.ports.evidence.code import CodeDiffResult
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -190,6 +191,59 @@ class PyGit2Adapter:
             return await asyncio.to_thread(
                 self._get_code_history_sync, tenant_id, investigation_id, path, profile
             )
+
+    async def compare_versions(
+        self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
+    ) -> CodeDiffResult:
+        """Diff two revisions within the tenant-scoped repository.
+
+        Added for `CodeEvidenceProviderProtocol` parity (the selector's
+        runtime protocol check rejected this adapter without it). Bounded:
+        50 files, 20 KB of patch text per file, binary patches dropped.
+        """
+        with tracer.start_as_current_span("PyGit2Adapter.compare_versions") as span:
+            span.set_attribute("tenant_id", tenant_id)
+            return await asyncio.to_thread(
+                self._compare_versions_sync, tenant_id, source_ref, target_ref, profile
+            )
+
+    def _compare_versions_sync(
+        self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
+    ) -> CodeDiffResult:
+        self._require_tenant_scope(tenant_id, profile)
+        repository = profile.repository
+        repo_path = (self._repo_base_path / repository).resolve()
+        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
+            raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
+
+        repo = pygit2.Repository(str(repo_path))
+        try:
+            old = repo.revparse_single(source_ref)
+            new = repo.revparse_single(target_ref)
+        except KeyError as exc:
+            raise ExecutionError(f"Unknown revision ref: {exc}") from exc
+        old_tree = old.tree if isinstance(old, pygit2.Commit) else old
+        new_tree = new.tree if isinstance(new, pygit2.Commit) else new
+        diff = repo.diff(old_tree, new_tree)
+
+        files_changed: list[str] = []
+        diff_contents: dict[str, str] = {}
+        for patch in diff:
+            if len(files_changed) >= 50:
+                break
+            path = patch.delta.new_file.path or patch.delta.old_file.path
+            files_changed.append(path)
+            try:
+                text = patch.text or ""
+            except (ValueError, UnicodeDecodeError):
+                continue  # binary patch: name recorded, content dropped
+            diff_contents[path] = text[:20_480]
+        return CodeDiffResult(
+            source_ref=source_ref,
+            target_ref=target_ref,
+            files_changed=files_changed,
+            diff_contents=diff_contents,
+        )
 
     def _get_code_history_sync(
         self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile

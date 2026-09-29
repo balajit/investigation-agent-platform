@@ -88,7 +88,7 @@ class GraphitiTemporalKnowledge:
     def _client_or_raise(self) -> Any:
         if self._client is None:
             from graphiti_core import Graphiti  # type: ignore[import-untyped]
-            from graphiti_core.embedder.openai import OpenAIEmbedderConfig
+            from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
             from graphiti_core.llm_client import OpenAIClient
             from graphiti_core.llm_client.config import LLMConfig
 

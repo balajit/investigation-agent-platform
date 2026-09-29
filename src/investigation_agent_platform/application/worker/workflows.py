@@ -131,7 +131,12 @@ class RunInvestigationWorkflow:
         # Budget guard: wall-clock + token/cost + max iterations.
         # Deterministic: use workflow.now() would be ideal but workflow.time is not available in all SDKs;
         # we rely on iteration cap + InvestigationBudget signal from reason/execute metadata.
-        max_iterations = 10
+        # WORKFLOW_LOCAL_ITERATION_GUARD is a determinism-safe backstop only, not
+        # the budget: real limits live in infra BudgetConfig (operator knob) and
+        # are enforced via activity metadata signals (domain InvestigationBudget).
+        # Do not tune investigation budgets here; change BudgetConfig instead.
+        WORKFLOW_LOCAL_ITERATION_GUARD = 10
+        max_iterations = WORKFLOW_LOCAL_ITERATION_GUARD
         # Lazy import for type safety without failing workflow determinism checks.
         # Budget is evaluated via activity results; workflow keeps local iteration guard.
         iteration = 0

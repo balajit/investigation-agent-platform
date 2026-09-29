@@ -86,6 +86,10 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
 
     try:
+        # rls_session requires a callable session factory, not the raw
+        # engine (passing the engine raises TypeError on first use).
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
         from investigation_agent_platform.infrastructure.persistence.evidence_repository import (
             SqlAlchemyEvidenceRepository,
         )
@@ -102,8 +106,7 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
             SqlAlchemyTimelineRepository,
         )
 
-        # session factory is the engine itself for rls_session helper
-        session_factory = engine
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
         investigation_repo = SqlAlchemyInvestigationRepository(session_factory)  # type: ignore[arg-type]
         profile_repo = SqlAlchemyApplicationProfileRepository(session_factory)  # type: ignore[arg-type]
@@ -143,57 +146,7 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         session_repo = SqlAlchemySessionRepository(session_factory)
         code_issue_index = SqlAlchemyCodeIssueIndex(session_factory)
     except Exception as exc:
-        raise PlatformConfigurationError(
-            f"Failed to wire Mem0 knowledge store: {exc}"
-        ) from exc
-
-
-def _wire_graphiti_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
-    """Wire Part 6 Slice 2 Graphiti temporal projection.
-
-    Builds GraphitiTemporalKnowledge against Neo4j when
-    `config.knowledge.graphiti_enabled` is true. Neo4j connection fields
-    fall back to the Layer 3 topology settings so both graph consumers
-    share one instance by default. Any wiring failure aborts production
-    startup (F-001 precedent); runtime projection failures later only
-    degrade to envelopes.
-    """
-    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
-
-    if not config.knowledge.graphiti_enabled:
-        logger.info("Graphiti projection disabled; envelopes only")
-        return
-
-    from investigation_agent_platform.infrastructure.knowledge.graphiti_adapter import (
-        GraphitiTemporalKnowledge,
-    )
-
-    try:
-        uri = config.knowledge.graphiti_neo4j_uri.get_secret_value()
-        user = config.knowledge.graphiti_neo4j_user.get_secret_value()
-        password = config.knowledge.graphiti_neo4j_password.get_secret_value()
-        if not uri:
-            uri = config.topology.uri.get_secret_value()
-            user = config.topology.username.get_secret_value()
-            password = config.topology.password.get_secret_value()
-        ctx.temporal_port = GraphitiTemporalKnowledge(  # type: ignore[attr-defined]
-            neo4j_uri=uri,
-            neo4j_user=user,
-            neo4j_password=password,
-            neo4j_database=config.knowledge.graphiti_neo4j_database,
-            model=config.knowledge.graphiti_model,
-            api_key=config.llm.api_key.get_secret_value(),
-            embedder_model=config.knowledge.graphiti_embedder_model,
-            semaphore_limit=config.knowledge.graphiti_semaphore_limit,
-        )
-        # Graph-schema migration step (mirrors Layer 3 install_constraints):
-        # create Graphiti indexes/constraints once at startup, never per request.
-        _run_async(ctx.temporal_port.ensure_indices())  # type: ignore[attr-defined]
-        logger.info("Graphiti temporal projection wired")
-    except Exception as exc:
-        raise PlatformConfigurationError(
-            f"Failed to wire Graphiti temporal knowledge: {exc}"
-        ) from exc
+        raise PlatformConfigurationError(f"Failed to wire persistence repositories: {exc}") from exc
 
     # Elastic / Oracle / Git adapters — attach to context if available
     ctx = AppContext(
@@ -261,11 +214,271 @@ def _wire_graphiti_dependencies(ctx: AppContext, config: ApplicationConfig) -> N
 
     ctx.temporal_config = config.temporal  # type: ignore[attr-defined]
 
+    _wire_evidence_gateway(ctx, config)
     _wire_topology_dependencies(ctx, config)
     _wire_knowledge_dependencies(ctx, config)
     _wire_graphiti_dependencies(ctx, config)
 
     return ctx
+
+
+def _oracle_mcp_servers(config: ApplicationConfig) -> list[dict[str, Any]]:
+    """Load Oracle MCP server entries from YAML (no secrets — mounts carry those).
+
+    Missing/empty file means no MCP servers (absent-means-unregistered).
+    Entries missing name/command/args/connection are skipped with a warning,
+    never half-registered; entries with empty tenants register nothing
+    (default-deny) and are logged as such.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(config.evidence.oracle_mcp_config)
+    if not path.is_file():
+        logger.info(
+            "No Oracle MCP server file; skipping MCP registration", extra={"path": str(path)}
+        )
+        return []
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.warning("Oracle MCP server file unreadable; skipping", extra={"error": str(exc)})
+        return []
+    entries = []
+    for entry in raw.get("servers", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if not all(entry.get(k) for k in ("name", "command", "args", "connection")):
+            logger.warning(
+                "Oracle MCP server entry incomplete; skipping",
+                extra={"entry": str(entry.get("name"))},
+            )
+            continue
+        if not entry.get("tenants"):
+            logger.warning(
+                "Oracle MCP server entry has no tenants; registering nothing",
+                extra={"entry": entry.get("name")},
+            )
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Compose the evidence gateway onto the production context (Part 3 addendum).
+
+    Registers each evidence provider only when its connection details are
+    configured (unconfigured providers stay unregistered, never stubbed),
+    then builds the gateway with the mandatory sanitizer + query policy and
+    tenant-scoped authorizer/registry. Any failure here aborts boot
+    (F-001): a half-wired gateway must not silently replace direct paths.
+    """
+    from investigation_agent_platform.application.evidence.gateway import AsyncEvidenceGateway
+    from investigation_agent_platform.application.evidence.selector import (
+        EvidenceProviderSelector,
+    )
+    from investigation_agent_platform.application.investigation.composition import (
+        build_investigation_services,
+    )
+    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+    from investigation_agent_platform.infrastructure.configuration.mapping_registry import (
+        load_mapping_profiles,
+    )
+    from investigation_agent_platform.infrastructure.evidence.security import (
+        QuerySafetyPolicy,
+        SensitiveDataRedactor,
+    )
+    from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+        ProfileBackedRepositoryRegistry,
+    )
+
+    try:
+        # Part 10: operator-authored field contracts. Load failure aborts
+        # boot (F-001) — a half-mapped evidence layer must never serve.
+        mapping_registry = load_mapping_profiles(config.evidence.mapping_profiles_path)
+        logger.info(
+            "Observability mappings loaded",
+            extra={"source_ids": sorted(mapping_registry.source_ids)},
+        )
+        selector = EvidenceProviderSelector()
+        if config.evidence.elasticsearch_url:
+            from elasticsearch import AsyncElasticsearch
+
+            from investigation_agent_platform.infrastructure.evidence.runtime.elastic import (
+                AsyncElasticAdapter,
+                ElasticAdapterSettings,
+            )
+
+            selector.register_runtime_provider(
+                "elastic-primary",
+                AsyncElasticAdapter(
+                    client=AsyncElasticsearch(
+                        config.evidence.elasticsearch_url,
+                        request_timeout=config.evidence.elastic_request_timeout,
+                    ),
+                    settings=ElasticAdapterSettings.from_evidence_config(config.evidence),
+                    provider_id="elastic-primary",
+                    request_timeout=config.evidence.elastic_request_timeout,
+                    mapping_registry=mapping_registry,
+                ),
+                # Default route: one shared Elastic deployment serves all
+                # tenant/app/env contexts (per-request scoping in the adapter).
+                default=True,
+            )
+        else:
+            logger.info("Elastic provider unconfigured; key elastic-primary stays unregistered")
+        if config.evidence.oracle_dsn.get_secret_value():
+            import importlib.util
+
+            if importlib.util.find_spec("oracledb") is None:
+                logger.warning("oracledb package absent; key oracle-primary stays unregistered")
+            else:
+                from sqlalchemy.ext.asyncio import create_async_engine as _create_engine
+
+                from investigation_agent_platform.infrastructure.evidence.state.oracle import (
+                    AsyncOracleStateAdapter,
+                    SqlglotTemplateValidator,
+                )
+
+                selector.register_state_provider(
+                    "oracle-primary",
+                    AsyncOracleStateAdapter(
+                        engine=_create_engine(
+                            f"oracle+oracledb://{config.evidence.oracle_dsn.get_secret_value()}"
+                        ),
+                        template_repository={},
+                        # Empty allowlist = no table restriction at the
+                        # validator layer (SELECT-only + bounds still
+                        # enforced); per-profile templates scope queries.
+                        validator=SqlglotTemplateValidator(set()),
+                        provider_id="oracle-primary",
+                        query_timeout=config.evidence.oracle_query_timeout,
+                    ),
+                )
+        else:
+            logger.info("Oracle DSN unconfigured; key oracle-primary stays unregistered")
+        if config.topology.code_repo_base_path:
+            from investigation_agent_platform.infrastructure.evidence.code.git import (
+                PyGit2Adapter,
+            )
+
+            selector.register_code_provider(
+                "pygit2-local",
+                PyGit2Adapter(
+                    repo_base_path=config.topology.code_repo_base_path,
+                    provider_id="pygit2-local",
+                ),
+            )
+        # MCP registers only with explicit server entries (no config shape
+        # means unregistered, per the addendum). One adapter per database.
+        for entry in _oracle_mcp_servers(config):
+            from investigation_agent_platform.infrastructure.evidence.mcp import (
+                McpEvidenceAdapter,
+            )
+
+            allowlist = {t: {entry["connection"]} for t in entry.get("tenants", [])}
+            selector.register_state_provider(
+                f"oracle-mcp-{entry['name']}",
+                McpEvidenceAdapter(
+                    server_params={"command": entry["command"], "args": entry["args"]},
+                    allowed_tools=entry.get("allowed_tools", ["run-sql"]),
+                    tool_timeout_seconds=float(entry.get("timeout_seconds", 30.0)),
+                    max_items_per_call=int(entry.get("max_rows", 1000)),
+                    connection_name=entry.get("connection", ""),
+                    tenant_allowlist=allowlist or None,
+                ),
+            )
+            logger.info(
+                "MCP Oracle server registered", extra={"key": f"oracle-mcp-{entry['name']}"}
+            )
+        selector.freeze()
+
+        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+            ProfileBasedActionAuthorizer,
+            ProfileBasedCapabilityRegistry,
+        )
+
+        sanitizer = SensitiveDataRedactor()
+        ctx.evidence_gateway = AsyncEvidenceGateway(  # type: ignore[attr-defined]
+            provider_selector=selector,
+            query_safety_policy=QuerySafetyPolicy(),
+            sanitizer=sanitizer,
+            telemetry=getattr(ctx, "observability", None),
+            timeout_seconds=config.evidence.gateway_timeout_seconds,
+            authorizer=ProfileBasedActionAuthorizer(ctx.profile_repo),
+            capability_registry=ProfileBasedCapabilityRegistry(ctx.profile_repo),
+            evidence_repository=ctx.evidence_repo,
+            repository_registry=ProfileBackedRepositoryRegistry(ctx.profile_repo),
+        )
+        logger.info("Evidence gateway composed")
+
+        from investigation_agent_platform.infrastructure.evidence.logs.trace_telemetry import (
+            TraceTelemetryExtractor,
+        )
+
+        # Part 9: transport-independent investigation services over the same
+        # gateway/selector/repositories (shared by MCP, REST, CLI, workers).
+        ctx.investigation_services = build_investigation_services(  # type: ignore[attr-defined]
+            gateway=ctx.evidence_gateway,  # type: ignore[attr-defined]
+            selector=selector,
+            investigation_repo=ctx.investigation_repo,
+            evidence_repo=ctx.evidence_repo,
+            profile_repo=ctx.profile_repo,
+            sanitizer=sanitizer,
+            derivation=TraceTelemetryExtractor(mapping_registry=mapping_registry),
+        )
+        logger.info("Investigation services composed")
+    except Exception as exc:
+        raise PlatformConfigurationError(f"Failed to wire evidence gateway: {exc}") from exc
+
+
+def _wire_graphiti_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Wire Part 6 Slice 2 Graphiti temporal projection.
+
+    Builds GraphitiTemporalKnowledge against Neo4j when
+    `config.knowledge.graphiti_enabled` is true. Neo4j connection fields
+    fall back to the Layer 3 topology settings so both graph consumers
+    share one instance by default. Any wiring failure aborts production
+    startup (F-001 precedent); runtime projection failures later only
+    degrade to envelopes.
+    """
+    from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+
+    if not config.knowledge.graphiti_enabled:
+        logger.info("Graphiti projection disabled; envelopes only")
+        return
+
+    from investigation_agent_platform.infrastructure.knowledge.graphiti_adapter import (
+        GraphitiTemporalKnowledge,
+    )
+
+    try:
+        uri = config.knowledge.graphiti_neo4j_uri.get_secret_value()
+        user = config.knowledge.graphiti_neo4j_user.get_secret_value()
+        password = config.knowledge.graphiti_neo4j_password.get_secret_value()
+        if not uri:
+            uri = config.topology.uri.get_secret_value()
+            user = config.topology.username.get_secret_value()
+            password = config.topology.password.get_secret_value()
+        ctx.temporal_port = GraphitiTemporalKnowledge(  # type: ignore[attr-defined]
+            neo4j_uri=uri,
+            neo4j_user=user,
+            neo4j_password=password,
+            neo4j_database=config.knowledge.graphiti_neo4j_database,
+            model=config.knowledge.graphiti_model,
+            api_key=config.llm.api_key.get_secret_value(),
+            embedder_model=config.knowledge.graphiti_embedder_model,
+            semaphore_limit=config.knowledge.graphiti_semaphore_limit,
+        )
+        # Graph-schema migration step (mirrors Layer 3 install_constraints):
+        # create Graphiti indexes/constraints once at startup, never per request.
+        _run_async(ctx.temporal_port.ensure_indices())  # type: ignore[attr-defined]
+        logger.info("Graphiti temporal projection wired")
+    except Exception as exc:
+        raise PlatformConfigurationError(
+            f"Failed to wire Graphiti temporal knowledge: {exc}"
+        ) from exc
 
 
 def _wire_knowledge_dependencies(ctx: AppContext, config: ApplicationConfig) -> None:
@@ -373,8 +586,26 @@ def _wire_topology_dependencies(ctx: AppContext, config: ApplicationConfig) -> N
         repository_registry=ctx.repository_registry,
         codeowners_resolver=codeowners_resolver,
         micro_resolver=micro_resolver,
+        trace_hop_resolver=_hop_resolver_for(ctx),
     )
     logger.info("Layer 3 topology backend (Neo4j) wired successfully")
+
+
+def _hop_resolver_for(ctx: AppContext) -> Any | None:
+    """Build the trace-hop resolver when a gateway is composed, else None.
+
+    Absent resolver keeps single-repository attribution (fail-closed); this
+    is the normal dev state, never an error.
+    """
+    gateway = getattr(ctx, "evidence_gateway", None)
+    if gateway is None:
+        logger.info("No evidence gateway composed; cross-repo hopping stays disabled")
+        return None
+    from investigation_agent_platform.infrastructure.topology.trace_hop import (
+        GatewayTraceHopResolver,
+    )
+
+    return GatewayTraceHopResolver(gateway)
 
 
 def build_app_context(config: ApplicationConfig) -> AppContext:

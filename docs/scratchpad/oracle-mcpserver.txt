@@ -1,0 +1,1370 @@
+ # Oracle SQLcl MCP Docker Server
+
+ ## Implementation Specification 
+
+ ## 1\. Objective
+
+ Build a containerized **Oracle SQLcl MCP Server** that allows an agentic investigation platform to investigate an Oracle Database 19c environment using **read-only application data**.
+
+ The solution must use **Oracle SQLcl's native MCP server capability**.
+
+ Do **not** implement a custom Python MCP server.
+
+ ### Target database
+
+```
+Oracle Database 19c
+Database version: 19.28.0.0.0
+```
+
+ ### Initial scope
+
+ The MCP server must allow an AI investigation agent to:
+
+ 1. Connect to the configured Oracle database.
+2. Discover application schemas.
+3. Inspect table and column metadata.
+4. Discover relationships/constraints.
+5. Generate SQL dynamically.
+6. Execute read-only SQL.
+7. Receive query results.
+8. Iterate through multiple queries as part of an investigation.
+
+ The initial implementation must **not** provide:
+
+ - INSERT
+- UPDATE
+- DELETE
+- MERGE
+- DDL
+- PL/SQL execution
+- DBA/performance views
+- AWR
+- ASH
+- `V$` views
+- `GV$` views
+- Database administration
+
+ The first version is strictly for **application-data investigation**.
+
+---
+
+ # 2\. Key Architectural Decision
+
+ Use:
+
+```
+Oracle SQLcl 25.2+
+```
+
+ with its native MCP server:
+
+```
+sql -mcp
+```
+
+ Do not build:
+
+```
+Python MCP server
+FastMCP wrapper
+Custom JSON-RPC implementation
+```
+
+ The architecture is:
+
+```
+                    Investigation Agent
+                           |
+                           | MCP / stdio
+                           v
+              +-------------------------+
+              | Docker Container        |
+              |                         |
+              | Java 17                 |
+              | SQLcl 25.2+             |
+              | SQLcl MCP Server        |
+              | SQLcl connection store  |
+              +------------+------------+
+                           |
+                           | Oracle Net
+                           v
+              +-------------------------+
+              | Oracle Database 19c     |
+              | 19.28                   |
+              |                         |
+              | Application schemas     |
+              | READ ONLY               |
+              +-------------------------+
+```
+
+ Oracle SQLcl already provides MCP functionality, including connection management and SQL execution. Do not duplicate this functionality.
+
+---
+
+ # 3\. Repository Structure
+
+ Create:
+
+```
+oracle-mcp/
+├── Dockerfile
+├── entrypoint.sh
+├── docker-compose.yml
+├── .dockerignore
+├── .gitignore
+├── README.md
+├── connections/
+│   └── tolam_stg.json
+└── secrets/
+    └── sqlcl-encryption-key
+```
+
+ The following must never be copied into the Docker image:
+
+```
+connections/
+secrets/
+```
+
+ They must be mounted at runtime.
+
+---
+
+ # 4\. Docker Image Requirements
+
+ Use:
+
+```
+eclipse-temurin:17-jre-jammy
+```
+
+ The image must contain:
+
+ - Java 17
+- Oracle SQLcl 25.2 or later
+- curl
+- unzip
+- CA certificates
+
+ Do not install Python.
+
+ Do not install the Python MCP SDK.
+
+ Do not include `mcp_server.py`.
+
+---
+
+ # 5\. SQLcl Version
+
+ The implementation must use:
+
+```
+SQLcl >= 25.2.0
+```
+
+ Prefer a pinned SQLcl version for reproducible builds.
+
+ Do not use an unpinned `sqlcl-latest.zip` URL in the production Dockerfile.
+
+ Make the download URL configurable through:
+
+```
+ARG SQLCL_URL
+```
+
+ The build must fail if `SQLCL_URL` is not supplied.
+
+ Example:
+
+```
+docker build \
+  --build-arg SQLCL_URL="<verified Oracle SQLcl download URL>" \
+  -t oracle-sqlcl-mcp:25.2 .
+```
+
+---
+
+ # 6\. Dockerfile
+
+ Create `Dockerfile`:
+
+```
+FROM eclipse-temurin:17-jre-jammy
+
+ARG SQLCL_URL
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       curl \
+       unzip \
+       ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+RUN test -n "${SQLCL_URL}" \
+    && curl -fL "${SQLCL_URL}" -o sqlcl.zip \
+    && unzip -q sqlcl.zip \
+    && rm sqlcl.zip
+
+ENV PATH="/opt/sqlcl/bin:${PATH}"
+
+ENV HOME=/home/sqlcl
+
+RUN useradd \
+      --create-home \
+      --home-dir /home/sqlcl \
+      --shell /bin/bash \
+      sqlcl \
+    && mkdir -p /home/sqlcl/.dbtools \
+    && chown -R sqlcl:sqlcl /home/sqlcl
+
+COPY entrypoint.sh /entrypoint.sh
+
+RUN chmod 0755 /entrypoint.sh \
+    && chown sqlcl:sqlcl /entrypoint.sh
+
+USER sqlcl
+
+WORKDIR /home/sqlcl
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+ The container must run as the non-root `sqlcl` user.
+
+---
+
+ # 7\. Entrypoint
+
+ Create `entrypoint.sh`.
+
+ Responsibilities:
+
+ 1. Validate required mounted files.
+2. Verify SQLcl version.
+3. Import the SQL Developer connection.
+4. Verify the connection exists.
+5. Start SQLcl MCP.
+6. Never print passwords or encryption keys.
+
+ Required files:
+
+```
+/config/tolam_stg.json
+/run/secrets/sqlcl-encryption-key
+```
+
+ Use:
+
+```
+#!/bin/bash
+set -euo pipefail
+
+CONNECTION_FILE="/config/tolam_stg.json"
+KEY_FILE="/run/secrets/sqlcl-encryption-key"
+
+echo "Starting Oracle SQLcl MCP Server..."
+
+echo "SQLcl version:"
+sql -version
+
+echo "Java version:"
+java -version 2>&1 | head -1
+
+if [ ! -f "${CONNECTION_FILE}" ]; then
+    echo "ERROR: Connection file not found: ${CONNECTION_FILE}" >&2
+    exit 1
+fi
+
+if [ ! -f "${KEY_FILE}" ]; then
+    echo "ERROR: SQLcl encryption key not found." >&2
+    exit 1
+fi
+
+SQLCL_KEY="$(cat "${KEY_FILE}")"
+
+echo "Importing SQL Developer connection..."
+
+sql -S <<EOF
+SECRET SET mcpImportKey ${SQLCL_KEY}
+CONNMGR IMPORT -KEY mcpImportKey -DUPLICATES REPLACE ${CONNECTION_FILE}
+EXIT
+EOF
+
+echo "Connection import completed."
+
+echo "Starting SQLcl MCP Server..."
+
+exec sql -mcp
+```
+
+ The implementation must review the SQLcl command syntax for the exact SQLcl version being installed and adjust the bootstrap commands if necessary.
+
+ Do not expose the encryption key in:
+
+ - logs
+- process arguments
+- Dockerfile
+- Git
+- MCP configuration
+- shell history
+
+---
+
+ # 8\. Existing Connection File
+
+ The user has an existing SQL Developer connection export:
+
+```
+scripts/tolam_stg.json
+```
+
+ Use this file as the initial Oracle connection.
+
+ Copy it to:
+
+```
+connections/tolam_stg.json
+```
+
+ Do not modify the file unless SQLcl requires a documented format conversion.
+
+ The connection was exported from:
+
+```
+Oracle SQL Developer 23.1.1.345
+```
+
+ The saved password may be encrypted.
+
+ The encryption key must be provided separately.
+
+ SQLcl supports importing SQL Developer connection JSON using `CONNMGR IMPORT`.
+
+---
+
+ # 9\. Secrets
+
+ Do not use:
+
+```
+DB_USER
+DB_PASS
+DB_CONNECT_STRING
+```
+
+ as the primary credential mechanism.
+
+ Do not put passwords into:
+
+```
+Dockerfile
+docker-compose.yml
+MCP client configuration
+Git
+```
+
+ The existing SQL Developer connection export should be used for the initial POC.
+
+ The encryption key must be provided at runtime through:
+
+```
+/run/secrets/sqlcl-encryption-key
+```
+
+ For production, integrate with the organization's approved secret manager.
+
+---
+
+ # 10\. Docker Compose
+
+ Create `docker-compose.yml`.
+
+ Example:
+
+```
+services:
+  oracle-sqlcl-mcp:
+    build:
+      context: .
+      args:
+        SQLCL_URL: ${SQLCL_URL}
+
+    image: oracle-sqlcl-mcp:25.2
+
+    stdin_open: true
+    tty: false
+
+    volumes:
+      - ./connections:/config:ro
+      - ./secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro
+
+    restart: "no"
+```
+
+ Do not put database passwords or encryption keys directly into this file.
+
+ Use:
+
+```
+.env
+```
+
+ only for non-secret build configuration such as the SQLcl download URL, and ensure `.env` is appropriately protected.
+
+---
+
+ # 11\. .gitignore
+
+ Create:
+
+```
+connections/
+secrets/
+.env
+*.log
+```
+
+ If the project needs to preserve an example connection file, use:
+
+```
+connections/example.json
+```
+
+ with all credentials removed.
+
+ Never commit:
+
+```
+tolam_stg.json
+sqlcl-encryption-key
+```
+
+ unless the connection export has been verified to contain no credentials and organizational policy explicitly permits it.
+
+---
+
+ # 12\. .dockerignore
+
+ Create:
+
+```
+.git
+.gitignore
+.env
+connections/
+secrets/
+README.md
+*.log
+```
+
+ The connection JSON and secret must not become Docker image layers.
+
+---
+
+ # 13\. Build
+
+ The implementation must support:
+
+```
+docker build \
+  --build-arg SQLCL_URL="<verified SQLcl URL>" \
+  -t oracle-sqlcl-mcp:25.2 .
+```
+
+ After building:
+
+```
+docker run --rm oracle-sqlcl-mcp:25.2 sql -version
+```
+
+ Expected:
+
+```
+SQLcl: 25.2.x
+```
+
+ Also verify:
+
+```
+docker run --rm oracle-sqlcl-mcp:25.2 java -version
+```
+
+ Expected Java major version:
+
+```
+17
+```
+
+---
+
+ # 14\. Connection Import Test
+
+ Before starting MCP, test SQLcl interactively.
+
+ Mount:
+
+```
+connections/
+secrets/
+```
+
+ into the container.
+
+ Verify:
+
+```
+CONNMGR LIST
+```
+
+ The expected connection is:
+
+```
+TOLAM_STG
+```
+
+ Test it:
+
+```
+CONNMGR TEST TOLAM_STG
+```
+
+ Then:
+
+```
+CONNECT TOLAM_STG
+```
+
+ The implementation must confirm that the connection succeeds before attempting MCP integration.
+
+---
+
+ # 15\. Database Verification
+
+ Once connected, execute:
+
+```
+SELECT
+    SYS_CONTEXT('USERENV', 'DB_NAME') AS DB_NAME,
+    SYS_CONTEXT('USERENV', 'SERVICE_NAME') AS SERVICE_NAME,
+    USER AS DB_USER
+FROM dual;
+```
+
+ Then:
+
+```
+SELECT banner_full
+FROM v$version;
+```
+
+ Expected database version:
+
+```
+Oracle Database 19c
+Version 19.28.0.0.0
+```
+
+ Do not make assumptions about the service name, hostname, SID, or PDB name. Obtain those values from the imported connection.
+
+---
+
+ # 16\. Application Data Scope
+
+ The database user must have read-only access to application data.
+
+ The preferred database account is:
+
+```
+MCP_INVESTIGATION_READ
+```
+
+ It should have only the required:
+
+```
+SELECT
+```
+
+ privileges.
+
+ It must not have:
+
+```
+INSERT
+UPDATE
+DELETE
+MERGE
+CREATE
+ALTER
+DROP
+TRUNCATE
+GRANT
+REVOKE
+EXECUTE
+```
+
+ Do not use:
+
+```
+SYS
+SYSTEM
+```
+
+ Do not use a DBA account.
+
+ Do not use an individual developer's production credentials for the production deployment.
+
+---
+
+ # 17\. Application Schema Discovery
+
+ The agent must be able to discover application metadata dynamically.
+
+ Useful metadata sources include:
+
+```
+ALL_TABLES
+ALL_VIEWS
+ALL_TAB_COLUMNS
+ALL_CONSTRAINTS
+ALL_CONS_COLUMNS
+ALL_INDEXES
+ALL_IND_COLUMNS
+```
+
+ Example table discovery:
+
+```
+SELECT
+    owner,
+    table_name
+FROM all_tables
+WHERE owner = '<APPLICATION_SCHEMA>'
+ORDER BY owner, table_name;
+```
+
+ Example column discovery:
+
+```
+SELECT
+    owner,
+    table_name,
+    column_id,
+    column_name,
+    data_type,
+    data_length,
+    nullable
+FROM all_tab_columns
+WHERE owner = '<APPLICATION_SCHEMA>'
+ORDER BY table_name, column_id;
+```
+
+ Relationship discovery:
+
+```
+SELECT
+    owner,
+    constraint_name,
+    constraint_type,
+    table_name,
+    r_constraint_name,
+    status
+FROM all_constraints
+WHERE owner = '<APPLICATION_SCHEMA>'
+ORDER BY table_name, constraint_name;
+```
+
+ Do not hard-code a complete application schema into the MCP server.
+
+ The investigation agent should discover the relevant metadata as needed.
+
+---
+
+ # 18\. MCP Capability
+
+ The MCP server must expose Oracle SQLcl's native capabilities.
+
+ The agent should be able to:
+
+```
+list connections
+connect
+disconnect
+run SQL
+run SQLcl commands where explicitly allowed
+```
+
+ The primary investigation capability is:
+
+```
+run-sql
+```
+
+ The agent should use it for read-only application queries.
+
+ Do not implement custom MCP functions such as:
+
+```
+get_customer()
+get_order()
+get_invoice()
+```
+
+ unless a later phase specifically requires them.
+
+ The objective is dynamic database investigation.
+
+---
+
+ # 19\. Example Investigation
+
+ The system should support an investigation such as:
+
+```
+User:
+
+Investigate why order 12345 has not shipped.
+```
+
+ The agent should be capable of:
+
+```
+1. Connect to the application database.
+
+2. Discover relevant schemas.
+
+3. Inspect candidate tables.
+
+4. Inspect columns.
+
+5. Inspect primary/foreign-key relationships.
+
+6. Generate a SELECT query.
+
+7. Execute the query.
+
+8. Analyze the result.
+
+9. Form another hypothesis.
+
+10. Generate another SELECT.
+
+11. Execute it.
+
+12. Continue until enough evidence exists
+    to explain the application-level issue.
+```
+
+ The system must not require a developer to pre-author every query.
+
+---
+
+ # 20\. Query Safety
+
+ The database's read-only privileges are the primary security boundary.
+
+ However, the implementation should also document the expectation that the investigation agent uses only read operations.
+
+ The initial allowed SQL category is:
+
+```
+SELECT
+WITH ... SELECT
+```
+
+ The following must not be intentionally exposed to the agent:
+
+```
+INSERT
+UPDATE
+DELETE
+MERGE
+DROP
+ALTER
+TRUNCATE
+CREATE
+GRANT
+REVOKE
+```
+
+ PL/SQL execution is out of scope.
+
+ Do not rely on an LLM system prompt as the security boundary.
+
+ Oracle privileges must enforce read-only behavior.
+
+---
+
+ # 21\. Query Resource Controls
+
+ The implementation should document and, where practical, enforce:
+
+```
+Query timeout
+Maximum result rows
+Maximum response size
+```
+
+ Initial POC defaults:
+
+```
+Query timeout: 30 seconds
+Maximum rows: 1,000
+```
+
+ These values must be configurable.
+
+ Avoid returning millions of rows to an LLM.
+
+ The agent should be encouraged to use targeted predicates and aggregation.
+
+---
+
+ # 22\. Production Network Architecture
+
+ The container is deployed inside the enterprise data center.
+
+ The database connection should be:
+
+```
+Docker container
+      |
+      | Oracle Net
+      |
+      v
+Oracle 19c
+```
+
+ Do not expose the Oracle listener to the public Internet.
+
+ The container only needs network connectivity to the Oracle listener/service.
+
+ Example:
+
+```
+MCP Client
+    |
+    | MCP / stdio
+    v
+Docker container
+    |
+    | TCP 1521 / Oracle Net
+    v
+Oracle Database
+```
+
+ The actual Oracle port/service must come from the existing connection configuration.
+
+---
+
+ # 23\. MCP Client Configuration
+
+ The MCP client should launch the container using stdio.
+
+ Generic configuration:
+
+```
+{
+  "mcpServers": {
+    "oracle-19c-investigation": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--name",
+        "oracle-sqlcl-mcp",
+        "-v",
+        "/absolute/path/oracle-mcp/connections:/config:ro",
+        "-v",
+        "/absolute/path/oracle-mcp/secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro",
+        "oracle-sqlcl-mcp:25.2"
+      ]
+    }
+  }
+}
+```
+
+ Do not put:
+
+```
+DB_PASS
+DB_USER
+```
+
+ in this configuration.
+
+---
+
+ # 24\. MCP Startup
+
+ The final container process must be:
+
+```
+sql -mcp
+```
+
+ The Python MCP SDK must not be involved.
+
+ The container must keep the MCP process attached to stdin/stdout.
+
+ Do not redirect MCP protocol traffic to ordinary logging on stdout.
+
+ If diagnostic logging is needed, send it to stderr.
+
+ This is important because MCP stdio uses stdin/stdout for protocol communication.
+
+---
+
+ # 25\. Logging
+
+ Normal diagnostic messages should go to:
+
+```
+stderr
+```
+
+ not stdout.
+
+ Do not log:
+
+```
+Oracle passwords
+SQL Developer encryption keys
+Connection secrets
+Access tokens
+```
+
+ Do not log full query results if they may contain sensitive application data.
+
+---
+
+ # 26\. Security Requirements
+
+ The implementation must satisfy:
+
+ ### Database
+
+ - Dedicated read-only account.
+- Application schemas only.
+- No DBA account.
+- No DML privileges.
+- No DDL privileges.
+- No PL/SQL execution.
+
+ ### Container
+
+ - Run as non-root.
+- Minimal base image.
+- No credentials baked into the image.
+- No secrets in Dockerfile.
+- No secrets in Git.
+- Connection JSON mounted read-only.
+- Encryption key mounted read-only.
+
+ ### MCP
+
+ - Native SQLcl MCP.
+- stdio transport.
+- No custom Python MCP proxy.
+- No credentials in MCP client configuration.
+
+ ### Network
+
+ - Container runs inside enterprise network.
+- Oracle listener remains private.
+- Only required Oracle network access is permitted.
+
+---
+
+ # 27\. Production Improvement: Investigation Replica
+
+ For the initial POC, direct read-only access to the Oracle environment may be acceptable if approved.
+
+ For production, prefer:
+
+```
+Production Oracle
+       |
+       | replication
+       v
+Investigation Oracle
+       |
+       | read-only
+       v
+SQLcl MCP
+       |
+       v
+Investigation Agent
+```
+
+ This prevents an autonomous investigation query from affecting production workloads.
+
+ The investigation database can contain only the application data required for investigation.
+
+---
+
+ # 28\. Future DBA Investigation — Out of Scope for Phase 1
+
+ Do not add these capabilities initially:
+
+```
+V$SESSION
+V$SQL
+V$SQL_PLAN
+V$LOCK
+V$SESSION_WAIT
+V$SYSTEM_EVENT
+DBA_HIST_*
+AWR
+ASH
+```
+
+ A future phase can add Oracle diagnostic information.
+
+ The future architecture may become:
+
+```
+Application Data
+       +
+Oracle Diagnostic Data
+       +
+Investigation Agent
+```
+
+ But Phase 1 must remain:
+
+```
+Application Data
+       +
+Read-only SQL
+       +
+Agentic Investigation
+```
+
+---
+
+ # 29\. Acceptance Criteria
+
+ The implementation is complete when all of the following work.
+
+ ## Container
+
+```
+[ ] Docker image builds successfully.
+[ ] Container runs as non-root.
+[ ] Java 17 is installed.
+[ ] SQLcl 25.2+ is installed.
+[ ] SQLcl version can be displayed.
+```
+
+ ## Connection
+
+```
+[ ] tolam_stg.json can be mounted.
+[ ] Encryption key can be mounted separately.
+[ ] SQL Developer connection can be imported.
+[ ] CONNMGR LIST shows TOLAM_STG.
+[ ] CONNMGR TEST succeeds.
+[ ] CONNECT TOLAM_STG succeeds.
+```
+
+ ## Database
+
+```
+[ ] Database reports Oracle 19c.
+[ ] Database reports version 19.28.0.0.0.
+[ ] Application schema metadata can be queried.
+[ ] Application table metadata can be queried.
+[ ] Application data can be read.
+```
+
+ ## MCP
+
+```
+[ ] sql -mcp starts successfully.
+[ ] MCP client can launch the Docker container.
+[ ] MCP client discovers SQLcl MCP tools.
+[ ] Agent can connect to TOLAM_STG.
+[ ] Agent can execute SELECT queries.
+[ ] Agent can inspect schema metadata.
+[ ] Agent can iteratively execute multiple read queries.
+```
+
+ ## Security
+
+```
+[ ] No password is present in Dockerfile.
+[ ] No password is present in MCP configuration.
+[ ] Encryption key is not baked into image.
+[ ] Connection file is not baked into image.
+[ ] Container runs as non-root.
+[ ] Oracle account is read-only.
+[ ] INSERT fails.
+[ ] UPDATE fails.
+[ ] DELETE fails.
+[ ] DDL fails.
+```
+
+---
+
+ # 30\. Required Negative Tests
+
+ The coding agent must test that dangerous operations cannot be performed.
+
+ For example:
+
+```
+INSERT INTO some_table (...) VALUES (...);
+```
+
+ must fail.
+
+```
+UPDATE some_table
+SET some_column = ...
+WHERE ...;
+```
+
+ must fail.
+
+```
+DELETE FROM some_table
+WHERE ...;
+```
+
+ must fail.
+
+ The exact error will depend on Oracle privileges.
+
+ The important requirement is:
+
+```
+Database must reject the operation.
+```
+
+ Do not simply detect these strings in Python.
+
+ There is no Python SQL filter in this architecture.
+
+---
+
+ # 31\. Required Read Tests
+
+ Test:
+
+```
+SELECT 1 FROM dual;
+```
+
+ Test metadata:
+
+```
+SELECT owner, table_name
+FROM all_tables
+WHERE owner = '<APPLICATION_SCHEMA>'
+FETCH FIRST 20 ROWS ONLY;
+```
+
+ Test application data:
+
+```
+SELECT *
+FROM <APPLICATION_SCHEMA>.<TABLE>
+FETCH FIRST 10 ROWS ONLY;
+```
+
+ Use actual application objects from the imported connection.
+
+---
+
+ # 32\. Deliverables
+
+ The coding agent must produce:
+
+```
+oracle-mcp/
+├── Dockerfile
+├── entrypoint.sh
+├── docker-compose.yml
+├── .dockerignore
+├── .gitignore
+├── README.md
+└── connections/
+    └── README.md
+```
+
+ Do not commit the actual production connection JSON or encryption key.
+
+ The coding agent should also provide:
+
+```
+Build instructions
+Run instructions
+Connection-import instructions
+MCP-client configuration
+Troubleshooting instructions
+Security considerations
+Test results
+```
+
+---
+
+ # 33\. Important Implementation Constraint
+
+ Do not introduce unnecessary components.
+
+ The desired implementation is:
+
+```
+             Investigation Agent
+                     |
+                     | MCP
+                     v
+             SQLcl MCP Server
+                     |
+                     | Oracle Net
+                     v
+               Oracle 19c
+```
+
+ Not:
+
+```
+Investigation Agent
+        |
+        v
+Python MCP Server
+        |
+        v
+SQLcl
+        |
+        v
+Oracle
+```
+
+ Not:
+
+```
+Investigation Agent
+        |
+        v
+ORDS
+        |
+        v
+Oracle
+```
+
+ ORDS is not installed in the current environment and should not be introduced solely to satisfy this POC.
+
+---
+
+ # 34\. Design Goal
+
+ The ultimate objective is to provide the investigation agent with a database environment it can reason about dynamically.
+
+ The agent should be able to perform:
+
+```
+                 Investigation
+                       |
+                       v
+              Schema Discovery
+                       |
+                       v
+              Metadata Analysis
+                       |
+                       v
+                  Hypothesis
+                       |
+                       v
+                SQL Generation
+                       |
+                       v
+                Read Execution
+                       |
+                       v
+                Result Analysis
+                       |
+                       v
+              New Hypothesis
+                       |
+                       v
+                  More SQL
+                       |
+                       v
+                  Diagnosis
+```
+
+ No developer-authored SQL query catalog is required.
+
+ No custom MCP tool needs to be created for every business object.
+
+ The database itself remains the source of truth for application schema and data, while SQLcl provides the Oracle-aware MCP execution layer.
+
+---
+
+ # 35\. Reference Documentation
+
+ Use Oracle's current SQLcl documentation as the authoritative source for exact commands and configuration.
+
+ Relevant documentation areas include:
+
+ - SQLcl MCP Server
+- Preparing the SQLcl environment
+- SQLcl MCP Server tools
+- SQLcl connection manager
+- `CONNMGR IMPORT`
+- `SECRET`
+- SQLcl MCP monitoring
+- SQLcl MCP security considerations
+
+ When implementing, verify commands against the **actual SQLcl version downloaded into the image** rather than assuming syntax from an older version.
+
+---
+
+ # 36\. Final Phase-1 Architecture
+
+```
+                         +-----------------------+
+                         | Investigation Agent   |
+                         |                       |
+                         | Reasoning             |
+                         | Hypothesis generation |
+                         | SQL generation        |
+                         | Result analysis       |
+                         +-----------+-----------+
+                                     |
+                                     | MCP / stdio
+                                     |
+                                     v
+                         +-----------------------+
+                         | Docker Container      |
+                         |                       |
+                         | Java 17               |
+                         | SQLcl 25.2+           |
+                         | SQLcl MCP Server      |
+                         |                       |
+                         | ~/.dbtools            |
+                         +-----------+-----------+
+                                     |
+                                     | Oracle Net
+                                     |
+                                     v
+                         +-----------------------+
+                         | Oracle Database 19c   |
+                         | 19.28                 |
+                         |                       |
+                         | Application schemas   |
+                         |                       |
+                         | SELECT only           |
+                         +-----------------------+
+```
+
+ **Phase 1 principle:**
+
+ > Give the investigation agent enough Oracle application-data access to discover, query, reason, and investigate—but no ability to modify data or perform database administration.

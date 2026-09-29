@@ -1,0 +1,1849 @@
+====================================================================================================
+INDEX: logz-xcos-verbose-prod-blue-es-001108
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "RequestBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "ResponseBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "SourceKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "System": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appHost": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceIndex": {
+    "type": "long"
+  },
+  "appInstanceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceNode": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "callType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "clientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "divisionName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "error": {
+    "type": "boolean"
+  },
+  "errorCode": {
+    "type": "long"
+  },
+  "errorMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "extract": {
+    "properties": {
+      "request": {
+        "properties": {
+          "ACCOUNT_NUMBER": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "AFFILIATE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CHANNEL": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CONSENT_ID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CSGLOCATIONID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERTYPE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "SPA": {
+            "type": "keyword",
+            "ignore_above": 128
+          }
+        }
+      }
+    }
+  },
+  "httpMethod": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "logstash-source": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "marketID": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "memoryFree": {
+    "type": "long"
+  },
+  "memoryTotal": {
+    "type": "long"
+  },
+  "memoryUsed": {
+    "type": "long"
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "messageId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "messageType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteAddr": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestDuration": {
+    "type": "long"
+  },
+  "requestEndTimestamp": {
+    "type": "long"
+  },
+  "requestEndTimestampText": {
+    "type": "date"
+  },
+  "requestStartTimestamp": {
+    "type": "long"
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "requestUrl": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "responseStatusCode": {
+    "type": "long"
+  },
+  "responseStatusMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleContext": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleNumbers": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "scope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceLocation": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceServerId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemUserId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "threadTotal": {
+    "type": "long"
+  },
+  "traceId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "trackingId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "traffic": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-fault-alerts-es-000245
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Percent_increase_threshhold": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "category": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "code": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "message": {
+    "type": "keyword",
+    "ignore_above": 1024
+  },
+  "minimum_count": {
+    "type": "long"
+  },
+  "mute": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "pythonsource": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-verbose-prod-cloud-es-000973
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "RequestBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "ResponseBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "SourceKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "System": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appHost": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceIndex": {
+    "type": "long"
+  },
+  "appInstanceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceNode": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "callType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "clientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "consumerClientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "consumerScope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "divisionName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "error": {
+    "type": "boolean"
+  },
+  "errorCode": {
+    "type": "long"
+  },
+  "errorMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "extract": {
+    "properties": {
+      "request": {
+        "properties": {
+          "ACCOUNT_NUMBER": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "AFFILIATE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CHANNEL": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CONSENT_ID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CSGLOCATIONID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERTYPE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "SPA": {
+            "type": "keyword",
+            "ignore_above": 128
+          }
+        }
+      }
+    }
+  },
+  "httpMethod": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "logstash-source": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "marketID": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "memoryFree": {
+    "type": "long"
+  },
+  "memoryTotal": {
+    "type": "long"
+  },
+  "memoryUsed": {
+    "type": "long"
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "messageId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "messageType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "profile": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteAddr": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestDuration": {
+    "type": "long"
+  },
+  "requestEndTimestamp": {
+    "type": "long"
+  },
+  "requestEndTimestampText": {
+    "type": "date"
+  },
+  "requestStartTimestamp": {
+    "type": "long"
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "requestUrl": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "responseStatusCode": {
+    "type": "long"
+  },
+  "responseStatusMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleContext": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleNumbers": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "scope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceLocation": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceServerId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemUserId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "threadTotal": {
+    "type": "long"
+  },
+  "traceId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "trackingId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-verbose-prod-micro-es-000847
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "RequestBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "ResponseBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "SourceKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "System": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appHost": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceIndex": {
+    "type": "long"
+  },
+  "appInstanceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceNode": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "callType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "clientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "divisionName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "document_id": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "error": {
+    "type": "boolean"
+  },
+  "errorCode": {
+    "type": "long"
+  },
+  "errorMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "extract": {
+    "properties": {
+      "request": {
+        "properties": {
+          "ACCOUNT_NUMBER": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "AFFILIATE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CHANNEL": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CONSENT_ID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CSGLOCATIONID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERTYPE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "SPA": {
+            "type": "keyword",
+            "ignore_above": 128
+          }
+        }
+      }
+    }
+  },
+  "httpMethod": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "logstash-source": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "marketID": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "memoryFree": {
+    "type": "long"
+  },
+  "memoryTotal": {
+    "type": "long"
+  },
+  "memoryUsed": {
+    "type": "long"
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "messageId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "messageType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteAddr": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestDuration": {
+    "type": "long"
+  },
+  "requestEndTimestamp": {
+    "type": "long"
+  },
+  "requestEndTimestampText": {
+    "type": "date"
+  },
+  "requestStartTimestamp": {
+    "type": "long"
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "requestUrl": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "responseStatusCode": {
+    "type": "long"
+  },
+  "responseStatusMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleContext": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleNumbers": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "scope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceLocation": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceServerId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemUserId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "threadTotal": {
+    "type": "long"
+  },
+  "traceId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "trackingId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "traffic": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-verbose-prod-es-003400
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ConsentCartSource": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "GraphQLOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "RequestBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "ResponseBody": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "SourceKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "System": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "accountNumber": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appHost": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceIndex": {
+    "type": "long"
+  },
+  "appInstanceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appInstanceNode": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "callType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "clientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "consumerClientId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "consumerScope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "csgClient": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "csgDestination": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "csgRoutingArea": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "csgVersion": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "divisionName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "document_id": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "droolsOfferRuleNumbers": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "error": {
+    "type": "boolean"
+  },
+  "errorCode": {
+    "type": "long"
+  },
+  "errorMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "event": {
+    "properties": {
+      "original": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 32766
+          }
+        },
+        "norms": false
+      }
+    }
+  },
+  "extract": {
+    "properties": {
+      "request": {
+        "properties": {
+          "ACCOUNT_NUMBER": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "AFFILIATE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CHANNEL": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CONSENT_ID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "CSGLOCATIONID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "ORDERTYPE": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "SESSION_ID": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "SPA": {
+            "type": "keyword",
+            "ignore_above": 128
+          },
+          "transactionKey": {
+            "type": "keyword",
+            "ignore_above": 128
+          }
+        }
+      }
+    }
+  },
+  "httpMethod": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "logstash-source": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "marketID": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "memoryFree": {
+    "type": "long"
+  },
+  "memoryTotal": {
+    "type": "long"
+  },
+  "memoryUsed": {
+    "type": "long"
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "messageId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "messageType": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "originServiceOperationVersion": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "partnerId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "profile": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteAddr": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "remoteServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestDuration": {
+    "type": "long"
+  },
+  "requestEndTimestamp": {
+    "type": "long"
+  },
+  "requestEndTimestampText": {
+    "type": "date"
+  },
+  "requestStartTimestamp": {
+    "type": "long"
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "requestUrl": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "responseStatusCode": {
+    "type": "long"
+  },
+  "responseStatusMessage": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleContext": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ruleNumbers": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "scope": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceLocation": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "serviceOperationVersion": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sessionId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceServerId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sourceSystemUserId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "threadTotal": {
+    "type": "long"
+  },
+  "traceId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "trackingId": {
+    "type": "keyword",
+    "ignore_above": 32766
+  },
+  "traffic": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "visitorSessionId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "x-cart-filters": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "xmSessionId": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-fault-alerts-es-000240
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Action": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Method": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Percent_increase_threshhold": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Service": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "ServiceOperationName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "Tracking": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "TransactionKey": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "appName": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "category": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "code": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "customerInfo": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "message": {
+    "type": "keyword",
+    "ignore_above": 1024
+  },
+  "minimum_count": {
+    "type": "long"
+  },
+  "mute": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "pythonsource": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "requestStartTimestampText": {
+    "type": "date"
+  },
+  "sourceSystemId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "system": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-root_cause-prod-es-000164
+====================================================================================================
+{
+  "XCOSSessionId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "_class": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "createdAt": {
+    "type": "long"
+  },
+  "errorDetails": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "errorReason": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "errorSource": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "failedServices": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "itemLevelException": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "requestId": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "triageToolException": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "updatedAt": {
+    "type": "long"
+  }
+}
+
+====================================================================================================
+INDEX: logz-ui-buyflow-err-grp-es-000016
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "browserInfo": {
+    "properties": {
+      "location": {
+        "properties": {
+          "href": {
+            "type": "keyword",
+            "ignore_above": 2048
+          },
+          "pathname": {
+            "type": "keyword",
+            "ignore_above": 512
+          }
+        }
+      }
+    }
+  },
+  "ctpSessionID": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "endTime": {
+    "type": "date"
+  },
+  "errorInfo": {
+    "properties": {
+      "message": {
+        "properties": {
+          "code": {
+            "type": "keyword",
+            "ignore_above": 128
+          }
+        }
+      },
+      "name": {
+        "type": "keyword",
+        "ignore_above": 128
+      },
+      "reason": {
+        "type": "keyword",
+        "ignore_above": 128
+      },
+      "status": {
+        "type": "keyword",
+        "ignore_above": 128
+      },
+      "url": {
+        "type": "keyword",
+        "ignore_above": 2048
+      }
+    }
+  },
+  "errorMessage": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 1024
+      }
+    },
+    "norms": false
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "intervalMinutes": {
+    "type": "long"
+  },
+  "pageWiseCount": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "pageWiseErrors": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "sessionIDs": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "startTime": {
+    "type": "date"
+  },
+  "totalErrorUniqueSessions": {
+    "type": "long"
+  },
+  "uniqueSessionsForGroup": {
+    "type": "long"
+  }
+}
+
+====================================================================================================
+INDEX: logz-xcos-buyflow-order-details-es-000030
+====================================================================================================
+{
+  "@timestamp": {
+    "type": "date"
+  },
+  "@version": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "account_number": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "affiliate_name": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "buyflow_intent": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "channel_name": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "creation_date": {
+    "type": "date"
+  },
+  "current_tiers": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "derived_intent": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "division": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "document_id": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "error_code": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "error_description": {
+    "type": "text",
+    "fields": {
+      "keyword": {
+        "type": "keyword",
+        "ignore_above": 32766
+      }
+    },
+    "norms": false
+  },
+  "existing_lobs": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "existing_mrc": {
+    "type": "float"
+  },
+  "hubble": {
+    "properties": {
+      "ingester": {
+        "properties": {
+          "hostname": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "type": {
+            "type": "keyword",
+            "ignore_above": 1024
+          },
+          "version": {
+            "type": "keyword",
+            "ignore_above": 1024
+          }
+        }
+      }
+    }
+  },
+  "indexid": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "last_update": {
+    "type": "date"
+  },
+  "location_id": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "location_status": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "market": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "message": {
+    "type": "match_only_text"
+  },
+  "new_lobs": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "new_mrc": {
+    "type": "float"
+  },
+  "new_tiers": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "one_time_charge": {
+    "type": "float"
+  },
+  "order_ref_id": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "order_type": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "promo_codes": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "removed_lobs": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sales_intent": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "session_id": {
+    "type": "keyword",
+    "ignore_above": 256
+  },
+  "status": {
+    "type": "keyword",
+    "ignore_above": 128
+  },
+  "sub_order_type": {
+    "type": "keyword",
+    "ignore_above": 128
+  }
+}

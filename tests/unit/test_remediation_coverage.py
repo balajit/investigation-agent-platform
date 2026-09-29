@@ -63,6 +63,35 @@ class TestRetryTaxonomy:
 
 
 # ===========================================================================
+# WIP 3.2: fail-closed audit — failures raise, never success envelopes
+# ===========================================================================
+
+
+class TestFailClosedActivities:
+    @pytest.mark.asyncio
+    async def test_create_failure_raises_not_success(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            ApplicationFailure,
+            create_investigation_activity,
+        )
+
+        # Malformed input must raise (typed by the taxonomy) — never return
+        # a success envelope for work that did not happen.
+        with pytest.raises(ApplicationFailure):
+            await create_investigation_activity({})  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_failure_envelope_not_silent_success(self) -> None:
+        from investigation_agent_platform.application.worker.activities import (
+            checkpoint_activity,
+        )
+
+        result = await checkpoint_activity({"tenant_id": "", "investigation_id": "bad"})  # type: ignore[arg-type]
+        assert result.success is False
+        assert "required" in (result.error or "")
+
+
+# ===========================================================================
 # F-013/F-014: idempotency reserve/conflict semantics
 # ===========================================================================
 
@@ -686,6 +715,8 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "008_evidence_observed_at_nullable",
+            "007_profile_id_128",
             "006_pgvector_extension",
             "005_knowledge_layer",
             "004_topology_snapshots",
@@ -736,7 +767,7 @@ class TestApproveActionEndpoint:
     def test_invalid_uuid_returns_400(self) -> None:
         client, _ = self._client()
         resp = client.post(
-            "/api/v1/not-a-uuid/approve-action?action_id=a&approved=true",
+            "/api/v1/investigations/not-a-uuid/approve-action?action_id=a&approved=true",
             headers={"X-Tenant-ID": "tenant-a"},
         )
         assert resp.status_code == 400
@@ -746,7 +777,7 @@ class TestApproveActionEndpoint:
 
         client, _ = self._client()
         resp = client.post(
-            f"/api/v1/{_uuid.uuid4()}/approve-action?action_id=a&approved=true",
+            f"/api/v1/investigations/{_uuid.uuid4()}/approve-action?action_id=a&approved=true",
             headers={"X-Tenant-ID": "tenant-a"},
         )
         assert resp.status_code == 404
@@ -766,7 +797,72 @@ class TestApproveActionEndpoint:
         inv = _asyncio.run(ctx.create_investigation_service().execute(req, tenant_id="tenant-a"))
         assert getattr(ctx, "temporal_client", None) is None
         resp = client.post(
-            f"/api/v1/{inv.id}/approve-action?action_id=a&approved=true",
+            f"/api/v1/investigations/{inv.id}/approve-action?action_id=a&approved=true",
             headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 503
+
+
+class TestNewInvestigationRoutes:
+    def _client(self):  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from investigation_agent_platform.api.app import create_app
+        from investigation_agent_platform.api.dependencies import AppContext, set_app_context
+
+        ctx = AppContext()
+        set_app_context(ctx)
+        return TestClient(create_app()), ctx
+
+    def _create(self, ctx, session: str = "sess-x"):  # type: ignore[no-untyped-def]
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.domain.investigation.models import InvestigationRequest
+
+        req = InvestigationRequest(
+            application_id="example-app",
+            problem_description="route check",
+            session_id=session,
+            requested_by="tester",
+        )
+        return _asyncio.run(ctx.create_investigation_service().execute(req, tenant_id="tenant-a"))
+
+    def test_list_returns_open(self) -> None:
+        client, ctx = self._client()
+        inv = self._create(ctx)
+        resp = client.get("/api/v1/investigations", headers={"X-Tenant-ID": "tenant-a"})
+        assert resp.status_code == 200
+        ids = [i["investigation_id"] for i in resp.json()["items"]]
+        assert str(inv.id) in ids
+
+    def test_conclusion_null_when_unconcluded(self) -> None:
+        client, ctx = self._client()
+        inv = self._create(ctx, session="sess-c")
+        resp = client.get(
+            f"/api/v1/investigations/{inv.id}/conclusion", headers={"X-Tenant-ID": "tenant-a"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["conclusion"] is None and body["status"] == "CREATED"
+
+    def test_retry_rejects_non_failed(self) -> None:
+        client, ctx = self._client()
+        inv = self._create(ctx, session="sess-r")
+        resp = client.post(
+            f"/api/v1/investigations/{inv.id}/retry", headers={"X-Tenant-ID": "tenant-a"}
+        )
+        assert resp.status_code == 409
+
+    def test_retry_failed_without_temporal_is_503(self) -> None:
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+
+        client, ctx = self._client()
+        inv = self._create(ctx, session="sess-f")
+        failed = inv.model_copy(update={"status": InvestigationStatus.FAILED})
+        _asyncio.run(ctx.investigation_repo.save("tenant-a", failed, inv.version))
+        resp = client.post(
+            f"/api/v1/investigations/{failed.id}/retry", headers={"X-Tenant-ID": "tenant-a"}
         )
         assert resp.status_code == 503

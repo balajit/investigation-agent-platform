@@ -140,6 +140,10 @@ class Neo4jTopologyAdapter:
                 "FOR (n:ASTNode) REQUIRE "
                 "(n.tenant_id, n.repository_id, n.revision, n.node_id) IS UNIQUE"
             ),
+            (
+                "CREATE CONSTRAINT topology_dbtable_key IF NOT EXISTS "
+                "FOR (t:DatabaseTable) REQUIRE (t.tenant_id, t.table_name) IS UNIQUE"
+            ),
         ]
         async with driver.session(database=self._config.database) as session:
             for stmt in statements:
@@ -260,6 +264,20 @@ class Neo4jTopologyAdapter:
                 for i in range(0, len(kept_calls), batch_size):
                     call_batch = kept_calls[i : i + batch_size]
                     await session.execute_write(self._write_call_batch, payload, call_batch)
+                kept_references = [
+                    r
+                    for r in payload.references
+                    if r.source_node_id in macro_ids and r.target_node_id in macro_ids
+                ]
+                for i in range(0, len(kept_references), batch_size):
+                    ref_batch = kept_references[i : i + batch_size]
+                    await session.execute_write(self._write_reference_batch, payload, ref_batch)
+                kept_db_accesses = [
+                    d for d in payload.database_accesses if d.source_node_id in macro_ids
+                ]
+                for i in range(0, len(kept_db_accesses), batch_size):
+                    db_batch = kept_db_accesses[i : i + batch_size]
+                    await session.execute_write(self._write_db_access_batch, payload, db_batch)
 
                 await session.execute_write(
                     self._write_snapshot_status,
@@ -302,7 +320,7 @@ class Neo4jTopologyAdapter:
             snapshot_id=payload.snapshot_id,
             status=TopologySnapshotStatus.READY,
             node_count=len(macro_nodes),
-            edge_count=len(kept_calls) + len(payload.references),
+            edge_count=len(kept_calls) + len(kept_references) + len(kept_db_accesses),
             micro_skipped_count=micro_skipped,
         )
 
@@ -408,6 +426,63 @@ class Neo4jTopologyAdapter:
             "MERGE (caller)-[c:CALLS]->(callee) "
             "SET c.call_site_file = row.call_site_file, c.call_site_line = row.call_site_line, "
             "c.resolution_status = row.resolution_status, c.confidence = row.confidence",
+            rows=rows,
+            tenant_id=payload.tenant_id,
+            repository_id=payload.repository_id,
+            revision=payload.revision,
+        )
+
+    @staticmethod
+    async def _write_reference_batch(tx: Any, payload: ASTTopologyPayload, batch: list[Any]) -> None:
+        rows = [
+            {
+                "source_node_id": str(r.source_node_id),
+                "target_node_id": str(r.target_node_id),
+                "reference_type": r.reference_type,
+                "file_path": r.file_path,
+                "line_number": r.line_number,
+                "confidence": r.confidence,
+            }
+            for r in batch
+        ]
+        if not rows:
+            return
+        await tx.run(
+            "UNWIND $rows AS row "
+            "MATCH (source:ASTNode {tenant_id: $tenant_id, repository_id: $repository_id, "
+            "revision: $revision, node_id: row.source_node_id}) "
+            "MATCH (target:ASTNode {tenant_id: $tenant_id, repository_id: $repository_id, "
+            "revision: $revision, node_id: row.target_node_id}) "
+            "MERGE (source)-[r:REFERENCES]->(target) "
+            "SET r.reference_type = row.reference_type, r.file_path = row.file_path, "
+            "r.line_number = row.line_number, r.confidence = row.confidence",
+            rows=rows,
+            tenant_id=payload.tenant_id,
+            repository_id=payload.repository_id,
+            revision=payload.revision,
+        )
+
+    @staticmethod
+    async def _write_db_access_batch(tx: Any, payload: ASTTopologyPayload, batch: list[Any]) -> None:
+        rows = [
+            {
+                "source_node_id": str(d.source_node_id),
+                "table_name": d.target_entity_or_table,
+                "operation_type": d.operation_type,
+                "query_fingerprint": d.query_fingerprint,
+            }
+            for d in batch
+        ]
+        if not rows:
+            return
+        await tx.run(
+            "UNWIND $rows AS row "
+            "MATCH (source:ASTNode {tenant_id: $tenant_id, repository_id: $repository_id, "
+            "revision: $revision, node_id: row.source_node_id}) "
+            "MERGE (t:DatabaseTable {tenant_id: $tenant_id, table_name: row.table_name}) "
+            "MERGE (source)-[e:ACCESSES_TABLE]->(t) "
+            "SET e.operation_type = row.operation_type, "
+            "e.query_fingerprint = row.query_fingerprint, e.revision = $revision",
             rows=rows,
             tenant_id=payload.tenant_id,
             repository_id=payload.repository_id,

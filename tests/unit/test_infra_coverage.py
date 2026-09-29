@@ -487,6 +487,7 @@ class TestConfig:
                 "IAP_LLM_API_KEY": "sk-test",
                 "IAP_LLM_PROVIDER": "anthropic",
                 "IAP_LLM_MODEL": "claude-3-haiku",
+                "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
             },
             clear=False,
         ):
@@ -529,7 +530,11 @@ class TestBootstrap:
 
         with patch.dict(
             os.environ,
-            {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"},
+            {
+                "IAP_DATABASE_URI": "postgresql://a:b@localhost/db",
+                "IAP_LLM_API_KEY": "sk",
+                "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
+            },
             clear=False,
         ):
             from investigation_agent_platform.infrastructure.configuration.config import (

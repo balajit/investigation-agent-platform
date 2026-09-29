@@ -311,6 +311,34 @@ class TestBuildPayload:
         assert wrapped["symbol_count"] >= 3
         assert wrapped["truncated"] is False
 
+    @pytest.mark.asyncio
+    async def test_imports_resolve_same_repo_modules(self, tmp_path: Path) -> None:
+        root = tmp_path / "imp"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "a.py").write_text("from b import helper\n\ndef run():\n    return helper()\n")
+        (root / "src" / "b.py").write_text("def helper():\n    return 1\n")
+        (root / "src" / "c.py").write_text("import os\n\ndef run2():\n    return os.name\n")
+        payload, truncated = await loader.build_payload_for_repo(
+            root, "tenant-a", "app-1", "imp", "f" * 40)
+        assert truncated is False
+        refs = [(e.file_path, e.reference_type) for e in payload.references]
+        assert ("src/a.py", "IMPORTS") in refs  # b.py resolved by stem
+        assert not any(f == "src/c.py" for f, _ in refs)  # os is external: no edge
+
+    @pytest.mark.asyncio
+    async def test_java_imports_resolve_class_stem(self, tmp_path: Path) -> None:
+        root = tmp_path / "jimp"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "Bar.java").write_text(
+            "package com.acme;\nimport com.acme.Foo;\nimport java.util.List;\n"
+            "public class Bar {\n public Foo make() { return new Foo(); }\n}\n")
+        (root / "src" / "Foo.java").write_text("package com.acme;\npublic class Foo {\n}\n")
+        payload, _ = await loader.build_payload_for_repo(
+            root, "tenant-a", "app-1", "jimp", "f" * 40)
+        refs = [(e.file_path, e.line_number) for e in payload.references]
+        assert ("src/Bar.java", 2) in refs  # com.acme.Foo -> Foo.java, true line number
+        assert len(refs) == 1  # java.util.List is external: no edge
+
 
 class TestRepoTypes:
     def test_mapping_parsed(self) -> None:

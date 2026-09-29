@@ -14,12 +14,12 @@ dependencies = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "sqlalchemy[asyncio]>=2.0.0",
+    "elasticsearch>=8,<9",
     "asyncpg>=0.29.0",
     "psycopg[binary]>=3.2.0",
     "alembic>=1.13.0",
     "pyyaml>=6.0",
     "rustworkx>=0.18.1",
-    "elasticsearch>=9.5.1",
     "sqlglot>=30.18.0",
     "pygit2>=1.20.1",
     "tenacity>=9.1.4",
@@ -37,9 +37,9 @@ dependencies = [
     "tiktoken>=0.14.0",
     "neo4j>=5.26.0",
     "mem0ai>=2.2.1",
-    "psycopg[binary]>=3.2",
     "graphiti-core>=0.30.2",
     "cognee[neo4j]>=1.6.1",
+    "psycopg2-binary>=2.9.13",
 ]
 
 [dependency-groups]
@@ -56,6 +56,9 @@ dev = [
     "bandit>=1.8.0",
     "pip-audit>=2.9.0",
     "dot>=0.3.0",
+    "pandas-stubs>=3.0.5.260914",
+    "xlsxwriter>=3.2.9",
+    "oracledb>=26.0.1",
 ]
 
 [tool.hatch.build.targets.wheel]

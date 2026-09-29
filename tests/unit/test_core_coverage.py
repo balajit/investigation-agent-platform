@@ -1777,6 +1777,28 @@ class TestInvestigationStateTransitions:
                 reason="x",
             )  # type: ignore[arg-type]
 
+    def test_paused_edges(self) -> None:
+        from investigation_agent_platform.domain.investigation.models import ActorType
+
+        inv = _make_investigation()
+        active = inv.model_copy(update={"status": InvestigationStatus.INVESTIGATING})
+        paused, _ = active.transition_to(InvestigationStatus.PAUSED, actor=ActorType.USER, reason="p")
+        assert paused.status == InvestigationStatus.PAUSED
+        resumed, _ = paused.transition_to(
+            InvestigationStatus.INVESTIGATING, actor=ActorType.USER, reason="r"
+        )
+        assert resumed.status == InvestigationStatus.INVESTIGATING
+        with pytest.raises(DomainException):
+            paused.transition_to(InvestigationStatus.COMPLETED, actor=ActorType.USER, reason="x")
+        completed = inv.model_copy(update={"status": InvestigationStatus.COMPLETED})
+        with pytest.raises(DomainException):
+            completed.transition_to(InvestigationStatus.PAUSED, actor=ActorType.USER, reason="x")
+        created = inv.model_copy(update={"status": InvestigationStatus.CREATED})
+        created_paused, _ = created.transition_to(
+            InvestigationStatus.PAUSED, actor=ActorType.USER, reason="p"
+        )
+        assert created_paused.status == InvestigationStatus.PAUSED
+
     def test_version_increments_on_cancel_via_service(self) -> None:
         # covered above but check domain directly
         inv = _make_investigation()

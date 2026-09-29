@@ -122,7 +122,9 @@ class EvidenceORM(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     source_id: Mapped[str] = mapped_column(String(256), nullable=False)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Nullable since Part 9: unknown provider observation time is stored as
+    # NULL, never fabricated. See migration 008.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -521,7 +523,7 @@ class ApplicationProfileORM(Base):
 
     __tablename__ = "application_profiles"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")

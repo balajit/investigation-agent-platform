@@ -638,10 +638,13 @@ class TestKnowledgeMigrationChain:
         rev = script.get_revision("005_knowledge_layer")
         assert rev is not None
         assert rev.down_revision == "004_topology_snapshots"
-        head = script.get_revision("006_pgvector_extension")
+        head = script.get_revision("007_profile_id_128")
         assert head is not None
-        assert head.down_revision == "005_knowledge_layer"
-        assert script.get_heads() == ["006_pgvector_extension"]
+        assert head.down_revision == "006_pgvector_extension"
+        latest = script.get_revision("008_evidence_observed_at_nullable")
+        assert latest is not None
+        assert latest.down_revision == "007_profile_id_128"
+        assert script.get_heads() == ["008_evidence_observed_at_nullable"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

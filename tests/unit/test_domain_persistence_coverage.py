@@ -744,7 +744,7 @@ class TestHealthAndRouters:
         fake_client = MagicMock()
         fake_client.get_workflow_handle = MagicMock(return_value=fake_handle)
         ctx.temporal_client = fake_client
-        for path, expected_status in [("pause", "PAUSE_REQUESTED"), ("resume", "RESUME_REQUESTED")]:
+        for path, expected_status in [("pause", "PAUSED"), ("resume", "INVESTIGATING")]:
             resp = client.post(
                 f"/api/v1/investigations/{inv.id}/{path}", headers={"X-Tenant-ID": "tenant-a"}
             )
@@ -787,7 +787,11 @@ class TestHealthAndRouters:
             load_application_config_from_env,
         )
 
-        env = {"IAP_DATABASE_URI": "postgresql://x", "IAP_LLM_API_KEY": "sk-test"}
+        env = {
+            "IAP_DATABASE_URI": "postgresql://x",
+            "IAP_LLM_API_KEY": "sk-test",
+            "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
+        }
         with patch.dict("os.environ", env, clear=False):
             cfg = load_application_config_from_env()
             assert cfg.database.connection_uri.get_secret_value() == "postgresql://x"

@@ -185,8 +185,11 @@ def _get_ctx() -> Any:
 async def create_investigation_activity(
     params: CreateInvestigationInput,
 ) -> CreateInvestigationOutput:
-    activity.logger.info("create_investigation_activity", extra={"app_id": params.application_id})
     try:
+        activity.logger.info(
+            "create_investigation_activity",
+            extra={"app_id": getattr(params, "application_id", None)},
+        )
         ctx = _get_ctx()
 
         # F-IDENTITY: if the caller (API) already created this investigation,
@@ -290,7 +293,10 @@ async def retrieve_evidence_activity(
             if profile is not None:
                 environment = profile.environment
                 window_seconds = profile.investigation_configuration.default_time_window
-                max_results = min(profile.investigation_configuration.max_evidence_per_query, 500)
+                # Part 9: RuntimeEvidenceRequest caps limit at the provider
+                # ceiling (200); clamp here so a generous profile knob cannot
+                # fail request validation (provider clamped identically before).
+                max_results = min(profile.investigation_configuration.max_evidence_per_query, 200)
 
         now = datetime.now(UTC)
         req = RuntimeEvidenceRequest(
@@ -552,11 +558,14 @@ async def execute_action_activity(
                 RuntimeEvidenceRequest,
             )
 
+            # Part 9: clamp caller-controlled dimensions to the domain bounds
+            # (mirrors the provider-side clamp that applied before: min()
+            # semantics preserved; per-item lengths still reject as invalid).
             req = RuntimeEvidenceRequest(
                 environment=environment,
-                keywords=list(parameters.get("keywords", [])) or [],
-                services=list(parameters.get("services", [])) or [],
-                limit=int(parameters.get("limit", 100)),
+                keywords=list(parameters.get("keywords", []))[:20] or [],
+                services=list(parameters.get("services", []))[:10] or [],
+                limit=min(int(parameters.get("limit", 100)), 200),
             )
             qres = await gateway.search_runtime_evidence(
                 tenant_id, investigation_id, application_id or "example-app", req
@@ -1301,9 +1310,7 @@ async def sweep_knowledge_activity(
             try:
                 retrieval = ctx.knowledge_retrieval_service()
                 janitor = KnowledgeArtifactJanitor(ctx.artifact_repo, retrieval)
-                result = await janitor.sweep_tenant(
-                    tenant_id, reverify_conditional=reverify
-                )
+                result = await janitor.sweep_tenant(tenant_id, reverify_conditional=reverify)
                 per_tenant[tenant_id] = result.expired_count
                 total_expired += result.expired_count
             except Exception as exc:

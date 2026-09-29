@@ -1,0 +1,17 @@
+# Oracle SQLcl MCP servers (one entry per database — see the Part 3 Oracle/MCP addendum).
+# No secrets in this file: connections/*.json and the SQLcl encryption key are
+# mounted read-only into each container at runtime. Missing file = no MCP servers.
+# tenants: explicit allowlist per server (default-deny); empty list registers nothing.
+servers: []
+# Example (uncomment per database, keep secrets out):
+# - name: tolam-stg
+#   command: docker
+#   args: ["run", "-i", "--rm", "--name", "oracle-sqlcl-mcp-tolam-stg",
+#          "-v", "/absolute/path/oracle-mcp/connections:/config:ro",
+#          "-v", "/absolute/path/oracle-mcp/secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro",
+#          "oracle-sqlcl-mcp:25.2"]
+#   connection: TOLAM-stg
+#   allowed_tools: ["run-sql"]
+#   timeout_seconds: 30.0
+#   max_rows: 1000
+#   tenants: ["TENANT-1"]

@@ -74,8 +74,67 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
     assert truncated is False
 
     adapter = CogneeTopologyAdapter(enabled=True, dataset_salt=salt)
-    first = await adapter.project_snapshot(payload)
-    second = await adapter.project_snapshot(payload)
+    first = await adapter.project_snapshot(payload, ownership_path=["github:acme", "team-pay"])
+    second = await adapter.project_snapshot(payload, ownership_path=["github:acme", "team-pay"])
     assert first.projection_hash == second.projection_hash
     assert first.point_count > 0
+
+    import uuid as _uuid
+
+    from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+        CogneeAttributionReader,
+    )
+
+    reader = CogneeAttributionReader(enabled=True, dataset_salt=salt)
+    line = next(
+        n.start_line + 1
+        for n in payload.ast_nodes
+        if n.qualified_name == "PaymentService.charge"
+    )
+    result = await reader.resolve_source_location(
+        "tenant-live", "app-1", _uuid.uuid4(), "acme--pay", "l" * 40,
+        "src/payments.py", line,
+    )
+    assert result.matched_node_qualified_name == "PaymentService.charge"
+    assert result.domain_id == "team-pay"
+    assert result.git_org_id == "github:acme"
+    assert result.fallback_level.value == "AST_NODE"
+
+    from neo4j import AsyncGraphDatabase
+
+    driver = AsyncGraphDatabase.driver(
+        os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
+        auth=(os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+              os.environ.get("GRAPH_DATABASE_PASSWORD", "")),
+    )
+    try:
+        async with driver.session(
+            database=os.environ.get("GRAPH_DATABASE_NAME", "neo4j")
+        ) as session:
+            result = await session.run(
+                "MATCH (n:TopologySymbolPoint {tenant_id: 'tenant-live'})"
+                "-[e:CALLS]->() RETURN count(*) AS c")
+            calls = (await result.single())["c"]
+            assert calls > 0, "CALLS edges projected alongside points"
+    finally:
+        await driver.close()
+
     await adapter.drop_projection("tenant-live", "acme--pay", "l" * 40)
+
+    from neo4j import AsyncGraphDatabase as _Driver
+
+    _driver = _Driver.driver(
+        os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
+        auth=(os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+              os.environ.get("GRAPH_DATABASE_PASSWORD", "")),
+    )
+    try:
+        async with _driver.session(
+            database=os.environ.get("GRAPH_DATABASE_NAME", "neo4j")
+        ) as session:
+            result = await session.run(
+                "MATCH (n:TopologySymbolPoint {tenant_id: 'tenant-live'}) "
+                "RETURN count(*) AS c")
+            assert (await result.single())["c"] == 0, "drop deletes the projection"
+    finally:
+        await _driver.close()

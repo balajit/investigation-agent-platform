@@ -72,15 +72,14 @@ class SqlAlchemyInvestigationRepository:
                 time_window=(row.created_at, row.created_at),
             )
         )
-        # Gracefully handle unknown/legacy status values (e.g. ARCHIVED).
+        # Gracefully handle unknown/legacy status values: no ARCHIVED state
+        # exists on InvestigationStatus, so everything unrecognized (legacy
+        # rows included) maps to CANCELLED rather than crashing the read.
         try:
             status = InvestigationStatus(row.status)
         except ValueError:
             logger.warning("Unknown investigation status '%s' mapped to CANCELLED", row.status)
-            if str(row.status).upper() == "ARCHIVED":
-                status = InvestigationStatus.CANCELLED
-            else:
-                status = InvestigationStatus.CANCELLED
+            status = InvestigationStatus.CANCELLED
         return Investigation(
             id=row.id,
             session_id=row.session_id,

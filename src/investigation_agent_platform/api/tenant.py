@@ -108,6 +108,18 @@ def _tenant_claim(claims: dict[str, Any]) -> str | None:
     return None
 
 
+async def resolve_identity_from_headers(
+    x_tenant_id: str | None, authorization: str | None
+) -> VerifiedIdentity:
+    """Public header-based identity resolution for non-FastAPI transports.
+
+    Same verification as the FastAPI dependency below (JWT allow-list,
+    issuer/audience/expiry, production fail-closed); used by the MCP HTTP
+    transport, which cannot use FastAPI ``Depends`` injection.
+    """
+    return await _resolve_verified_identity(x_tenant_id, authorization)
+
+
 async def get_verified_identity(
     request: Request,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),

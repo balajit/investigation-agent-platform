@@ -91,6 +91,72 @@ class TelemetryConfig(BaseModel):
     enabled: bool = Field(default=True)
 
 
+class EvidenceConfig(BaseModel):
+    """Evidence provider connection details (Part 3 addendum).
+
+    Every field is optional: unconfigured providers stay unregistered on the
+    selector (never stubbed). Oracle additionally requires the ``oracledb``
+    package, which is not a default dependency — absence fails that one
+    registration closed with a named log, never boot.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    elasticsearch_url: str | None = Field(default=None)
+    elastic_request_timeout: int = Field(default=30, ge=1, le=300)
+    # Provider query timeout (Elasticsearch `timeout` body parameter). Separate
+    # from `elastic_request_timeout` (client/cancellation boundary); the
+    # relationship is documented in Part 9 Phase 3.
+    elastic_query_timeout_seconds: float = Field(default=25.0, ge=1.0, le=300.0)
+    # Cursor signing key for Elastic pagination tokens. Fail-closed: production
+    # boot halts when empty (see `_validate_evidence_secrets`). Non-production
+    # may run without one; the adapter then requires an explicit key.
+    cursor_signing_key: SecretStr = Field(default=SecretStr(""))
+    cursor_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    # Operator-tunable provider ceilings. Each is capped by an immutable
+    # security maximum (`le=`): operators may lower bounds, never raise them.
+    elastic_max_hits: int = Field(default=200, ge=1, le=200)
+    elastic_max_time_window_seconds: int = Field(default=7 * 24 * 3600, ge=1, le=7 * 24 * 3600)
+    elastic_max_keyword_terms: int = Field(default=20, ge=1, le=20)
+    elastic_max_services: int = Field(default=10, ge=1, le=10)
+    oracle_dsn: SecretStr = Field(default=SecretStr(""))
+    oracle_query_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
+    gateway_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # YAML listing Oracle SQLcl MCP servers (no secrets — mounts carry those).
+    # Each entry: {name, command, args, connection, allowed_tools,
+    # timeout_seconds, max_rows, tenants}. Missing file = no MCP servers.
+    oracle_mcp_config: str = Field(default="config/oracle-mcp-servers.yaml", min_length=1)
+    # Directory of ObservabilitySourceMapping YAML documents (Part 10).
+    # Missing directory = generic-ECS fallback only, never a stub mapping.
+    mapping_profiles_path: str = Field(default="config/observability-mappings", min_length=1)
+
+
+class McpConfig(BaseModel):
+    """MCP investigation-service transport configuration (Part 9 Phase 6).
+
+    The MCP server is an agent-facing interface over the application
+    investigation services — never an infrastructure administration surface.
+    Only the three investigation tools are exposed; transports share one
+    tool/application layer so behavior is identical.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=False)
+    transport: str = Field(default="stdio", min_length=1)
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8899, ge=1, le=65535)
+    server_name: str = Field(default="investigation-agent-platform", min_length=1)
+    # HTTP transport identity headers (names only; values verified per request).
+    tenant_header: str = Field(default="X-Tenant-ID", min_length=1)
+    investigation_header: str = Field(default="X-Investigation-ID", min_length=1)
+    # stdio transport scope: a stdio server instance is bound to exactly one
+    # investigation (no per-request auth on stdio). Empty = stdio refused.
+    stdio_tenant_id: str = Field(default="", max_length=128)
+    stdio_investigation_id: str = Field(default="", max_length=36)
+    stdio_actor_id: str = Field(default="local-operator", max_length=256)
+
+
 class TopologyConfig(BaseModel):
     """Layer 3 static-code/organizational topology (Neo4j) configuration.
 
@@ -194,15 +260,68 @@ class KnowledgeConfig(BaseModel):
     graphiti_semaphore_limit: int = Field(default=5, ge=1, le=100)
 
 
+def _evidence_config_from_env() -> EvidenceConfig:
+    """Build ``EvidenceConfig`` from ``IAP_ELASTICSEARCH_*``/``IAP_ORACLE_*`` variables."""
+    return EvidenceConfig(
+        elasticsearch_url=os.environ.get("IAP_ELASTICSEARCH_URL"),
+        elastic_request_timeout=int(os.environ.get("IAP_ELASTICSEARCH_TIMEOUT", "30")),
+        elastic_query_timeout_seconds=float(
+            os.environ.get("IAP_ELASTICSEARCH_QUERY_TIMEOUT", "25.0")
+        ),
+        cursor_signing_key=SecretStr(os.environ.get("IAP_ELASTIC_CURSOR_SIGNING_KEY", "")),
+        cursor_ttl_seconds=int(os.environ.get("IAP_ELASTIC_CURSOR_TTL_SECONDS", "3600")),
+        elastic_max_hits=int(os.environ.get("IAP_ELASTICSEARCH_MAX_HITS", "200")),
+        elastic_max_time_window_seconds=int(
+            os.environ.get("IAP_ELASTICSEARCH_MAX_TIME_WINDOW_SECONDS", str(7 * 24 * 3600))
+        ),
+        elastic_max_keyword_terms=int(os.environ.get("IAP_ELASTICSEARCH_MAX_KEYWORD_TERMS", "20")),
+        elastic_max_services=int(os.environ.get("IAP_ELASTICSEARCH_MAX_SERVICES", "10")),
+        oracle_dsn=SecretStr(os.environ.get("IAP_ORACLE_DSN", "")),
+        oracle_query_timeout=float(os.environ.get("IAP_ORACLE_QUERY_TIMEOUT", "30.0")),
+        gateway_timeout_seconds=float(os.environ.get("IAP_GATEWAY_TIMEOUT_SECONDS", "30.0")),
+        mapping_profiles_path=os.environ.get(
+            "IAP_MAPPING_PROFILES_PATH", "config/observability-mappings"
+        ),
+    )
+
+
+def _validate_evidence_secrets(evidence: EvidenceConfig, environment: str) -> None:
+    """Fail closed when production lacks required evidence secrets.
+
+    The Elastic cursor signing key is a production security boundary: cursor
+    integrity must never rest on a source-controlled constant. Non-production
+    environments may run without one (tests pass explicit keys); the adapter
+    refuses to sign with an empty key regardless of environment.
+    """
+    if environment.lower() == "production" and not evidence.cursor_signing_key.get_secret_value():
+        msg = "Boot halted: IAP_ELASTIC_CURSOR_SIGNING_KEY is required in production"
+        logger.critical(msg)
+        raise PlatformConfigurationError(msg)
+
+
+def _mcp_config_from_env() -> McpConfig:
+    """Build ``McpConfig`` from ``IAP_MCP_*`` environment variables."""
+    return McpConfig(
+        enabled=os.environ.get("IAP_MCP_ENABLED", "false").lower() == "true",
+        transport=os.environ.get("IAP_MCP_TRANSPORT", "stdio"),
+        host=os.environ.get("IAP_MCP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("IAP_MCP_PORT", "8899")),
+        server_name=os.environ.get("IAP_MCP_SERVER_NAME", "investigation-agent-platform"),
+        tenant_header=os.environ.get("IAP_MCP_TENANT_HEADER", "X-Tenant-ID"),
+        investigation_header=os.environ.get("IAP_MCP_INVESTIGATION_HEADER", "X-Investigation-ID"),
+        stdio_tenant_id=os.environ.get("IAP_MCP_TENANT_ID", ""),
+        stdio_investigation_id=os.environ.get("IAP_MCP_INVESTIGATION_ID", ""),
+        stdio_actor_id=os.environ.get("IAP_MCP_ACTOR_ID", "local-operator"),
+    )
+
+
 def _knowledge_config_from_env() -> KnowledgeConfig:
     """Build ``KnowledgeConfig`` from ``IAP_KNOWLEDGE_*`` environment variables."""
     return KnowledgeConfig(
         enabled=os.environ.get("IAP_KNOWLEDGE_ENABLED", "true").lower() == "true",
         max_reverify_attempts=int(os.environ.get("IAP_KNOWLEDGE_MAX_REVERIFY_ATTEMPTS", "3")),
         max_episodes_per_investigation=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODES", "50")),
-        evidence_summary_ttl_days=int(
-            os.environ.get("IAP_KNOWLEDGE_EVIDENCE_TTL_DAYS", "90")
-        ),
+        evidence_summary_ttl_days=int(os.environ.get("IAP_KNOWLEDGE_EVIDENCE_TTL_DAYS", "90")),
         max_episode_bytes=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODE_BYTES", "8192")),
         mem0_enabled=os.environ.get("IAP_KNOWLEDGE_MEM0_ENABLED", "false").lower() == "true",
         graphiti_enabled=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_ENABLED", "false").lower()
@@ -222,9 +341,7 @@ def _knowledge_config_from_env() -> KnowledgeConfig:
             os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_PASSWORD", "")
         ),
         graphiti_neo4j_database=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE", "neo4j"),
-        graphiti_semaphore_limit=int(
-            os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")
-        ),
+        graphiti_semaphore_limit=int(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")),
     )
 
 
@@ -244,6 +361,8 @@ class ApplicationConfig(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     topology: TopologyConfig = Field(default_factory=TopologyConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
 
 class PlatformHeader(BaseModel):
@@ -369,10 +488,13 @@ def load_application_config_from_yaml(
         reasoning = settings.reasoning or {}
         investigation = settings.investigation or {}
         platform = settings.platform
+        environment = os.environ.get("IAP_ENVIRONMENT", platform.environment)
 
         try:
+            evidence_config = _evidence_config_from_env()
+            _validate_evidence_secrets(evidence_config, environment)
             return ApplicationConfig(
-                environment=os.environ.get("IAP_ENVIRONMENT", platform.environment),
+                environment=environment,
                 application_id=os.environ.get("IAP_APP_ID", platform.name),
                 database=DatabaseConfig(
                     connection_uri=SecretStr(db_uri),
@@ -435,6 +557,8 @@ def load_application_config_from_yaml(
                 ),
                 topology=_topology_config_from_env(),
                 knowledge=_knowledge_config_from_env(),
+                evidence=evidence_config,
+                mcp=_mcp_config_from_env(),
             )
         except Exception as exc:
             logger.critical("Boot halted: invalid configuration settings", exc_info=exc)
@@ -460,8 +584,11 @@ def load_application_config_from_env() -> ApplicationConfig:
             raise PlatformConfigurationError(msg)
 
         try:
+            environment = os.environ.get("IAP_ENVIRONMENT", "production")
+            evidence_config = _evidence_config_from_env()
+            _validate_evidence_secrets(evidence_config, environment)
             return ApplicationConfig(
-                environment=os.environ.get("IAP_ENVIRONMENT", "production"),
+                environment=environment,
                 application_id=os.environ.get("IAP_APP_ID", "investigation-agent-platform"),
                 database=DatabaseConfig(
                     connection_uri=SecretStr(db_uri),
@@ -508,6 +635,8 @@ def load_application_config_from_env() -> ApplicationConfig:
                 ),
                 topology=_topology_config_from_env(),
                 knowledge=_knowledge_config_from_env(),
+                evidence=evidence_config,
+                mcp=_mcp_config_from_env(),
             )
         except Exception as exc:
             if isinstance(exc, PlatformConfigurationError):

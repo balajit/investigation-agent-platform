@@ -17,7 +17,11 @@ from investigation_agent_platform.api.dependencies import (
     get_app_context,
 )
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
-from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+from investigation_agent_platform.domain.common.exceptions import (
+    ConcurrencyError,
+    InvalidLifecycleTransitionException,
+)
+from investigation_agent_platform.domain.investigation.models import ActorType, InvestigationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +96,27 @@ async def pause_investigation(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot pause investigation in terminal status {investigation.status.value}",
         )
+    if investigation.status == InvestigationStatus.PAUSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Investigation is already paused"
+        )
 
     await _signal_workflow(ctx, investigation_id, "pause")
+    try:
+        paused, _ = investigation.transition_to(
+            InvestigationStatus.PAUSED, ActorType.USER, f"pause requested by {principal_id}"
+        )
+    except InvalidLifecycleTransitionException as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    try:
+        await ctx.investigation_repo.save(x_tenant_id, paused, investigation.version)
+    except ConcurrencyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await ctx.transition_repo.record_transition(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
         from_state=investigation.status.value,
-        to_state="PAUSED",
+        to_state=InvestigationStatus.PAUSED.value,
         reason=f"pause requested by {principal_id}",
     )
 
@@ -107,7 +125,7 @@ async def pause_investigation(
             WorkflowStatusEvent(
                 investigation_id=investigation_uuid,
                 tenant_id=x_tenant_id,
-                new_status="PAUSED",
+                new_status=InvestigationStatus.PAUSED.value,
             )
         )
 
@@ -115,7 +133,7 @@ async def pause_investigation(
         "Pause signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
     )
-    return {"investigation_id": investigation_id, "status": "PAUSE_REQUESTED"}
+    return {"investigation_id": investigation_id, "status": InvestigationStatus.PAUSED.value}
 
 
 @router.post("/investigations/{investigation_id}/resume", status_code=status.HTTP_202_ACCEPTED)
@@ -146,11 +164,29 @@ async def resume_investigation(
         )
 
     await _signal_workflow(ctx, investigation_id, "resume")
+    if investigation.status == InvestigationStatus.PAUSED:
+        try:
+            resumed, _ = investigation.transition_to(
+                InvestigationStatus.INVESTIGATING,
+                ActorType.USER,
+                f"resume requested by {principal_id}",
+            )
+        except InvalidLifecycleTransitionException as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        try:
+            await ctx.investigation_repo.save(x_tenant_id, resumed, investigation.version)
+        except ConcurrencyError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        to_state = InvestigationStatus.INVESTIGATING.value
+    else:
+        # Resume on an already-active investigation is a signal-only no-op;
+        # the audit records the unchanged status, never a pseudo-status.
+        to_state = investigation.status.value
     await ctx.transition_repo.record_transition(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
         from_state=investigation.status.value,
-        to_state="IN_PROGRESS",
+        to_state=to_state,
         reason=f"resume requested by {principal_id}",
     )
 
@@ -159,7 +195,7 @@ async def resume_investigation(
             WorkflowStatusEvent(
                 investigation_id=investigation_uuid,
                 tenant_id=x_tenant_id,
-                new_status="IN_PROGRESS",
+                new_status=to_state,
             )
         )
 
@@ -167,7 +203,7 @@ async def resume_investigation(
         "Resume signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
     )
-    return {"investigation_id": investigation_id, "status": "RESUME_REQUESTED"}
+    return {"investigation_id": investigation_id, "status": to_state}
 
 
 @router.post("/investigations/{investigation_id}/approve-action", status_code=status.HTTP_200_OK)
@@ -198,8 +234,16 @@ async def approve_action(
     signal_name = "action_approval_response"
     payload = {"action_id": action_id, "approved": approved, "principal_id": principal_id}
 
-    if getattr(ctx, "temporal_client", None) is not None:
-        await _signal_workflow(ctx, investigation_id, signal_name, payload)
+    if getattr(ctx, "temporal_client", None) is None:
+        logger.error(
+            "Cannot signal workflow: Temporal client is not wired",
+            extra={"investigation_id": investigation_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workflow execution engine is unavailable; approval signal was not sent",
+        )
+    await _signal_workflow(ctx, investigation_id, signal_name, payload)
 
     if hasattr(ctx, "outbox_queue"):
         await ctx.outbox_queue.put(

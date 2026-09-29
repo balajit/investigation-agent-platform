@@ -12,3 +12,10 @@ wheels/
 # Generated LLM source files
 llm_source/
 tmp/
+
+# Oracle/SQLcl connection material — credentials, never commit
+scripts/tolam_stg.json
+connections/
+secrets/
+*sqlcl-encryption-key*
+.env

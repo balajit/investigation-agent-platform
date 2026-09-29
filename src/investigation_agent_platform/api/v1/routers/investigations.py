@@ -21,7 +21,10 @@ from investigation_agent_platform.domain.common.exceptions import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
 )
-from investigation_agent_platform.domain.investigation.models import InvestigationRequest
+from investigation_agent_platform.domain.investigation.models import (
+    InvestigationRequest,
+    InvestigationStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +366,103 @@ async def get_investigation(
     return {"investigation": investigation.model_dump(mode="json")}
 
 
+@router.get("/investigations")
+async def list_investigations(
+    x_tenant_id: str = Depends(require_tenant),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Lists open investigations for the tenant (most recent first, best-effort order).
+
+    Backed by `list_open_ids`; full query/filter support needs repository
+    listing (downgraded in the Part 4 §4.1 matrix note until then).
+    """
+    ctx = get_app_context()
+    ids = await ctx.investigation_repo.list_open_ids(x_tenant_id)
+    items = []
+    for inv_id in ids[:limit]:
+        inv = await ctx.get_investigation_service().execute(x_tenant_id, inv_id)
+        if inv is None or getattr(inv, "tenant_id", x_tenant_id) != x_tenant_id:
+            continue
+        items.append(
+            {
+                "investigation_id": str(inv.id),
+                "status": inv.status.value,
+                "application_id": inv.application_id,
+                "created_at": inv.created_at.isoformat() if inv.created_at else None,
+                "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
+            }
+        )
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/investigations/{investigation_id}/conclusion")
+async def get_conclusion(
+    investigation_id: str,
+    x_tenant_id: str = Depends(require_tenant),
+) -> dict[str, Any]:
+    """Fetches the terminal root-cause conclusion; null while unconcluded."""
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id format"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+
+    if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+
+    conclusion = getattr(investigation, "conclusion", None)
+    return {
+        "investigation_id": investigation_id,
+        "status": investigation.status.value,
+        "conclusion": conclusion.model_dump(mode="json") if conclusion is not None else None,
+    }
+
+
+@router.post("/investigations/{investigation_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_investigation(
+    investigation_id: str,
+    request: Request,
+    x_tenant_id: str = Depends(require_tenant),
+) -> dict[str, Any]:
+    """Redispatches the Temporal workflow for a FAILED investigation."""
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id format"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+
+    if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+    if investigation.status != InvestigationStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only FAILED investigations can be retried (status is {investigation.status.value})",
+        )
+
+    correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
+        "X-Correlation-ID"
+    )
+    return await _dispatch_workflow(
+        ctx, investigation, x_tenant_id, investigation_id, correlation_id
+    )
+
+
 @router.post("/investigations/{investigation_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
 async def cancel_investigation(
     investigation_id: str,
@@ -389,49 +489,3 @@ async def cancel_investigation(
 
     await ctx.cancel_investigation_service().execute(x_tenant_id, investigation_uuid, reason=reason)
     return {"investigation_id": investigation_id, "status": "CANCELLING", "reason": reason}
-
-
-@router.post("/{investigation_id}/approve-action")
-async def approve_remediation_action(
-    investigation_id: str,
-    action_id: str,
-    approved: bool,
-    tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
-    """Signals Temporal workflow to proceed or abort a restricted action."""
-    ctx = get_app_context()
-    try:
-        investigation_uuid = UUID(investigation_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id format"
-        ) from exc
-
-    investigation = await ctx.get_investigation_service().execute(tenant_id, investigation_uuid)
-    if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
-    if getattr(investigation, "tenant_id", tenant_id) != tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
-        )
-
-    temporal_client = getattr(ctx, "temporal_client", None)
-    if temporal_client is None:
-        logger.error(
-            "Cannot signal workflow: Temporal client is not wired",
-            extra={"investigation_id": investigation_id},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Workflow execution engine is unavailable; approval signal was not sent",
-        )
-
-    signal_name = "action_approval_response"
-    payload = {"action_id": action_id, "approved": approved, "approver_tenant": tenant_id}
-
-    await temporal_client.signal_workflow(
-        workflow_id=f"wf-investigation-{investigation_id}",
-        signal=signal_name,
-        arg=payload,
-    )
-    return {"status": "signal_sent", "approved": approved}

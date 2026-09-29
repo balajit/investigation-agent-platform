@@ -142,6 +142,41 @@ class SecurityPolicyViolationException(DomainException):
         )
 
 
+# Pagination Exceptions (Part 9: invalid cursors fail, never fall back to page one)
+class InvalidCursorException(DomainException):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="INVALID_CURSOR",
+            details=details,
+            retryable=False,
+            http_status_code=400,
+        )
+
+
+# Provider Exceptions (Part 9: typed provider failures instead of one ExecutionError)
+class ProviderTimeoutException(DomainException):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="PROVIDER_TIMEOUT",
+            details=details,
+            retryable=True,
+            http_status_code=504,
+        )
+
+
+class ProviderUnavailableException(DomainException):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="PROVIDER_UNAVAILABLE",
+            details=details,
+            retryable=True,
+            http_status_code=503,
+        )
+
+
 # Infrastructure & System Configuration Exceptions
 class PlatformConfigurationError(DomainException):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:

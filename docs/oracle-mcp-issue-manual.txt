@@ -1,0 +1,40 @@
+Connectivity test sequence (spec §14–15, interactive)
+# 1. Shell into the image with both mounts (entrypoint overridden)
+docker run --rm -it --entrypoint /bin/bash \
+  -v "$PWD/oracle-mcp/connections:/config:ro" \
+  -v "$PWD/oracle-mcp/secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro" \
+  --user sqlcl \
+  oracle-sqlcl-mcp:26.2
+Inside the container, mirror exactly what the entrypoint automates (so any failure is debuggable before MCP is involved):
+sql -version                                  # expect 26.2.2.0
+sql -S <<'EOF'
+SECRET SET mcpImportKey $(cat /run/secrets/sqlcl-encryption-key)
+CONNMGR IMPORT -KEY mcpImportKey -DUPLICATES REPLACE /config/tolam_stg.json
+CONNMGR LIST
+EXIT
+EOF
+# expect: TOLAM-stg listed
+Then the connection and database proofs:
+sql -S TOLAM-stg <<'EOF'
+CONNMGR TEST TOLAM-stg
+SELECT SYS_CONTEXT('USERENV','DB_NAME') AS db_name,
+       SYS_CONTEXT('USERENV','SERVICE_NAME') AS service,
+       USER AS db_user FROM dual;
+SELECT banner_full FROM v$version;
+EXIT
+EOF
+# expect: TEST success, Oracle 19c / 19.28.0.0.0, USER = connecting account
+Then application-data and negative proofs (spec §§30–31):
+sql -S TOLAM-stg <<'EOF'
+SELECT owner, table_name FROM all_tables
+WHERE owner = '<APPLICATION_SCHEMA>' ORDER BY table_name FETCH FIRST 20 ROWS ONLY;
+INSERT INTO some_table(x) VALUES (1);
+EXIT
+EOF
+# expect: metadata rows returned; INSERT rejected by the database
+If CONNMGR TEST fails, read the failure in this order
+1. Import error / checksum mismatch → wrong encryption key (most likely) or SQL Developer format drift (spec §7: verify against actual 26.2 syntax).
+2. IO / timeout reaching host:port → network path (VPN, security group, private listener). Confirm with the connection's host/port from customUrl and your network team — nothing in the image can fix routing.
+3. ORA-01017 invalid credentials → password in the export doesn't match, or the account is locked — DBA check.
+4. ORA-01031 insufficient privileges on metadata queries → grants missing — DBA check against the §16 list.
+Once CONNECT + the version query succeed, the remaining acceptance is the MCP launch itself (sql -mcp already proven to start) plus an end-to-end run-sql through our adapter — which is wired and waiting (oracle-mcp-tolam-stg entry in config/oracle-mcp-servers.yaml with your tenant listed, then query through the gateway).

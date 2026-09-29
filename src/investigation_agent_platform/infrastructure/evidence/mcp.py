@@ -17,8 +17,11 @@ from investigation_agent_platform.domain.evidence.models import (
     Evidence,
     EvidenceType,
 )
-from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.evidence.requests import (
+    ApplicationStateRequest,
+    RuntimeEvidenceRequest,
+)
+from investigation_agent_platform.domain.profile.models import ObservabilityProfile, StateProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -47,11 +50,20 @@ class McpEvidenceAdapter:
         allowed_tools: list[str],
         tool_timeout_seconds: float = MCP_TOOL_TIMEOUT_SECONDS,
         max_items_per_call: int = MCP_MAX_ITEMS_PER_CALL,
+        connection_name: str = "",
+        tenant_allowlist: dict[str, set[str]] | None = None,
     ) -> None:
         self._server_params = server_params
         self._allowed_tools: set[str] = set(allowed_tools)
         self._tool_timeout_seconds = tool_timeout_seconds
         self._max_items_per_call = max_items_per_call
+        # SQLcl connection name selected per call (e.g. "TOLAM-stg"). Empty
+        # means the server exposes exactly one connection; anything else is
+        # resolved per call from the allowlisted set below.
+        self._connection_name = connection_name
+        # tenant_id -> allowed SQLcl connection names. None = unrestricted
+        # (dev only); production entries must name their tenants explicitly.
+        self._tenant_allowlist = tenant_allowlist
 
     def _validate_tool_call(
         self, tenant_id: str, tool_name: str, arguments: dict[str, Any]
@@ -164,6 +176,101 @@ class McpEvidenceAdapter:
                     },
                 )
                 raise ExecutionError(f"MCP invocation failure: {exc}") from exc
+
+    async def get_application_state(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        request: ApplicationStateRequest,
+        profile: StateProfile,
+    ) -> EvidenceQueryResult:
+        """Single-state fetch via the same run-sql path (SQLcl has no point fetch).
+
+        Protocol parity with `search_application_state`; both execute the
+        gated SELECT in ``request.parameters``. Kept as a separate entry
+        point so the selector's runtime protocol check holds honestly.
+        """
+        return await self.search_application_state(tenant_id, investigation_id, request, profile)
+
+    async def search_application_state(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        request: ApplicationStateRequest,
+        profile: StateProfile,
+    ) -> EvidenceQueryResult:
+        """Execute agent-generated read-only SQL via SQLcl `run-sql` (Oracle MCP path).
+
+        The SQL arrives in ``request.parameters["sql"]`` and passes
+        ``QuerySafetyPolicy.validate_generated_sql`` (SELECT/WITH-only) before
+        dispatch — the sanctioned dynamic-SQL exception, backstopped by
+        read-only grants, timeout/row caps, and full provenance. Connection
+        resolves from the explicit parameter, the instance default, or the
+        tenant allowlist (default-deny in production).
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        from investigation_agent_platform.infrastructure.evidence.security import (
+            QuerySafetyPolicy,
+        )
+
+        raw_sql = request.parameters.get("sql", "")
+        if not isinstance(raw_sql, str) or not raw_sql.strip():
+            raise SecurityPolicyViolationException("MCP state query requires parameters['sql']")
+        sql = await QuerySafetyPolicy().validate_generated_sql(tenant_id, raw_sql)
+        connection = self._resolve_connection(tenant_id, request.parameters.get("connection", ""))
+        arguments = {
+            "connection": connection,
+            "sql": sql,
+            "max_rows": min(int(request.limit), self._max_items_per_call),
+        }
+        self._validate_tool_call(tenant_id, "run-sql", arguments)
+        with tracer.start_as_current_span("McpEvidenceAdapter.search_application_state") as span:
+            span.set_attribute("tenant_id", tenant_id)
+            span.set_attribute("connection", connection)
+            try:
+                async with stdio_client(self._server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await asyncio.wait_for(
+                            session.call_tool("run-sql", arguments=arguments),
+                            timeout=self._tool_timeout_seconds,
+                        )
+                        content_items = list(result.content)[: self._max_items_per_call]
+                        items = [
+                            self._map_mcp_result_to_evidence(item, tenant_id, investigation_id)
+                            for item in content_items
+                        ]
+                        return EvidenceQueryResult(
+                            items=items,
+                            cursor=None,
+                            has_more=len(content_items) == self._max_items_per_call,
+                            total_count=len(items),
+                        )
+            except TimeoutError as exc:
+                raise ExecutionError(
+                    f"MCP run-sql timed out after {self._tool_timeout_seconds}s"
+                ) from exc
+            except Exception as exc:
+                raise ExecutionError(f"MCP run-sql failure: {exc}") from exc
+
+    def _resolve_connection(self, tenant_id: str, requested: Any) -> str:
+        """Resolve the SQLcl connection name under default-deny tenant scoping."""
+        if isinstance(requested, str) and requested.strip():
+            chosen = requested.strip()
+        elif self._connection_name:
+            chosen = self._connection_name
+        else:
+            raise SecurityPolicyViolationException(
+                "MCP state query names no connection and the adapter has no default"
+            )
+        allowed = self._tenant_allowlist
+        if allowed is not None and chosen not in allowed.get(tenant_id, set()):
+            raise SecurityPolicyViolationException(
+                f"Tenant '{tenant_id}' may not use connection '{chosen}'"
+            )
+        return chosen
 
     def _map_mcp_result_to_evidence(
         self, content_item: Any, tenant_id: str, investigation_id: UUID

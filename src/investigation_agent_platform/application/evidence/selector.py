@@ -26,6 +26,7 @@ class EvidenceProviderSelector:
         self._state_providers: dict[str, StateEvidenceProviderProtocol] = {}
         self._code_providers: dict[str, CodeEvidenceProviderProtocol] = {}
         self._code_intelligence_providers: dict[str, CodeIntelligenceProviderProtocol] = {}
+        self._default_runtime_key: str | None = None
         self._is_frozen = False
 
     def freeze(self) -> None:
@@ -60,11 +61,15 @@ class EvidenceProviderSelector:
 
     # Public Registration Methods
     def register_runtime_provider(
-        self, key: str, provider: RuntimeEvidenceProviderProtocol
+        self, key: str, provider: RuntimeEvidenceProviderProtocol, *, default: bool = False
     ) -> None:
         self._register(
             self._runtime_providers, key, provider, RuntimeEvidenceProviderProtocol, "runtime"
         )
+        if default:
+            if self._is_frozen:
+                raise RuntimeError("Provider selector is frozen and cannot accept registrations.")
+            self._default_runtime_key = key
 
     def register_state_provider(self, key: str, provider: StateEvidenceProviderProtocol) -> None:
         self._register(self._state_providers, key, provider, StateEvidenceProviderProtocol, "state")
@@ -87,9 +92,24 @@ class EvidenceProviderSelector:
     async def get_runtime_provider(
         self, tenant_id: str, application_id: str, environment: str
     ) -> RuntimeEvidenceProviderProtocol:
+        """Resolve the runtime provider for a tenant/app/environment context.
+
+        Routing order: exact context key first, then the registered default
+        provider (Part 9: a single shared Elastic deployment serves all
+        tenants — per-request tenant scoping happens in the adapter's index
+        pattern, not via per-tenant provider instances). No match anywhere
+        fails closed.
+        """
         with tracer.start_as_current_span("EvidenceProviderSelector.get_runtime_provider"):
             key = f"{tenant_id}:{application_id}:{environment}"
             provider = self._runtime_providers.get(key)
+            if provider is None and self._default_runtime_key is not None:
+                provider = self._runtime_providers.get(self._default_runtime_key)
+                if provider is not None:
+                    logger.debug(
+                        "Runtime provider resolved via default registration",
+                        extra={"default_key": self._default_runtime_key},
+                    )
             if not provider:
                 logger.error(
                     "No runtime provider configured for tenant/app/env context",
