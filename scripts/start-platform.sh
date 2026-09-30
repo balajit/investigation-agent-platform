@@ -91,4 +91,4 @@ if [[ "$RUN_WORKER" == true ]]; then
   echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
 fi
 
-echo "Platform up. Health: curl -sf http://localhost:$PORT/health"
+echo "Platform up. Health: curl -sf http://localhost:$PORT/api/v1/health/live"
