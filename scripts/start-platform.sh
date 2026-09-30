@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/start-platform.sh            # full stack (API + worker)
 #   ./scripts/start-platform.sh --no-worker
+#   ./scripts/start-platform.sh --restart  # restart API/worker only (infra untouched)
 #   ./scripts/start-platform.sh --stop     # stop API/worker + compose stop (volumes kept)
 #
 # Required env: IAP_DATABASE_URI, IAP_LLM_API_KEY
@@ -17,22 +18,38 @@ PORT="${PORT:-8000}"
 TIMEOUT="${TIMEOUT:-120}"
 RUN_API=true
 RUN_WORKER=true
+RESTART_ONLY=false
+
+# `uv run` wrappers exit on SIGTERM but orphan the real child process,
+# which keeps holding the port. So pid-file kills alone are not enough:
+# sweep the distinctive command lines too. Workers stuck in bridge I/O
+# may ignore SIGTERM, hence the SIGKILL fallback.
+stop_app() {
+  [[ -f tmp/api.pid ]] && kill "$(cat tmp/api.pid)" 2>/dev/null || true
+  [[ -f tmp/worker.pid ]] && kill "$(cat tmp/worker.pid)" 2>/dev/null || true
+  pkill -f "uvicorn investigation_agent_platform.main:app" 2>/dev/null || true
+  pkill -f "investigation_agent_platform.main --worker" 2>/dev/null || true
+  sleep 2
+  pkill -9 -f "uvicorn investigation_agent_platform.main:app" 2>/dev/null || true
+  pkill -9 -f "investigation_agent_platform.main --worker" 2>/dev/null || true
+  rm -f tmp/api.pid tmp/worker.pid
+}
 
 for arg in "$@"; do
   case "$arg" in
     --no-api) RUN_API=false ;;
     --no-worker) RUN_WORKER=false ;;
+    --restart) RESTART_ONLY=true ;;
     --stop)
       echo "Stopping API/worker (if running) and compose services..."
-      [[ -f tmp/api.pid ]] && kill "$(cat tmp/api.pid)" 2>/dev/null || true
-      [[ -f tmp/worker.pid ]] && kill "$(cat tmp/worker.pid)" 2>/dev/null || true
+      stop_app
       docker compose -f "$COMPOSE_FILE" stop
       exit 0
       ;;
     --timeout=*) TIMEOUT="${arg#--timeout=}" ;;
     --compose-file=*) COMPOSE_FILE="${arg#--compose-file=}" ;;
     --help|-h)
-      echo "Usage: $0 [--no-api] [--no-worker] [--stop] [--timeout=SECS] [--compose-file=PATH]"
+      echo "Usage: $0 [--no-api] [--no-worker] [--restart] [--stop] [--timeout=SECS] [--compose-file=PATH]"
       exit 0
       ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
@@ -50,6 +67,29 @@ fi
 command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 2; }
 
 mkdir -p tmp
+
+# --restart: bounce the application processes only. Infrastructure
+# (compose services) and migrations are left untouched.
+if [[ "$RESTART_ONLY" == true ]]; then
+  echo "Restarting application (API/worker)..."
+  stop_app
+  sleep 2
+  if [[ "$RUN_API" == true ]]; then
+    echo "Starting API on :$PORT ..."
+    nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" > tmp/api.log 2>&1 &
+    echo $! > tmp/api.pid
+    echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
+  fi
+  if [[ "$RUN_WORKER" == true ]]; then
+    echo "Starting Temporal worker ..."
+    nohup uv run python -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
+    echo $! > tmp/worker.pid
+    echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
+  fi
+  echo "Application restarted. Health: curl -sf http://localhost:$PORT/api/v1/health/live"
+  exit 0
+fi
+
 echo "Starting infrastructure: $COMPOSE_FILE"
 docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka 
 
