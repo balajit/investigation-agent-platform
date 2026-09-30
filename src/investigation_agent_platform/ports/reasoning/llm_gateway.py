@@ -54,6 +54,6 @@ class LLMGatewayResponse(BaseModel):
 
 @runtime_checkable
 class LLMGateway(Protocol):
-    """Provider-agnostic gateway (OpenAI | Anthropic)."""
+    """Provider-agnostic gateway (OpenAI | Anthropic | Azure OpenAI)."""
 
     async def complete(self, tenant_id: str, request: LLMGatewayRequest) -> LLMGatewayResponse: ...

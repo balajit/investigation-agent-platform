@@ -715,7 +715,7 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
-            "008_evidence_observed_at_nullable",
+            "008_evidence_observed_nullable",
             "007_profile_id_128",
             "006_pgvector_extension",
             "005_knowledge_layer",

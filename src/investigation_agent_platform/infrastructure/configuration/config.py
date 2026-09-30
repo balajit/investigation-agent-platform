@@ -28,15 +28,112 @@ class DatabaseConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """Large Language Model provider configuration."""
+    """Large Language Model provider configuration.
+
+    Providers: ``openai`` | ``anthropic`` | ``azure`` (Azure OpenAI).
+    Azure uses the OpenAI SDK's ``AsyncAzureOpenAI`` client: ``api_key`` +
+    ``azure_endpoint`` + ``azure_api_version``, with ``azure_deployment`` as
+    the wire name for chat completions. ``model_name`` stays the logical
+    base-model id (e.g. ``gpt-4o``) so registry/pricing policy still applies.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     api_key: SecretStr = Field(..., min_length=1)
     model_name: str = Field(default="gpt-4o", min_length=1)
-    provider: str = Field(default="openai", description="openai|anthropic")
+    provider: str = Field(default="openai", description="openai|anthropic|azure")
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     max_tokens: int = Field(default=4096, ge=128)
+    # Azure OpenAI wiring (only required when provider == "azure").
+    azure_endpoint: str = Field(default="", max_length=512)
+    azure_api_version: str = Field(default="2024-02-01", min_length=1, max_length=64)
+    azure_deployment: str = Field(default="", max_length=128)
+    azure_embedding_deployment: str = Field(default="", max_length=128)
+    azure_embedding_api_version: str = Field(default="", max_length=64)
+    azure_embedding_endpoint: str = Field(default="", max_length=512)
+
+
+def _first_env(*names: str, default: str = "") -> str:
+    """Return the first set non-empty env var among ``names`` (aliases first)."""
+    for name in names:
+        value = os.environ.get(name, "")
+        if value:
+            return value
+    return default
+
+
+def _llm_config_from_env(
+    *,
+    model_default: str = "gpt-4o",
+    provider_default: str = "openai",
+    temperature_default: float = 0.0,
+    max_tokens_default: int = 4096,
+    api_key_override: str | None = None,
+) -> LLMConfig:
+    """Build ``LLMConfig`` from env, accepting Azure aliases.
+
+    Canonical: ``IAP_LLM_*`` / ``IAP_AZURE_OPENAI_*``.
+    Aliases (for existing Azure setups): ``ACCOUNT_LLM_PROVIDER``,
+    ``AZURE_OPENAI_API_KEY``, ``AZURE_OPENAI_ENDPOINT`` / ``AZURE_API_BASE``,
+    ``AZURE_OPENAI_API_VERSION`` / ``AZURE_API_VERSION``,
+    ``AZURE_OPENAI_DEPLOYMENT_NAME`` / ``MODEL_NAME``.
+    """
+    provider = _first_env("IAP_LLM_PROVIDER", "ACCOUNT_LLM_PROVIDER", default=provider_default)
+    api_key = api_key_override or _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
+    cfg = LLMConfig(
+        api_key=SecretStr(api_key),
+        model_name=os.environ.get("IAP_LLM_MODEL", model_default),
+        provider=provider,
+        temperature=float(os.environ.get("IAP_LLM_TEMPERATURE", str(temperature_default))),
+        max_tokens=int(os.environ.get("IAP_LLM_MAX_TOKENS", str(max_tokens_default))),
+        azure_endpoint=_first_env(
+            "IAP_AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_API_BASE",
+        ),
+        azure_api_version=_first_env(
+            "IAP_AZURE_OPENAI_API_VERSION",
+            "AZURE_OPENAI_API_VERSION",
+            "AZURE_API_VERSION",
+            default="2024-02-01",
+        ),
+        azure_deployment=_first_env(
+            "IAP_AZURE_OPENAI_DEPLOYMENT",
+            "AZURE_OPENAI_DEPLOYMENT_NAME",
+            "MODEL_NAME",
+        ),
+        azure_embedding_deployment=_first_env(
+            "IAP_AZURE_EMBEDDING_DEPLOYMENT",
+            "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
+            "AZURE_EMBEDDING_DEPLOYMENT",
+        ),
+        azure_embedding_api_version=_first_env(
+            "IAP_AZURE_EMBEDDING_API_VERSION",
+            "AZURE_EMBEDDING_VERSION",
+        ),
+        azure_embedding_endpoint=_first_env(
+            "IAP_AZURE_EMBEDDING_ENDPOINT",
+            "AZURE_EMBEDDING_API_BASE",
+        ),
+    )
+    if cfg.provider.lower() == "azure":
+        missing = [
+            name
+            for name, value in (
+                ("azure_endpoint", cfg.azure_endpoint),
+                ("azure_deployment", cfg.azure_deployment),
+            )
+            if not value
+        ]
+        if missing:
+            msg = (
+                "Boot halted: provider 'azure' requires missing settings: "
+                + ", ".join(missing)
+                + " (set IAP_AZURE_OPENAI_ENDPOINT / IAP_AZURE_OPENAI_DEPLOYMENT)"
+            )
+            logger.critical(msg, extra={"missing": missing})
+            raise PlatformConfigurationError(msg)
+    return cfg
 
 
 class BudgetConfig(BaseModel):
@@ -473,11 +570,14 @@ def load_application_config_from_yaml(
         settings = load_platform_settings(path)
 
         db_uri = database_uri or os.environ.get("IAP_DATABASE_URI", "")
-        llm_key = llm_api_key or os.environ.get("IAP_LLM_API_KEY", "")
+        llm_key = llm_api_key or _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
         if not db_uri or not llm_key:
             missing = [
                 name
-                for name, value in (("IAP_DATABASE_URI", db_uri), ("IAP_LLM_API_KEY", llm_key))
+                for name, value in (
+                    ("IAP_DATABASE_URI", db_uri),
+                    ("IAP_LLM_API_KEY|AZURE_OPENAI_API_KEY", llm_key),
+                )
                 if not value
             ]
             msg = f"Boot halted: missing required environment variables: {', '.join(missing)}"
@@ -501,16 +601,12 @@ def load_application_config_from_yaml(
                     pool_size=int(persistence.get("connection_pool_size", 10)),
                     max_overflow=int(persistence.get("max_overflow", 20)),
                 ),
-                llm=LLMConfig(
-                    api_key=SecretStr(llm_key),
-                    model_name=os.environ.get(
-                        "IAP_LLM_MODEL", str(reasoning.get("model", "gpt-4o"))
-                    ),
-                    provider=os.environ.get(
-                        "IAP_LLM_PROVIDER", str(reasoning.get("provider", "openai"))
-                    ),
-                    temperature=float(reasoning.get("temperature", 0.0)),
-                    max_tokens=int(reasoning.get("max_tokens", 4096)),
+                llm=_llm_config_from_env(
+                    model_default=str(reasoning.get("model", "gpt-4o")),
+                    provider_default=str(reasoning.get("provider", "openai")),
+                    temperature_default=float(reasoning.get("temperature", 0.0)),
+                    max_tokens_default=int(reasoning.get("max_tokens", 4096)),
+                    api_key_override=llm_key,
                 ),
                 budget=BudgetConfig(
                     max_tool_calls=int(
@@ -571,14 +667,14 @@ def load_application_config_from_env() -> ApplicationConfig:
     """Loads and validates configuration from environment, halting boot on failure."""
     with tracer.start_as_current_span("load_application_config_from_env"):
         db_uri = os.environ.get("IAP_DATABASE_URI", "")
-        llm_key = os.environ.get("IAP_LLM_API_KEY", "")
+        llm_key = _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
 
         if not db_uri or not llm_key:
             missing = []
             if not db_uri:
                 missing.append("IAP_DATABASE_URI")
             if not llm_key:
-                missing.append("IAP_LLM_API_KEY")
+                missing.append("IAP_LLM_API_KEY|AZURE_OPENAI_API_KEY")
             msg = f"Boot halted: missing required environment variables: {', '.join(missing)}"
             logger.critical(msg, extra={"missing_vars": missing})
             raise PlatformConfigurationError(msg)
@@ -595,13 +691,7 @@ def load_application_config_from_env() -> ApplicationConfig:
                     pool_size=int(os.environ.get("IAP_DB_POOL_SIZE", "10")),
                     max_overflow=int(os.environ.get("IAP_DB_MAX_OVERFLOW", "20")),
                 ),
-                llm=LLMConfig(
-                    api_key=SecretStr(llm_key),
-                    model_name=os.environ.get("IAP_LLM_MODEL", "gpt-4o"),
-                    provider=os.environ.get("IAP_LLM_PROVIDER", "openai"),
-                    temperature=float(os.environ.get("IAP_LLM_TEMPERATURE", "0.0")),
-                    max_tokens=int(os.environ.get("IAP_LLM_MAX_TOKENS", "4096")),
-                ),
+                llm=_llm_config_from_env(api_key_override=llm_key),
                 budget=BudgetConfig(
                     max_tool_calls=int(os.environ.get("IAP_MAX_TOOL_CALLS", "50")),
                     max_reasoning_calls=int(os.environ.get("IAP_MAX_REASONING_CALLS", "20")),

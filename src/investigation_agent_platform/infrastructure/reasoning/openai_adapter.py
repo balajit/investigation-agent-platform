@@ -61,18 +61,48 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
 
 
 class OpenAIGateway(LLMGateway):
-    """OpenAI adapter — lazy client init so mypy/test does not require openai."""
+    """OpenAI adapter — lazy client init so mypy/test does not require openai.
+
+    Also serves the ``azure`` provider via ``openai.AsyncAzureOpenAI``: the
+    chat ``model`` kwarg is then the Azure deployment name
+    (``LLMConfig.azure_deployment``), while ``model_name`` remains the logical
+    base-model id for registry/pricing.
+    """
 
     def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._client: object | None = None
+
+    @property
+    def _is_azure(self) -> bool:
+        return (self._config.provider or "openai").lower() == "azure"
+
+    def _wire_model_name(self) -> str:
+        if self._is_azure and self._config.azure_deployment:
+            return self._config.azure_deployment
+        return self._config.model_name
 
     def _get_client(self) -> object:
         if self._client is None:
             try:
                 import openai  # type: ignore[import-not-found]
 
-                self._client = openai.AsyncOpenAI(api_key=self._config.api_key.get_secret_value())
+                if self._is_azure:
+                    endpoint = (self._config.azure_endpoint or "").rstrip("/")
+                    if not endpoint or not self._config.azure_deployment:
+                        raise RuntimeError(
+                            "Azure provider requires IAP_AZURE_OPENAI_ENDPOINT "
+                            "and IAP_AZURE_OPENAI_DEPLOYMENT"
+                        )
+                    self._client = openai.AsyncAzureOpenAI(
+                        api_key=self._config.api_key.get_secret_value(),
+                        azure_endpoint=endpoint,
+                        api_version=self._config.azure_api_version or "2024-02-01",
+                    )
+                else:
+                    self._client = openai.AsyncOpenAI(
+                        api_key=self._config.api_key.get_secret_value()
+                    )
             except ImportError as exc:
                 raise RuntimeError("openai package not installed") from exc
         return self._client
@@ -100,7 +130,12 @@ class OpenAIGateway(LLMGateway):
                 details={"classification": envelope.classification},
             )
         provider = (self._config.provider or "openai").lower()
-        if envelope.allowed_provider and envelope.allowed_provider.lower() not in (provider, "any"):
+        if envelope.allowed_provider and envelope.allowed_provider.lower() not in (
+            provider,
+            "any",
+            # Azure OpenAI serves OpenAI models: accept either label.
+            *([] if provider not in ("azure", "openai") else ["azure", "openai"]),
+        ):
             raise SecurityPolicyViolationException(
                 f"Envelope permits provider '{envelope.allowed_provider}' but gateway is '{provider}'",
                 details={"allowed_provider": envelope.allowed_provider},
@@ -154,7 +189,7 @@ class OpenAIGateway(LLMGateway):
 
         # Use structured output if schema provided
         kwargs: dict[str, object] = {
-            "model": self._config.model_name,
+            "model": self._wire_model_name(),
             "messages": [
                 {
                     "role": "system",
