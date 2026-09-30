@@ -6,7 +6,7 @@ carry real timestamps. Downgrade requires no NULL rows present.
 """
 
 # revision identifiers, used by Alembic.
-revision = "008_evidence_observed_nullable"
+revision = "008_evidence_observed_at_nullable"
 down_revision = "007_profile_id_128"
 branch_labels = None
 depends_on = None

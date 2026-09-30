@@ -18,8 +18,14 @@ from pydantic import BaseModel, Field
 from investigation_agent_platform.api.dependencies import get_app_context
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
 from investigation_agent_platform.domain.common.exceptions import (
+    ConcurrencyError,
     IdempotencyConflictError,
     IdempotencyInProgressError,
+)
+from investigation_agent_platform.domain.investigation.input_requirements import (
+    MAX_FULFILLMENT_BYTES,
+    InputFulfillment,
+    RequirementState,
 )
 from investigation_agent_platform.domain.investigation.models import (
     InvestigationRequest,
@@ -361,7 +367,195 @@ async def get_investigation(
             status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
         )
 
-    return {"investigation": investigation.model_dump(mode="json")}
+    # Part 11.5: surface pending input requirements when suspended, so
+    # callers learn exactly what data to supply without a second round-trip.
+    pending_requirements: list[dict[str, Any]] = []
+    if investigation.status == InvestigationStatus.AWAITING_INPUT:
+        input_repo = getattr(ctx, "input_repo", None)
+        if input_repo is not None:
+            pending = await input_repo.get_pending(x_tenant_id, investigation_uuid)
+            pending_requirements = [req.model_dump(mode="json") for req in pending]
+
+    return {
+        "investigation": investigation.model_dump(mode="json"),
+        "pending_requirements": pending_requirements,
+    }
+
+
+class FulfillInputBody(BaseModel):
+    requirement_version: int = Field(ge=1)
+    data: dict[str, Any] = Field(max_length=200)
+
+
+@router.post(
+    "/investigations/{investigation_id}/input-requirements/{requirement_id}/fulfill",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def fulfill_input_requirement(
+    investigation_id: str,
+    requirement_id: str,
+    body: FulfillInputBody,
+    x_tenant_id: str = Depends(require_tenant),
+    principal_id: str = Depends(require_principal),
+    x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+) -> dict[str, Any]:
+    """Fulfill a pending input requirement via Temporal Update (Part 11.5).
+
+    Validation split: this endpoint checks auth, tenant, JSON Schema, size,
+    and the durable compare-and-set; the workflow Update validator re-checks
+    id/version against in-memory state (validators cannot do I/O). Persist
+    order is fulfill-row → FULFILLED → Update, so a failed Update is safely
+    replayable under the same idempotency key.
+    """
+    import hashlib
+
+    if not x_idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Idempotency-Key header is required",
+        )
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+        requirement_uuid = UUID(requirement_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid id format"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+    if investigation.status != InvestigationStatus.AWAITING_INPUT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Investigation is not awaiting input (status {investigation.status.value})",
+        )
+
+    canonical = json.dumps(body.data, sort_keys=True, separators=(",", ":"))
+    if len(canonical.encode("utf-8")) > MAX_FULFILLMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Fulfillment payload exceeds {MAX_FULFILLMENT_BYTES} bytes",
+        )
+    request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    try:
+        cached, reserved = await ctx.idempotency_store.reserve_or_get(
+            x_tenant_id,
+            x_idempotency_key,
+            request_hash,
+            operation="input-fulfill",
+            application_id=investigation.application_id,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IdempotencyInProgressError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if not reserved:
+        logger.info("Replaying cached fulfill-input response for key=%s", x_idempotency_key)
+        return cached or {}
+
+    input_repo = getattr(ctx, "input_repo", None)
+    if input_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Input requirement store is unavailable",
+        )
+    requirement = await input_repo.get_by_id(x_tenant_id, requirement_uuid)
+    if requirement is None or requirement.investigation_id != investigation_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Input requirement not found"
+        )
+    if requirement.state != RequirementState.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Input requirement is {requirement.state.value}, not PENDING",
+        )
+    if requirement.requirement_version != body.requirement_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stale requirement version; reload pending requirements",
+        )
+    if requirement.json_schema:
+        import jsonschema  # type: ignore[import-untyped]
+
+        try:
+            jsonschema.validate(body.data, requirement.json_schema)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Fulfillment data failed requirement schema: {exc}",
+            ) from exc
+
+    fulfillment = InputFulfillment(
+        requirement_id=requirement_uuid,
+        requirement_version=body.requirement_version,
+        tenant_id=x_tenant_id,
+        investigation_id=investigation_uuid,
+        fulfilled_by=principal_id,
+        content_digest=f"sha256:{request_hash}",
+        content_bytes=len(canonical.encode("utf-8")),
+    )
+    await input_repo.record_fulfillment(x_tenant_id, fulfillment)
+    try:
+        await input_repo.set_state(
+            x_tenant_id,
+            requirement_uuid,
+            body.requirement_version,
+            RequirementState.FULFILLED,
+        )
+    except ConcurrencyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    temporal_client = getattr(ctx, "temporal_client", None)
+    if temporal_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workflow execution engine is unavailable; cannot deliver input",
+        )
+    try:
+        handle = temporal_client.get_workflow_handle(f"wf-investigation-{investigation_id}")
+        update_result = await handle.execute_update(
+            "fulfill_input",
+            args=[str(requirement_uuid), body.requirement_version, body.data],
+            id=f"fulfill-{x_idempotency_key}",
+        )
+    except Exception as exc:
+        message = str(exc)
+        # Validator rejections carry these markers (see workflow validator);
+        # they are caller-fixable conflicts, not infrastructure failures.
+        # Message inspection follows the events.py precedent for mapping
+        # Temporal delivery failures to HTTP semantics.
+        if "no pending input requirement" in message or "stale or unknown" in message:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
+        logger.error(
+            "Failed to deliver fulfill_input update",
+            extra={"investigation_id": investigation_id, "error": message},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to deliver input to workflow",
+        ) from exc
+
+    response_payload: dict[str, Any] = {
+        "investigation_id": investigation_id,
+        "requirement_id": requirement_id,
+        "status": "FULFILLED",
+        "update": update_result if isinstance(update_result, dict) else {},
+    }
+    await ctx.idempotency_store.complete(
+        x_tenant_id,
+        x_idempotency_key,
+        response_payload,
+        operation="input-fulfill",
+        application_id=investigation.application_id,
+    )
+    return response_payload
 
 
 @router.get("/investigations")
@@ -417,10 +611,57 @@ async def get_conclusion(
         )
 
     conclusion = getattr(investigation, "conclusion", None)
+    if conclusion is None:
+        # Part 11.2: the in-flight aggregate never carries a persisted
+        # conclusion (it's written directly to finding_repo by the worker
+        # activity, never round-tripped through the Investigation aggregate).
+        # Read it from the durable store so this endpoint reflects reality
+        # instead of always returning null once concluded.
+        finding_repo = getattr(ctx, "finding_repo", None)
+        if finding_repo is not None:
+            conclusion = await finding_repo.get_conclusion(x_tenant_id, investigation_uuid)
     return {
         "investigation_id": investigation_id,
         "status": investigation.status.value,
         "conclusion": conclusion.model_dump(mode="json") if conclusion is not None else None,
+    }
+
+
+@router.get("/investigations/{investigation_id}/findings")
+async def list_findings(
+    investigation_id: str,
+    x_tenant_id: str = Depends(require_tenant),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Retrieves paginated findings for an investigation (Part 11.2)."""
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id format"
+        ) from exc
+
+    investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        )
+
+    finding_repo = getattr(ctx, "finding_repo", None)
+    if finding_repo is None:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
+    findings, total = await finding_repo.list_findings(
+        x_tenant_id, investigation_uuid, limit=limit, offset=offset
+    )
+    return {
+        "items": [f.model_dump(mode="json") for f in findings],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
     }
 
 

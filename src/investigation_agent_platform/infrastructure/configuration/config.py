@@ -154,6 +154,12 @@ class TemporalConfig(BaseModel):
     target_host: str = Field(default="localhost:7233", min_length=1)
     namespace: str = Field(default="default", min_length=1)
     task_queue: str = Field(default="investigation-tasks", min_length=1)
+    # Part 11.3E: workload-isolated queues share one deployable worker
+    # package; splitting services comes only with measured need.
+    indexing_task_queue: str = Field(default="indexing-tasks", min_length=1)
+    analytics_task_queue: str = Field(default="analytics-tasks", min_length=1)
+    max_concurrent_activities: int = Field(default=100, ge=1, le=1000)
+    max_concurrent_workflows: int = Field(default=50, ge=1, le=1000)
 
 
 class KafkaConfig(BaseModel):
@@ -164,6 +170,29 @@ class KafkaConfig(BaseModel):
     bootstrap_servers: str = Field(default="localhost:9092", min_length=1)
     topic_prefix: str = Field(default="investigation", min_length=1)
     consumer_group: str = Field(default="investigation-agent-group", min_length=1)
+
+
+class QuotaConfig(BaseModel):
+    """Platform-wide default quota limits (Part 11.3D).
+
+    Per-tenant overrides arrive via future policy storage; these defaults
+    apply when no override resolves. All values mirror QuotaPolicy fields.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_concurrent_investigations: int = Field(default=10, ge=0, le=1000)
+    max_concurrent_jobs: int = Field(default=5, ge=0, le=500)
+    max_queued_jobs: int = Field(default=50, ge=0, le=5000)
+    max_batch_records: int = Field(default=500, ge=1, le=5000)
+    max_reference_source_bytes: int = Field(default=500_000_000, ge=0)
+    max_reference_files: int = Field(default=50_000, ge=0)
+    max_vector_rows: int = Field(default=5_000_000, ge=0)
+    max_llm_tokens_per_day: int = Field(default=10_000_000, ge=0)
+    max_active_chat_sessions: int = Field(default=100, ge=0, le=10000)
+    max_active_streams: int = Field(default=100, ge=0, le=10000)
+    max_report_history: int = Field(default=50, ge=0, le=1000)
+    max_artifact_bytes: int = Field(default=10_000_000_000, ge=0)
 
 
 class ObjectStorageConfig(BaseModel):
@@ -252,6 +281,23 @@ class McpConfig(BaseModel):
     stdio_tenant_id: str = Field(default="", max_length=128)
     stdio_investigation_id: str = Field(default="", max_length=36)
     stdio_actor_id: str = Field(default="local-operator", max_length=256)
+
+
+class BufferConfig(BaseModel):
+    """Dev-only buffered persistence (SQLite WAL + background flush).
+
+    Outside production, repository writes go to Postgres when reachable and
+    are journaled to a local SQLite write-ahead log otherwise, then replayed
+    by a background flusher. ``path`` should live on a persisted volume when
+    the app runs containerized so the buffer survives restarts. Production
+    ignores this config entirely (F-001 fail-fast).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=True)
+    path: str = Field(default="data/iap-buffer.sqlite3", min_length=1, max_length=512)
+    flush_interval_seconds: float = Field(default=5.0, ge=1.0, le=300.0)
 
 
 class TopologyConfig(BaseModel):
@@ -396,6 +442,48 @@ def _validate_evidence_secrets(evidence: EvidenceConfig, environment: str) -> No
         raise PlatformConfigurationError(msg)
 
 
+def _buffer_config_from_env() -> BufferConfig:
+    """Build ``BufferConfig`` from ``IAP_BUFFER_*`` environment variables."""
+    return BufferConfig(
+        enabled=os.environ.get("IAP_BUFFER_ENABLED", "true").lower() == "true",
+        path=os.environ.get("IAP_BUFFER_PATH", "data/iap-buffer.sqlite3"),
+        flush_interval_seconds=float(os.environ.get("IAP_BUFFER_FLUSH_INTERVAL_SECONDS", "5.0")),
+    )
+
+
+def _quota_config_from_env() -> QuotaConfig:
+    """Build ``QuotaConfig`` from ``IAP_QUOTA_*`` environment variables."""
+    return QuotaConfig(
+        max_concurrent_investigations=int(os.environ.get("IAP_QUOTA_MAX_CONCURRENT_INV", "10")),
+        max_concurrent_jobs=int(os.environ.get("IAP_QUOTA_MAX_CONCURRENT_JOBS", "5")),
+        max_queued_jobs=int(os.environ.get("IAP_QUOTA_MAX_QUEUED_JOBS", "50")),
+        max_batch_records=int(os.environ.get("IAP_QUOTA_MAX_BATCH_RECORDS", "500")),
+        max_reference_source_bytes=int(
+            os.environ.get("IAP_QUOTA_MAX_REF_SOURCE_BYTES", "500000000")
+        ),
+        max_reference_files=int(os.environ.get("IAP_QUOTA_MAX_REF_FILES", "50000")),
+        max_vector_rows=int(os.environ.get("IAP_QUOTA_MAX_VECTOR_ROWS", "5000000")),
+        max_llm_tokens_per_day=int(os.environ.get("IAP_QUOTA_MAX_LLM_TOKENS_DAY", "10000000")),
+        max_active_chat_sessions=int(os.environ.get("IAP_QUOTA_MAX_CHAT_SESSIONS", "100")),
+        max_active_streams=int(os.environ.get("IAP_QUOTA_MAX_STREAMS", "100")),
+        max_report_history=int(os.environ.get("IAP_QUOTA_MAX_REPORT_HISTORY", "50")),
+        max_artifact_bytes=int(os.environ.get("IAP_QUOTA_MAX_ARTIFACT_BYTES", "10000000000")),
+    )
+
+
+def _temporal_config_from_env() -> TemporalConfig:
+    """Build ``TemporalConfig`` from ``IAP_TEMPORAL_*`` environment variables."""
+    return TemporalConfig(
+        target_host=os.environ.get("IAP_TEMPORAL_HOST", "localhost:7233"),
+        namespace=os.environ.get("IAP_TEMPORAL_NAMESPACE", "default"),
+        task_queue=os.environ.get("IAP_TEMPORAL_TASK_QUEUE", "investigation-tasks"),
+        indexing_task_queue=os.environ.get("IAP_TEMPORAL_INDEXING_QUEUE", "indexing-tasks"),
+        analytics_task_queue=os.environ.get("IAP_TEMPORAL_ANALYTICS_QUEUE", "analytics-tasks"),
+        max_concurrent_activities=int(os.environ.get("IAP_TEMPORAL_MAX_ACTIVITIES", "100")),
+        max_concurrent_workflows=int(os.environ.get("IAP_TEMPORAL_MAX_WORKFLOWS", "50")),
+    )
+
+
 def _mcp_config_from_env() -> McpConfig:
     """Build ``McpConfig`` from ``IAP_MCP_*`` environment variables."""
     return McpConfig(
@@ -454,12 +542,14 @@ class ApplicationConfig(BaseModel):
     budget: BudgetConfig
     temporal: TemporalConfig = Field(default_factory=TemporalConfig)
     kafka: KafkaConfig = Field(default_factory=KafkaConfig)
+    quotas: QuotaConfig = Field(default_factory=QuotaConfig)
     storage: ObjectStorageConfig = Field(default_factory=ObjectStorageConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     topology: TopologyConfig = Field(default_factory=TopologyConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
 
 
 class PlatformHeader(BaseModel):
@@ -627,11 +717,8 @@ def load_application_config_from_yaml(
                         )
                     ),
                 ),
-                temporal=TemporalConfig(
-                    target_host=os.environ.get("IAP_TEMPORAL_HOST", "localhost:7233"),
-                    namespace=os.environ.get("IAP_TEMPORAL_NAMESPACE", "default"),
-                    task_queue=os.environ.get("IAP_TEMPORAL_TASK_QUEUE", "investigation-tasks"),
-                ),
+                temporal=_temporal_config_from_env(),
+                quotas=_quota_config_from_env(),
                 kafka=KafkaConfig(
                     bootstrap_servers=os.environ.get("IAP_KAFKA_SERVERS", "localhost:9092"),
                     topic_prefix=os.environ.get("IAP_KAFKA_TOPIC_PREFIX", "investigation"),
@@ -655,6 +742,7 @@ def load_application_config_from_yaml(
                 knowledge=_knowledge_config_from_env(),
                 evidence=evidence_config,
                 mcp=_mcp_config_from_env(),
+                buffer=_buffer_config_from_env(),
             )
         except Exception as exc:
             logger.critical("Boot halted: invalid configuration settings", exc_info=exc)
@@ -697,11 +785,8 @@ def load_application_config_from_env() -> ApplicationConfig:
                     max_reasoning_calls=int(os.environ.get("IAP_MAX_REASONING_CALLS", "20")),
                     max_duration_seconds=int(os.environ.get("IAP_MAX_DURATION_SECONDS", "1800")),
                 ),
-                temporal=TemporalConfig(
-                    target_host=os.environ.get("IAP_TEMPORAL_HOST", "localhost:7233"),
-                    namespace=os.environ.get("IAP_TEMPORAL_NAMESPACE", "default"),
-                    task_queue=os.environ.get("IAP_TEMPORAL_TASK_QUEUE", "investigation-tasks"),
-                ),
+                temporal=_temporal_config_from_env(),
+                quotas=_quota_config_from_env(),
                 kafka=KafkaConfig(
                     bootstrap_servers=os.environ.get("IAP_KAFKA_SERVERS", "localhost:9092"),
                     topic_prefix=os.environ.get("IAP_KAFKA_TOPIC_PREFIX", "investigation"),
@@ -727,6 +812,7 @@ def load_application_config_from_env() -> ApplicationConfig:
                 knowledge=_knowledge_config_from_env(),
                 evidence=evidence_config,
                 mcp=_mcp_config_from_env(),
+                buffer=_buffer_config_from_env(),
             )
         except Exception as exc:
             if isinstance(exc, PlatformConfigurationError):

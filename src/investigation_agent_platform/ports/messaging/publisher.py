@@ -35,3 +35,19 @@ class EventPublisher(Protocol):
     async def publish_domain_event(self, tenant_id: str, event: InvestigationEvent) -> None: ...
 
     async def publish_batch(self, envelopes: list[EventEnvelope]) -> None: ...
+
+
+def job_topic_for(tenant_id: str, topic_prefix: str = "iap") -> str:
+    """Kafka topic carrying one tenant's job progress events (Part 11.3C).
+
+    Convention: ``{prefix}-jobs.{tenant_id}`` — opaque per-tenant stream,
+    never derived from raw caller input beyond the verified tenant id.
+    """
+    return f"{topic_prefix}-jobs.{tenant_id}"
+
+
+@runtime_checkable
+class TopicEventPublisher(Protocol):
+    """Topic-aware publishing; extends EventPublisher without changing it."""
+
+    async def publish_to_topic(self, topic: str, payload: dict[str, Any]) -> None: ...

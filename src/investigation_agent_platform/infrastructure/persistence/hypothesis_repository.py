@@ -124,3 +124,31 @@ class SqlAlchemyHypothesisRepository:
                 )
             )
             return [self._from_orm(row) for row in result.all()]
+
+    async def find_by_investigation_and_tenant(
+        self, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 50
+    ) -> tuple[list[Hypothesis], int]:
+        """Paginated tenant-scoped hypotheses (mirrors the in-memory repo
+        semantics the hypotheses router relies on)."""
+        from sqlalchemy import func
+
+        async with rls_session(self._session_factory, tenant_id) as session:
+            total = await session.scalar(
+                select(func.count())
+                .select_from(HypothesisORM)
+                .where(
+                    HypothesisORM.tenant_id == tenant_id,
+                    HypothesisORM.investigation_id == investigation_id,
+                )
+            )
+            result = await session.scalars(
+                select(HypothesisORM)
+                .where(
+                    HypothesisORM.tenant_id == tenant_id,
+                    HypothesisORM.investigation_id == investigation_id,
+                )
+                .order_by(HypothesisORM.created_at)
+                .offset(offset)
+                .limit(limit)
+            )
+            return [self._from_orm(row) for row in result.all()], int(total or 0)

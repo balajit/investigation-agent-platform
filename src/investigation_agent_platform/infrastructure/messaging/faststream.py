@@ -81,6 +81,10 @@ class KafkaEventPublisher(EventPublisher):
     async def publish_raw(self, topic: str, payload: dict[str, Any]) -> None:
         await self._broker.publish(payload, topic=topic)
 
+    async def publish_to_topic(self, topic: str, payload: dict[str, Any]) -> None:
+        """Topic-aware publish (Part 11.3C TopicEventPublisher)."""
+        await self.publish_raw(topic, payload)
+
 
 def build_faststream_app(
     broker: KafkaBroker,

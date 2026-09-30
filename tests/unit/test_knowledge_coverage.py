@@ -644,7 +644,19 @@ class TestKnowledgeMigrationChain:
         latest = script.get_revision("008_evidence_observed_at_nullable")
         assert latest is not None
         assert latest.down_revision == "007_profile_id_128"
-        assert script.get_heads() == ["008_evidence_observed_at_nullable"]
+        new_head = script.get_revision("009_profile_revisions_and_investigation_metadata")
+        assert new_head is not None
+        assert new_head.down_revision == "008_evidence_observed_at_nullable"
+        newest = script.get_revision("010_background_jobs_and_quotas")
+        assert newest is not None
+        assert newest.down_revision == "009_profile_revisions_and_investigation_metadata"
+        newest11 = script.get_revision("011_input_requirements")
+        assert newest11 is not None
+        assert newest11.down_revision == "010_background_jobs_and_quotas"
+        newest12 = script.get_revision("012_finding_clusters")
+        assert newest12 is not None
+        assert newest12.down_revision == "011_input_requirements"
+        assert script.get_heads() == ["012_finding_clusters"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

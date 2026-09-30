@@ -93,6 +93,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         from investigation_agent_platform.infrastructure.persistence.evidence_repository import (
             SqlAlchemyEvidenceRepository,
         )
+        from investigation_agent_platform.infrastructure.persistence.finding_repository import (
+            SqlAlchemyFindingConclusionRepository,
+        )
         from investigation_agent_platform.infrastructure.persistence.hypothesis_repository import (
             SqlAlchemyHypothesisRepository,
         )
@@ -113,6 +116,12 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         evidence_repo = SqlAlchemyEvidenceRepository(session_factory)  # type: ignore[arg-type]
         timeline_repo = SqlAlchemyTimelineRepository(session_factory)  # type: ignore[arg-type]
         hypothesis_repo = SqlAlchemyHypothesisRepository(session_factory)  # type: ignore[arg-type]
+        finding_repo = SqlAlchemyFindingConclusionRepository(session_factory)  # type: ignore[arg-type]
+        from investigation_agent_platform.infrastructure.persistence.input_requirement_repository import (
+            SqlAlchemyInputRequirementRepository,
+        )
+
+        input_repo = SqlAlchemyInputRequirementRepository(session_factory)  # type: ignore[arg-type]
 
         from investigation_agent_platform.infrastructure.messaging.outbox import (
             SqlAlchemyOutboxRepository,
@@ -136,15 +145,23 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         action_repo = SqlAlchemyActionExecutionRepository(session_factory)
         outbox_repo = SqlAlchemyOutboxRepository(session_factory)
 
+        from investigation_agent_platform.infrastructure.persistence.background_job_repository import (
+            SqlAlchemyBackgroundJobRepository,
+        )
         from investigation_agent_platform.infrastructure.persistence.knowledge_repository import (
             SqlAlchemyArtifactRepository,
             SqlAlchemyCodeIssueIndex,
             SqlAlchemySessionRepository,
         )
+        from investigation_agent_platform.infrastructure.persistence.quota_enforcer import (
+            PostgresQuotaEnforcer,
+        )
 
         artifact_repo = SqlAlchemyArtifactRepository(session_factory)
         session_repo = SqlAlchemySessionRepository(session_factory)
         code_issue_index = SqlAlchemyCodeIssueIndex(session_factory)
+        background_job_repo = SqlAlchemyBackgroundJobRepository(session_factory)  # type: ignore[arg-type]
+        quota_enforcer = PostgresQuotaEnforcer(session_factory)
     except Exception as exc:
         raise PlatformConfigurationError(f"Failed to wire persistence repositories: {exc}") from exc
 
@@ -163,6 +180,29 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     ctx.idempotency_store = idempotency_store  # type: ignore[attr-defined]
     ctx.action_repo = action_repo  # type: ignore[attr-defined]
     ctx.outbox_repo = outbox_repo  # type: ignore[attr-defined]
+    # Part 11.2: durable finding/conclusion store (production must never
+    # operate on the process-local in-memory store).
+    ctx.finding_repo = finding_repo
+    from investigation_agent_platform.infrastructure.persistence.finding_cluster_repository import (
+        SqlAlchemyFindingClusterRepository,
+    )
+
+    # Part 11.7: durable cluster taxonomy (same fail-closed rule).
+    ctx.finding_cluster_repo = SqlAlchemyFindingClusterRepository(session_factory)
+    # Part 11.5: durable input requirements/fulfillments (same fail-closed
+    # rule — the AWAITING_INPUT flow depends on these rows surviving restarts).
+    ctx.input_repo = input_repo
+    # Part 11.3: durable background jobs + atomic quotas (same fail-closed
+    # rule as F-011/F-012/F-013). The job fan-out hub stays process-local by
+    # design (one subscriber per API replica); the artifact store is wired
+    # below with object storage when configured.
+    ctx.background_job_repo = background_job_repo
+    ctx.quota_enforcer = quota_enforcer  # type: ignore[assignment]
+    from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+        JobProgressHub,
+    )
+
+    ctx.job_hub = JobProgressHub()
     # Part 6 Slice 0: durable knowledge stores (RLS-scoped envelopes/sessions;
     # tenant-free coordination index by construction).
     ctx.artifact_repo = artifact_repo  # type: ignore[attr-defined]
@@ -218,8 +258,42 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     _wire_topology_dependencies(ctx, config)
     _wire_knowledge_dependencies(ctx, config)
     _wire_graphiti_dependencies(ctx, config)
+    _wire_artifact_store(ctx, config)
 
     return ctx
+
+
+def _wire_artifact_store(ctx: AppContext, config: ApplicationConfig) -> None:
+    """Wire the Part 11.3A artifact store: S3 when configured, else local dir.
+
+    Production without an S3 endpoint still gets a durable local directory
+    (never the process-memory store); the path must live on a persisted
+    volume in containerized deployments.
+    """
+    import os
+
+    storage = config.storage
+    if storage.endpoint_url:
+        from investigation_agent_platform.infrastructure.artifacts.s3_store import (
+            S3ArtifactStore,
+        )
+
+        ctx.artifact_store = S3ArtifactStore(  # type: ignore[assignment]
+            endpoint_url=storage.endpoint_url,
+            bucket_name=storage.bucket_name,
+            access_key=storage.access_key.get_secret_value(),
+            secret_key=storage.secret_key.get_secret_value(),
+            region=storage.region,
+        )
+        logger.info("Wired S3 artifact store", extra={"bucket": storage.bucket_name})
+    else:
+        from investigation_agent_platform.infrastructure.artifacts.local_store import (
+            LocalArtifactStore,
+        )
+
+        path = os.environ.get("IAP_ARTIFACT_DIR", "data/artifacts")
+        ctx.artifact_store = LocalArtifactStore(path)  # type: ignore[assignment]
+        logger.info("Wired local artifact store", extra={"path": path})
 
 
 def _oracle_mcp_servers(config: ApplicationConfig) -> list[dict[str, Any]]:

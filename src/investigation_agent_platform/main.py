@@ -52,7 +52,13 @@ if _cfg is not None:
 
 
 def _create_lifespan_app() -> FastAPI:
-    app = create_app()
+    from investigation_agent_platform.api.dependencies import Container, get_app_context
+
+    # Part 11.0: pass the already-bootstrapped AppContext explicitly so the
+    # lifespan preserves production wiring instead of replacing it. When no
+    # config loaded (_cfg is None), get_app_context() yields the default
+    # in-memory context — identical to previous dev behavior, but explicit.
+    app = create_app(container=Container(context=get_app_context()))
 
     original_lifespan = app.router.lifespan_context
 
@@ -90,6 +96,34 @@ def _create_lifespan_app() -> FastAPI:
                 extra={"error": str(exc)},
             )
 
+    async def _maybe_wire_buffered() -> None:
+        """Dev-only buffered persistence (Postgres write-through + WAL fallback).
+
+        Wraps the lifespan's in-memory ``AppContext`` stores with buffered
+        proxies so writes land in Postgres whenever reachable and journal
+        locally otherwise, then starts the background flusher. Production
+        never takes this path (F-001). Any failure leaves the plain context
+        untouched — startup must never break on buffering.
+        """
+        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+            return
+        try:
+            from investigation_agent_platform.api.dependencies import get_app_context
+            from investigation_agent_platform.bootstrap.buffered_dev import (
+                ensure_buffered_dev_context,
+                start_buffer_flusher,
+            )
+
+            cfg = _cfg or load_application_config_from_env()
+            ctx = get_app_context()
+            await ensure_buffered_dev_context(ctx, cfg)
+            start_buffer_flusher(get_app_context())
+        except Exception as exc:
+            logger.warning(
+                "Buffered persistence unavailable; continuing in-memory",
+                extra={"error": str(exc)},
+            )
+
     @asynccontextmanager
     async def lifespan(api: FastAPI):  # type: ignore[no-untyped-def]
         # Graceful startup: AppContext already built via bootstrap above
@@ -97,24 +131,22 @@ def _create_lifespan_app() -> FastAPI:
         if original_lifespan is not None:
             async with original_lifespan(api):
                 await _maybe_wire_temporal()
+                await _maybe_wire_buffered()
                 yield
         else:
             await _maybe_wire_temporal()
+            await _maybe_wire_buffered()
             yield
-        # Graceful shutdown: close engine/broker if present
+        # Graceful shutdown: the inner lifespan already ran the ordered
+        # shutdown_app_context(); this second call is an idempotent no-op
+        # that covers paths where the inner lifespan was bypassed.
         try:
-            from investigation_agent_platform.api.dependencies import get_app_context
+            from investigation_agent_platform.api.dependencies import (
+                get_app_context,
+                shutdown_app_context,
+            )
 
-            ctx = get_app_context()
-            engine = getattr(ctx, "engine", None)
-            if engine is not None:
-                await engine.dispose()
-                logger.info("Disposed database engine on shutdown")
-            broker = getattr(ctx, "broker", None)
-            if broker is not None and hasattr(broker, "close"):
-                maybe = broker.close()
-                if asyncio.iscoroutine(maybe):
-                    await maybe
+            await shutdown_app_context(get_app_context())
         except Exception as exc:
             logger.warning("Error during shutdown cleanup: %s", exc)
         logger.info("Application shutdown complete")

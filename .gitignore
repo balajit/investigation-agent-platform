@@ -13,6 +13,10 @@ wheels/
 llm_source/
 tmp/
 
+# Local buffered-persistence WAL (dev fallback journal; restorable via volume)
+data/*.sqlite3*
+!data/.gitkeep
+
 # Oracle/SQLcl connection material — credentials, never commit
 scripts/tolam_stg.json
 connections/

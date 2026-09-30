@@ -46,10 +46,16 @@ from investigation_agent_platform.api.dependencies import (
     ApiSettings,
     Container,
     get_app_context,
+    log_composition_summary,
     set_app_context,
+    shutdown_app_context,
 )
 from investigation_agent_platform.api.errors import public_error, sanitize_extra
 from investigation_agent_platform.api.rate_limit import check_rate_limit
+from investigation_agent_platform.api.v1.routers.capabilities import (
+    router as capabilities_router,
+)
+from investigation_agent_platform.api.v1.routers.clusters import router as clusters_router
 from investigation_agent_platform.api.v1.routers.events import router as events_router
 from investigation_agent_platform.api.v1.routers.evidence import router as evidence_router
 from investigation_agent_platform.api.v1.routers.health import router as health_router
@@ -57,6 +63,7 @@ from investigation_agent_platform.api.v1.routers.hypotheses import router as hyp
 from investigation_agent_platform.api.v1.routers.investigations import (
     router as investigations_router,
 )
+from investigation_agent_platform.api.v1.routers.jobs import router as jobs_router
 from investigation_agent_platform.api.v1.routers.knowledge import router as knowledge_router
 from investigation_agent_platform.api.v1.routers.profiles import router as profiles_router
 from investigation_agent_platform.api.v1.routers.timeline import router as timeline_router
@@ -98,9 +105,14 @@ def create_app(
             extra={"event": "startup", "environment": app_settings.environment},
         )
         await app_container.initialize()
-        set_app_context(app_container)
+        # Part 11.0: install the container's explicit AppContext. The previous
+        # code passed the Container itself and relied on set_app_context
+        # silently coercing it into a fresh in-memory context — wiping any
+        # bootstrapped production context. set_app_context is now fail-closed.
+        set_app_context(app_container.context)
 
         ctx = get_app_context()
+        log_composition_summary(ctx)
         worker_task = None
         if hasattr(ctx, "outbox_worker"):
             worker_task = asyncio.create_task(ctx.outbox_worker.start_listening())
@@ -117,6 +129,9 @@ def create_app(
         logger.info(
             "Shutting down application dependency container...", extra={"event": "shutdown"}
         )
+        # Ordered shutdown (flusher → broker → engine); idempotent, so the
+        # main.py wrapper calling it again is a safe no-op.
+        await shutdown_app_context(ctx)
         await app_container.shutdown()
 
     docs_url = (
@@ -344,5 +359,8 @@ def create_app(
     app.include_router(profiles_router, prefix=api_v1)
     app.include_router(events_router, prefix=api_v1)
     app.include_router(knowledge_router, prefix=api_v1)
+    app.include_router(capabilities_router, prefix=api_v1)
+    app.include_router(jobs_router, prefix=api_v1)
+    app.include_router(clusters_router, prefix=api_v1)
 
     return app

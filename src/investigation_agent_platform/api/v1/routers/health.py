@@ -57,7 +57,13 @@ async def readiness(response: Response) -> dict[str, Any]:
                 ),
                 timeout=1.5,
             )
-            checks["database"] = "CONNECTED"
+            # Buffered (dev-only) repos report BUFFERED while serving from the
+            # WAL fallback so operators can see degraded state; the probe
+            # itself still passes because the request path is functional.
+            if getattr(ctx.investigation_repo, "primary_status", "UP") == "DOWN":
+                checks["database"] = "BUFFERED"
+            else:
+                checks["database"] = "CONNECTED"
         except Exception as exc:
             logger.warning("Readiness probe database check failed: %s", exc)
             checks["database"] = "DISCONNECTED"

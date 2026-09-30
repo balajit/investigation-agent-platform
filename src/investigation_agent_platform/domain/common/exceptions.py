@@ -189,6 +189,23 @@ class PlatformConfigurationError(DomainException):
         )
 
 
+class CredentialProviderError(DomainException):
+    """Outbound credential acquisition failure (Part 11.4).
+
+    Never carries token values, client secrets, or full auth responses —
+    details are limited to provider id, host, and sanitized failure class.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message,
+            error_code="CREDENTIAL_PROVIDER_ERROR",
+            details=details,
+            retryable=False,
+            http_status_code=502,
+        )
+
+
 class ExecutionError(DomainException):
     def __init__(
         self, message: str, details: dict[str, Any] | None = None, retryable: bool = True

@@ -19,16 +19,26 @@ class SqlAlchemyTransitionRepository:
         self._session_factory = db_session_factory
 
     async def record_transition(
-        self, tenant_id: str, investigation_id: UUID, from_state: str, to_state: str, reason: str
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        from_state: str,
+        to_state: str,
+        reason: str,
+        _buffer_id: UUID | None = None,
     ) -> None:
+        """Record a transition. ``_buffer_id`` is set only by buffered-persistence
+        replay so a retried replay re-inserts the same PK instead of duplicating
+        the audit row; callers never pass it (the port signature is unchanged)."""
         async with rls_session(self._session_factory, tenant_id) as session:
-            session.add(
-                InvestigationTransitionORM(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    from_status=from_state,
-                    to_status=to_state,
-                    actor="SYSTEM",
-                    reason=reason,
-                )
+            row = InvestigationTransitionORM(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                from_status=from_state,
+                to_status=to_state,
+                actor="SYSTEM",
+                reason=reason,
             )
+            if _buffer_id is not None:
+                row.id = _buffer_id
+            session.add(row)

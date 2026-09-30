@@ -37,8 +37,18 @@ class SqlAlchemyIdempotencyStore:
         self._ttl_seconds = ttl_seconds
 
     async def reserve_or_get(
-        self, tenant_id: str, key: str, request_hash: str
+        self,
+        tenant_id: str,
+        key: str,
+        request_hash: str,
+        operation: str = "default",
+        application_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool]:
+        from investigation_agent_platform.domain.common.idempotency import (
+            scoped_idempotency_key,
+        )
+
+        key = scoped_idempotency_key(key, operation, application_id)
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=self._ttl_seconds)
         async with rls_session(self._session_factory, tenant_id) as session:
@@ -91,7 +101,19 @@ class SqlAlchemyIdempotencyStore:
                 )
             return row.response_json, False
 
-    async def complete(self, tenant_id: str, key: str, response: dict[str, Any]) -> None:
+    async def complete(
+        self,
+        tenant_id: str,
+        key: str,
+        response: dict[str, Any],
+        operation: str = "default",
+        application_id: str | None = None,
+    ) -> None:
+        from investigation_agent_platform.domain.common.idempotency import (
+            scoped_idempotency_key,
+        )
+
+        key = scoped_idempotency_key(key, operation, application_id)
         status_code = int(response.get("_status_code", 200)) if isinstance(response, dict) else 200
         async with rls_session(self._session_factory, tenant_id) as session:
             existing = await session.scalars(

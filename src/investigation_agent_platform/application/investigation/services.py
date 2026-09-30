@@ -106,6 +106,9 @@ class CreateInvestigationService:
             created_at=now,
             updated_at=now,
             version=1,
+            # Part 11.2: pin the exact profile revision this investigation
+            # was created against, for reproducibility as profiles evolve.
+            metadata={"profile_version": profile.version},
         )
 
         await self.investigation_repo.create(tenant_id, investigation)

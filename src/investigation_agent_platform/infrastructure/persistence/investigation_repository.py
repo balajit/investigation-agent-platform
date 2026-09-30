@@ -48,6 +48,7 @@ class SqlAlchemyInvestigationRepository:
             session_id=investigation.session_id,
             request_json=investigation.request.model_dump(mode="json"),
             context_json=investigation.context.model_dump(mode="json"),
+            metadata_json=investigation.metadata or None,
             version=investigation.version,
             code_issue_fingerprint=investigation.code_issue_fingerprint,
         )
@@ -94,6 +95,7 @@ class SqlAlchemyInvestigationRepository:
             completed_at=row.completed_at,
             version=row.version,
             code_issue_fingerprint=row.code_issue_fingerprint,
+            metadata=row.metadata_json or {},
         )
 
     async def create(self, tenant_id: str, investigation: Investigation) -> None:
@@ -130,6 +132,7 @@ class SqlAlchemyInvestigationRepository:
                     completed_at=investigation.completed_at,
                     request_json=investigation.request.model_dump(mode="json"),
                     context_json=investigation.context.model_dump(mode="json"),
+                    metadata_json=investigation.metadata or None,
                     version=expected_version + 1,
                 )
             )

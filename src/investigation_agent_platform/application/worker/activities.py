@@ -948,17 +948,28 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
 
     Returns ``InvestigationStatus.COMPLETED`` only when the gate approves;
     otherwise returns ``InvestigationStatus.FAILED`` so the denial and its
-    blockers are persisted in the lifecycle rather than swallowed.
+    blockers are persisted in the lifecycle rather than swallowed. On
+    approval, also persists the Finding + InvestigationConclusion that
+    justify COMPLETED (Part 11.2) — the conclusion read path and clustering
+    (Part 11.7+) depend on this corpus actually existing.
     """
     from investigation_agent_platform.application.investigation.verification import (
         ConclusionGate,
         RootCauseVerificationPolicy,
         VerificationEngine,
+        VerificationStatus,
+    )
+    from investigation_agent_platform.domain.finding.models import (
+        ConclusionStatus,
+        Finding,
+        FindingType,
+        InvestigationConclusion,
     )
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
 
     evidence_repo: Any = getattr(ctx, "evidence_repo", None)
     hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
+    finding_repo: Any = getattr(ctx, "finding_repo", None)
     evidence_items: list[Any] = []
     hypotheses: list[Any] = []
     if evidence_repo is not None:
@@ -984,14 +995,56 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     decision = await gate.evaluate(
         tenant_id, investigation_id, verification, [], [], evidence_items, gate_policy
     )
-    if decision.approved:
-        return InvestigationStatus.COMPLETED
-    logger.warning(
-        "ConclusionGate denied COMPLETED: %s",
-        "; ".join(decision.blockers),
-        extra={"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
-    )
-    return InvestigationStatus.FAILED
+    if not decision.approved:
+        logger.warning(
+            "ConclusionGate denied COMPLETED: %s",
+            "; ".join(decision.blockers),
+            extra={"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+        )
+        return InvestigationStatus.FAILED
+
+    # Part 11.2: persist the Finding + InvestigationConclusion that back this
+    # approval. Best-effort — a persistence failure here must never revert an
+    # already-approved conclusion to FAILED (the gate decision stands), but it
+    # is logged loudly since downstream reads/clustering depend on this row.
+    if finding_repo is not None:
+        try:
+            evidence_ids = [e.evidence_id for e in evidence_items][:100]
+            hyp = hypotheses[0]
+            finding = Finding(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                finding_type=FindingType.ROOT_CAUSE,
+                title=hyp.title,
+                statement=hyp.statement,
+                evidence_ids=evidence_ids,
+                related_hypothesis_ids=[hyp.id],
+                causal_chain=evidence_ids[:1],
+                confidence=verification.confidence.overall_confidence,
+            )
+            await finding_repo.save_finding_record(tenant_id, finding)
+            conclusion = InvestigationConclusion(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED
+                if verification.status == VerificationStatus.VERIFIED
+                else ConclusionStatus.ROOT_CAUSE_LIKELY,
+                root_cause=hyp.statement,
+                supporting_evidence_ids=evidence_ids,
+                supporting_hypothesis_ids=[hyp.id],
+                confidence=verification.confidence.overall_confidence,
+            )
+            await finding_repo.save_conclusion(tenant_id, conclusion)
+        except Exception as exc:
+            logger.exception(
+                "Failed to persist finding/conclusion after gate approval",
+                extra={
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "error": str(exc),
+                },
+            )
+    return InvestigationStatus.COMPLETED
 
 
 @activity.defn
@@ -1424,3 +1477,416 @@ async def collect_snapshots_activity(
     except Exception as exc:
         logger.exception("collect_snapshots_activity failed", extra={"error": str(exc)})
         return CollectSnapshotsOutput(error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Part 11.5: structured input requirements
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecordInputRequirementInput:
+    tenant_id: str
+    investigation_id: str
+    reason: str = ""
+    json_schema: dict[str, Any] = field(default_factory=dict)
+    classification: str = "INTERNAL"
+    resume_status: str = "INVESTIGATING"
+    promote_to_evidence: bool = False
+    expires_in_seconds: int | None = None
+
+
+@dataclass
+class SetInputRequirementStateInput:
+    tenant_id: str
+    requirement_id: str
+    expected_version: int
+    state: str = "FULFILLED"
+
+
+@dataclass
+class PromoteFulfillmentEvidenceInput:
+    tenant_id: str
+    investigation_id: str
+    requirement_id: str
+    data: dict[str, Any] = field(default_factory=dict)
+    classification: str = "INTERNAL"
+
+
+@activity.defn
+async def record_input_requirement_activity(
+    params: RecordInputRequirementInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Persist one InputRequirement row and return its identity + wait budget."""
+    from datetime import timedelta
+
+    from investigation_agent_platform.domain.investigation.input_requirements import (
+        AWAITING_INPUT_SOURCES,
+        InputRequirement,
+    )
+    from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+
+    activity.logger.info("record_input_requirement_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        inv_id_str = str(data.get("investigation_id", ""))
+        reason = str(data.get("reason", "") or "Additional input required")
+        if not tenant_id or not inv_id_str:
+            return GenericActivityResult(
+                success=False, error="tenant_id and investigation_id required"
+            )
+        investigation_id = UUID(inv_id_str)
+        try:
+            resume_status = InvestigationStatus(str(data.get("resume_status", "INVESTIGATING")))
+        except ValueError:
+            resume_status = InvestigationStatus.INVESTIGATING
+        if resume_status not in AWAITING_INPUT_SOURCES:
+            return GenericActivityResult(
+                success=False,
+                error=f"resume_status {resume_status.value} cannot suspend for input",
+            )
+        expires_in = data.get("expires_in_seconds")
+        expires_at = None
+        wait_timeout_seconds: float | None = None
+        if isinstance(expires_in, (int, float)) and expires_in > 0:
+            from datetime import UTC, datetime
+
+            expires_at = datetime.now(UTC) + timedelta(seconds=float(expires_in))
+            wait_timeout_seconds = float(expires_in)
+        requirement = InputRequirement(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            reason=reason[:512],
+            json_schema=dict(data.get("json_schema", {}) or {}),
+            classification=str(data.get("classification", "INTERNAL")),
+            resume_status=resume_status,
+            promote_to_evidence=bool(data.get("promote_to_evidence", False)),
+            expires_at=expires_at,
+        )
+        ctx = _get_ctx()
+        await ctx.input_repo.create_requirement(tenant_id, requirement)
+        result_data: dict[str, Any] = {
+            "requirement_id": str(requirement.requirement_id),
+            "requirement_version": requirement.requirement_version,
+            "resume_status": resume_status.value,
+            "promote_to_evidence": requirement.promote_to_evidence,
+        }
+        if wait_timeout_seconds is not None:
+            result_data["wait_timeout_seconds"] = wait_timeout_seconds
+        return GenericActivityResult(success=True, data=result_data)
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("record_input_requirement_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def set_input_requirement_state_activity(
+    params: SetInputRequirementStateInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Compare-and-set a requirement's state (FULFILLED/EXPIRED/CANCELLED)."""
+    from investigation_agent_platform.domain.investigation.input_requirements import (
+        RequirementState,
+    )
+
+    activity.logger.info("set_input_requirement_state_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        req_id_str = str(data.get("requirement_id", ""))
+        if not tenant_id or not req_id_str:
+            return GenericActivityResult(
+                success=False, error="tenant_id and requirement_id required"
+            )
+        try:
+            state = RequirementState(str(data.get("state", "FULFILLED")))
+        except ValueError:
+            return GenericActivityResult(
+                success=False, error=f"unknown requirement state {data.get('state')!r}"
+            )
+        try:
+            expected_version = int(data.get("expected_version", 1))
+        except (TypeError, ValueError):
+            return GenericActivityResult(success=False, error="expected_version invalid")
+        ctx = _get_ctx()
+        await ctx.input_repo.set_state(tenant_id, UUID(req_id_str), expected_version, state)
+        return GenericActivityResult(success=True, data={"state": state.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("set_input_requirement_state_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def promote_fulfillment_evidence_activity(
+    params: PromoteFulfillmentEvidenceInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Persist caller-supplied fulfillment data as DOCUMENTATION evidence.
+
+    Only runs when the requirement opted in (``promote_to_evidence``); the
+    classification travels from the requirement, and provenance records the
+    requirement id so the evidence is traceable back to its source.
+    """
+    import hashlib
+    import json
+    from datetime import UTC, datetime
+
+    from investigation_agent_platform.domain.evidence.models import (
+        ClassificationLevel,
+        Evidence,
+        EvidenceType,
+    )
+    from investigation_agent_platform.domain.provenance.models import (
+        EvidenceFreshness,
+        EvidenceProvenance,
+        QueryFingerprint,
+        SourceLocation,
+    )
+
+    activity.logger.info("promote_fulfillment_evidence_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        inv_id_str = str(data.get("investigation_id", ""))
+        req_id_str = str(data.get("requirement_id", ""))
+        payload = data.get("data", {}) or {}
+        if not tenant_id or not inv_id_str or not req_id_str:
+            return GenericActivityResult(
+                success=False,
+                error="tenant_id, investigation_id and requirement_id required",
+            )
+        if not isinstance(payload, dict):
+            return GenericActivityResult(success=False, error="fulfillment data invalid")
+        try:
+            classification = ClassificationLevel(str(data.get("classification", "INTERNAL")))
+        except ValueError:
+            classification = ClassificationLevel.INTERNAL
+        investigation_id = UUID(inv_id_str)
+        now = datetime.now(UTC)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        snippet = canonical[:4000]
+        evidence = Evidence(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            evidence_type=EvidenceType.DOCUMENTATION,
+            provider="input-fulfillment",
+            source=f"input-requirement:{req_id_str}",
+            title="Caller-supplied investigation input",
+            summary=f"Fulfillment for input requirement {req_id_str}",
+            content_snippet=snippet,
+            attributes={"requirement_id": req_id_str},
+            observed_at=None,
+            retrieved_at=now,
+            provenance=EvidenceProvenance(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                provider_type="input-fulfillment",
+                requested_provider_id="input-fulfillment",
+                actual_provider_id="input-fulfillment",
+                source_system="input-requirement",
+                retrieval_timestamp=now,
+                query_fingerprint=QueryFingerprint(
+                    provider_type="input-fulfillment",
+                    operation="fulfill",
+                    normalized_query_hash=hashlib.sha256(req_id_str.encode()).hexdigest(),
+                ),
+                source_location=SourceLocation(system="input-requirement", identifier=req_id_str),
+            ),
+            freshness=EvidenceFreshness(observed_at=None, retrieved_at=now),
+            classification=classification,
+            fingerprint=hashlib.sha256(
+                f"input-fulfillment:{req_id_str}:{canonical}".encode()
+            ).hexdigest(),
+        )
+        ctx = _get_ctx()
+        await ctx.evidence_repo.save(tenant_id, evidence, investigation_id)
+        return GenericActivityResult(success=True, data={"evidence_id": str(evidence.evidence_id)})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("promote_fulfillment_evidence_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Part 11.7: finding clustering
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RunClusteringInput:
+    tenant_id: str
+    job_id: str = ""
+    limit: int = 500
+    batch_size: int = 25
+
+
+@dataclass
+class UpdateClusteringJobInput:
+    tenant_id: str
+    job_id: str
+    status: str = ""
+    stage: dict[str, Any] | None = None
+    error: str | None = None
+    progress: int | None = None
+    total: int | None = None
+
+
+@activity.defn
+async def run_clustering_activity(
+    params: RunClusteringInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Run one bounded incremental clustering pass (Part 11.7)."""
+    from investigation_agent_platform.application.finding.clustering_service import (
+        FindingClusterService,
+        QuotaExceededError,
+    )
+    from investigation_agent_platform.domain.common.extension import CapabilityScope
+    from investigation_agent_platform.domain.common.quotas import QuotaPolicy
+
+    activity.logger.info("run_clustering_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        if not tenant_id:
+            return GenericActivityResult(success=False, error="tenant_id required")
+        try:
+            limit = max(1, min(int(data.get("limit", 500)), 2000))
+            batch_size = max(1, min(int(data.get("batch_size", 25)), 100))
+        except (TypeError, ValueError):
+            return GenericActivityResult(success=False, error="limit/batch_size invalid")
+        ctx = _get_ctx()
+
+        gateway: Any = None
+        try:
+            from investigation_agent_platform.infrastructure.configuration.config import (
+                load_application_config_from_env,
+            )
+            from investigation_agent_platform.infrastructure.reasoning.factory import (
+                create_llm_gateway,
+            )
+
+            gateway = create_llm_gateway(load_application_config_from_env().llm)
+        except Exception as exc:
+            # Lexical-only degraded mode: taxonomy preserved, new findings
+            # explicitly UNASSIGNED with provenance. Loud, never silent.
+            logger.warning(
+                "Clustering without LLM gateway; lexical-only mode",
+                extra={"tenant_id": tenant_id, "error": str(exc)},
+            )
+
+        quota_policy: QuotaPolicy | None = None
+        quota_guarded = False
+        try:
+            from investigation_agent_platform.infrastructure.configuration.config import (
+                load_application_config_from_env as _load_cfg,
+            )
+
+            quota_policy = QuotaPolicy.model_validate(_load_cfg().quotas.model_dump(mode="json"))
+            quota_guarded = True
+        except Exception as exc:
+            logger.warning(
+                "Clustering without quota guard; config unavailable",
+                extra={"tenant_id": tenant_id, "error": str(exc)},
+            )
+
+        service = FindingClusterService(
+            finding_repo=getattr(ctx, "finding_repo", None),
+            cluster_repo=getattr(ctx, "finding_cluster_repo", None),
+            llm_gateway=gateway,
+            embedder=None,
+            batch_size=batch_size,
+        )
+        if service._finding_repo is None or service._cluster_repo is None:
+            return GenericActivityResult(
+                success=False, error="finding or cluster repository unavailable"
+            )
+        scope = CapabilityScope(tenant_id=tenant_id)
+        try:
+            result = await service.run_incremental(
+                tenant_id,
+                limit=limit,
+                quota_enforcer=getattr(ctx, "quota_enforcer", None) if quota_guarded else None,
+                quota_policy=quota_policy,
+                scope=scope if quota_guarded else None,
+            )
+        except QuotaExceededError as exc:
+            return GenericActivityResult(success=False, error=str(exc))
+        result_data = result.model_dump(mode="json")
+        result_data["quota_guarded"] = quota_guarded
+        result_data["lexical_only"] = gateway is None
+        return GenericActivityResult(success=True, data=result_data)
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("run_clustering_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def update_clustering_job_activity(
+    params: UpdateClusteringJobInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Apply a status/stage/error update to the linked BackgroundJob row."""
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.domain.common.background_job import (
+        BackgroundJobStage,
+        BackgroundJobStatus,
+    )
+
+    activity.logger.info("update_clustering_job_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id_str = str(data.get("job_id", ""))
+        if not tenant_id or not job_id_str:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            job_id = _UUID(job_id_str)
+        except ValueError:
+            return GenericActivityResult(success=False, error="job_id invalid")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "background_job_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="background job repo unavailable")
+        job = await repo.get_by_id(tenant_id, job_id)
+        if job is None:
+            return GenericActivityResult(success=False, error="background job not found")
+        updates: dict[str, Any] = {"version": job.version + 1}
+        status_raw = str(data.get("status", "") or "")
+        if status_raw:
+            try:
+                updates["status"] = BackgroundJobStatus(status_raw)
+            except ValueError:
+                return GenericActivityResult(
+                    success=False, error=f"unknown job status {status_raw!r}"
+                )
+        stage_raw = data.get("stage")
+        if isinstance(stage_raw, dict) and stage_raw.get("name"):
+            stages = list(job.stages)
+            stages.append(
+                BackgroundJobStage(
+                    seq=len(stages),
+                    name=str(stage_raw["name"])[:128],
+                    message=str(stage_raw.get("message", ""))[:1024],
+                )
+            )
+            updates["stages"] = stages[-50:]
+        if data.get("error") is not None:
+            updates["error"] = str(data["error"])[:2048]
+        if isinstance(data.get("progress"), int):
+            updates["progress"] = max(0, data["progress"])
+        if isinstance(data.get("total"), int):
+            updates["total"] = max(0, data["total"])
+        updated = job.model_copy(update=updates)
+        await repo.save(tenant_id, updated, expected_version=job.version)
+        return GenericActivityResult(success=True, data={"status": updated.status.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("update_clustering_job_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc

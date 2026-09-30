@@ -40,6 +40,9 @@ class InvestigationStatus(StrEnum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
+    # Part 11.5: workflow is suspended waiting for caller-supplied input
+    # (see domain/investigation/input_requirements.py). Terminal-until-resumed.
+    AWAITING_INPUT = "AWAITING_INPUT"
 
 
 class FactType(StrEnum):
@@ -300,6 +303,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.INVESTIGATING: {
                 InvestigationStatus.CORRELATING,
@@ -308,6 +312,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.CORRELATING: {
                 InvestigationStatus.HYPOTHESIZING,
@@ -316,6 +321,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.HYPOTHESIZING: {
                 InvestigationStatus.VERIFYING,
@@ -324,6 +330,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.VERIFYING: {
                 InvestigationStatus.CONCLUDING,
@@ -333,12 +340,14 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.CONCLUDING: {
                 InvestigationStatus.COMPLETED,
                 InvestigationStatus.FAILED,
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
+                InvestigationStatus.AWAITING_INPUT,
             },
             InvestigationStatus.COMPLETED: {
                 InvestigationStatus.INVESTIGATING,
@@ -348,6 +357,18 @@ class Investigation(BaseModel):
             },
             InvestigationStatus.PAUSED: {
                 InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.CANCELLED,
+                InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
+            },
+            InvestigationStatus.AWAITING_INPUT: {
+                InvestigationStatus.CONTEXTUALIZING,
+                InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.CORRELATING,
+                InvestigationStatus.HYPOTHESIZING,
+                InvestigationStatus.VERIFYING,
+                InvestigationStatus.CONCLUDING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
             },

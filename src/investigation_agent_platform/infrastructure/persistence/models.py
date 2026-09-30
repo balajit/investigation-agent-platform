@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID as PyUUID
 from uuid import uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -18,7 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -54,6 +55,10 @@ class InvestigationORM(Base):
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     context_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Part 11.2: round-trips Investigation.metadata (previously dropped on
+    # save/load — includes e.g. the resolved profile revision this
+    # investigation was created against).
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     code_issue_fingerprint: Mapped[str | None] = mapped_column(
         String(128), nullable=True, index=True
@@ -519,12 +524,22 @@ class AgentActionORM(Base):
 
 
 class ApplicationProfileORM(Base):
-    """Onboarded application configuration profile."""
+    """Onboarded application configuration profile.
+
+    Part 11.2: immutable, tenant-aware revisions. ``row_id`` is the surrogate
+    primary key so multiple versions of the same ``(tenant_id, id)`` can
+    coexist; ``id`` is the caller-facing application id (no longer globally
+    unique — two tenants may reuse the same application id, and one tenant
+    may hold many historical revisions). ``save()`` never mutates an existing
+    revision row; each ``(tenant_id, id, version)`` triple is written once.
+    """
 
     __tablename__ = "application_profiles"
 
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    row_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     environment: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -539,6 +554,8 @@ class ApplicationProfileORM(Base):
     __table_args__ = (
         Index("idx_app_profile_tenant", "tenant_id"),
         Index("idx_app_profile_tenant_env", "tenant_id", "environment"),
+        Index("idx_app_profile_tenant_app", "tenant_id", "id"),
+        UniqueConstraint("tenant_id", "id", "version", name="uq_app_profile_tenant_id_version"),
     )
 
 
@@ -773,4 +790,244 @@ class TopologySnapshotAuditORM(Base):
             name="uq_topology_snapshot_tenant_repo_rev_hash",
         ),
         Index("idx_topology_snapshot_tenant_repo_rev", "tenant_id", "repository_id", "revision"),
+    )
+
+
+class BackgroundJobORM(Base):
+    """Durable background-job read model (Part 11.3B).
+
+    Temporal is authoritative for execution; this row is the queryable read
+    model updated via OCC (``version``). Terminal rows are retained per their
+    retention class and purged by an asynchronous purge job.
+    """
+
+    __tablename__ = "background_jobs"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    application_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    contract_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[str] = mapped_column(String(256), nullable=False, default="system")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parent_job_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    input_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    result_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quota_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    retention_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    stages_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("idx_bg_jobs_tenant_kind_status", "tenant_id", "kind", "status"),
+        Index("idx_bg_jobs_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class QuotaCounterORM(Base):
+    """Atomic quota counters for pre-dispatch checks (Part 11.3D).
+
+    One row per (tenant_id, application_id, quota_class, operation, window).
+    ``SELECT ... FOR UPDATE`` inside ``rls_session`` serializes concurrent
+    dispatches across API replicas.
+    """
+
+    __tablename__ = "quota_counters"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Normalized to "" when the scope has no application id: Postgres treats
+    # NULL as distinct in unique constraints, which would defeat the
+    # one-row-per-scope upsert this table exists for.
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    quota_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "application_id",
+            "quota_class",
+            "operation",
+            "window_start",
+            name="uq_quota_counter_scope",
+        ),
+        Index("idx_quota_counter_tenant", "tenant_id"),
+    )
+
+
+class InputRequirementORM(Base):
+    """Durable input requirement: workflow blocked on caller data (Part 11.5)."""
+
+    __tablename__ = "input_requirements"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requirement_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    json_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False, default="INTERNAL")
+    resume_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    promote_to_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (Index("idx_input_req_tenant_inv", "tenant_id", "investigation_id"),)
+
+
+class InputFulfillmentORM(Base):
+    """Immutable fulfillment audit: digest + metadata, never raw payload (Part 11.5)."""
+
+    __tablename__ = "input_fulfillments"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requirement_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    requirement_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    fulfilled_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fulfilled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "requirement_id",
+            "requirement_version",
+            name="uq_fulfillment_req_version",
+        ),
+        Index("idx_fulfillment_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class FindingClusterORM(Base):
+    """One named root-cause pattern in a tenant's taxonomy (Part 11.7)."""
+
+    __tablename__ = "finding_clusters"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    cluster_key: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    taxonomy_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    # Maintained by the repository on write (to_tsvector over label+description);
+    # plain column (not GENERATED) to keep migration DDL explicit and portable.
+    lexical_tsv: Mapped[Any | None] = mapped_column(TSVECTOR(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "cluster_key",
+            "taxonomy_revision",
+            name="uq_cluster_tenant_key_revision",
+        ),
+        Index("idx_cluster_tenant_revision", "tenant_id", "taxonomy_revision"),
+    )
+
+
+class FindingClusterAssignmentORM(Base):
+    """Normalized finding→cluster membership history (Part 11.7).
+
+    No FK to finding_clusters: the UNASSIGNED bucket has no taxonomy row by
+    design, and assignments must survive cluster merges without cascades.
+    """
+
+    __tablename__ = "finding_cluster_assignments"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    finding_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    cluster_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    method: Mapped[str] = mapped_column(String(64), nullable=False, default="llm-assign")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    taxonomy_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        Index("idx_assignment_tenant_finding", "tenant_id", "finding_id"),
+        Index("idx_assignment_tenant_cluster", "tenant_id", "cluster_id"),
+    )
+
+
+class FindingEmbeddingORM(Base):
+    """Per-finding retrieval vectors, one row per (model, generation) (Part 11.7).
+
+    The ``embedding`` column is a dimensionless pgvector: embedding spaces
+    must never be compared across ``embedding_model``/``embedding_version``
+    (enforced in every query), and blue/green migration proceeds by writing a
+    new ``generation`` and switching reads to ``MAX(generation)``.
+    """
+
+    __tablename__ = "finding_embeddings"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    finding_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    embedding: Mapped[Any] = mapped_column(Vector(), nullable=True)
+    lexical: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lexical_tsv: Mapped[Any | None] = mapped_column(TSVECTOR(), nullable=True)
+    lifecycle: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "finding_id",
+            "embedding_model",
+            "embedding_version",
+            "generation",
+            name="uq_finding_embedding_space",
+        ),
+        Index("idx_finding_emb_tenant_model", "tenant_id", "embedding_model"),
     )
