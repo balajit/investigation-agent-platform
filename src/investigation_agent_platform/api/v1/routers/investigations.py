@@ -200,7 +200,6 @@ async def _dispatch_workflow(
         memo = (
             {"correlation_id": correlation_id, "tenant_id": tenant_id} if correlation_id else None
         )
-        headers = {"X-Correlation-ID": correlation_id} if correlation_id else None
         from datetime import timedelta as _timedelta
 
         await temporal_client.start_workflow(
@@ -211,7 +210,6 @@ async def _dispatch_workflow(
                 getattr(ctx, "temporal_config", None), "task_queue", "investigation-tasks"
             ),
             memo=memo,
-            headers=headers,  # type: ignore[arg-type]
             # F-055: Temporal workflow execution timeout is the outer boundary
             # for investigation wall-clock; application timestamps alone cannot
             # bound provider calls, retries, or worker restarts.

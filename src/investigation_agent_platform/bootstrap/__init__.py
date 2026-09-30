@@ -618,6 +618,28 @@ def build_app_context(config: ApplicationConfig) -> AppContext:
     else:
         logger.info("Building AppContext with in-memory dependencies", extra={"environment": env})
         ctx = AppContext()
+        # Best-effort Temporal wiring outside production: when the engine is
+        # reachable (e.g. local docker-compose), attach a client so workflow
+        # dispatch (/start) and signals work in dev. When unreachable, leave
+        # it absent — routers report 503 and readiness reports NOT_REQUIRED.
+        try:
+            from temporalio.client import Client as _TemporalClient
+
+            ctx.temporal_client = _run_async(  # type: ignore[attr-defined]
+                _TemporalClient.connect(
+                    config.temporal.target_host, namespace=config.temporal.namespace
+                )
+            )
+            ctx.temporal_config = config.temporal  # type: ignore[attr-defined]
+            logger.info(
+                "Wired dev Temporal client",
+                extra={"target": config.temporal.target_host},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Temporal unavailable; workflow dispatch disabled in this process",
+                extra={"error": str(exc)},
+            )
     set_app_context(ctx)
     return ctx
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from contextlib import asynccontextmanager
@@ -55,14 +56,50 @@ def _create_lifespan_app() -> FastAPI:
 
     original_lifespan = app.router.lifespan_context
 
+    async def _maybe_wire_temporal() -> None:
+        """Best-effort Temporal client for the non-production API process.
+
+        The factory lifespan installs a bare in-memory ``AppContext`` (wiping
+        the bootstrap context), so without this the dev API can never dispatch
+        workflows (``/start`` → 503) even with Temporal running next to it.
+        Production wires its client mandatorily in bootstrap; here a failure
+        just leaves dispatch disabled (routers report 503, never silent 200).
+        """
+        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+            return
+        try:
+            from investigation_agent_platform.api.dependencies import get_app_context
+
+            ctx = get_app_context()
+            if getattr(ctx, "temporal_client", None) is not None:
+                return
+            cfg = _cfg or load_application_config_from_env()
+            from temporalio.client import Client as _TemporalClient
+
+            ctx.temporal_client = await _TemporalClient.connect(  # type: ignore[attr-defined]
+                cfg.temporal.target_host, namespace=cfg.temporal.namespace
+            )
+            ctx.temporal_config = cfg.temporal  # type: ignore[attr-defined]
+            logger.info(
+                "Wired API Temporal client",
+                extra={"target": cfg.temporal.target_host},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Temporal unavailable; workflow dispatch disabled in API",
+                extra={"error": str(exc)},
+            )
+
     @asynccontextmanager
     async def lifespan(api: FastAPI):  # type: ignore[no-untyped-def]
         # Graceful startup: AppContext already built via bootstrap above
         logger.info("Application startup complete")
         if original_lifespan is not None:
             async with original_lifespan(api):
+                await _maybe_wire_temporal()
                 yield
         else:
+            await _maybe_wire_temporal()
             yield
         # Graceful shutdown: close engine/broker if present
         try:
