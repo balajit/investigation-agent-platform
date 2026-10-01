@@ -9,6 +9,7 @@
 # Usage:
 #   ./scripts/run-golden-scenario.sh [--env-file PATH] [--api-base URL]
 #     [--tenant ID] [--skip-llm] [--skip-elastic] [--start] [--timeout SECS]
+#     [--part11[=SCENARIOS]] [--skip-core]
 #
 # Env: IAP_DATABASE_URI, IAP_LLM_API_KEY (or source your env file first).
 #   Default env file: .env.local, fallback ~/bin/.iap.env.local.
@@ -22,6 +23,9 @@ TIMEOUT="${TIMEOUT:-10}"
 SKIP_LLM=false
 SKIP_ELASTIC=false
 DO_START=false
+DO_PART11=false
+PART11_ONLY=""
+SKIP_CORE=false
 PASS_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -39,8 +43,11 @@ while [[ $# -gt 0 ]]; do
     --skip-llm) SKIP_LLM=true; PASS_ARGS+=(--skip-llm) ;;
     --skip-elastic) SKIP_ELASTIC=true; PASS_ARGS+=(--skip-elastic) ;;
     --start) DO_START=true; PASS_ARGS+=(--start) ;;
+    --part11) DO_PART11=true ;;
+    --part11=*) DO_PART11=true; PART11_ONLY="${1#--part11=}" ;;
+    --skip-core) SKIP_CORE=true ;;
     --help|-h)
-      echo "Usage: $0 [--env-file PATH] [--api-base URL] [--tenant ID] [--app-id ID] [--skip-llm] [--skip-elastic] [--start] [--timeout SECS]"
+      echo "Usage: $0 [--env-file PATH] [--api-base URL] [--tenant ID] [--app-id ID] [--skip-llm] [--skip-elastic] [--start] [--timeout SECS] [--part11[=SCENARIOS]] [--skip-core]"
       exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -136,10 +143,26 @@ if [[ $fail -gt 0 ]]; then
 fi
 
 echo "== Stage 2: deep checks (LLM + Elastic + API golden path) =="
-if [[ "$SKIP_LLM" == true ]]; then echo "(--skip-llm)"; fi
-if [[ "$SKIP_ELASTIC" == true ]]; then echo "(--skip-elastic)"; fi
-if [[ "$DO_START" == true ]]; then echo "(--start: will POST /start, needs Temporal + worker)"; fi
-uv run python scripts/golden_scenario.py "${PASS_ARGS[@]}"
-rc=$?
-if [[ $rc -eq 0 ]]; then echo "GOLDEN SCENARIO: PASS"; else echo "GOLDEN SCENARIO: FAIL (see JSON above)"; fi
+if [[ "$SKIP_CORE" == true ]]; then
+  echo "(--skip-core)"
+  rc=0
+else
+  if [[ "$SKIP_LLM" == true ]]; then echo "(--skip-llm)"; fi
+  if [[ "$SKIP_ELASTIC" == true ]]; then echo "(--skip-elastic)"; fi
+  if [[ "$DO_START" == true ]]; then echo "(--start: will POST /start, needs Temporal + worker)"; fi
+  uv run python scripts/golden_scenario.py "${PASS_ARGS[@]}"
+  rc=$?
+  if [[ $rc -eq 0 ]]; then echo "GOLDEN SCENARIO: PASS"; else echo "GOLDEN SCENARIO: FAIL (see JSON above)"; fi
+fi
+
+if [[ "$DO_PART11" == true ]]; then
+  echo "== Stage 3: Part 11 scenarios (durable DB/artifact asserts) =="
+  PART11_ARGS=(--api-base "$API_BASE" --tenant "$TENANT" --timeout "$TIMEOUT")
+  if [[ -n "$PART11_ONLY" ]]; then PART11_ARGS+=(--only "$PART11_ONLY"); fi
+  uv run python scripts/golden_part11.py "${PART11_ARGS[@]}"
+  rc11=$?
+  if [[ $rc11 -eq 0 ]]; then echo "GOLDEN PART11: PASS"; else echo "GOLDEN PART11: FAIL (see above)"; fi
+  [[ $rc -eq 0 ]] || exit $rc
+  exit $rc11
+fi
 exit $rc

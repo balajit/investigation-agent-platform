@@ -1166,7 +1166,7 @@ class TestMigration010:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         assert mod.revision == "010_background_jobs_and_quotas"
-        assert mod.down_revision == "009_profile_revisions_and_investigation_metadata"
+        assert mod.down_revision == "009_profile_revisions"
 
     def test_010_remains_ancestor(self) -> None:
         from alembic.config import Config
@@ -1176,7 +1176,7 @@ class TestMigration010:
         script = ScriptDirectory.from_config(cfg)
         rev = script.get_revision("010_background_jobs_and_quotas")
         assert rev is not None
-        assert rev.down_revision == "009_profile_revisions_and_investigation_metadata"
+        assert rev.down_revision == "009_profile_revisions"
         chain: list[str] = []
         current = script.get_revision(script.get_heads()[0])
         while current is not None:

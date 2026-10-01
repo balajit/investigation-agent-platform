@@ -43,6 +43,18 @@ and `docs/IAP-implementation-part11-plan-todo-v1.1.md` (phase specifications).
 - [x] **Task 5.a** — Source: Structured input-required suspension (~2 units)
 - [x] **Task 5.b** — Tests: Structured input-required suspension (~1 unit)
 - [x] **Task 6.a** — Source: Finding clustering (~2 units)
+- [x] **Task 6.b** — Tests: Finding clustering
+- [x] **Task 7.a** — Source: Aggregate reporting
+- [x] **Task 7.b** — Tests: Aggregate reporting
+- [x] **Task 8.a** — Source: Conversational investigation chat
+- [x] **Task 8.b** — Tests: Conversational investigation chat
+- [x] **Task 9.a** — Source: Defensive LLM JSON recovery
+- [x] **Task 9.b** — Tests: Defensive LLM JSON recovery
+- [x] **Task 10.a** — Source: Reference-document indexing + search
+- [x] **Task 10.b** — Tests: Reference-document indexing + search
+- [x] **Task 11.a** — Source: Bulk investigation intake
+- [x] **Task 11.b** — Tests: Bulk investigation intake
+- [x] **Task 12.a** — Source: Integration + operations
 
 Running total: **~17 units**.
 
@@ -50,22 +62,22 @@ Running total: **~17 units**.
 
 ### Task 6.b — Tests: Finding clustering
 
-Depends: 6.a.
+Depends: 6.a. Done: `tests/unit/test_part11_phase7.py` (22 tests).
 
-- [ ] Incremental run processes only unassigned findings (seed assigned +
+- [x] Incremental run processes only unassigned findings (seed assigned +
   unassigned, assert only unassigned touched).
-- [ ] Semantic-candidate cap enforced (≤12 candidates passed to LLM).
-- [ ] New-cluster creation persists row + assignment with history.
-- [ ] Malformed LLM output (missing array, unknown ids, duplicates) →
+- [x] Semantic-candidate cap enforced (≤12 candidates passed to LLM).
+- [x] New-cluster creation persists row + assignment with history.
+- [x] Malformed LLM output (missing array, unknown ids, duplicates) →
   explicit `UNASSIGNED`, nothing silently dropped.
-- [ ] Assignment history preserved across re-runs (valid_from/valid_to).
-- [ ] Tenant isolation on cluster read/list/assign.
-- [ ] Embedding model/version migration never mixes spaces.
-- [ ] API tests: taxonomy list, cluster detail + members, run trigger
+- [x] Assignment history preserved across re-runs (valid_from/valid_to).
+- [x] Tenant isolation on cluster read/list/assign.
+- [x] Embedding model/version migration never mixes spaces.
+- [x] API tests: taxonomy list, cluster detail + members, run trigger
   (idempotent replay, 400/404/409/502/503 mapping).
-- [ ] Migration 012 chain + single-head test; convert 011-head test to
+- [x] Migration 012 chain + single-head test; convert 011-head test to
   ancestor assertion.
-- [ ] Full gate.
+- [x] Full gate.
 
 ### Task 7.a — Source: Aggregate reporting (Phase 11.8)
 
@@ -97,16 +109,16 @@ Depends: 6.b (consumes cluster taxonomy).
 
 ### Task 7.b — Tests: Aggregate reporting
 
-Depends: 7.a.
+Depends: 7.a. Done: `tests/unit/test_part11_phase8.py` (23 tests).
 
-- [ ] Exact-generation reproducibility (same taxonomy snapshot → identical
+- [x] Exact-generation reproducibility (same taxonomy snapshot → identical
   report bytes).
-- [ ] Tenant isolation + authorized artifact access (cross-tenant 404, no
+- [x] Tenant isolation + authorized artifact access (cross-tenant 404, no
   key leakage).
-- [ ] Stored-XSS + CSP tests (malicious finding/cluster text escaped).
-- [ ] Empty-taxonomy renders a clear "no data yet" state.
-- [ ] Retention, legal hold, cascade cleanup.
-- [ ] Full gate.
+- [x] Stored-XSS + CSP tests (malicious finding/cluster text escaped).
+- [x] Empty-taxonomy renders a clear "no data yet" state.
+- [x] Retention, legal hold, cascade cleanup.
+- [x] Full gate.
 
 ### Task 8.a — Source: Conversational investigation chat (Phase 11.10)
 
@@ -133,15 +145,16 @@ Depends: 11.3 foundations (Task 3).
 
 ### Task 8.b — Tests: Conversational investigation chat
 
-Depends: 8.a.
+Depends: 8.a. Done: `tests/unit/test_part11_phase10.py` (24 tests).
 
-- [ ] Persistence across restart (durable repo round-trip, not in-process).
-- [ ] Cross-tenant session access rejected.
-- [ ] Stream event ordering + final-schema validation.
-- [ ] Disconnect cancellation, no duplicated text on provider failure.
-- [ ] Suggested action cannot bypass normal authorization/idempotency.
-- [ ] Retention/purge + quota tests.
-- [ ] Migration chain test; full gate.
+- [x] Persistence across restart (durable SQL round-trip on real
+  PostgreSQL when reachable, skipped otherwise — not in-process).
+- [x] Cross-tenant session access rejected.
+- [x] Stream event ordering + final-schema validation.
+- [x] Disconnect cancellation, no duplicated text on provider failure.
+- [x] Suggested action cannot bypass normal authorization/idempotency.
+- [x] Retention/purge + quota tests.
+- [x] Migration chain test (013 head; full linear chain); full gate.
 
 ### Task 9.a — Source: Defensive LLM JSON recovery (Phase 11.11)
 
@@ -162,16 +175,17 @@ Depends: 11.1 contracts (Task 1).
 
 ### Task 9.b — Tests: Defensive LLM JSON recovery
 
-Depends: 9.a.
+Depends: 9.a. Done: `tests/unit/test_part11_phase11.py` (31 tests).
 
-- [ ] Code fences, trailing prose, confirmed-truncation repair + validate.
-- [ ] Missing required fields, duplicate keys, excessive nesting, altered
+- [x] Code fences, trailing prose, confirmed-truncation repair + validate.
+- [x] Missing required fields, duplicate keys, excessive nesting, altered
   tool arguments, unterminated strings, domain-invalid values → all fail
-  closed.
-- [ ] Authorization/tool-execution/credential call sites reject repaired
-  output.
-- [ ] Bounded property-based/fuzz tests.
-- [ ] Full gate.
+  closed (extraction fail-closed + downstream schema/domain rejection).
+- [x] Authorization/tool-execution/credential call sites reject repaired
+  output (sensitive/destructive permission pattern).
+- [x] Bounded property-based/fuzz tests (seeded 500-input fuzz + truncation
+  prefix sweep).
+- [x] Full gate.
 
 ### Task 10.a — Source: Reference-document indexing + search (Phase 11.6)
 
@@ -205,16 +219,17 @@ Depends: 11.4 credentials (Task 4, for git/S3 fetch auth).
 
 ### Task 10.b — Tests: Reference-document indexing + search
 
-Depends: 10.a.
+Depends: 10.a. Done: `tests/unit/test_part11_phase6.py` (32 tests).
 
-- [ ] Fetcher conformance suite (all three fetch specs).
-- [ ] Unchanged-file reindex no-op; changed/deleted-file reconciliation;
+- [x] Fetcher conformance suite (git/local/S3 specs).
+- [x] Unchanged-file reindex no-op; changed/deleted-file reconciliation;
   failed generation leaves prior generation active.
-- [ ] Tenant/application isolation with identical source IDs.
-- [ ] Hybrid retrieval + embedding-version routing; recall benchmark
-  against exact retrieval on a golden query set.
-- [ ] SSRF, traversal, symlink, oversized-input, secret-redaction tests.
-- [ ] Migration chain test; full gate.
+- [x] Tenant/application isolation with identical source IDs.
+- [x] Hybrid retrieval + embedding-version routing; recall benchmark
+  (recall@1 == 1.0) against exact retrieval on a golden query set.
+- [x] SSRF, traversal, symlink, oversized-input, secret-redaction tests.
+- [x] REST + investigation-scoped MCP tool + strict contract updates;
+  migration chain test (014 head); full gate.
 
 ### Task 11.a — Source: Bulk investigation intake (Phase 11.9)
 
@@ -245,37 +260,39 @@ Depends: 11.5 structured input (Task 5, for per-record interrupts).
 
 ### Task 11.b — Tests: Bulk investigation intake
 
-Depends: 11.a.
+Depends: 11.a. Done: `tests/unit/test_part11_phase9.py` (30 tests).
 
-- [ ] Maximum concurrently *active* child executions (not just starts).
-- [ ] Deterministic replay, collision-free IDs across concurrent batches.
-- [ ] Partial failure, cancellation, waiting-input child, restart,
-  Continue-As-New, quota, cross-tenant status rejection.
-- [ ] Full gate.
+- [x] Maximum concurrently *active* child executions (bound pinned at 10;
+  permit-held-until-completion windowed dispatch; full execution in 12.a
+  golden scenarios).
+- [x] Deterministic replay, collision-free IDs across concurrent batches.
+- [x] Partial failure, cancellation, waiting-input child, restart,
+  Continue-As-New predicate, quota, cross-tenant status rejection.
+- [x] Full gate.
 
 ### Task 12.a — Source: Integration + operations (Phase 11.12)
 
-Depends: all of 6.b, 7.b, 8.b, 9.b, 10.b, 11.b.
+Depends: all of 6.b, 7.b, 8.b, 9.b, 10.b, 11.b. Done (worker/queue/schedule/Kafka fixes verified live; golden 38/38 green).
 
-- [ ] Register every new workflow/activity in each supported worker
+- [x] Register every new workflow/activity in each supported worker
   launcher; verify analytics + indexing queue coverage.
-- [ ] Finalize task-queue/concurrency config; verify Phase 11.3 schedule
+- [x] Finalize task-queue/concurrency config; verify Phase 11.3 schedule
   reconciliation end-to-end (stable IDs, overlap, jitter, pause/unpause,
   catch-up/backfill, update/delete).
-- [ ] Extend `scripts/run-golden-scenario.sh` with the six Part 11
+- [x] Extend `scripts/run-golden-scenario.sh` with the six Part 11
   scenarios (input suspend/restart/fulfill/resume; source
   index/search/delete/reindex; finding → clustering → report artifact;
   batch partial failure + bounded concurrency; chat stream + action
   authorization; job snapshot + Kafka/WebSocket progress + reconnect).
   Scenarios assert durable database/artifact state, not just HTTP shapes.
-- [ ] Write Part 11 operations documentation (plugin/capability discovery,
+- [x] Write Part 11 operations documentation (plugin/capability discovery,
   task queues + worker sizing, schedule reconciliation, Kafka
   subscriber/fan-out topology, artifact storage + signed URLs, vector
   index maintenance + recall checks + re-embedding + vacuum/reindex
   triggers, retention + legal hold + purge + audit, quotas + cost
   controls, credential refresh failures + safe diagnostics, contract /
   plugin upgrade + rollback).
-- [ ] Source gate (ruff + format + mypy, no pytest; golden scenarios run
+- [x] Source gate (ruff + format + mypy, no pytest; golden scenarios run
   separately, not part of this gate).
 
 ### Task 12.b — Tests: Integration + operations (final)

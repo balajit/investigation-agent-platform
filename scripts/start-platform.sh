@@ -82,7 +82,7 @@ if [[ "$RESTART_ONLY" == true ]]; then
   fi
   if [[ "$RUN_WORKER" == true ]]; then
     echo "Starting Temporal worker ..."
-    nohup uv run python -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
+    nohup uv run python -u -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
     echo $! > tmp/worker.pid
     echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
   fi
@@ -126,7 +126,7 @@ if [[ "$RUN_API" == true ]]; then
 fi
 if [[ "$RUN_WORKER" == true ]]; then
   echo "Starting Temporal worker ..."
-  nohup uv run python -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
+  nohup uv run python -u -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
   echo $! > tmp/worker.pid
   echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
 fi

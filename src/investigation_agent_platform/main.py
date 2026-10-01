@@ -124,6 +124,23 @@ def _create_lifespan_app() -> FastAPI:
                 extra={"error": str(exc)},
             )
 
+    async def _maybe_start_job_messaging() -> None:
+        """Start the per-replica job progress subscriber (Part 11.3C/11.12).
+
+        One pattern subscriber with a replica-unique group; missing broker
+        (dev) skips quietly, Kafka outages degrade to DB snapshots + local
+        hub — progress streaming is supplemental, never boot-critical.
+        """
+        try:
+            from investigation_agent_platform.api.dependencies import get_app_context
+            from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+                ensure_job_messaging,
+            )
+
+            await ensure_job_messaging(get_app_context())
+        except Exception as exc:
+            logger.warning("Job messaging unavailable", extra={"error": str(exc)})
+
     @asynccontextmanager
     async def lifespan(api: FastAPI):  # type: ignore[no-untyped-def]
         # Graceful startup: AppContext already built via bootstrap above
@@ -132,10 +149,12 @@ def _create_lifespan_app() -> FastAPI:
             async with original_lifespan(api):
                 await _maybe_wire_temporal()
                 await _maybe_wire_buffered()
+                await _maybe_start_job_messaging()
                 yield
         else:
             await _maybe_wire_temporal()
             await _maybe_wire_buffered()
+            await _maybe_start_job_messaging()
             yield
         # Graceful shutdown: the inner lifespan already ran the ordered
         # shutdown_app_context(); this second call is an idempotent no-op

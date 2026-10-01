@@ -699,6 +699,17 @@ class TestCodeAccessScope:
 
 
 class TestMigrationChain:
+    def test_revision_ids_fit_alembic_version_column(self) -> None:
+        # alembic_version.version_num is VARCHAR(32): longer ids fail the
+        # version bookkeeping UPDATE on every migrate (seen with 008/009).
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        cfg = Config("alembic.ini")
+        script = ScriptDirectory.from_config(cfg)
+        for rev in script.walk_revisions():
+            assert len(rev.revision) <= 32, f"revision id too long: {rev.revision!r}"
+
     def test_revision_chain_is_linear(self) -> None:
         from alembic.config import Config
         from alembic.script import ScriptDirectory
@@ -715,11 +726,14 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "015_batch_intake",
+            "014_reference_documents",
+            "013_chat_sessions",
             "012_finding_clusters",
             "011_input_requirements",
             "010_background_jobs_and_quotas",
-            "009_profile_revisions_and_investigation_metadata",
-            "008_evidence_observed_at_nullable",
+            "009_profile_revisions",
+            "008_evidence_observed_nullable",
             "007_profile_id_128",
             "006_pgvector_extension",
             "005_knowledge_layer",

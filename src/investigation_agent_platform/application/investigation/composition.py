@@ -8,6 +8,7 @@ directly.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 from investigation_agent_platform.application.evidence.selector import (
     EvidenceProviderSelector,
@@ -38,6 +39,10 @@ class InvestigationServices:
     runtime_evidence: RuntimeEvidenceService
     evidence_detail: EvidenceDetailService
     trace_investigation: TraceInvestigationService
+    # Part 11.6: reference-document search for the investigation-scoped MCP
+    # tool. Optional so existing builders/tests compose unchanged; the tool
+    # fails closed when absent.
+    reference_docs: Any | None = None
 
 
 def build_investigation_services(

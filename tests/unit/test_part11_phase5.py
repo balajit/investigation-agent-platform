@@ -931,10 +931,19 @@ class TestMigration011:
         assert mod.revision == "011_input_requirements"
         assert mod.down_revision == "010_background_jobs_and_quotas"
 
-    def test_single_head_is_011(self) -> None:
+    def test_011_is_ancestor_of_head(self) -> None:
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["011_input_requirements"]
+        # 011 is no longer the head (012 superseded it); it must remain a
+        # linear ancestor of the current single head.
+        rev = script.get_revision(script.get_heads()[0])
+        seen = []
+        while rev is not None:
+            seen.append(rev.revision)
+            down = rev.down_revision
+            rev = script.get_revision(down) if down else None
+        assert "011_input_requirements" in seen
+        assert seen.index("012_finding_clusters") < seen.index("011_input_requirements")

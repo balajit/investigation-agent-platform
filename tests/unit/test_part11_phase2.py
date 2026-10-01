@@ -679,15 +679,15 @@ class TestMigration009:
             Path(__file__).resolve().parents[2]
             / "migrations"
             / "versions"
-            / "009_profile_revisions_and_investigation_metadata.py"
+            / "009_profile_revisions.py"
         )
         assert path.is_file()
         spec = importlib.util.spec_from_file_location("migration_009", path)
         assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        assert mod.revision == "009_profile_revisions_and_investigation_metadata"
-        assert mod.down_revision == "008_evidence_observed_at_nullable"
+        assert mod.revision == "009_profile_revisions"
+        assert mod.down_revision == "008_evidence_observed_nullable"
 
     def test_009_remains_ancestor(self) -> None:
         from alembic.config import Config
@@ -695,9 +695,9 @@ class TestMigration009:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        rev = script.get_revision("009_profile_revisions_and_investigation_metadata")
+        rev = script.get_revision("009_profile_revisions")
         assert rev is not None
-        assert rev.down_revision == "008_evidence_observed_at_nullable"
+        assert rev.down_revision == "008_evidence_observed_nullable"
         # Walk down from the current head: 009 must still be in the chain.
         chain: list[str] = []
         current = script.get_revision(script.get_heads()[0])
@@ -705,4 +705,4 @@ class TestMigration009:
             chain.append(current.revision)
             down = current.down_revision
             current = script.get_revision(down) if down else None
-        assert "009_profile_revisions_and_investigation_metadata" in chain
+        assert "009_profile_revisions" in chain

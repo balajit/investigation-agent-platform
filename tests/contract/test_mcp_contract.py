@@ -73,7 +73,12 @@ def _output_arms(tool):  # type: ignore[no-untyped-def]
 async def test_tool_catalog_exact():
     tools = await _tools()
     assert set(tools) == EXPECTED_TOOLS
-    assert set(tools) == {"search_runtime_evidence", "get_evidence", "investigate_trace"}
+    assert set(tools) == {
+        "search_runtime_evidence",
+        "get_evidence",
+        "investigate_trace",
+        "search_reference_docs",
+    }
     names = [name for name in tools]
     assert len(names) == len(set(names))
 
@@ -234,9 +239,7 @@ async def test_output_success_shapes():
         "sql_supported",
         "completeness",
     }
-    assert {"code_location_supported", "sql_supported"} <= set(
-        trace_success.get("required", [])
-    )
+    assert {"code_location_supported", "sql_supported"} <= set(trace_success.get("required", []))
     get_arms = [arm for arm, _ in _output_arms(tools["get_evidence"])]
     get_success = next(arm for arm in get_arms if "attributes" in arm.get("properties", {}))
     assert "provenance" in get_success["properties"]

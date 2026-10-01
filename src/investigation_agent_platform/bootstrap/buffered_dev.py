@@ -36,6 +36,11 @@ BUFFERED_ATTRS: tuple[str, ...] = (
     "hypothesis_repo",
     "input_repo",
     "finding_cluster_repo",
+    "chat_repo",
+    "reference_repo",
+    "batch_repo",
+    "background_job_repo",
+    "finding_repo",
     "checkpoint_repo",
     "transition_repo",
     "action_repo",
@@ -88,6 +93,15 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     from investigation_agent_platform.infrastructure.persistence.action_execution_repository import (
         SqlAlchemyActionExecutionRepository,
     )
+    from investigation_agent_platform.infrastructure.persistence.background_job_repository import (
+        SqlAlchemyBackgroundJobRepository,
+    )
+    from investigation_agent_platform.infrastructure.persistence.batch_intake_repository import (
+        SqlAlchemyBatchIntakeRepository,
+    )
+    from investigation_agent_platform.infrastructure.persistence.chat_repository import (
+        SqlAlchemyChatSessionRepository,
+    )
     from investigation_agent_platform.infrastructure.persistence.checkpoint_repository import (
         SqlAlchemyCheckpointRepository,
     )
@@ -96,6 +110,9 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     )
     from investigation_agent_platform.infrastructure.persistence.finding_cluster_repository import (
         SqlAlchemyFindingClusterRepository,
+    )
+    from investigation_agent_platform.infrastructure.persistence.finding_repository import (
+        SqlAlchemyFindingConclusionRepository,
     )
     from investigation_agent_platform.infrastructure.persistence.hypothesis_repository import (
         SqlAlchemyHypothesisRepository,
@@ -117,6 +134,9 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     from investigation_agent_platform.infrastructure.persistence.profile_repository import (
         SqlAlchemyApplicationProfileRepository,
     )
+    from investigation_agent_platform.infrastructure.persistence.reference_doc_repository import (
+        SqlAlchemyReferenceDocRepository,
+    )
     from investigation_agent_platform.infrastructure.persistence.timeline_repository import (
         SqlAlchemyTimelineRepository,
     )
@@ -132,6 +152,11 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
         "hypothesis_repo": SqlAlchemyHypothesisRepository(session_factory),
         "input_repo": SqlAlchemyInputRequirementRepository(session_factory),
         "finding_cluster_repo": SqlAlchemyFindingClusterRepository(session_factory),
+        "chat_repo": SqlAlchemyChatSessionRepository(session_factory),
+        "reference_repo": SqlAlchemyReferenceDocRepository(session_factory),
+        "batch_repo": SqlAlchemyBatchIntakeRepository(session_factory),
+        "background_job_repo": SqlAlchemyBackgroundJobRepository(session_factory),
+        "finding_repo": SqlAlchemyFindingConclusionRepository(session_factory),
         "checkpoint_repo": SqlAlchemyCheckpointRepository(session_factory),
         "transition_repo": SqlAlchemyTransitionRepository(session_factory),
         "action_repo": SqlAlchemyActionExecutionRepository(session_factory),

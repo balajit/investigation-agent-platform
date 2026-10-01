@@ -107,7 +107,10 @@ async def readiness(response: Response) -> dict[str, Any]:
         ping = getattr(broker, "ping", None) or getattr(broker, "status", None)
         try:
             if callable(ping):
-                res = ping()
+                try:
+                    res = ping(timeout=1.5)
+                except TypeError:
+                    res = ping()
                 if asyncio.iscoroutine(res):
                     await asyncio.wait_for(res, timeout=1.5)
             checks["broker"] = "CONNECTED"

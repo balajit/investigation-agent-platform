@@ -28,6 +28,14 @@ DEFAULT_CLUSTER_BATCH_SIZE = 25
 #: Cap: maximum taxonomy members before the assigner must merge.
 MAX_TAXONOMY_CLUSTERS = 25
 
+#: Fixed pgvector dimension for the finding-embedding column (Part 11.7).
+#: HNSW indexes require declared dimensions, so the inaugural space is pinned
+#: to text-embedding-3-small (1536). A different-dimension model needs a new
+#: migration (blue/green at DDL level); same-dimension model upgrades flow
+#: through generations. Vectors of any other non-empty length are rejected
+#: fail-closed at the repository boundary, never silently truncated/padded.
+FINDING_EMBEDDING_DIMS = 1536
+
 
 class FindingCluster(BaseModel):
     """One named root-cause pattern within a tenant's taxonomy."""

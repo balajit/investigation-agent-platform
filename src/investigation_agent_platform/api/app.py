@@ -52,9 +52,16 @@ from investigation_agent_platform.api.dependencies import (
 )
 from investigation_agent_platform.api.errors import public_error, sanitize_extra
 from investigation_agent_platform.api.rate_limit import check_rate_limit
+from investigation_agent_platform.api.v1.routers.aggregate_reports import (
+    router as aggregate_reports_router,
+)
+from investigation_agent_platform.api.v1.routers.batch_intake import (
+    router as batch_intake_router,
+)
 from investigation_agent_platform.api.v1.routers.capabilities import (
     router as capabilities_router,
 )
+from investigation_agent_platform.api.v1.routers.chat import router as chat_router
 from investigation_agent_platform.api.v1.routers.clusters import router as clusters_router
 from investigation_agent_platform.api.v1.routers.events import router as events_router
 from investigation_agent_platform.api.v1.routers.evidence import router as evidence_router
@@ -66,6 +73,9 @@ from investigation_agent_platform.api.v1.routers.investigations import (
 from investigation_agent_platform.api.v1.routers.jobs import router as jobs_router
 from investigation_agent_platform.api.v1.routers.knowledge import router as knowledge_router
 from investigation_agent_platform.api.v1.routers.profiles import router as profiles_router
+from investigation_agent_platform.api.v1.routers.reference_docs import (
+    router as reference_docs_router,
+)
 from investigation_agent_platform.api.v1.routers.timeline import router as timeline_router
 from investigation_agent_platform.domain.common.exceptions import (
     ConcurrencyError,
@@ -362,5 +372,9 @@ def create_app(
     app.include_router(capabilities_router, prefix=api_v1)
     app.include_router(jobs_router, prefix=api_v1)
     app.include_router(clusters_router, prefix=api_v1)
+    app.include_router(aggregate_reports_router, prefix=api_v1)
+    app.include_router(batch_intake_router, prefix=api_v1)
+    app.include_router(chat_router, prefix=api_v1)
+    app.include_router(reference_docs_router, prefix=api_v1)
 
     return app

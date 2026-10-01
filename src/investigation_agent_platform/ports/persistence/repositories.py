@@ -20,6 +20,11 @@ from investigation_agent_platform.domain.finding.models import (
     InvestigationConclusion,
 )
 from investigation_agent_platform.domain.hypothesis.models import Hypothesis
+from investigation_agent_platform.domain.intake.batch import BatchRecordResult
+from investigation_agent_platform.domain.investigation.chat import (
+    ChatMessage,
+    InvestigationChatSession,
+)
 from investigation_agent_platform.domain.investigation.input_requirements import (
     InputFulfillment,
     InputRequirement,
@@ -338,4 +343,58 @@ class FindingClusterRepository(Protocol):
         self, tenant_id: str, query_text: str, limit: int = 12
     ) -> list[UUID]:
         """Cluster ids whose member findings lexically match (bounded)."""
+        ...
+
+
+@runtime_checkable
+class ChatSessionRepository(Protocol):
+    """Tenant-scoped durable chat sessions + messages (Part 11.10)."""
+
+    async def save_session(self, tenant_id: str, session: InvestigationChatSession) -> None: ...
+
+    async def get_session(
+        self, tenant_id: str, session_id: UUID
+    ) -> InvestigationChatSession | None: ...
+
+    async def save_message(self, tenant_id: str, message: ChatMessage) -> None: ...
+
+    async def list_messages(
+        self, tenant_id: str, session_id: UUID, limit: int = 100, offset: int = 0
+    ) -> tuple[list[ChatMessage], int]: ...
+
+    async def count_active_sessions(self, tenant_id: str) -> int: ...
+
+    async def delete_session(self, tenant_id: str, session_id: UUID) -> None: ...
+
+    async def sessions_older_than(
+        self, tenant_id: str, cutoff: Any, limit: int = 500
+    ) -> list[InvestigationChatSession]: ...
+
+
+@runtime_checkable
+class BatchIntakeRepository(Protocol):
+    """Tenant-scoped batch record rows for one batch job (Part 11.9)."""
+
+    async def create_records(
+        self, tenant_id: str, job_id: UUID, records: list[BatchRecordResult]
+    ) -> None: ...
+
+    async def list_records(
+        self, tenant_id: str, job_id: UUID, limit: int = 100, offset: int = 0
+    ) -> tuple[list[BatchRecordResult], int]: ...
+
+    async def get_record(
+        self, tenant_id: str, job_id: UUID, record_index: int
+    ) -> BatchRecordResult | None: ...
+
+    async def save_record(
+        self, tenant_id: str, job_id: UUID, record: BatchRecordResult
+    ) -> None: ...
+
+    async def reset_failed(self, tenant_id: str, job_id: UUID, attempt: int) -> int:
+        """Reset FAILED rows to PENDING for a partial retry; returns count."""
+        ...
+
+    async def delete_job_records(self, tenant_id: str, job_id: UUID) -> int:
+        """Hard-delete all rows for one job; returns rows removed."""
         ...

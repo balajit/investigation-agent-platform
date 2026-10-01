@@ -189,6 +189,27 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
 
     # Part 11.7: durable cluster taxonomy (same fail-closed rule).
     ctx.finding_cluster_repo = SqlAlchemyFindingClusterRepository(session_factory)
+    from investigation_agent_platform.infrastructure.persistence.chat_repository import (
+        SqlAlchemyChatSessionRepository,
+    )
+
+    # Part 11.10: durable chat sessions + messages (same fail-closed rule —
+    # streams resume from persisted history, never process-local memory).
+    ctx.chat_repo = SqlAlchemyChatSessionRepository(session_factory)
+    from investigation_agent_platform.infrastructure.persistence.reference_doc_repository import (
+        SqlAlchemyReferenceDocRepository,
+    )
+
+    # Part 11.6: durable reference chunks + generations (same fail-closed
+    # rule — retrieval must survive restarts and reconcile generations).
+    ctx.reference_repo = SqlAlchemyReferenceDocRepository(session_factory)
+    from investigation_agent_platform.infrastructure.persistence.batch_intake_repository import (
+        SqlAlchemyBatchIntakeRepository,
+    )
+
+    # Part 11.9: durable batch record rows (same fail-closed rule — resume,
+    # partial retries, and paginated children read row-level state).
+    ctx.batch_repo = SqlAlchemyBatchIntakeRepository(session_factory)
     # Part 11.5: durable input requirements/fulfillments (same fail-closed
     # rule — the AWAITING_INPUT flow depends on these rows surviving restarts).
     ctx.input_repo = input_repo
@@ -233,6 +254,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
 
         broker = KafkaBroker(config.kafka.bootstrap_servers)
         ctx.broker = broker  # type: ignore[attr-defined]
+        # Part 11.12: kafka topology (prefix/groups) travels with the
+        # context so progress publish/subscribe share one source of truth.
+        ctx.kafka_config = config.kafka  # type: ignore[attr-defined]
         from investigation_agent_platform.infrastructure.messaging.faststream import (
             KafkaEventPublisher,
         )
@@ -503,6 +527,18 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             derivation=TraceTelemetryExtractor(mapping_registry=mapping_registry),
         )
         logger.info("Investigation services composed")
+        # Part 11.6: reference-document service for the investigation-scoped
+        # MCP search tool (same repositories the REST surface uses).
+        from investigation_agent_platform.application.reference.reference_service import (
+            ReferenceDocumentService,
+        )
+
+        ctx.investigation_services.reference_docs = ReferenceDocumentService(  # type: ignore[attr-defined]
+            chunk_repo=ctx.reference_repo,
+            profile_repo=ctx.profile_repo,
+            embedder=None,
+        )
+        logger.info("Reference-document service composed")
     except Exception as exc:
         raise PlatformConfigurationError(f"Failed to wire evidence gateway: {exc}") from exc
 
@@ -712,6 +748,39 @@ def build_app_context(config: ApplicationConfig) -> AppContext:
         except Exception as exc:
             logger.warning(
                 "Temporal unavailable; workflow dispatch disabled in this process",
+                extra={"error": str(exc)},
+            )
+        # Best-effort Kafka wiring outside production: same topology as
+        # production (replica-unique consumer groups, pattern subscription)
+        # so progress streaming works in dev when the broker is reachable.
+        # Absent/unreachable broker degrades to DB snapshots + local hub.
+        try:
+            from faststream.kafka import KafkaBroker as _KafkaBroker
+
+            ctx.broker = _KafkaBroker(config.kafka.bootstrap_servers)  # type: ignore[attr-defined]
+            ctx.kafka_config = config.kafka  # type: ignore[attr-defined]
+            logger.info(
+                "Wired dev Kafka broker",
+                extra={"servers": config.kafka.bootstrap_servers},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Kafka unavailable; progress streaming degraded in this process",
+                extra={"error": str(exc)},
+            )
+        # Shared filesystem artifact store outside production: the API and
+        # worker are separate processes, so process-local memory would make
+        # worker-stored artifacts invisible to API reads (and vice versa).
+        try:
+            from investigation_agent_platform.infrastructure.artifacts.local_store import (
+                LocalArtifactStore,
+            )
+
+            ctx.artifact_store = LocalArtifactStore("data/artifacts")  # type: ignore[assignment]
+            logger.info("Wired dev filesystem artifact store")
+        except Exception as exc:
+            logger.warning(
+                "Filesystem artifact store unavailable; continuing in-memory",
                 extra={"error": str(exc)},
             )
     set_app_context(ctx)

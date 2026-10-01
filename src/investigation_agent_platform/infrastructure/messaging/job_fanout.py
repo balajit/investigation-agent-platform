@@ -148,3 +148,124 @@ def _register_topic_consumer(broker: Any, hub: JobProgressHub, topic: str, group
 def job_topics_for_tenant(tenant_id: str, topic_prefix: str) -> str:
     """Single job topic for one tenant (kept singular: strict ordering)."""
     return job_topic_for(tenant_id, topic_prefix)
+
+
+def job_topic_pattern(topic_prefix: str) -> str:
+    """Regex matching every tenant job topic under one prefix (Part 11.12).
+
+    One pattern subscriber per replica replaces per-tenant subscription:
+    tenant enumeration does not exist, and registering consumers after
+    broker start is unreliable. New tenants flow without restarts.
+    """
+    import re
+
+    return f"^{re.escape(topic_prefix)}-jobs\\..*"
+
+
+def build_job_pattern_consumer(
+    broker: Any, hub: JobProgressHub, topic_prefix: str, group_id: str
+) -> Any:
+    """Register the single pattern subscriber for all job topics."""
+
+    @broker.subscriber(pattern=job_topic_pattern(topic_prefix), group_id=group_id)  # type: ignore[untyped-decorator]
+    async def handle_job_progress(msg: Any) -> None:
+        try:
+            payload = msg.model_dump() if hasattr(msg, "model_dump") else dict(msg)
+            event = JobProgressEvent.model_validate(payload)
+        except Exception as exc:
+            logger.warning("Skipping malformed job progress event", extra={"error": str(exc)})
+            return
+        await hub.publish(event)
+
+    return handle_job_progress
+
+
+def job_progress_event_for(tenant_id: str, job: Any) -> JobProgressEvent:
+    """Build the versioned progress event for one job row (Part 11.3C)."""
+    from datetime import UTC, datetime
+
+    stages = list(getattr(job, "stages", []) or [])
+    return JobProgressEvent(
+        job_id=job.id,
+        tenant_id=tenant_id,
+        kind=str(getattr(job, "kind", "")),
+        status=job.status,
+        progress=int(getattr(job, "progress", 0) or 0),
+        total=int(getattr(job, "total", 0) or 0),
+        stage=str(getattr(stages[-1], "name", "") or "") if stages else None,
+        at=datetime.now(UTC),
+    )
+
+
+async def maybe_publish_job_progress(ctx: Any, tenant_id: str, job: Any) -> bool:
+    """Best-effort progress publish; never fails the caller (Part 11.12).
+
+    Returns True when the event reached the broker. Missing broker, topics,
+    or Kafka outages degrade to DB snapshots + local hub only.
+    """
+    try:
+        broker = getattr(ctx, "broker", None)
+        kafka = getattr(ctx, "kafka_config", None)
+        if broker is None or job is None:
+            return False
+        prefix = getattr(kafka, "topic_prefix", None) or "iap-"
+        topic = job_topic_for(tenant_id, prefix)
+        event = job_progress_event_for(tenant_id, job)
+        await broker.publish(event.model_dump(mode="json"), topic=topic)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Job progress publish skipped",
+            extra={"tenant_id": tenant_id, "error": str(exc)},
+        )
+        return False
+
+
+_messaging_started = False
+
+
+async def ensure_job_messaging(ctx: Any) -> bool:
+    """Start the broker + pattern consumer once per process (Part 11.12).
+
+    One subscriber per API replica with a replica-unique group (shared
+    groups are prohibited: partitions would load-balance away from local
+    sockets). Safe to call repeatedly; missing broker skips quietly.
+    """
+    global _messaging_started
+    if _messaging_started:
+        return True
+    try:
+        broker = getattr(ctx, "broker", None)
+        hub = getattr(ctx, "job_hub", None)
+        kafka = getattr(ctx, "kafka_config", None)
+        if broker is None or hub is None:
+            logger.info("Job messaging skipped (no broker/hub on context)")
+            return False
+        prefix = getattr(kafka, "topic_prefix", None) or "iap-"
+        base_group = getattr(kafka, "consumer_group", None) or "iap-consumer-group"
+        build_job_pattern_consumer(broker, hub, prefix, replica_consumer_group(base_group))
+        # Kafka outages must degrade, never hang boot: broker.start() can
+        # block indefinitely against an unresolvable advertised listener.
+        try:
+            await asyncio.wait_for(broker.start(), timeout=20)
+        except Exception as exc:
+            try:
+                await broker.close()
+            except Exception:
+                pass
+            logger.error(
+                "Job messaging broker unreachable; continuing degraded",
+                extra={"error": str(exc)},
+            )
+            return False
+        _messaging_started = True
+        logger.info(
+            "Job messaging started",
+            extra={"group": replica_consumer_group(base_group), "prefix": prefix},
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "Job messaging failed to start; continuing degraded", extra={"error": str(exc)}
+        )
+        return False

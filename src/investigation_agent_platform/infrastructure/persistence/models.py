@@ -997,10 +997,11 @@ class FindingClusterAssignmentORM(Base):
 class FindingEmbeddingORM(Base):
     """Per-finding retrieval vectors, one row per (model, generation) (Part 11.7).
 
-    The ``embedding`` column is a dimensionless pgvector: embedding spaces
-    must never be compared across ``embedding_model``/``embedding_version``
-    (enforced in every query), and blue/green migration proceeds by writing a
-    new ``generation`` and switching reads to ``MAX(generation)``.
+    The ``embedding`` column is a fixed-dimension pgvector (HNSW requires
+    declared dimensions). Spaces must never be compared across
+    ``embedding_model``/``embedding_version`` (enforced in every query), and
+    blue/green migration proceeds by writing a new ``generation`` and
+    switching reads to ``MAX(generation)``.
     """
 
     __tablename__ = "finding_embeddings"
@@ -1011,7 +1012,8 @@ class FindingEmbeddingORM(Base):
     embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    embedding: Mapped[Any] = mapped_column(Vector(), nullable=True)
+    # Fixed dims (HNSW requirement); keep in sync with FINDING_EMBEDDING_DIMS.
+    embedding: Mapped[Any] = mapped_column(Vector(1536), nullable=True)
     lexical: Mapped[str | None] = mapped_column(Text, nullable=True)
     lexical_tsv: Mapped[Any | None] = mapped_column(TSVECTOR(), nullable=True)
     lifecycle: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
@@ -1030,4 +1032,160 @@ class FindingEmbeddingORM(Base):
             name="uq_finding_embedding_space",
         ),
         Index("idx_finding_emb_tenant_model", "tenant_id", "embedding_model"),
+    )
+
+
+class ChatSessionORM(Base):
+    """Durable chat session (Part 11.10)."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    application_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    classification: Mapped[str] = mapped_column(String(32), nullable=False, default="INTERNAL")
+    allowed_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="openai")
+    authorization_reference: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    legal_hold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    contract_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_chat_session_tenant_created", "tenant_id", "created_at"),
+        Index("idx_chat_session_investigation", "tenant_id", "investigation_id"),
+    )
+
+
+class ChatMessageORM(Base):
+    """Durable chat message (Part 11.10)."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    session_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_chat_message_session_created", "session_id", "created_at"),
+        Index("idx_chat_message_tenant_session", "tenant_id", "session_id"),
+    )
+
+
+class ReferenceDocumentChunkORM(Base):
+    """Platform-owned reference chunk (Part 11.6)."""
+
+    __tablename__ = "reference_document_chunks"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    application_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    document_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    source_revision: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    embedding_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lifecycle: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    lexical_tsv: Mapped[Any | None] = mapped_column(TSVECTOR(), nullable=True)
+    # Fixed dims (HNSW requirement); keep in sync with REFERENCE_EMBEDDING_DIMS.
+    embedding: Mapped[Any] = mapped_column(Vector(1536), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_id",
+            "generation",
+            "document_path",
+            "chunk_index",
+            name="uq_refdoc_chunk_space",
+        ),
+        Index("idx_refdoc_tenant_source_gen", "tenant_id", "source_id", "generation"),
+    )
+
+
+class ReferenceIndexGenerationORM(Base):
+    """Index generation row for blue/green routing (Part 11.6)."""
+
+    __tablename__ = "reference_index_generations"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    source_revision: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    embedding_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0")
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_id",
+            "generation",
+            name="uq_refdoc_generation",
+        ),
+        Index("idx_refdoc_gen_tenant_source", "tenant_id", "source_id"),
+    )
+
+
+class BatchIntakeRecordORM(Base):
+    """Per-record bulk intake state for one batch job (Part 11.9)."""
+
+    __tablename__ = "batch_intake_records"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    job_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    record_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    external_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    investigation_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    child_workflow_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "job_id",
+            "external_key",
+            name="uq_batch_record_key",
+        ),
+        Index("idx_batch_record_job_status", "tenant_id", "job_id", "status"),
+        Index("idx_batch_record_job_index", "tenant_id", "job_id", "record_index"),
     )

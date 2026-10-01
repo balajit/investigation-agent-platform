@@ -150,7 +150,12 @@ def test_stdio_context_requires_configuration():
 
 
 def test_expected_tool_catalog():
-    assert EXPECTED_TOOLS == {"search_runtime_evidence", "get_evidence", "investigate_trace"}
+    assert EXPECTED_TOOLS == {
+        "search_runtime_evidence",
+        "get_evidence",
+        "investigate_trace",
+        "search_reference_docs",
+    }
 
 
 def test_tool_argument_surface_has_no_auth_or_infra_params():

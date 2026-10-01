@@ -8,7 +8,7 @@ migration. Downgrade drops policies, indexes, and tables.
 
 # revision identifiers, used by Alembic.
 revision = "010_background_jobs_and_quotas"
-down_revision = "009_profile_revisions_and_investigation_metadata"
+down_revision = "009_profile_revisions"
 branch_labels = None
 depends_on = None
 

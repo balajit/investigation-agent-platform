@@ -28,7 +28,10 @@ class SqlAlchemyApplicationProfileRepository:
 
     @staticmethod
     def _to_orm(profile: ApplicationProfile, tenant_id: str) -> ApplicationProfileORM:
+        from uuid import uuid4 as _uuid4
+
         return ApplicationProfileORM(
+            row_id=_uuid4(),
             id=profile.id,
             tenant_id=tenant_id,
             version=profile.version,

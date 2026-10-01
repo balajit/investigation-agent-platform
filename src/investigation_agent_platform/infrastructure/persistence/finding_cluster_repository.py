@@ -7,8 +7,12 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+from investigation_agent_platform.domain.common.exceptions import (
+    ConcurrencyError,
+    DomainValidationException,
+)
 from investigation_agent_platform.domain.finding.clustering import (
+    FINDING_EMBEDDING_DIMS,
     UNASSIGNED_CLUSTER_ID,
     FindingCluster,
     FindingClusterAssignment,
@@ -226,6 +230,11 @@ class SqlAlchemyFindingClusterRepository:
         """Idempotent write for one (finding, model, version, generation) space."""
         if embedding.tenant_id != tenant_id:
             raise ConcurrencyError("Embedding tenant mismatch")
+        if embedding.vector and len(embedding.vector) != FINDING_EMBEDDING_DIMS:
+            raise DomainValidationException(
+                f"Embedding vector has {len(embedding.vector)} dims, "
+                f"expected {FINDING_EMBEDDING_DIMS}; refusing to mix spaces"
+            )
         lexical = embedding.lexical_text[:4000]
         async with rls_session(self._session_factory, tenant_id) as session:
             stmt = (

@@ -125,6 +125,34 @@ class InvestigationProfile(BaseModel):
     )
     correlation_depth: int = Field(default=2, alias="correlationDepth", ge=1, le=10)
     max_hypotheses: int = Field(default=5, alias="maximumHypotheses", ge=1, le=50)
+    parameters_schema: dict[str, Any] | None = Field(
+        default=None,
+        alias="parametersSchema",
+        description="Optional JSON-Schema subset for intake record parameters "
+        "(type/required/properties/enum/maxLength/minimum/maximum/"
+        "additionalProperties). Absent means structural bounds only.",
+    )
+
+
+class ReferenceDocsProfile(BaseModel):
+    """Optional versioned reference-document configuration (Part 11.6).
+
+    Absent (None) means reference retrieval is unconfigured: indexing and
+    search fail closed with a clear error. Present means the listed sources
+    may be indexed; endpoint and path policies below bound every fetch.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    config_version: str = Field(default="1.0", alias="configVersion", min_length=1, max_length=32)
+    sources: list[dict[str, Any]] = Field(default_factory=list, alias="sources", max_length=10)
+    allowed_hosts: list[str] = Field(default_factory=list, alias="allowedHosts", max_length=100)
+    local_allowed_roots: list[str] = Field(
+        default_factory=list, alias="localAllowedRoots", max_length=20
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small", alias="embeddingModel", min_length=1, max_length=128
+    )
 
 
 class ApplicationProfile(BaseModel):
@@ -146,3 +174,6 @@ class ApplicationProfile(BaseModel):
     code_configuration: CodeProfile = Field(alias="code")
     correlation_configuration: CorrelationProfile = Field(alias="correlation")
     investigation_configuration: InvestigationProfile = Field(alias="investigation")
+    reference_docs_configuration: ReferenceDocsProfile | None = Field(
+        default=None, alias="referenceDocs"
+    )

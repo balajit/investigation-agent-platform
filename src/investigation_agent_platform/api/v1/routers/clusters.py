@@ -195,6 +195,11 @@ async def run_clustering(
     except ConcurrencyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+        maybe_publish_job_progress,
+    )
+
+    await maybe_publish_job_progress(ctx, x_tenant_id, queued if current is not None else job)
     response_payload: dict[str, Any] = {
         "job_id": str(job.id),
         "workflow_id": f"wf-clustering-{job.id}",

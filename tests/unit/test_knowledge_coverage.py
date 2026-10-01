@@ -641,22 +641,31 @@ class TestKnowledgeMigrationChain:
         head = script.get_revision("007_profile_id_128")
         assert head is not None
         assert head.down_revision == "006_pgvector_extension"
-        latest = script.get_revision("008_evidence_observed_at_nullable")
+        latest = script.get_revision("008_evidence_observed_nullable")
         assert latest is not None
         assert latest.down_revision == "007_profile_id_128"
-        new_head = script.get_revision("009_profile_revisions_and_investigation_metadata")
+        new_head = script.get_revision("009_profile_revisions")
         assert new_head is not None
-        assert new_head.down_revision == "008_evidence_observed_at_nullable"
+        assert new_head.down_revision == "008_evidence_observed_nullable"
         newest = script.get_revision("010_background_jobs_and_quotas")
         assert newest is not None
-        assert newest.down_revision == "009_profile_revisions_and_investigation_metadata"
+        assert newest.down_revision == "009_profile_revisions"
         newest11 = script.get_revision("011_input_requirements")
         assert newest11 is not None
         assert newest11.down_revision == "010_background_jobs_and_quotas"
         newest12 = script.get_revision("012_finding_clusters")
         assert newest12 is not None
         assert newest12.down_revision == "011_input_requirements"
-        assert script.get_heads() == ["012_finding_clusters"]
+        newest13 = script.get_revision("013_chat_sessions")
+        assert newest13 is not None
+        assert newest13.down_revision == "012_finding_clusters"
+        newest14 = script.get_revision("014_reference_documents")
+        assert newest14 is not None
+        assert newest14.down_revision == "013_chat_sessions"
+        newest15 = script.get_revision("015_batch_intake")
+        assert newest15 is not None
+        assert newest15.down_revision == "014_reference_documents"
+        assert script.get_heads() == ["015_batch_intake"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

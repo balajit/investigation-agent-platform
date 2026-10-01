@@ -82,12 +82,6 @@ def upgrade() -> None:
             ["lexical_tsv"],
             postgresql_using="gin",
         )
-        op.create_index(
-            "idx_cluster_lexical",
-            "finding_clusters",
-            ["lexical_tsv"],
-            postgresql_using="gin",
-        )
     _tenant_policy("finding_clusters", "cluster_tenant")
 
     if not _table_exists("finding_cluster_assignments"):
@@ -125,10 +119,11 @@ def upgrade() -> None:
             sa.Column("embedding_model", sa.String(128), nullable=False),
             sa.Column("embedding_version", sa.String(32), nullable=False, server_default="1.0"),
             sa.Column("generation", sa.Integer(), nullable=False, server_default="1"),
-            # Dimensionless pgvector: embedding spaces are isolated by
+            # Fixed-dimension pgvector: HNSW requires declared dimensions.
+            # 1536 pins the inaugural text-embedding-3-small space (see
+            # FINDING_EMBEDDING_DIMS); spaces stay isolated by
             # (model, version) at query time, never compared across spaces.
-            # HNSW index below assumes one consistent dimension per space.
-            sa.Column("embedding", Vector(), nullable=True),
+            sa.Column("embedding", Vector(1536), nullable=True),
             sa.Column("lexical", sa.Text(), nullable=True),
             sa.Column("lexical_tsv", sa.dialects.postgresql.TSVECTOR(), nullable=True),
             sa.Column("lifecycle", sa.String(32), nullable=False, server_default="ACTIVE"),

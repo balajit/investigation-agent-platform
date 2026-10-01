@@ -1884,9 +1884,738 @@ async def update_clustering_job_activity(
             updates["total"] = max(0, data["total"])
         updated = job.model_copy(update=updates)
         await repo.save(tenant_id, updated, expected_version=job.version)
+        from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+            maybe_publish_job_progress,
+        )
+
+        await maybe_publish_job_progress(ctx, tenant_id, updated)
         return GenericActivityResult(success=True, data={"status": updated.status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
         logger.exception("update_clustering_job_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class RunReportInput:
+    tenant_id: str
+    job_id: str = ""
+    legal_hold: bool = False
+
+
+@dataclass
+class UpdateReportJobInput:
+    tenant_id: str
+    job_id: str
+    status: str = ""
+    stage: dict[str, Any] | None = None
+    error: str | None = None
+    progress: int | None = None
+    total: int | None = None
+
+
+@activity.defn
+async def run_report_activity(
+    params: RunReportInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Build, render, and store one aggregate report (Part 11.8)."""
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.application.reporting.aggregate_service import (
+        InvestigationAggregateReportService,
+    )
+    from investigation_agent_platform.application.reporting.artifacts import (
+        store_report_run,
+    )
+    from investigation_agent_platform.infrastructure.reporting.html_renderer import (
+        HtmlAggregateReportRenderer,
+    )
+
+    activity.logger.info("run_report_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id_str = str(data.get("job_id", ""))
+        if not tenant_id:
+            return GenericActivityResult(success=False, error="tenant_id required")
+        try:
+            job_id = _UUID(job_id_str) if job_id_str else None
+        except ValueError:
+            return GenericActivityResult(success=False, error="job_id invalid")
+        legal_hold = bool(data.get("legal_hold", False))
+        ctx = _get_ctx()
+        cluster_repo = getattr(ctx, "finding_cluster_repo", None)
+        store = getattr(ctx, "artifact_store", None)
+        if cluster_repo is None or store is None:
+            return GenericActivityResult(
+                success=False, error="cluster repository or artifact store unavailable"
+            )
+        service = InvestigationAggregateReportService(
+            cluster_repo=cluster_repo,
+            finding_repo=getattr(ctx, "finding_repo", None),
+        )
+        report = await service.build(tenant_id, job_id=job_id)
+        html = HtmlAggregateReportRenderer().render(report)
+        manifest_json = report.model_dump_json(indent=2).encode("utf-8")
+        if job_id is None:
+            return GenericActivityResult(
+                success=False, error="job_id required for artifact history"
+            )
+        refs = await store_report_run(
+            store, tenant_id, job_id, html, manifest_json, legal_hold=legal_hold
+        )
+        await _link_report_result(ctx, tenant_id, job_id, refs["history_html"].key)
+        return GenericActivityResult(
+            success=True,
+            data={
+                "taxonomy_revision": report.taxonomy_revision,
+                "assignment_count": report.assignment_count,
+                "artifact_keys": [refs["history_html"].key, refs["history_json"].key],
+            },
+        )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("run_report_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+async def _link_report_result(ctx: Any, tenant_id: str, job_id: Any, result_ref: str) -> None:
+    """Best-effort result_ref linkage; OCC races must not fail the run."""
+    try:
+        repo = getattr(ctx, "background_job_repo", None)
+        if repo is None:
+            return
+        job = await repo.get_by_id(tenant_id, job_id)
+        if job is None:
+            return
+        updated = job.model_copy(update={"result_ref": result_ref, "version": job.version + 1})
+        await repo.save(tenant_id, updated, expected_version=job.version)
+    except Exception as exc:
+        logger.warning(
+            "Report result_ref linkage skipped",
+            extra={"tenant_id": tenant_id, "error": str(exc)},
+        )
+
+
+@activity.defn
+async def update_report_job_activity(
+    params: UpdateReportJobInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Apply a status/stage/error update to the linked aggregate-report job."""
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.domain.common.background_job import (
+        BackgroundJobStage,
+        BackgroundJobStatus,
+    )
+
+    activity.logger.info("update_report_job_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id_str = str(data.get("job_id", ""))
+        if not tenant_id or not job_id_str:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            job_id = _UUID(job_id_str)
+        except ValueError:
+            return GenericActivityResult(success=False, error="job_id invalid")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "background_job_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="background job repo unavailable")
+        job = await repo.get_by_id(tenant_id, job_id)
+        if job is None:
+            return GenericActivityResult(success=False, error="background job not found")
+        updates: dict[str, Any] = {"version": job.version + 1}
+        status_raw = str(data.get("status", "") or "")
+        if status_raw:
+            try:
+                updates["status"] = BackgroundJobStatus(status_raw)
+            except ValueError:
+                return GenericActivityResult(
+                    success=False, error=f"unknown job status {status_raw!r}"
+                )
+        stage_raw = data.get("stage")
+        if isinstance(stage_raw, dict) and stage_raw.get("name"):
+            stages = list(job.stages)
+            stages.append(
+                BackgroundJobStage(
+                    seq=len(stages),
+                    name=str(stage_raw["name"])[:128],
+                    message=str(stage_raw.get("message", ""))[:1024],
+                )
+            )
+            updates["stages"] = stages[-50:]
+        if data.get("error") is not None:
+            updates["error"] = str(data["error"])[:2048]
+        if isinstance(data.get("progress"), int):
+            updates["progress"] = max(0, data["progress"])
+        if isinstance(data.get("total"), int):
+            updates["total"] = max(0, data["total"])
+        updated = job.model_copy(update=updates)
+        await repo.save(tenant_id, updated, expected_version=job.version)
+        from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+            maybe_publish_job_progress,
+        )
+
+        await maybe_publish_job_progress(ctx, tenant_id, updated)
+        return GenericActivityResult(success=True, data={"status": updated.status.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("update_report_job_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class RunReindexInput:
+    tenant_id: str
+    job_id: str = ""
+    source_id: str = ""
+    application_id: str = ""
+
+
+@dataclass
+class UpdateReindexJobInput:
+    tenant_id: str
+    job_id: str
+    status: str = ""
+    stage: dict[str, Any] | None = None
+    error: str | None = None
+    progress: int | None = None
+    total: int | None = None
+
+
+@activity.defn
+async def run_reindex_activity(
+    params: RunReindexInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Index one reference source into a new generation (Part 11.6)."""
+    from investigation_agent_platform.application.reference.reference_service import (
+        ReferenceDocumentService,
+    )
+
+    activity.logger.info("run_reindex_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        source_id = str(data.get("source_id", ""))
+        if not tenant_id or not source_id:
+            return GenericActivityResult(success=False, error="tenant_id and source_id required")
+        ctx = _get_ctx()
+        chunk_repo = getattr(ctx, "reference_repo", None)
+        if chunk_repo is None:
+            return GenericActivityResult(success=False, error="reference repository unavailable")
+        service = ReferenceDocumentService(
+            chunk_repo=chunk_repo,
+            profile_repo=getattr(ctx, "profile_repo", None),
+            embedder=None,
+        )
+        try:
+            summary = await service.index_source(
+                tenant_id, source_id, data.get("application_id") or None
+            )
+        except (RuntimeError, ValueError) as exc:
+            return GenericActivityResult(success=False, error=str(exc))
+        return GenericActivityResult(success=True, data=summary.model_dump(mode="json"))
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("run_reindex_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def update_reindex_job_activity(
+    params: UpdateReindexJobInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Apply a status/stage/error update to the linked reindex job."""
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.domain.common.background_job import (
+        BackgroundJobStage,
+        BackgroundJobStatus,
+    )
+
+    activity.logger.info("update_reindex_job_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id_str = str(data.get("job_id", ""))
+        if not tenant_id or not job_id_str:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            job_id = _UUID(job_id_str)
+        except ValueError:
+            return GenericActivityResult(success=False, error="job_id invalid")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "background_job_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="background job repo unavailable")
+        job = await repo.get_by_id(tenant_id, job_id)
+        if job is None:
+            return GenericActivityResult(success=False, error="background job not found")
+        updates: dict[str, Any] = {"version": job.version + 1}
+        status_raw = str(data.get("status", "") or "")
+        if status_raw:
+            try:
+                updates["status"] = BackgroundJobStatus(status_raw)
+            except ValueError:
+                return GenericActivityResult(
+                    success=False, error=f"unknown job status {status_raw!r}"
+                )
+        stage_raw = data.get("stage")
+        if isinstance(stage_raw, dict) and stage_raw.get("name"):
+            stages = list(job.stages)
+            stages.append(
+                BackgroundJobStage(
+                    seq=len(stages),
+                    name=str(stage_raw["name"])[:128],
+                    message=str(stage_raw.get("message", ""))[:1024],
+                )
+            )
+            updates["stages"] = stages[-50:]
+        if data.get("error") is not None:
+            updates["error"] = str(data["error"])[:2048]
+        if isinstance(data.get("progress"), int):
+            updates["progress"] = max(0, data["progress"])
+        if isinstance(data.get("total"), int):
+            updates["total"] = max(0, data["total"])
+        updated = job.model_copy(update=updates)
+        await repo.save(tenant_id, updated, expected_version=job.version)
+        from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+            maybe_publish_job_progress,
+        )
+
+        await maybe_publish_job_progress(ctx, tenant_id, updated)
+        return GenericActivityResult(success=True, data={"status": updated.status.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("update_reindex_job_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class LoadBatchRecordsInput:
+    tenant_id: str
+    job_id: str = ""
+    start_index: int = 0
+
+
+@dataclass
+class MarkBatchRecordsInput:
+    tenant_id: str
+    job_id: str = ""
+    record_indices: list[int] = None  # type: ignore[assignment]
+    status: str = ""
+    child_workflow_ids: dict[str, str] | None = None
+
+
+@dataclass
+class MarkBatchRecordResultInput:
+    tenant_id: str
+    job_id: str = ""
+    record_index: int = 0
+    status: str = ""
+    error: str | None = None
+
+
+@dataclass
+class ResolveBatchStragglersInput:
+    tenant_id: str
+    job_id: str = ""
+    record_indices: list[int] = None  # type: ignore[assignment]
+
+
+@dataclass
+class CancelBatchChildrenInput:
+    tenant_id: str
+    job_id: str = ""
+
+
+@dataclass
+class UpdateBatchJobInput:
+    tenant_id: str
+    job_id: str
+    status: str = ""
+    stage: dict[str, Any] | None = None
+    error: str | None = None
+    progress: int | None = None
+    total: int | None = None
+
+
+def _batch_uuid(value: str) -> Any:
+    from uuid import UUID as _UUID
+
+    try:
+        return _UUID(value)
+    except ValueError:
+        return None
+
+
+@activity.defn
+async def load_batch_records_activity(
+    params: LoadBatchRecordsInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Load PENDING batch records from a dispatch cursor (Part 11.9)."""
+    activity.logger.info("load_batch_records_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            start_index = max(0, int(data.get("start_index", 0)))
+        except (TypeError, ValueError):
+            return GenericActivityResult(success=False, error="start_index invalid")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="batch repository unavailable")
+        records, total = await repo.list_records(tenant_id, job_id, limit=500, offset=0)
+        pending = [
+            {
+                "record_index": record.record_index,
+                "investigation_id": str(record.investigation_id)
+                if record.investigation_id
+                else None,
+                "application_id": record.application_id,
+                "external_key": record.external_key,
+                "attempt": record.attempt,
+            }
+            for record in records
+            if record.record_index >= start_index and record.status.value == "PENDING"
+        ]
+        return GenericActivityResult(success=True, data={"records": pending, "total": total})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("load_batch_records_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def mark_batch_records_activity(
+    params: MarkBatchRecordsInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Bulk-mark records DISPATCHED/RUNNING with child workflow ids."""
+    from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
+
+    activity.logger.info("mark_batch_records_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            status = BatchRecordStatus(str(data.get("status", "") or ""))
+        except ValueError:
+            return GenericActivityResult(success=False, error="unknown record status")
+        indices = data.get("record_indices") or []
+        child_ids = data.get("child_workflow_ids") or {}
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="batch repository unavailable")
+        marked = 0
+        for raw_index in indices:
+            record = await repo.get_record(tenant_id, job_id, int(raw_index))
+            if record is None:
+                continue
+            child_id = child_ids.get(str(raw_index))
+            await repo.save_record(
+                tenant_id,
+                job_id,
+                record.model_copy(update={"status": status, "child_workflow_id": child_id}),
+            )
+            marked += 1
+        return GenericActivityResult(success=True, data={"marked": marked})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("mark_batch_records_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def mark_batch_record_result_activity(
+    params: MarkBatchRecordResultInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Mark one record terminal (DONE/FAILED/CANCELED) with an error."""
+    from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
+
+    activity.logger.info("mark_batch_record_result_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            index = int(data.get("record_index", -1))
+            status = BatchRecordStatus(str(data.get("status", "") or ""))
+        except (TypeError, ValueError):
+            return GenericActivityResult(success=False, error="record result invalid")
+        if status not in (
+            BatchRecordStatus.DONE,
+            BatchRecordStatus.FAILED,
+            BatchRecordStatus.CANCELED,
+        ):
+            return GenericActivityResult(success=False, error="status must be terminal")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="batch repository unavailable")
+        record = await repo.get_record(tenant_id, job_id, index)
+        if record is None:
+            return GenericActivityResult(success=False, error="batch record not found")
+        error = data.get("error")
+        await repo.save_record(
+            tenant_id,
+            job_id,
+            record.model_copy(
+                update={"status": status, "error": str(error)[:2048] if error else None}
+            ),
+        )
+        return GenericActivityResult(success=True, data={"status": status.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("mark_batch_record_result_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def resolve_batch_stragglers_activity(
+    params: ResolveBatchStragglersInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Classify still-running records via the persisted investigation status.
+
+    AWAITING_INPUT investigations keep running (parent completes partial);
+    anything else still active stays RUNNING (also left running). Never
+    invents terminal states for live executions.
+    """
+    from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
+
+    activity.logger.info("resolve_batch_stragglers_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        indices = [int(index) for index in (data.get("record_indices") or [])]
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        investigation_repo = getattr(ctx, "investigation_repo", None)
+        if repo is None or investigation_repo is None:
+            return GenericActivityResult(success=False, error="repositories unavailable")
+        awaiting = 0
+        running = 0
+        for index in indices:
+            record = await repo.get_record(tenant_id, job_id, index)
+            if record is None or record.investigation_id is None:
+                continue
+            investigation = await investigation_repo.get_by_id(tenant_id, record.investigation_id)
+            status_value = str(getattr(getattr(investigation, "status", None), "value", ""))
+            if status_value == "AWAITING_INPUT":
+                await repo.save_record(
+                    tenant_id,
+                    job_id,
+                    record.model_copy(update={"status": BatchRecordStatus.AWAITING_INPUT}),
+                )
+                awaiting += 1
+            else:
+                await repo.save_record(
+                    tenant_id,
+                    job_id,
+                    record.model_copy(update={"status": BatchRecordStatus.RUNNING}),
+                )
+                running += 1
+        return GenericActivityResult(
+            success=True, data={"awaiting_input": awaiting, "running": running}
+        )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("resolve_batch_stragglers_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def cancel_batch_children_activity(
+    params: CancelBatchChildrenInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Cancel live child executions for RUNNING records (Part 11.9).
+
+    Explicit propagation: the declared parent-close policy is ABANDON (so
+    awaiting-input children survive parent completion), therefore parent
+    cancellation fans out here — one client cancel per live child, each
+    outcome recorded. Failures cancel auditably, never silently.
+    """
+    from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
+
+    activity.logger.info("cancel_batch_children_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        client = getattr(ctx, "temporal_client", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="batch repository unavailable")
+        if client is None:
+            return GenericActivityResult(success=False, error="temporal client unavailable")
+        records, _ = await repo.list_records(tenant_id, job_id, limit=500, offset=0)
+        canceled = 0
+        failed: list[str] = []
+        for record in records:
+            if record.status not in (BatchRecordStatus.RUNNING, BatchRecordStatus.DISPATCHED):
+                continue
+            if not record.child_workflow_id:
+                continue
+            try:
+                handle = client.get_workflow_handle(record.child_workflow_id)
+                await handle.cancel()
+                await repo.save_record(
+                    tenant_id,
+                    job_id,
+                    record.model_copy(update={"status": BatchRecordStatus.CANCELED}),
+                )
+                canceled += 1
+            except Exception as exc:
+                failed.append(f"{record.record_index}:{exc}")
+        return GenericActivityResult(success=True, data={"canceled": canceled, "failed": failed})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("cancel_batch_children_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@activity.defn
+async def update_batch_job_activity(
+    params: UpdateBatchJobInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Apply a status/stage/error update to the linked batch job."""
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.domain.common.background_job import (
+        BackgroundJobStage,
+        BackgroundJobStatus,
+    )
+
+    activity.logger.info("update_batch_job_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id_str = str(data.get("job_id", ""))
+        if not tenant_id or not job_id_str:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        try:
+            job_id = _UUID(job_id_str)
+        except ValueError:
+            return GenericActivityResult(success=False, error="job_id invalid")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "background_job_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="background job repo unavailable")
+        job = await repo.get_by_id(tenant_id, job_id)
+        if job is None:
+            return GenericActivityResult(success=False, error="background job not found")
+        updates: dict[str, Any] = {"version": job.version + 1}
+        status_raw = str(data.get("status", "") or "")
+        if status_raw:
+            try:
+                updates["status"] = BackgroundJobStatus(status_raw)
+            except ValueError:
+                return GenericActivityResult(
+                    success=False, error=f"unknown job status {status_raw!r}"
+                )
+        stage_raw = data.get("stage")
+        if isinstance(stage_raw, dict) and stage_raw.get("name"):
+            stages = list(job.stages)
+            stages.append(
+                BackgroundJobStage(
+                    seq=len(stages),
+                    name=str(stage_raw["name"])[:128],
+                    message=str(stage_raw.get("message", ""))[:1024],
+                )
+            )
+            updates["stages"] = stages[-50:]
+        if data.get("error") is not None:
+            updates["error"] = str(data["error"])[:2048]
+        if isinstance(data.get("progress"), int):
+            updates["progress"] = max(0, data["progress"])
+        if isinstance(data.get("total"), int):
+            updates["total"] = max(0, data["total"])
+        updated = job.model_copy(update=updates)
+        await repo.save(tenant_id, updated, expected_version=job.version)
+        from investigation_agent_platform.infrastructure.messaging.job_fanout import (
+            maybe_publish_job_progress,
+        )
+
+        await maybe_publish_job_progress(ctx, tenant_id, updated)
+        return GenericActivityResult(success=True, data={"status": updated.status.value})
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("update_batch_job_activity failed", extra={"error": str(exc)})
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class SummarizeBatchInput:
+    tenant_id: str
+    job_id: str = ""
+
+
+@activity.defn
+async def summarize_batch_activity(
+    params: SummarizeBatchInput | dict[str, Any],
+) -> GenericActivityResult:
+    """Aggregate batch counts over record rows (Part 11.9)."""
+    activity.logger.info("summarize_batch_activity")
+    try:
+        data = params if isinstance(params, dict) else params.__dict__
+        tenant_id = str(data.get("tenant_id", ""))
+        job_id = _batch_uuid(str(data.get("job_id", "")))
+        if not tenant_id or job_id is None:
+            return GenericActivityResult(success=False, error="tenant_id and job_id required")
+        ctx = _get_ctx()
+        repo = getattr(ctx, "batch_repo", None)
+        if repo is None:
+            return GenericActivityResult(success=False, error="batch repository unavailable")
+        records, _ = await repo.list_records(tenant_id, job_id, limit=500, offset=0)
+        counts = {
+            "total": len(records),
+            "succeeded": 0,
+            "failed": 0,
+            "awaiting_input": 0,
+            "canceled": 0,
+        }
+        for record in records:
+            status = record.status.value
+            if status == "DONE":
+                counts["succeeded"] += 1
+            elif status == "FAILED":
+                counts["failed"] += 1
+            elif status == "AWAITING_INPUT":
+                counts["awaiting_input"] += 1
+            elif status == "CANCELED":
+                counts["canceled"] += 1
+        return GenericActivityResult(success=True, data=counts)
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception("summarize_batch_activity failed", extra={"error": str(exc)})
         raise _application_failure_from_exc(exc) from exc

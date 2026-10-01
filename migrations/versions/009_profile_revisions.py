@@ -14,8 +14,8 @@ profile revision an investigation was created against.
 """
 
 # revision identifiers, used by Alembic.
-revision = "009_profile_revisions_and_investigation_metadata"
-down_revision = "008_evidence_observed_at_nullable"
+revision = "009_profile_revisions"
+down_revision = "008_evidence_observed_nullable"
 branch_labels = None
 depends_on = None
 

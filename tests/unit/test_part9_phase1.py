@@ -307,14 +307,14 @@ def test_migration_008_chain():
         Path(__file__).resolve().parents[2]
         / "migrations"
         / "versions"
-        / "008_evidence_observed_at_nullable.py"
+        / "008_evidence_observed_nullable.py"
     )
     assert path.is_file()
     spec = importlib.util.spec_from_file_location("migration_008", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.revision == "008_evidence_observed_at_nullable"
+    assert mod.revision == "008_evidence_observed_nullable"
     assert mod.down_revision == "007_profile_id_128"
 
 

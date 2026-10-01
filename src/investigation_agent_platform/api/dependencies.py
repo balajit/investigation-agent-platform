@@ -46,6 +46,11 @@ from investigation_agent_platform.domain.finding.models import (
     InvestigationConclusion,
 )
 from investigation_agent_platform.domain.hypothesis.models import Hypothesis
+from investigation_agent_platform.domain.intake.batch import BatchRecordResult
+from investigation_agent_platform.domain.investigation.chat import (
+    ChatMessage,
+    InvestigationChatSession,
+)
 from investigation_agent_platform.domain.investigation.input_requirements import (
     InputFulfillment,
     InputRequirement,
@@ -70,6 +75,8 @@ from investigation_agent_platform.ports.artifacts.store import (
 from investigation_agent_platform.ports.persistence.repositories import (
     ApplicationProfileRepository,
     BackgroundJobRepository,
+    BatchIntakeRepository,
+    ChatSessionRepository,
     CheckpointRepository,
     EvidenceRepository,
     FindingClusterRepository,
@@ -79,6 +86,9 @@ from investigation_agent_platform.ports.persistence.repositories import (
     InvestigationRepository,
     TimelineRepository,
     TransitionEventRepository,
+)
+from investigation_agent_platform.ports.reference.documents import (
+    ReferenceChunkRepository,
 )
 
 if TYPE_CHECKING:
@@ -1100,6 +1110,20 @@ class InMemoryFindingClusterRepository(FindingClusterRepository):
             from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
 
             raise ConcurrencyError("Embedding tenant mismatch")
+        if embedding.vector:
+            from investigation_agent_platform.domain.finding.clustering import (
+                FINDING_EMBEDDING_DIMS,
+            )
+
+            if len(embedding.vector) != FINDING_EMBEDDING_DIMS:
+                from investigation_agent_platform.domain.common.exceptions import (
+                    DomainValidationException,
+                )
+
+                raise DomainValidationException(
+                    f"Embedding vector has {len(embedding.vector)} dims, "
+                    f"expected {FINDING_EMBEDDING_DIMS}; refusing to mix spaces"
+                )
         key = (
             tenant_id,
             embedding.finding_id,
@@ -1145,6 +1169,358 @@ class InMemoryFindingClusterRepository(FindingClusterRepository):
                     scored[assignment.cluster_id] = max(scored.get(assignment.cluster_id, 0), score)
         ranked = sorted(scored.items(), key=lambda pair: pair[1], reverse=True)
         return [cluster_id for cluster_id, _ in ranked[: max(1, limit)]]
+
+
+class InMemoryReferenceDocRepository:
+    """Process-local reference chunks + generations (Part 11.6)."""
+
+    def __init__(self) -> None:
+        from investigation_agent_platform.domain.reference.documents import (
+            ReferenceDocumentChunk,
+        )
+
+        self._chunks: dict[tuple[str, str, int, str, int], ReferenceDocumentChunk] = {}
+        self._generations: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self._vectors: dict[tuple[str, str, int, str, int], list[float]] = {}
+
+    async def active_generation(self, tenant_id: str, source_id: str) -> int:
+        active = [
+            generation
+            for (tenant, source, generation), row in self._generations.items()
+            if tenant == tenant_id and source == source_id and row["status"] == "ACTIVE"
+        ]
+        return max(active, default=0)
+
+    async def create_generation(
+        self,
+        tenant_id: str,
+        source_id: str,
+        generation: int,
+        source_revision: str,
+        embedding_model: str,
+        embedding_version: str,
+    ) -> UUID:
+        from uuid import uuid4 as _uuid4
+
+        generation_id = _uuid4()
+        self._generations[(tenant_id, source_id, generation)] = {
+            "id": generation_id,
+            "status": "ACTIVE",
+            "source_revision": source_revision,
+            "embedding_model": embedding_model,
+            "embedding_version": embedding_version,
+            "chunk_count": 0,
+        }
+        return generation_id
+
+    async def set_generation_status(
+        self, tenant_id: str, generation_id: UUID, status: str, chunk_count: int = 0
+    ) -> None:
+        for (tenant, _source, _generation), row in self._generations.items():
+            if tenant == tenant_id and row["id"] == generation_id:
+                if status not in ("ACTIVE", "SUPERSEDED", "FAILED"):
+                    from investigation_agent_platform.domain.common.exceptions import (
+                        ConcurrencyError,
+                    )
+
+                    raise ConcurrencyError(f"Unknown generation status {status!r}")
+                row["status"] = status
+                row["chunk_count"] = chunk_count
+                return
+        from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+        raise ConcurrencyError("Generation not found")
+
+    async def list_generations(self, tenant_id: str, source_id: str) -> list[dict[str, Any]]:
+        rows = [
+            {"generation": generation, **row}
+            for (tenant, source, generation), row in self._generations.items()
+            if tenant == tenant_id and source == source_id
+        ]
+        return sorted(rows, key=lambda row: row["generation"], reverse=True)
+
+    async def upsert_chunk(self, tenant_id: str, chunk: Any, vector: list[float] | None) -> None:
+        from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+        from investigation_agent_platform.domain.reference.documents import (
+            REFERENCE_EMBEDDING_DIMS,
+        )
+
+        tenant = getattr(chunk, "tenant_id", None)
+        if tenant != tenant_id:
+            raise ConcurrencyError("Reference chunk tenant mismatch")
+        if vector is not None and len(vector) != REFERENCE_EMBEDDING_DIMS:
+            raise ConcurrencyError("Reference vector dims mismatch")
+        key = (
+            tenant_id,
+            chunk.source_id,
+            chunk.generation,
+            chunk.document_path,
+            chunk.chunk_index,
+        )
+        self._chunks[key] = chunk
+        if vector is not None:
+            self._vectors[key] = list(vector)
+        else:
+            self._vectors.pop(key, None)
+
+    async def chunks_for_paths(
+        self, tenant_id: str, source_id: str, generation: int
+    ) -> dict[str, str]:
+        from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
+
+        merged: dict[str, str] = {}
+        for (tenant, source, gen, path, _index), chunk in self._chunks.items():
+            if (
+                tenant == tenant_id
+                and source == source_id
+                and gen == generation
+                and chunk.lifecycle == ChunkLifecycle.ACTIVE
+            ):
+                merged.setdefault(path, chunk.content_hash)
+        return merged
+
+    async def tombstone_missing(
+        self, tenant_id: str, source_id: str, generation: int, seen_hashes: set[str]
+    ) -> int:
+        from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
+
+        count = 0
+        for (tenant, source, gen, _path, _index), chunk in self._chunks.items():
+            if (
+                tenant == tenant_id
+                and source == source_id
+                and gen == generation
+                and chunk.lifecycle == ChunkLifecycle.ACTIVE
+                and chunk.content_hash not in seen_hashes
+            ):
+                self._chunks[(tenant, source, gen, _path, _index)] = chunk.model_copy(
+                    update={"lifecycle": ChunkLifecycle.TOMBSTONED}
+                )
+                count += 1
+        return count
+
+    async def lexical_candidates(self, tenant_id: str, query: str, limit: int) -> list[object]:
+        from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
+
+        def _generation_active(source_id: str, generation: int) -> bool:
+            row = self._generations.get((tenant_id, source_id, generation))
+            return row is not None and row["status"] == "ACTIVE"
+
+        words = {word for word in query.lower().split() if len(word) >= 3}
+        if not words:
+            return []
+        scored = sorted(
+            (
+                (sum(1 for word in words if word in chunk.content.lower()), chunk)
+                for (tenant, source, gen, _path, _index), chunk in self._chunks.items()
+                if tenant == tenant_id
+                and chunk.lifecycle == ChunkLifecycle.ACTIVE
+                and _generation_active(source, gen)
+            ),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        return [chunk for score, chunk in scored[: max(1, limit)] if score > 0]
+
+    async def vector_candidates(
+        self,
+        tenant_id: str,
+        vector: list[float],
+        embedding_model: str,
+        embedding_version: str,
+        limit: int,
+    ) -> list[object]:
+        from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
+
+        def _generation_active(source_id: str, generation: int) -> bool:
+            row = self._generations.get((tenant_id, source_id, generation))
+            return row is not None and row["status"] == "ACTIVE"
+
+        def _cosine(left: list[float], right: list[float]) -> float:
+            dot: float = sum(a * b for a, b in zip(left, right))
+            left_norm: float = sum(a * a for a in left) ** 0.5
+            right_norm: float = sum(b * b for b in right) ** 0.5
+            if not left_norm or not right_norm:
+                return -1.0
+            return dot / (left_norm * right_norm)
+
+        scored = sorted(
+            (
+                (
+                    _cosine(vector, self._vectors[key]),
+                    self._chunks[key],
+                )
+                for key in self._vectors
+                if key[0] == tenant_id
+                and self._chunks[key].lifecycle == ChunkLifecycle.ACTIVE
+                and self._chunks[key].embedding_model == embedding_model
+                and self._chunks[key].embedding_version == embedding_version
+                and _generation_active(key[1], key[2])
+            ),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        return [chunk for _score, chunk in scored[: max(1, limit)]]
+
+    async def delete_source(self, tenant_id: str, source_id: str) -> int:
+        chunk_keys = [key for key in self._chunks if key[0] == tenant_id and key[1] == source_id]
+        gen_keys = [key for key in self._generations if key[0] == tenant_id and key[1] == source_id]
+        for chunk_key in chunk_keys:
+            self._chunks.pop(chunk_key, None)
+            self._vectors.pop(chunk_key, None)
+        for gen_key in gen_keys:
+            self._generations.pop(gen_key, None)
+        return len(chunk_keys) + len(gen_keys)
+
+
+class InMemoryBatchIntakeRepository(BatchIntakeRepository):
+    """Process-local batch record rows (Part 11.9)."""
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, UUID, int], BatchRecordResult] = {}
+
+    async def create_records(
+        self, tenant_id: str, job_id: UUID, records: list[BatchRecordResult]
+    ) -> None:
+        from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+        for record in records:
+            key = (tenant_id, job_id, record.record_index)
+            if key in self._records:
+                raise ConcurrencyError("Batch record already exists")
+            self._records[key] = record
+
+    async def list_records(
+        self, tenant_id: str, job_id: UUID, limit: int = 100, offset: int = 0
+    ) -> tuple[list[BatchRecordResult], int]:
+        rows = sorted(
+            (
+                record
+                for (tenant, job, _index), record in self._records.items()
+                if tenant == tenant_id and job == job_id
+            ),
+            key=lambda record: record.record_index,
+        )
+        return rows[offset : offset + limit], len(rows)
+
+    async def get_record(
+        self, tenant_id: str, job_id: UUID, record_index: int
+    ) -> BatchRecordResult | None:
+        return self._records.get((tenant_id, job_id, record_index))
+
+    async def save_record(self, tenant_id: str, job_id: UUID, record: BatchRecordResult) -> None:
+        from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+        key = (tenant_id, job_id, record.record_index)
+        if key not in self._records:
+            raise ConcurrencyError("Batch record not found")
+        self._records[key] = record
+
+    async def reset_failed(self, tenant_id: str, job_id: UUID, attempt: int) -> int:
+        from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
+
+        count = 0
+        for key, record in list(self._records.items()):
+            if (
+                key[0] == tenant_id
+                and key[1] == job_id
+                and record.status == BatchRecordStatus.FAILED
+            ):
+                self._records[key] = record.model_copy(
+                    update={
+                        "status": BatchRecordStatus.PENDING,
+                        "attempt": attempt,
+                        "error": None,
+                        "child_workflow_id": None,
+                    }
+                )
+                count += 1
+        return count
+
+    async def delete_job_records(self, tenant_id: str, job_id: UUID) -> int:
+        keys = [key for key in self._records if key[0] == tenant_id and key[1] == job_id]
+        for key in keys:
+            self._records.pop(key, None)
+        return len(keys)
+
+
+class InMemoryChatSessionRepository(ChatSessionRepository):
+    """Process-local chat sessions + messages (Part 11.10)."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[tuple[str, UUID], InvestigationChatSession] = {}
+        self._messages: dict[tuple[str, UUID], ChatMessage] = {}
+
+    async def save_session(self, tenant_id: str, session: InvestigationChatSession) -> None:
+        if session.tenant_id != tenant_id:
+            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+            raise ConcurrencyError("Chat session tenant mismatch")
+        self._sessions[(tenant_id, session.id)] = session
+
+    async def get_session(
+        self, tenant_id: str, session_id: UUID
+    ) -> InvestigationChatSession | None:
+        session = self._sessions.get((tenant_id, session_id))
+        if session is not None and session.tenant_id != tenant_id:
+            return None
+        return session
+
+    async def save_message(self, tenant_id: str, message: ChatMessage) -> None:
+        if message.tenant_id != tenant_id:
+            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+            raise ConcurrencyError("Chat message tenant mismatch")
+        self._messages.setdefault((tenant_id, message.id), message)
+
+    async def list_messages(
+        self, tenant_id: str, session_id: UUID, limit: int = 100, offset: int = 0
+    ) -> tuple[list[ChatMessage], int]:
+        filtered = sorted(
+            (
+                message
+                for (tenant, _), message in self._messages.items()
+                if tenant == tenant_id
+                and message.tenant_id == tenant_id
+                and message.session_id == session_id
+            ),
+            key=lambda message: message.created_at,
+        )
+        total = len(filtered)
+        return filtered[offset : offset + limit], total
+
+    async def count_active_sessions(self, tenant_id: str) -> int:
+        return sum(
+            1
+            for (tenant, _), session in self._sessions.items()
+            if tenant == tenant_id
+            and session.tenant_id == tenant_id
+            and session.status.value == "ACTIVE"
+        )
+
+    async def delete_session(self, tenant_id: str, session_id: UUID) -> None:
+        self._sessions.pop((tenant_id, session_id), None)
+        for key in [
+            key
+            for key, message in self._messages.items()
+            if key[0] == tenant_id and message.session_id == session_id
+        ]:
+            self._messages.pop(key, None)
+
+    async def sessions_older_than(
+        self, tenant_id: str, cutoff: datetime, limit: int = 500
+    ) -> list[InvestigationChatSession]:
+        aged = sorted(
+            (
+                session
+                for (tenant, _), session in self._sessions.items()
+                if tenant == tenant_id
+                and session.tenant_id == tenant_id
+                and session.created_at <= cutoff
+            ),
+            key=lambda session: session.created_at,
+        )
+        return aged[: max(1, min(limit, 500))]
 
 
 class InMemoryArtifactStore(ArtifactStorePort):
@@ -1272,6 +1648,15 @@ class AppContext:
         # Part 11.7: cluster taxonomy + assignments — durable Postgres in
         # production, process-local store in dev/test.
         self.finding_cluster_repo: FindingClusterRepository = InMemoryFindingClusterRepository()
+        # Part 11.10: chat sessions + messages — durable Postgres in
+        # production, process-local store in dev/test.
+        self.chat_repo: ChatSessionRepository = InMemoryChatSessionRepository()
+        # Part 11.6: reference chunks + generations — durable Postgres in
+        # production, process-local store in dev/test.
+        self.reference_repo: ReferenceChunkRepository = InMemoryReferenceDocRepository()
+        # Part 11.9: batch intake records — durable Postgres in production,
+        # process-local store in dev/test.
+        self.batch_repo: BatchIntakeRepository = InMemoryBatchIntakeRepository()
         # Part 11.3: background jobs + artifacts + quota — durable Postgres /
         # object storage in production, process-local in dev/test.
         from investigation_agent_platform.application.extensions.registries import (

@@ -179,6 +179,21 @@ def build_default_registries() -> ExtensionRegistries:
     registries = ExtensionRegistries()
     for manifest in adapt_llm_factory_manifests():
         registries.completion_gateways.register(manifest, implementation=None)
+    from investigation_agent_platform.application.reporting.job_kinds import (
+        register_reporting_plugins,
+    )
+
+    register_reporting_plugins(registries)
+    from investigation_agent_platform.application.reference.job_kinds import (
+        register_reference_plugins,
+    )
+
+    register_reference_plugins(registries)
+    from investigation_agent_platform.application.intake.job_kinds import (
+        register_intake_plugins,
+    )
+
+    register_intake_plugins(registries)
     return registries
 
 
