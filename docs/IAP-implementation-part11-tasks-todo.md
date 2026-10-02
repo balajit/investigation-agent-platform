@@ -55,8 +55,9 @@ and `docs/IAP-implementation-part11-plan-todo-v1.1.md` (phase specifications).
 - [x] **Task 11.a** — Source: Bulk investigation intake
 - [x] **Task 11.b** — Tests: Bulk investigation intake
 - [x] **Task 12.a** — Source: Integration + operations
+- [x] **Task 12.b** — Tests: Integration + operations (final)
 
-Running total: **~17 units**.
+Running total: **~18 units**.
 
 ## Remaining (in execution order)
 
@@ -297,19 +298,19 @@ Depends: all of 6.b, 7.b, 8.b, 9.b, 10.b, 11.b. Done (worker/queue/schedule/Kafk
 
 ### Task 12.b — Tests: Integration + operations (final)
 
-Depends: 12.a.
+Depends: 12.a. Done: `tests/unit/test_part11_phase12.py` (43 tests, 2026-10-01).
 
-- [ ] Shared plugin conformance suite (manifest/version negotiation,
+- [x] Shared plugin conformance suite (manifest/version negotiation,
   config/secret redaction, lifecycle, scope isolation, idempotency,
   cancellation, restart, quotas, provenance, cleanup).
-- [ ] Full security suite (SSRF, traversal, symlink, XSS, cursor
+- [x] Full security suite (SSRF, traversal, symlink, XSS, cursor
   tampering, WS auth, quota races, cross-tenant identifier collisions).
-- [ ] Migration upgrade + downgrade from current production head.
-- [ ] Performance baselines (vector search, clustering batch, bulk child
+- [x] Migration upgrade + downgrade from current production head.
+- [x] Performance baselines (vector search, clustering batch, bulk child
   concurrency, report generation, event fan-out).
-- [ ] Full test suite: zero regressions; Ruff + format clean; no new mypy
+- [x] Full test suite: zero regressions; Ruff + format clean; no new mypy
   errors; API/MCP/Kafka contract fixtures versioned and pinned.
-- [ ] Mark `docs/IAP-implementation-part11-plan-todo-v1.1.md` DONE with
+- [x] Mark `docs/IAP-implementation-part11-plan-todo-v1.1.md` DONE with
   date + actual test counts.
 
 ## Explicitly Deferred (do not build unless triggers fire)

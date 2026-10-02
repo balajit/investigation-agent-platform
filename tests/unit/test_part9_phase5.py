@@ -171,8 +171,14 @@ class _Provider:
         mapping_source_id=None,
     ):  # type: ignore[no-untyped-def]
         self.get_calls.append(
-            (tenant_id, investigation_id, evidence_id, environment, correlation_id,
-             mapping_source_id)
+            (
+                tenant_id,
+                investigation_id,
+                evidence_id,
+                environment,
+                correlation_id,
+                mapping_source_id,
+            )
         )
         resolved = await mapping_lookup.get_evidence(tenant_id, evidence_id)
         assert resolved is not None
@@ -426,7 +432,9 @@ async def test_investigate_trace_delegates_with_policy_budget():
             "labels": {"trace_id": "abc"},
         },
     )
-    service, gateway, ev_repo = _trace_services(iid, items=[item], profile=_profile(max_evidence=25))
+    service, gateway, ev_repo = _trace_services(
+        iid, items=[item], profile=_profile(max_evidence=25)
+    )
     request = TraceTelemetryRequest(trace_id="abc", environment="production", max_evidence=100)
     result = await service.investigate_trace(_scope(iid), request)
     assert result.telemetry.trace_id == "abc"

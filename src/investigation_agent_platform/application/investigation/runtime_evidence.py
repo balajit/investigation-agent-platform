@@ -140,9 +140,7 @@ class RuntimeEvidenceService:
                     f"the investigation profile {profile.environment!r}."
                 )
             scoped_request = request.model_copy(
-                update={
-                    "mapping_source_id": profile.observability_configuration.mapping_source_id
-                }
+                update={"mapping_source_id": profile.observability_configuration.mapping_source_id}
             )
             result = await self._gateway.search_runtime_evidence(
                 context.tenant_id,

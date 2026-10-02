@@ -54,13 +54,23 @@ async def _ingest_fixture(tmp_path: Path, name: str, tenant: str, sha: str, tag:
     dest = tmp_path / tag / name
     shutil.copytree(FIXTURES / name, dest)
     full_name = name.replace("--", "/")
-    repo = module.RepoListing(full_name, "main", f"https://github.com/{full_name}.git",
-                              False, False, False, False, 1, "Python")
+    repo = module.RepoListing(
+        full_name,
+        "main",
+        f"https://github.com/{full_name}.git",
+        False,
+        False,
+        False,
+        False,
+        1,
+        "Python",
+    )
     rid = module.repository_id_for(full_name)
     adapter = InMemoryTopologyAdapter()
     await module.register_identities(dest, tenant, repo, rid, "SERVICE", adapter)
     payload, truncated = await module.build_payload_for_repo(
-        dest, tenant, f"{tenant}-{rid}", rid, sha)
+        dest, tenant, f"{tenant}-{rid}", rid, sha
+    )
     assert truncated is False
     result = await module.ingest_payload(payload, adapter)
     assert result["status"] == "READY"
@@ -88,19 +98,30 @@ async def test_enrichment_benchmark(tmp_path: Path) -> None:
     module = _ilu.module_from_spec(spec)
     _sys.modules["ingest_github"] = module
     spec.loader.exec_module(module)
-    repo_b = module.RepoListing("acme/billing", "main", "https://github.com/acme/billing.git",
-                                False, False, False, False, 1, "Python")
+    repo_b = module.RepoListing(
+        "acme/billing",
+        "main",
+        "https://github.com/acme/billing.git",
+        False,
+        False,
+        False,
+        False,
+        1,
+        "Python",
+    )
     rid_b = module.repository_id_for("acme/billing")
     await module.register_identities(dest, tenant, repo_b, rid_b, "SERVICE", adapter)
     payload_b, trunc_b = await module.build_payload_for_repo(
-        dest, tenant, f"{tenant}-{rid_b}", rid_b, sha_a)
+        dest, tenant, f"{tenant}-{rid_b}", rid_b, sha_a
+    )
     assert trunc_b is False
     assert (await module.ingest_payload(payload_b, adapter))["status"] == "READY"
     # Second revision of payments for the reproducibility case.
     dest2 = tmp_path / "r3" / "acme--payments"
     _shutil.copytree(FIXTURES / "acme--payments", dest2)
     payload_b2, _ = await module.build_payload_for_repo(
-        dest2, tenant, f"{tenant}-{rid_pay}", rid_pay, sha_b)
+        dest2, tenant, f"{tenant}-{rid_pay}", rid_pay, sha_b
+    )
     assert (await module.ingest_payload(payload_b2, adapter))["status"] == "READY"
 
     inv = uuid.uuid4()
@@ -115,61 +136,92 @@ async def test_enrichment_benchmark(tmp_path: Path) -> None:
     # 1. exact ownership
     line = _find_line(pay_root, "src/payments.py", "charged:{amount_cents}")
     t = time.perf_counter()
-    exact = await adapter.resolve_source_location(tenant, "app", inv, rid_pay, sha_a,
-                                                  "src/payments.py", line)
+    exact = await adapter.resolve_source_location(
+        tenant, "app", inv, rid_pay, sha_a, "src/payments.py", line
+    )
     ms = (time.perf_counter() - t) * 1000
-    record("exact", exact.matched_node_qualified_name == "PaymentService.charge"
-           and exact.domain_id == "team-payments"
-           and exact.fallback_level.value == "AST_NODE", ms, str(exact.matched_node_qualified_name))
+    record(
+        "exact",
+        exact.matched_node_qualified_name == "PaymentService.charge"
+        and exact.domain_id == "team-payments"
+        and exact.fallback_level.value == "AST_NODE",
+        ms,
+        str(exact.matched_node_qualified_name),
+    )
 
     # 2. overload disambiguation
     line = _find_line(pay_root, "src/payments.py", "webhook:")
     t = time.perf_counter()
-    over = await adapter.resolve_source_location(tenant, "app", inv, rid_pay, sha_a,
-                                                 "src/payments.py", line)
+    over = await adapter.resolve_source_location(
+        tenant, "app", inv, rid_pay, sha_a, "src/payments.py", line
+    )
     ms = (time.perf_counter() - t) * 1000
-    record("overload", over.matched_node_qualified_name == "PaymentWebhook.handle", ms,
-           str(over.matched_node_qualified_name))
+    record(
+        "overload",
+        over.matched_node_qualified_name == "PaymentWebhook.handle",
+        ms,
+        str(over.matched_node_qualified_name),
+    )
 
     # 3. cross-repo same-name symbols stay repo-scoped
     line = _find_line(bill_root, "src/billing.py", "billing-event:")
     t = time.perf_counter()
-    cross = await adapter.resolve_source_location(tenant, "app", inv, rid_b, sha_a,
-                                                  "src/billing.py", line)
+    cross = await adapter.resolve_source_location(
+        tenant, "app", inv, rid_b, sha_a, "src/billing.py", line
+    )
     ms = (time.perf_counter() - t) * 1000
-    record("cross_repo", cross.matched_node_qualified_name == "BillingService.handle"
-           and cross.domain_id is None, ms, str(cross.matched_node_qualified_name))
+    record(
+        "cross_repo",
+        cross.matched_node_qualified_name == "BillingService.handle" and cross.domain_id is None,
+        ms,
+        str(cross.matched_node_qualified_name),
+    )
 
     # 4. revision reproducibility
     charge_line = _find_line(pay_root, "src/payments.py", "charged:{amount_cents}")
     t = time.perf_counter()
-    old = await adapter.resolve_source_location(tenant, "app", inv, rid_pay, sha_a,
-                                                "src/payments.py", charge_line)
-    new = await adapter.resolve_source_location(tenant, "app", inv, rid_pay, sha_b,
-                                                "src/payments.py", charge_line)
+    old = await adapter.resolve_source_location(
+        tenant, "app", inv, rid_pay, sha_a, "src/payments.py", charge_line
+    )
+    new = await adapter.resolve_source_location(
+        tenant, "app", inv, rid_pay, sha_b, "src/payments.py", charge_line
+    )
     ms = (time.perf_counter() - t) * 1000
-    record("revision", old.snapshot_id != new.snapshot_id
-           and old.matched_node_qualified_name == new.matched_node_qualified_name, ms)
+    record(
+        "revision",
+        old.snapshot_id != new.snapshot_id
+        and old.matched_node_qualified_name == new.matched_node_qualified_name,
+        ms,
+    )
 
     # 5-7. multi-hop data present in the payload edge lists (same questions the
     # pilot answers from Cognee points; adapter traversal APIs consume these).
     pay_payload, _ = await module.build_payload_for_repo(
-        pay_root, tenant, f"{tenant}-{rid_pay}", rid_pay, sha_a)
+        pay_root, tenant, f"{tenant}-{rid_pay}", rid_pay, sha_a
+    )
     quals = {n.node_id: n.qualified_name for n in pay_payload.ast_nodes}
     t = time.perf_counter()
-    chain = {(quals.get(c.caller_node_id), quals.get(c.callee_node_id))
-             for c in pay_payload.calls}
+    chain = {(quals.get(c.caller_node_id), quals.get(c.callee_node_id)) for c in pay_payload.calls}
     ms = (time.perf_counter() - t) * 1000
-    record("call_chain", ("process_payment", "process_payment.validate") in chain, ms,
-           f"{len(chain)} call edges")
+    record(
+        "call_chain",
+        ("process_payment", "process_payment.validate") in chain,
+        ms,
+        f"{len(chain)} call edges",
+    )
     t = time.perf_counter()
-    callers = {quals.get(c.caller_node_id) for c in pay_payload.calls
-               if quals.get(c.callee_node_id) == "process_payment.validate"}
+    callers = {
+        quals.get(c.caller_node_id)
+        for c in pay_payload.calls
+        if quals.get(c.callee_node_id) == "process_payment.validate"
+    }
     ms = (time.perf_counter() - t) * 1000
     record("blast_radius", callers == {"process_payment"}, ms, str(sorted(callers)))
     t = time.perf_counter()
-    sql = [(quals.get(d.source_node_id), d.target_entity_or_table)
-           for d in pay_payload.database_accesses]
+    sql = [
+        (quals.get(d.source_node_id), d.target_entity_or_table)
+        for d in pay_payload.database_accesses
+    ]
     ms = (time.perf_counter() - t) * 1000
     record("sql_hop", ("PaymentService.charge", "payments") in sql, ms, str(sql))
 

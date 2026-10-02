@@ -2,10 +2,10 @@ from elasticsearch import Elasticsearch
 import json
 
 es = Elasticsearch(
-['https://xcos-elk.eaas.comcast.net/es/'],
-    basic_auth=('xcos_api_service_account', 'xc0s@p1'),
+    ["https://xcos-elk.eaas.comcast.net/es/"],
+    basic_auth=("xcos_api_service_account", "xc0s@p1"),
     verify_certs=False,
-    request_timeout=1200
+    request_timeout=1200,
 )
 
 indices = es.cat.indices(format="json")
@@ -20,10 +20,6 @@ for index_name, index_data in mappings.items():
     print(f"INDEX: {index_name}")
     print(f"{'=' * 100}")
 
-    properties = (
-        index_data
-        .get("mappings", {})
-        .get("properties", {})
-    )
+    properties = index_data.get("mappings", {}).get("properties", {})
 
     print(json.dumps(properties, indent=2))

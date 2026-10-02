@@ -1782,7 +1782,9 @@ class TestInvestigationStateTransitions:
 
         inv = _make_investigation()
         active = inv.model_copy(update={"status": InvestigationStatus.INVESTIGATING})
-        paused, _ = active.transition_to(InvestigationStatus.PAUSED, actor=ActorType.USER, reason="p")
+        paused, _ = active.transition_to(
+            InvestigationStatus.PAUSED, actor=ActorType.USER, reason="p"
+        )
         assert paused.status == InvestigationStatus.PAUSED
         resumed, _ = paused.transition_to(
             InvestigationStatus.INVESTIGATING, actor=ActorType.USER, reason="r"

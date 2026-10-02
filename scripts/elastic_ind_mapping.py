@@ -9,12 +9,7 @@ password = os.environ.get("ES_PASSWORD", "")
 print(f"url: {url}, user: {user}, password: {password}")
 
 
-es = Elasticsearch(
-[url],
-    basic_auth=(user, password),
-    verify_certs=False,
-    request_timeout=1200
-)
+es = Elasticsearch([url], basic_auth=(user, password), verify_certs=False, request_timeout=1200)
 
 indices = es.cat.indices(format="json")
 
@@ -28,10 +23,6 @@ for index_name, index_data in mappings.items():
     print(f"INDEX: {index_name}")
     print(f"{'=' * 100}")
 
-    properties = (
-        index_data
-        .get("mappings", {})
-        .get("properties", {})
-    )
+    properties = index_data.get("mappings", {}).get("properties", {})
 
     print(json.dumps(properties, indent=2))

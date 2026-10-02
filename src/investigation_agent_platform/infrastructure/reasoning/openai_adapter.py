@@ -27,6 +27,8 @@ _MODEL_RATES: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.00015, 0.0006),
     "gpt-4-turbo": (0.01, 0.03),
     "gpt-3.5-turbo": (0.0005, 0.0015),
+    "muse-spark-1.3": (0.00015, 0.0006),
+    "gpt-4.1": (0.005, 0.015),
 }
 
 
@@ -60,6 +62,16 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
     return bool(getattr(exc, "retryable", False))
 
 
+def _openai_base_url(config: LLMConfig) -> str:
+    """Normalized custom base URL ("" when unset; fail-closed on non-http schemes)."""
+    base_url = (config.openai_base_url or "").strip().rstrip("/")
+    if base_url:
+        scheme = base_url.split("://", 1)[0].lower() if "://" in base_url else ""
+        if scheme not in ("http", "https"):
+            raise RuntimeError("openai_base_url must be an http(s) URL")
+    return base_url
+
+
 class OpenAIGateway(LLMGateway):
     """OpenAI adapter — lazy client init so mypy/test does not require openai.
 
@@ -91,18 +103,24 @@ class OpenAIGateway(LLMGateway):
                     endpoint = (self._config.azure_endpoint or "").rstrip("/")
                     if not endpoint or not self._config.azure_deployment:
                         raise RuntimeError(
-                            "Azure provider requires IAP_AZURE_OPENAI_ENDPOINT "
-                            "and IAP_AZURE_OPENAI_DEPLOYMENT"
+                            "Azure provider requires IAP_AZURE_ENDPOINT and IAP_AZURE_DEPLOYMENT"
                         )
                     self._client = openai.AsyncAzureOpenAI(
                         api_key=self._config.api_key.get_secret_value(),
                         azure_endpoint=endpoint,
-                        api_version=self._config.azure_api_version or "2024-02-01",
+                        api_version=self._config.azure_api_version or "2025-01-01-preview",
                     )
                 else:
-                    self._client = openai.AsyncOpenAI(
-                        api_key=self._config.api_key.get_secret_value()
-                    )
+                    base_url = _openai_base_url(self._config)
+                    if base_url:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value(),
+                            base_url=base_url,
+                        )
+                    else:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value()
+                        )
             except ImportError as exc:
                 raise RuntimeError("openai package not installed") from exc
         return self._client

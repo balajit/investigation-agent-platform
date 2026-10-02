@@ -433,7 +433,9 @@ class Neo4jTopologyAdapter:
         )
 
     @staticmethod
-    async def _write_reference_batch(tx: Any, payload: ASTTopologyPayload, batch: list[Any]) -> None:
+    async def _write_reference_batch(
+        tx: Any, payload: ASTTopologyPayload, batch: list[Any]
+    ) -> None:
         rows = [
             {
                 "source_node_id": str(r.source_node_id),
@@ -463,7 +465,9 @@ class Neo4jTopologyAdapter:
         )
 
     @staticmethod
-    async def _write_db_access_batch(tx: Any, payload: ASTTopologyPayload, batch: list[Any]) -> None:
+    async def _write_db_access_batch(
+        tx: Any, payload: ASTTopologyPayload, batch: list[Any]
+    ) -> None:
         rows = [
             {
                 "source_node_id": str(d.source_node_id),

@@ -32,19 +32,36 @@ from investigation_agent_platform.infrastructure.topology.cognee_adapter import 
 
 def _payload(tenant: str = "tenant-a") -> ASTTopologyPayload:
     node = ASTNodeIdentity.create(
-        tenant_id=tenant, repository_id="acme--pay", revision="f" * 40,
-        name="charge", qualified_name="PaymentService.charge",
-        node_type=TopologyNodeType.METHOD, file_path="src/payments.py",
-        start_line=17, end_line=24,
+        tenant_id=tenant,
+        repository_id="acme--pay",
+        revision="f" * 40,
+        name="charge",
+        qualified_name="PaymentService.charge",
+        node_type=TopologyNodeType.METHOD,
+        file_path="src/payments.py",
+        start_line=17,
+        end_line=24,
     )
     return ASTTopologyPayload(
-        schema_version="v1", parser_version="test", tenant_id=tenant,
-        application_id=f"{tenant}-acme--pay", repository_id="acme--pay",
-        revision="f" * 40, snapshot_id=uuid.uuid4(),
-        source_files=[SourceFileIdentity(tenant_id=tenant, repository_id="acme--pay",
-                                         revision="f" * 40, path="src/payments.py",
-                                         language="python", content_hash="abc")],
-        ast_nodes=[node], payload_hash="0" * 64,
+        schema_version="v1",
+        parser_version="test",
+        tenant_id=tenant,
+        application_id=f"{tenant}-acme--pay",
+        repository_id="acme--pay",
+        revision="f" * 40,
+        snapshot_id=uuid.uuid4(),
+        source_files=[
+            SourceFileIdentity(
+                tenant_id=tenant,
+                repository_id="acme--pay",
+                revision="f" * 40,
+                path="src/payments.py",
+                language="python",
+                content_hash="abc",
+            )
+        ],
+        ast_nodes=[node],
+        payload_hash="0" * 64,
     )
 
 
@@ -88,16 +105,33 @@ class TestPointMapping:
         (node,) = payload.ast_nodes
         other = _node_like(payload, "mod.other", "other")
         payload = payload.model_copy(update={"ast_nodes": [node, other]})
-        calls = [CallEdgeInput(caller_node_id=node.node_id, callee_node_id=other.node_id,
-                               callee_qualified_name="mod.other", call_site_file="src/payments.py",
-                               call_site_line=1, resolution_status=CallResolutionStatus.RESOLVED)]
-        refs = [ReferenceEdgeInput(source_node_id=node.node_id, target_node_id=other.node_id,
-                                   reference_type="IMPORTS", file_path="src/payments.py",
-                                   line_number=1)]
-        dangling = CallEdgeInput(caller_node_id=node.node_id,
-                                 callee_node_id=uuid.uuid4(), callee_qualified_name="ghost",
-                                 call_site_file="src/payments.py", call_site_line=2,
-                                 resolution_status=CallResolutionStatus.UNRESOLVED)
+        calls = [
+            CallEdgeInput(
+                caller_node_id=node.node_id,
+                callee_node_id=other.node_id,
+                callee_qualified_name="mod.other",
+                call_site_file="src/payments.py",
+                call_site_line=1,
+                resolution_status=CallResolutionStatus.RESOLVED,
+            )
+        ]
+        refs = [
+            ReferenceEdgeInput(
+                source_node_id=node.node_id,
+                target_node_id=other.node_id,
+                reference_type="IMPORTS",
+                file_path="src/payments.py",
+                line_number=1,
+            )
+        ]
+        dangling = CallEdgeInput(
+            caller_node_id=node.node_id,
+            callee_node_id=uuid.uuid4(),
+            callee_qualified_name="ghost",
+            call_site_file="src/payments.py",
+            call_site_line=2,
+            resolution_status=CallResolutionStatus.UNRESOLVED,
+        )
         points = map_payload_to_points(payload, calls + [dangling], refs)
         by_id = {p.node_id: p for p in points}
         linked = _linked_rels(by_id[str(node.node_id)])
@@ -150,10 +184,15 @@ def _node_like(payload, qualified: str, name: str):  # type: ignore[no-untyped-d
     )
 
     return ASTNodeIdentity.create(
-        tenant_id=payload.tenant_id, repository_id=payload.repository_id,
-        revision=payload.revision, name=name, qualified_name=qualified,
-        node_type=TopologyNodeType.FUNCTION, file_path="src/other.py",
-        start_line=1, end_line=5,
+        tenant_id=payload.tenant_id,
+        repository_id=payload.repository_id,
+        revision=payload.revision,
+        name=name,
+        qualified_name=qualified,
+        node_type=TopologyNodeType.FUNCTION,
+        file_path="src/other.py",
+        start_line=1,
+        end_line=5,
     )
 
 
@@ -174,8 +213,16 @@ class TestCompletionContainment:
     def test_retrieval_allowed(self, allowed: str) -> None:
         assert_retrieval_only(allowed)
 
-    @pytest.mark.parametrize("blocked", ["GRAPH_COMPLETION", "RAG_COMPLETION", "HYBRID_COMPLETION",
-                                         "GRAPH_COMPLETION_COT", "TRIPLET_COMPLETION"])
+    @pytest.mark.parametrize(
+        "blocked",
+        [
+            "GRAPH_COMPLETION",
+            "RAG_COMPLETION",
+            "HYBRID_COMPLETION",
+            "GRAPH_COMPLETION_COT",
+            "TRIPLET_COMPLETION",
+        ],
+    )
     def test_completion_blocked(self, blocked: str) -> None:
         with pytest.raises(TopologyNotConfiguredError, match="retrieval-only"):
             assert_retrieval_only(blocked)

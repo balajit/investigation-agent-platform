@@ -253,6 +253,13 @@ class _InMemoryTransitionRepository(TransitionEventRepository):
         return None
 
 
+def _artifact_valid_to(artifact: Any) -> datetime:
+    """Sort key for TTL sweeps; artifacts are pre-filtered to valid_to set."""
+    valid_to = artifact.valid_to
+    assert isinstance(valid_to, datetime)
+    return valid_to
+
+
 class InMemoryArtifactRepository:
     """Process-local envelope store mirroring the RLS visibility carve-out.
 
@@ -339,7 +346,7 @@ class InMemoryArtifactRepository:
             and a.valid_to is not None
             and a.valid_to <= cutoff
         ]
-        rows.sort(key=lambda a: a.valid_to)
+        rows.sort(key=_artifact_valid_to)
         return rows[:limit]
 
 

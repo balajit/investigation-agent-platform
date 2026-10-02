@@ -85,18 +85,73 @@ def _artifact(**overrides):  # type: ignore[no-untyped-def]
     return KnowledgeArtifact(**base)
 
 
+def _embedding_api_key() -> str | None:
+    """Usable embedding key, or None when the environment has none.
+
+    The mem0 round-trip needs a real key (billable network call): either
+    OpenAI (``IAP_OPENAI_API_KEY``) or Azure (``IAP_AZURE_API_KEY`` /
+    ``IAP_AZURE_EMBEDDING_API_KEY`` with ``IAP_AZURE_ENDPOINT``).
+    Missing keys skip — same convention as unreachable services — instead
+    of failing on 401.
+    """
+    value = os.environ.get("IAP_OPENAI_API_KEY", "").strip()
+    if value:
+        return value
+    if os.environ.get("IAP_AZURE_ENDPOINT", "").strip():
+        for name in ("IAP_AZURE_API_KEY", "IAP_AZURE_EMBEDDING_API_KEY"):
+            value = os.environ.get(name, "").strip()
+            if value:
+                return value
+    return None
+
+
+def _azure_mem0_kwargs() -> dict | None:
+    """Azure mem0 settings, or None when the environment is OpenAI-based."""
+    endpoint = os.environ.get("IAP_AZURE_ENDPOINT", "").strip()
+    if not endpoint:
+        return None
+    chat_key = os.environ.get("IAP_AZURE_API_KEY", "").strip()
+    embedding_deployment = os.environ.get("IAP_AZURE_EMBEDDING_DEPLOYMENT", "").strip()
+    embedding_endpoint = os.environ.get("IAP_AZURE_EMBEDDING_ENDPOINT", "").strip() or endpoint
+    embedding_api_version = (
+        os.environ.get("IAP_AZURE_EMBEDDING_API_VERSION", "").strip()
+        or os.environ.get("IAP_AZURE_API_VERSION", "2025-01-01-preview").strip()
+    )
+    embedding_api_key = os.environ.get("IAP_AZURE_EMBEDDING_API_KEY", "").strip() or chat_key
+    return {
+        "api_key": chat_key,
+        "llm_provider": "azure_openai",
+        "azure_endpoint": endpoint,
+        "azure_api_version": os.environ.get("IAP_AZURE_API_VERSION", "2025-01-01-preview").strip(),
+        "azure_deployment": os.environ.get("IAP_AZURE_DEPLOYMENT", "").strip(),
+        "azure_embedding_deployment": embedding_deployment,
+        "azure_embedding_endpoint": embedding_endpoint,
+        "azure_embedding_api_version": embedding_api_version,
+        "azure_embedding_api_key": embedding_api_key,
+    }
+
+
 @requires_containers
 class TestMem0PgvectorContract:
     @pytest.mark.asyncio
     async def test_round_trip_tenant_scoped(self) -> None:
         if not _pg_reachable():
             pytest.skip("pgvector Postgres unreachable")
+        api_key = _embedding_api_key()
+        if api_key is None:
+            pytest.skip("no usable embedding API key (IAP_OPENAI_API_KEY / IAP_AZURE_*)")
         pytest.importorskip("mem0")
         from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
             Mem0KnowledgeStore,
         )
 
-        store = Mem0KnowledgeStore(pgvector_url=PGVECTOR_URL)
+        azure_kwargs = _azure_mem0_kwargs()
+        if azure_kwargs is not None and not azure_kwargs["azure_embedding_deployment"]:
+            pytest.skip("IAP_AZURE_EMBEDDING_DEPLOYMENT required for Azure mem0")
+        store_kwargs = {"pgvector_url": PGVECTOR_URL, "api_key": api_key}
+        if azure_kwargs is not None:
+            store_kwargs.update(azure_kwargs)
+        store = Mem0KnowledgeStore(**store_kwargs)
         artifact = _artifact(kind="micro_fact", statement="Team Atlas owns checkout")
         record_id = await store.project_artifact("tenant-a", artifact)
         assert record_id

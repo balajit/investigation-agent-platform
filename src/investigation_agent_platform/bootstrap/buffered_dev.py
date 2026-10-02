@@ -313,14 +313,15 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
         return ctx
 
 
-def start_buffer_flusher(ctx: Any) -> asyncio.Task | None:
+def start_buffer_flusher(ctx: Any) -> asyncio.Task[Any] | None:
     """Start the background WAL flusher for a buffered context (lifespan)."""
     from investigation_agent_platform.infrastructure.persistence.buffered import flusher_loop
 
     if not getattr(ctx, "_buffered", False):
         return None
-    if getattr(ctx, "_buffer_flusher_task", None) is not None:
-        return ctx._buffer_flusher_task
+    existing: asyncio.Task[Any] | None = getattr(ctx, "_buffer_flusher_task", None)
+    if existing is not None:
+        return existing
     stop = asyncio.Event()
     ctx._buffer_flusher_stop = stop
     task = asyncio.create_task(

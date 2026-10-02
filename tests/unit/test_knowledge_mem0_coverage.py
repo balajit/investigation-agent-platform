@@ -78,7 +78,8 @@ class TestTenantScoping:
         _, kwargs = client.search.call_args
         assert kwargs["top_k"] == 5
         assert kwargs["filters"] == {
-            "AND": [{"user_id": "t_acme__investigator"}, {"tenant_id": "acme"}]
+            "user_id": "t_acme__investigator",
+            "AND": [{"tenant_id": "acme"}],
         }
 
     @pytest.mark.asyncio
@@ -302,6 +303,99 @@ class TestMem0Config:
         assert not hasattr(ctx, "knowledge_store") or True  # no attribute set
         # attribute must not have been assigned by wiring
         assert "knowledge_store" not in ctx.__dict__
+
+    def test_azure_provider_builds_azure_openai_config(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import mem0
+
+        from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
+            Mem0KnowledgeStore,
+        )
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            mem0.Memory,
+            "from_config",
+            staticmethod(lambda config: captured.update(config) or MagicMock()),
+        )
+        store = Mem0KnowledgeStore(
+            api_key="az-key",
+            pgvector_url="postgresql://u:p@localhost/db",
+            llm_provider="azure_openai",
+            azure_endpoint="https://example.openai.azure.com",
+            azure_api_version="2025-01-01-preview",
+            azure_deployment="gpt-4.1",
+            azure_embedding_deployment="text-embedding-3-small",
+            azure_embedding_endpoint="https://embed.example.openai.azure.com",
+            azure_embedding_api_version="2023-05-15",
+            azure_embedding_api_key="az-embed-key",
+        )
+        store._client()
+        assert captured["llm"]["provider"] == "azure_openai"
+        assert captured["llm"]["config"]["model"] == "gpt-4.1"
+        assert captured["llm"]["config"]["azure_kwargs"]["azure_endpoint"] == (
+            "https://example.openai.azure.com"
+        )
+        assert captured["embedder"]["provider"] == "azure_openai"
+        assert captured["embedder"]["config"]["model"] == "text-embedding-3-small"
+        assert captured["embedder"]["config"]["api_key"] == "az-embed-key"
+        assert captured["embedder"]["config"]["azure_kwargs"]["azure_endpoint"] == (
+            "https://embed.example.openai.azure.com"
+        )
+        assert captured["embedder"]["config"]["azure_kwargs"]["api_version"] == ("2023-05-15")
+        assert captured["embedder"]["config"]["azure_kwargs"]["azure_deployment"] == (
+            "text-embedding-3-small"
+        )
+
+    def test_azure_embedder_falls_back_to_shared_settings(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import mem0
+
+        from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
+            Mem0KnowledgeStore,
+        )
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            mem0.Memory,
+            "from_config",
+            staticmethod(lambda config: captured.update(config) or MagicMock()),
+        )
+        store = Mem0KnowledgeStore(
+            api_key="az-key",
+            pgvector_url="postgresql://u:p@localhost/db",
+            llm_provider="azure_openai",
+            azure_endpoint="https://example.openai.azure.com",
+            azure_deployment="gpt-4.1",
+            azure_embedding_deployment="text-embedding-3-small",
+        )
+        store._client()
+        assert captured["embedder"]["config"]["api_key"] == "az-key"
+        assert captured["embedder"]["config"]["azure_kwargs"]["azure_endpoint"] == (
+            "https://example.openai.azure.com"
+        )
+
+    def test_azure_provider_requires_deployments(self) -> None:
+        from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
+            Mem0KnowledgeStore,
+        )
+
+        store = Mem0KnowledgeStore(
+            api_key="az-key",
+            pgvector_url="postgresql://u:p@localhost/db",
+            llm_provider="azure_openai",
+        )
+        with pytest.raises(ValueError, match="azure_endpoint and azure_deployment"):
+            store._client()
+
+    def test_unknown_provider_rejected(self) -> None:
+        from investigation_agent_platform.infrastructure.knowledge.mem0_adapter import (
+            Mem0KnowledgeStore,
+        )
+
+        store = Mem0KnowledgeStore(
+            pgvector_url="postgresql://u:p@localhost/db", llm_provider="vertex"
+        )
+        with pytest.raises(ValueError, match="Unsupported mem0 llm_provider"):
+            store._client()
 
 
 # ===========================================================================

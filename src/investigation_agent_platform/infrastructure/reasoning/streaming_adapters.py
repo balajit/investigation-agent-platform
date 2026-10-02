@@ -41,6 +41,16 @@ def streaming_manifest() -> PluginManifest:
     )
 
 
+def _openai_base_url(config: LLMConfig) -> str:
+    """Normalized custom base URL ("" when unset; fail-closed on non-http schemes)."""
+    base_url = (config.openai_base_url or "").strip().rstrip("/")
+    if base_url:
+        scheme = base_url.split("://", 1)[0].lower() if "://" in base_url else ""
+        if scheme not in ("http", "https"):
+            raise RuntimeError("openai_base_url must be an http(s) URL")
+    return base_url
+
+
 def count_text_tokens(model_name: str, text: str) -> int:
     """Best-effort token count for cost accounting (tiktoken, char fallback)."""
     try:
@@ -80,8 +90,7 @@ class OpenAIStreamingGateway:
                     endpoint = (self._config.azure_endpoint or "").rstrip("/")
                     if not endpoint or not self._config.azure_deployment:
                         raise RuntimeError(
-                            "Azure streaming requires IAP_AZURE_OPENAI_ENDPOINT "
-                            "and IAP_AZURE_OPENAI_DEPLOYMENT"
+                            "Azure streaming requires IAP_AZURE_ENDPOINT and IAP_AZURE_DEPLOYMENT"
                         )
                     self._client = openai.AsyncAzureOpenAI(
                         api_key=self._config.api_key.get_secret_value(),
@@ -89,9 +98,16 @@ class OpenAIStreamingGateway:
                         api_version=self._config.azure_api_version or "2024-02-01",
                     )
                 else:
-                    self._client = openai.AsyncOpenAI(
-                        api_key=self._config.api_key.get_secret_value()
-                    )
+                    base_url = _openai_base_url(self._config)
+                    if base_url:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value(),
+                            base_url=base_url,
+                        )
+                    else:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value()
+                        )
             except ImportError as exc:
                 raise RuntimeError("openai package not installed") from exc
         return self._client

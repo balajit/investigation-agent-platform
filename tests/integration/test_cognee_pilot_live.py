@@ -3,9 +3,11 @@
 
 Opt-in via ``IAP_RUN_CONTAINER_TESTS=1`` (mirrors test_knowledge_containers.py
 and test_ingest_neo4j.py); skips cleanly without the flag or when Neo4j or the
-``cognee`` package is unavailable. Requires the pilot env:
-``IAP_COGNEE_ENABLED=true`` plus ``IAP_COGNEE_DATASET_SALT`` and the
-``IAP_TOPOLOGY_NEO4J_*`` connection vars.
+``cognee`` package is unavailable. Requires the pilot env: ``IAP_COGNEE_ENABLED=true`` plus the
+``IAP_TOPOLOGY_NEO4J_*`` connection vars. ``IAP_COGNEE_DATASET_SALT`` defaults
+to a transient per-run value when unset; ``GRAPH_DATABASE_*`` is derived from
+``IAP_TOPOLOGY_NEO4J_*`` via the pilot script mapping (setdefault: explicit
+values always win).
 """
 
 from __future__ import annotations
@@ -28,12 +30,41 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "github_loader"
 NEO4J_URI = os.environ.get("IAP_TOPOLOGY_NEO4J_URI", "bolt://localhost:7687")
 
 
+@pytest.fixture(autouse=True)
+def _cognee_pilot_env() -> None:
+    """Apply the pilot script env glue so pytest needs no manual exports.
+
+    Maps ``IAP_TOPOLOGY_NEO4J_*`` to the ``GRAPH_DATABASE_*`` vars Cognee
+    reads (reuses ``scripts/cognee_pilot._cognee_env_from_topology``;
+    setdefault, so explicit values win) and defaults the dataset salt to a
+    transient per-run value. The test drops its projection afterwards, so no
+    residue survives regardless of salt.
+    """
+    import importlib.util
+    import secrets
+    import sys
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "cognee_pilot.py"
+    spec = importlib.util.spec_from_file_location("cognee_pilot_env", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cognee_pilot_env"] = module
+    spec.loader.exec_module(module)
+    module._cognee_env_from_topology()
+    if os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true":
+        os.environ.setdefault(
+            "IAP_COGNEE_DATASET_SALT", f"pytest-{os.getpid()}-{secrets.token_hex(4)}"
+        )
+
+
 def _bolt_reachable() -> bool:
     try:
         from urllib.parse import urlparse
 
         parsed = urlparse(NEO4J_URI)
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 7687), timeout=1.0):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 7687), timeout=1.0
+        ):
             return True
     except OSError:
         return False
@@ -70,7 +101,8 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
     dest = tmp_path / "acme--payments"
     shutil.copytree(FIXTURES / "acme--payments", dest)
     payload, truncated = await loader.build_payload_for_repo(
-        dest, "tenant-live", "app-1", "acme--pay", "l" * 40)
+        dest, "tenant-live", "app-1", "acme--pay", "l" * 40
+    )
     assert truncated is False
 
     adapter = CogneeTopologyAdapter(enabled=True, dataset_salt=salt)
@@ -87,13 +119,16 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
 
     reader = CogneeAttributionReader(enabled=True, dataset_salt=salt)
     line = next(
-        n.start_line + 1
-        for n in payload.ast_nodes
-        if n.qualified_name == "PaymentService.charge"
+        n.start_line + 1 for n in payload.ast_nodes if n.qualified_name == "PaymentService.charge"
     )
     result = await reader.resolve_source_location(
-        "tenant-live", "app-1", _uuid.uuid4(), "acme--pay", "l" * 40,
-        "src/payments.py", line,
+        "tenant-live",
+        "app-1",
+        _uuid.uuid4(),
+        "acme--pay",
+        "l" * 40,
+        "src/payments.py",
+        line,
     )
     assert result.matched_node_qualified_name == "PaymentService.charge"
     assert result.domain_id == "team-pay"
@@ -104,8 +139,10 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
 
     driver = AsyncGraphDatabase.driver(
         os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
-        auth=(os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
-              os.environ.get("GRAPH_DATABASE_PASSWORD", "")),
+        auth=(
+            os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+            os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
+        ),
     )
     try:
         async with driver.session(
@@ -113,7 +150,8 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
         ) as session:
             result = await session.run(
                 "MATCH (n:TopologySymbolPoint {tenant_id: 'tenant-live'})"
-                "-[e:CALLS]->() RETURN count(*) AS c")
+                "-[e:CALLS]->() RETURN count(*) AS c"
+            )
             calls = (await result.single())["c"]
             assert calls > 0, "CALLS edges projected alongside points"
     finally:
@@ -125,16 +163,18 @@ async def test_live_projection_idempotent(tmp_path: Path) -> None:
 
     _driver = _Driver.driver(
         os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
-        auth=(os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
-              os.environ.get("GRAPH_DATABASE_PASSWORD", "")),
+        auth=(
+            os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+            os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
+        ),
     )
     try:
         async with _driver.session(
             database=os.environ.get("GRAPH_DATABASE_NAME", "neo4j")
         ) as session:
             result = await session.run(
-                "MATCH (n:TopologySymbolPoint {tenant_id: 'tenant-live'}) "
-                "RETURN count(*) AS c")
+                "MATCH (n:TopologySymbolPoint {tenant_id: 'tenant-live'}) RETURN count(*) AS c"
+            )
             assert (await result.single())["c"] == 0, "drop deletes the projection"
     finally:
         await _driver.close()

@@ -44,9 +44,10 @@ class KnowledgeArtifactJanitor:
 
     def _now(self) -> datetime:
         try:
-            return self.retrieval._now()
+            now = self.retrieval._now()
         except Exception:
             return datetime.now(UTC)
+        return now if isinstance(now, datetime) else datetime.now(UTC)
 
     async def sweep_tenant(
         self,

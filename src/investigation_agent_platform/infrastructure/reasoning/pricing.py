@@ -28,6 +28,8 @@ _BASE_RATES: dict[str, tuple[float, float]] = {
     "claude-3-opus": (0.015, 0.075),
     "claude-3-haiku": (0.00025, 0.00125),
     "claude-sonnet-4": (0.003, 0.015),
+    "muse-spark-1.3": (0.00015, 0.0006),
+    "gpt-4.1": (0.005, 0.015),
 }
 
 _FALLBACK_RATE = (0.005, 0.015)

@@ -444,13 +444,10 @@ class TestFactory:
 
     def test_infer_claude(self) -> None:
         config = LLMConfig(api_key=SecretStr("k"), model_name="claude-sonnet-4", provider="")
-        # provider empty triggers inference
-        gw = create_llm_gateway(config)
-        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
-            AnthropicGateway,
-        )
-
-        assert isinstance(gw, AnthropicGateway)
+        # Empty provider defaults to openai; a claude model then fails closed
+        # instead of being silently cross-wired (no inference).
+        with pytest.raises(PlatformConfigurationError):
+            create_llm_gateway(config)
 
     def test_infer_gpt(self) -> None:
         config = LLMConfig(api_key=SecretStr("k"), model_name="gpt-4o-mini", provider="")
@@ -471,11 +468,11 @@ class TestConfig:
         assert cfg.provider == "anthropic"
 
     def test_load_from_env_missing(self) -> None:
-        env = {"IAP_DATABASE_URI": "", "IAP_LLM_API_KEY": ""}
+        env = {"IAP_DATABASE_URI": "", "IAP_OPENAI_API_KEY": ""}
         with patch.dict(os.environ, env, clear=False):
             # ensure missing
             os.environ.pop("IAP_DATABASE_URI", None)
-            os.environ.pop("IAP_LLM_API_KEY", None)
+            os.environ.pop("IAP_OPENAI_API_KEY", None)
             with pytest.raises(PlatformConfigurationError):
                 load_application_config_from_env()
 
@@ -484,9 +481,9 @@ class TestConfig:
             os.environ,
             {
                 "IAP_DATABASE_URI": "postgresql+asyncpg://a:b@localhost/db",
-                "IAP_LLM_API_KEY": "sk-test",
+                "IAP_ANTHROPIC_API_KEY": "sk-test",
                 "IAP_LLM_PROVIDER": "anthropic",
-                "IAP_LLM_MODEL": "claude-3-haiku",
+                "IAP_ANTHROPIC_MODEL": "claude-3-haiku",
                 "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
             },
             clear=False,
@@ -504,7 +501,7 @@ class TestConfig:
         p.write_text(yaml_content, encoding="utf-8")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("IAP_DATABASE_URI", None)
-            os.environ.pop("IAP_LLM_API_KEY", None)
+            os.environ.pop("IAP_OPENAI_API_KEY", None)
             with pytest.raises(PlatformConfigurationError):
                 load_application_config_from_yaml(path=p)
 
@@ -514,7 +511,7 @@ class TestConfig:
         p.write_text(yaml_content, encoding="utf-8")
         with patch.dict(
             os.environ,
-            {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_LLM_API_KEY": "sk"},
+            {"IAP_DATABASE_URI": "postgresql://a:b@localhost/db", "IAP_OPENAI_API_KEY": "sk"},
             clear=False,
         ):
             cfg = load_application_config_from_yaml(path=p)
@@ -532,7 +529,7 @@ class TestBootstrap:
             os.environ,
             {
                 "IAP_DATABASE_URI": "postgresql://a:b@localhost/db",
-                "IAP_LLM_API_KEY": "sk",
+                "IAP_OPENAI_API_KEY": "sk",
                 "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
             },
             clear=False,

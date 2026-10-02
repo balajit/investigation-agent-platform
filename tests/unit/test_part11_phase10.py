@@ -387,7 +387,7 @@ class TestChatEndpoints:
     def _client(self, monkeypatch) -> tuple[TestClient, AppContext]:  # type: ignore[no-untyped-def]
         monkeypatch.setenv("IAP_ENVIRONMENT", "development")
         monkeypatch.setenv("IAP_DATABASE_URI", "postgresql://iap:iap@localhost:5452/iap")
-        monkeypatch.setenv("IAP_LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("IAP_OPENAI_API_KEY", "sk-test")
         ctx = AppContext()
         set_app_context(ctx)
         return TestClient(create_app()), ctx

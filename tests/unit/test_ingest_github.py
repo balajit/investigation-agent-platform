@@ -96,9 +96,18 @@ class TestWalkSourceFiles:
 
 class TestManifestRow:
     def test_ready_row_shape(self) -> None:
-        repo = loader.RepoListing("acme/pay", "main", "https://x", False, False, False, False, 1, "Python")
-        row = loader.manifest_row("t1", "acme", repo, "acme--pay", "deadbeef" * 5, "READY",
-                                  {"node_count": 3, "edge_count": 1, "file_count": 2})
+        repo = loader.RepoListing(
+            "acme/pay", "main", "https://x", False, False, False, False, 1, "Python"
+        )
+        row = loader.manifest_row(
+            "t1",
+            "acme",
+            repo,
+            "acme--pay",
+            "deadbeef" * 5,
+            "READY",
+            {"node_count": 3, "edge_count": 1, "file_count": 2},
+        )
         assert isinstance(row, loader.IngestManifestRow)
         assert row.status == "READY"
         assert row.revision_sha == "deadbeef" * 5
@@ -106,19 +115,25 @@ class TestManifestRow:
         loader.IngestManifestRow.model_validate_json(row.model_dump_json())
 
     def test_error_truncated(self) -> None:
-        repo = loader.RepoListing("acme/pay", "main", "https://x", False, False, False, False, 1, None)
+        repo = loader.RepoListing(
+            "acme/pay", "main", "https://x", False, False, False, False, 1, None
+        )
         row = loader.manifest_row("t1", "acme", repo, "r", "sha", "FAILED", {}, "e" * 5000)
         assert row.error_summary is not None and len(row.error_summary) <= 2000
 
     def test_invalid_status_rejected(self) -> None:
         from pydantic import ValidationError
 
-        repo = loader.RepoListing("acme/pay", "main", "https://x", False, False, False, False, 1, None)
+        repo = loader.RepoListing(
+            "acme/pay", "main", "https://x", False, False, False, False, 1, None
+        )
         with pytest.raises(ValidationError):
             loader.manifest_row("t1", "acme", repo, "r", "sha", "BOGUS", {})  # type: ignore[arg-type]
 
     def test_resume_map_terminal_only(self, tmp_path: Path) -> None:
-        repo = loader.RepoListing("acme/pay", "main", "https://x", False, False, False, False, 1, None)
+        repo = loader.RepoListing(
+            "acme/pay", "main", "https://x", False, False, False, False, 1, None
+        )
         rows = [
             loader.manifest_row("t", "acme", repo, "r", "sha1", "FETCHING", {}),
             loader.manifest_row("t", "acme", repo, "r", "sha1", "READY", {}),
@@ -133,18 +148,28 @@ class TestManifestRow:
 
 class TestListing:
     def _item(self, **over: object) -> dict:
-        base: dict = {"full_name": "acme/r", "default_branch": "main",
-                      "clone_url": "https://github.com/acme/r.git", "private": False,
-                      "fork": False, "archived": False, "disabled": False,
-                      "size": 10, "language": "Python"}
+        base: dict = {
+            "full_name": "acme/r",
+            "default_branch": "main",
+            "clone_url": "https://github.com/acme/r.git",
+            "private": False,
+            "fork": False,
+            "archived": False,
+            "disabled": False,
+            "size": 10,
+            "language": "Python",
+        }
         base.update(over)
         return base
 
     def test_skip_rules(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        items = [self._item(), self._item(full_name="acme/f", fork=True),
-                 self._item(full_name="acme/a", archived=True),
-                 self._item(full_name="acme/d", disabled=True),
-                 self._item(full_name="acme/e", size=0)]
+        items = [
+            self._item(),
+            self._item(full_name="acme/f", fork=True),
+            self._item(full_name="acme/a", archived=True),
+            self._item(full_name="acme/d", disabled=True),
+            self._item(full_name="acme/e", size=0),
+        ]
         monkeypatch.setattr(loader, "_github_request", lambda path, token: (items, {}))
         repos, skipped = loader.list_org_repos("acme", "tok", False, False)
         assert [r.full_name for r in repos] == ["acme/r"]
@@ -179,8 +204,17 @@ class TestListing:
 
 class TestFetchGuards:
     def test_refuses_non_git_dir(self, tmp_path: Path) -> None:
-        repo = loader.RepoListing("acme/pay", "main", "https://github.com/acme/pay.git",
-                                  False, False, False, False, 1, None)
+        repo = loader.RepoListing(
+            "acme/pay",
+            "main",
+            "https://github.com/acme/pay.git",
+            False,
+            False,
+            False,
+            False,
+            1,
+            None,
+        )
         (tmp_path / "acme--pay").mkdir()
         with pytest.raises(RuntimeError, match="non-git"):
             loader.fetch_repo_at_sha(repo, "sha", tmp_path, "tok", False)
@@ -197,7 +231,8 @@ class TestCli:
 
     def test_resume_is_companion(self) -> None:
         args = loader.build_parser().parse_args(
-            ["--org", "acme", "--tenant-id", "t", "--resume", "m.jsonl"])
+            ["--org", "acme", "--tenant-id", "t", "--resume", "m.jsonl"]
+        )
         assert args.resume == "m.jsonl" and args.org == "acme"
 
 
@@ -214,11 +249,19 @@ class TestRateLimitBackoff:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise err
+
             class Resp:
                 headers: ClassVar[dict] = {}
-                def __enter__(self): return self
-                def __exit__(self, *a): return False
-                def read(self): return b"[]"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self):
+                    return b"[]"
+
             return Resp()
 
         monkeypatch.setattr(loader.urllib.request, "urlopen", fake_open)
@@ -291,13 +334,15 @@ class TestBuildPayload:
         root = _stage_fixture(tmp_path, "acme--payments")
         (root / "notes.txt").write_text("hello\n")
         payload, _ = await loader.build_payload_for_repo(
-            root, "tenant-a", "app-1", "acme--payments", "f" * 40)
+            root, "tenant-a", "app-1", "acme--payments", "f" * 40
+        )
         txt_nodes = [n for n in payload.ast_nodes if n.file_path == "notes.txt"]
         assert len(txt_nodes) == 1 and txt_nodes[0].node_type.value == "MODULE"
 
     @pytest.mark.asyncio
-    async def test_truncated_on_cap_breach(self, tmp_path: Path,
-                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_truncated_on_cap_breach(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(loader, "MAX_NODE_SYMBOLS", 2)
         _, truncated = await self._build(tmp_path)
         assert truncated is True
@@ -305,8 +350,9 @@ class TestBuildPayload:
     @pytest.mark.asyncio
     async def test_legacy_wrapper_shape(self, tmp_path: Path) -> None:
         root = _stage_fixture(tmp_path, "acme--billing")
-        wrapped = await loader.parse_repo_to_payload(root, "tenant-a", "app-1",
-                                                      "acme--billing", "e" * 40)
+        wrapped = await loader.parse_repo_to_payload(
+            root, "tenant-a", "app-1", "acme--billing", "e" * 40
+        )
         assert wrapped["revision"] == "e" * 40
         assert wrapped["symbol_count"] >= 3
         assert wrapped["truncated"] is False
@@ -315,11 +361,14 @@ class TestBuildPayload:
     async def test_imports_resolve_same_repo_modules(self, tmp_path: Path) -> None:
         root = tmp_path / "imp"
         (root / "src").mkdir(parents=True)
-        (root / "src" / "a.py").write_text("from b import helper\n\ndef run():\n    return helper()\n")
+        (root / "src" / "a.py").write_text(
+            "from b import helper\n\ndef run():\n    return helper()\n"
+        )
         (root / "src" / "b.py").write_text("def helper():\n    return 1\n")
         (root / "src" / "c.py").write_text("import os\n\ndef run2():\n    return os.name\n")
         payload, truncated = await loader.build_payload_for_repo(
-            root, "tenant-a", "app-1", "imp", "f" * 40)
+            root, "tenant-a", "app-1", "imp", "f" * 40
+        )
         assert truncated is False
         refs = [(e.file_path, e.reference_type) for e in payload.references]
         assert ("src/a.py", "IMPORTS") in refs  # b.py resolved by stem
@@ -331,10 +380,12 @@ class TestBuildPayload:
         (root / "src").mkdir(parents=True)
         (root / "src" / "Bar.java").write_text(
             "package com.acme;\nimport com.acme.Foo;\nimport java.util.List;\n"
-            "public class Bar {\n public Foo make() { return new Foo(); }\n}\n")
+            "public class Bar {\n public Foo make() { return new Foo(); }\n}\n"
+        )
         (root / "src" / "Foo.java").write_text("package com.acme;\npublic class Foo {\n}\n")
         payload, _ = await loader.build_payload_for_repo(
-            root, "tenant-a", "app-1", "jimp", "f" * 40)
+            root, "tenant-a", "app-1", "jimp", "f" * 40
+        )
         refs = [(e.file_path, e.line_number) for e in payload.references]
         assert ("src/Bar.java", 2) in refs  # com.acme.Foo -> Foo.java, true line number
         assert len(refs) == 1  # java.util.List is external: no edge
@@ -354,13 +405,24 @@ class TestRepoTypes:
 
     def test_per_repo_override_wins(self) -> None:
         assert loader.resolve_repo_type("acme/pay", "UNKNOWN", {"acme/pay": "SERVICE"}) == "SERVICE"
-        assert loader.resolve_repo_type("acme/other", "UNKNOWN", {"acme/pay": "SERVICE"}) == "UNKNOWN"
+        assert (
+            loader.resolve_repo_type("acme/other", "UNKNOWN", {"acme/pay": "SERVICE"}) == "UNKNOWN"
+        )
 
 
 class TestRegisterIdentities:
     def _repo(self, full_name: str = "acme/pay") -> object:
-        return loader.RepoListing(full_name, "main", f"https://github.com/{full_name}.git",
-                                  False, False, False, False, 1, "Python")
+        return loader.RepoListing(
+            full_name,
+            "main",
+            f"https://github.com/{full_name}.git",
+            False,
+            False,
+            False,
+            False,
+            1,
+            "Python",
+        )
 
     @pytest.mark.asyncio
     async def test_codeowners_domain_resolved(self, tmp_path: Path) -> None:
@@ -370,8 +432,9 @@ class TestRegisterIdentities:
 
         root = _stage_fixture(tmp_path, "acme--payments")
         adapter = InMemoryTopologyAdapter()
-        result = await loader.register_identities(root, "tenant-a", self._repo(),
-                                                  "acme--pay", "SERVICE", adapter)
+        result = await loader.register_identities(
+            root, "tenant-a", self._repo(), "acme--pay", "SERVICE", adapter
+        )
         assert result["git_org_id"] == "github:acme"
         assert result["domain_id"] == "team-payments"
         stored = adapter._repositories_by_id[("tenant-a", "acme--pay")]
@@ -386,9 +449,9 @@ class TestRegisterIdentities:
 
         root = _stage_fixture(tmp_path, "acme--billing")
         adapter = InMemoryTopologyAdapter()
-        result = await loader.register_identities(root, "tenant-a",
-                                                  self._repo("acme/bill"),
-                                                  "acme--bill", "UNKNOWN", adapter)
+        result = await loader.register_identities(
+            root, "tenant-a", self._repo("acme/bill"), "acme--bill", "UNKNOWN", adapter
+        )
         assert result["domain_id"] is None
         assert adapter._ownership[("tenant-a", "acme--bill")] == ["github:acme"]
 
@@ -401,7 +464,8 @@ class TestIngestPayload:
         dest = tmp_path / f"stage-{self._run['n']}"
         shutil.copytree(FIXTURES / "acme--payments", dest / "acme--payments")
         payload, truncated = await loader.build_payload_for_repo(
-            dest / "acme--payments", tenant, "app-1", "acme--pay", "f" * 40)
+            dest / "acme--payments", tenant, "app-1", "acme--pay", "f" * 40
+        )
         assert truncated is False
         return payload
 
@@ -469,8 +533,7 @@ class TestIngestPayload:
             raise TopologyProviderUnavailableError("down")
 
         real.ingest = down  # type: ignore[method-assign]
-        result = await loader.ingest_payload(await self._payload(tmp_path), real,
-                                             max_attempts=2)
+        result = await loader.ingest_payload(await self._payload(tmp_path), real, max_attempts=2)
         assert result["status"] == "FAILED"
         assert "2 attempts" in (result["error"] or "")
 

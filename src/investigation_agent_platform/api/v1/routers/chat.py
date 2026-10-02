@@ -77,7 +77,7 @@ def _streaming_gateway() -> Any:
     )
 
     cfg = load_application_config_from_env().llm
-    if cfg.provider.lower() not in ("openai", "azure"):
+    if cfg.provider.lower() not in ("openai", "azure", "muse"):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Streaming is unavailable for provider {cfg.provider!r}",

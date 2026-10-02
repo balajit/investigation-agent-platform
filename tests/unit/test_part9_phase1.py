@@ -219,7 +219,7 @@ def test_evidence_accepts_unknown_observation_time():
 
 def _clean_env(monkeypatch):
     monkeypatch.setenv("IAP_DATABASE_URI", "postgresql://test/test")
-    monkeypatch.setenv("IAP_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("IAP_OPENAI_API_KEY", "test-key")
     for var in (
         "IAP_ELASTIC_CURSOR_SIGNING_KEY",
         "IAP_ELASTICSEARCH_MAX_HITS",

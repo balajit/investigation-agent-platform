@@ -128,15 +128,15 @@ class TraceInvestigationService:
                 max_evidence=effective_max,
                 mapping_source_id=mapping_source_id,
             )
-            contributing = {
-                evidence_id
-                for location in telemetry.code_locations
-                for evidence_id in location.evidence_ids
-            } | {
-                evidence_id
-                for table in telemetry.tables
-                for evidence_id in table.evidence_ids
-            } | {statement.evidence_id for statement in telemetry.sql_statements}
+            contributing = (
+                {
+                    evidence_id
+                    for location in telemetry.code_locations
+                    for evidence_id in location.evidence_ids
+                }
+                | {evidence_id for table in telemetry.tables for evidence_id in table.evidence_ids}
+                | {statement.evidence_id for statement in telemetry.sql_statements}
+            )
             by_id = {item.evidence_id: item for item in result.items}
             evidence_refs = [
                 EvidenceRef(

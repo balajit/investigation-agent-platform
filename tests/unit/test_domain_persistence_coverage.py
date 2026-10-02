@@ -772,7 +772,7 @@ class TestHealthAndRouters:
             import os
 
             old_db = os.environ.pop("IAP_DATABASE_URI", None)
-            old_llm = os.environ.pop("IAP_LLM_API_KEY", None)
+            old_llm = os.environ.pop("IAP_OPENAI_API_KEY", None)
             try:
                 with pytest.raises(PlatformConfigurationError):
                     load_application_config_from_env()
@@ -780,7 +780,7 @@ class TestHealthAndRouters:
                 if old_db:
                     os.environ["IAP_DATABASE_URI"] = old_db
                 if old_llm:
-                    os.environ["IAP_LLM_API_KEY"] = old_llm
+                    os.environ["IAP_OPENAI_API_KEY"] = old_llm
 
     def test_config_load_from_env_success(self) -> None:
         from investigation_agent_platform.infrastructure.configuration.config import (
@@ -789,7 +789,7 @@ class TestHealthAndRouters:
 
         env = {
             "IAP_DATABASE_URI": "postgresql://x",
-            "IAP_LLM_API_KEY": "sk-test",
+            "IAP_OPENAI_API_KEY": "sk-test",
             "IAP_ELASTIC_CURSOR_SIGNING_KEY": "test-signing-key",
         }
         with patch.dict("os.environ", env, clear=False):

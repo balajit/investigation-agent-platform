@@ -108,7 +108,9 @@ async def _run(args: argparse.Namespace) -> int:
     service = ElasticMetadataService(_client_from_env())
     try:
         if args.indices is not None:
-            rows = await service.get_available_indices(args.indices or os.environ.get("ES_PATTERN", "logs-*"))
+            rows = await service.get_available_indices(
+                args.indices or os.environ.get("ES_PATTERN", "logs-*")
+            )
             print(json.dumps(rows, indent=2)[:20000])
         elif args.columns:
             print(json.dumps(await service.get_index_columns(args.columns), indent=2)[:20000])

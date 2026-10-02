@@ -222,13 +222,18 @@ class PyGit2Adapter:
             new = repo.revparse_single(target_ref)
         except KeyError as exc:
             raise ExecutionError(f"Unknown revision ref: {exc}") from exc
-        old_tree = old.tree if isinstance(old, pygit2.Commit) else old
-        new_tree = new.tree if isinstance(new, pygit2.Commit) else new
-        diff = repo.diff(old_tree, new_tree)
+        if isinstance(old, pygit2.Commit) and isinstance(new, pygit2.Commit):
+            diff = repo.diff(old, new)
+        else:
+            # Annotated tags or other non-commit objects: resolve via rev
+            # strings (same trees; matches the diff() overloads).
+            diff = repo.diff(source_ref, target_ref)
 
         files_changed: list[str] = []
         diff_contents: dict[str, str] = {}
         for patch in diff:
+            if patch is None:
+                continue
             if len(files_changed) >= 50:
                 break
             path = patch.delta.new_file.path or patch.delta.old_file.path

@@ -54,6 +54,12 @@ MODEL_REGISTRY: dict[str, ModelPolicy] = {
         max_context_tokens=128000,
         max_cost_usd_per_call=5.0,
     ),
+    "gpt-4.1": ModelPolicy(
+        provider="openai",
+        model_name="gpt-4.1",
+        max_context_tokens=128000,
+        max_cost_usd_per_call=5.0,
+    ),
     "claude-3-5-sonnet": ModelPolicy(
         provider="anthropic",
         model_name="claude-3-5-sonnet",
@@ -78,6 +84,12 @@ MODEL_REGISTRY: dict[str, ModelPolicy] = {
         max_context_tokens=200000,
         max_cost_usd_per_call=5.0,
     ),
+    "muse-spark-1.3": ModelPolicy(
+        provider="muse",
+        model_name="muse-spark-1.3",
+        max_context_tokens=128000,
+        max_cost_usd_per_call=1.0,
+    ),
 }
 
 
@@ -87,76 +99,85 @@ def get_model_policy(model_name: str) -> ModelPolicy:
     if policy is None:
         raise PlatformConfigurationError(
             f"Model '{model_name}' is not in the approved model registry; "
-            "refusing to instantiate an unreviewed model"
+            "refusing to instantiate an unreviewed model (for Azure set "
+            "IAP_AZURE_MODEL to the base model id and "
+            "IAP_AZURE_DEPLOYMENT to your deployment name)"
         )
     return policy
+
+
+SUPPORTED_PROVIDERS = ("openai", "anthropic", "azure", "muse")
+
+# Cross-transport pairs: same model family, different wire. Everything else
+# must match the registry provider exactly.
+TRANSPORT_COMPAT = frozenset({("azure", "openai"), ("openai", "muse")})
+
+# Required LLMConfig fields per provider; enforced uniformly below.
+PROVIDER_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "azure": ("azure_endpoint", "azure_deployment"),
+    "muse": ("openai_base_url",),
+}
+
+# Canonical env name per required field, for error messages.
+REQUIREMENT_ENV = {
+    "azure_endpoint": "IAP_AZURE_ENDPOINT",
+    "azure_deployment": "IAP_AZURE_DEPLOYMENT",
+    "openai_base_url": "IAP_MUSE_ENDPOINT",
+}
 
 
 def create_llm_gateway(config: LLMConfig) -> LLMGateway:
     """Create gateway based on LLMConfig.provider.
 
-    Supported: 'openai' (default for gpt-*), 'anthropic' (claude-*) and
-    'azure' (Azure OpenAI deployment of an OpenAI model).
-    Env var IAP_LLM_PROVIDER overrides inference; otherwise inferred from model_name.
+    Supported: 'openai' (default), 'anthropic' (claude-*), 'azure' (Azure
+    OpenAI deployment of an OpenAI model), 'muse' (Meta-hosted Muse models
+    over an OpenAI-compatible endpoint).
 
-    F-030: the requested model must exist in MODEL_REGISTRY and its registered
-    provider must agree with the configured/inferred provider — otherwise
-    construction fails closed instead of instantiating an unreviewed model.
-    'azure' is compatible with 'openai'-registered models (same model family,
-    different wire transport); set IAP_LLM_MODEL to the base model id and
-    IAP_AZURE_OPENAI_DEPLOYMENT to the Azure deployment name.
+    F-030: the requested model must exist in MODEL_REGISTRY (see
+    get_model_policy) and either match the provider or form a pair in
+    TRANSPORT_COMPAT. Required per-provider settings come from
+    PROVIDER_REQUIREMENTS. Any violation fails closed.
     """
-    provider = (config.provider or "").lower() if hasattr(config, "provider") else ""
-    if not provider:
-        model = config.model_name.lower()
-        if model.startswith("claude"):
-            provider = "anthropic"
-        else:
-            provider = "openai"
-
-    try:
-        policy = get_model_policy(config.model_name)
-    except PlatformConfigurationError as exc:
-        if provider == "azure":
-            raise PlatformConfigurationError(
-                f"Model '{config.model_name}' is not in the approved model registry; "
-                "for Azure set IAP_LLM_MODEL to the base model id (e.g. 'gpt-4o-mini') "
-                "and IAP_AZURE_OPENAI_DEPLOYMENT to your deployment name"
-            ) from exc
-        raise
-    if policy.provider != provider and not (provider == "azure" and policy.provider == "openai"):
+    provider = (config.provider or "openai").lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise PlatformConfigurationError(
+            f"Unsupported LLM provider '{config.provider}'; "
+            f"expected one of {', '.join(SUPPORTED_PROVIDERS)}"
+        )
+    policy = get_model_policy(config.model_name)
+    if policy.provider != provider and (provider, policy.provider) not in TRANSPORT_COMPAT:
         raise PlatformConfigurationError(
             f"Model '{config.model_name}' is registered for provider '{policy.provider}' "
             f"but '{provider}' was requested; refusing to cross-wire providers"
         )
-
-    if provider == "azure":
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
-            OpenAIGateway,
+    missing = [f for f in PROVIDER_REQUIREMENTS.get(provider, ()) if not getattr(config, f)]
+    if missing:
+        names = ", ".join(REQUIREMENT_ENV[f] for f in missing)
+        raise PlatformConfigurationError(
+            f"Provider '{provider}' requires missing settings ({names}); refusing to "
+            "build a misconfigured gateway"
         )
-
-        if not config.azure_endpoint or not config.azure_deployment:
-            raise PlatformConfigurationError(
-                "Provider 'azure' requires IAP_AZURE_OPENAI_ENDPOINT and "
-                "IAP_AZURE_OPENAI_DEPLOYMENT (or AZURE_OPENAI_ENDPOINT / "
-                "AZURE_OPENAI_DEPLOYMENT_NAME)"
-            )
-        logger.info(
-            "Creating Azure OpenAI LLM gateway",
-            extra={"model": config.model_name, "deployment": config.azure_deployment},
+    if policy.provider == "muse" and not config.openai_base_url:
+        raise PlatformConfigurationError(
+            f"Model '{config.model_name}' is Muse-hosted and requires an explicit "
+            "Meta endpoint (IAP_MUSE_ENDPOINT); refusing to send Muse "
+            "models to the default OpenAI endpoint"
         )
-        return OpenAIGateway(config)
+    from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+        OpenAIGateway,
+    )
+
     if provider == "anthropic":
         from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
             AnthropicGateway,
         )
 
-        logger.info("Creating Anthropic LLM gateway", extra={"model": config.model_name})
-        return AnthropicGateway(config)
+        gateway_cls: type[AnthropicGateway | OpenAIGateway] = AnthropicGateway
     else:
-        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
-            OpenAIGateway,
-        )
-
-        logger.info("Creating OpenAI LLM gateway", extra={"model": config.model_name})
-        return OpenAIGateway(config)
+        gateway_cls = OpenAIGateway
+    logger.info(
+        "Creating %s LLM gateway",
+        provider,
+        extra={"model": config.model_name, "provider": provider},
+    )
+    return gateway_cls(config)

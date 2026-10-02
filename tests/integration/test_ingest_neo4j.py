@@ -40,7 +40,9 @@ def _bolt_reachable() -> bool:
         from urllib.parse import urlparse
 
         parsed = urlparse(NEO4J_URI)
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 7687), timeout=1.0):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 7687), timeout=1.0
+        ):
             return True
     except OSError:
         return False
@@ -74,9 +76,16 @@ def _payload(tenant_id: str):  # type: ignore[no-untyped-def]
         repository_id="acme--pay",
         revision="f" * 40,
         snapshot_id=uuid.uuid4(),
-        source_files=[SourceFileIdentity(tenant_id=tenant_id, repository_id="acme--pay",
-                                         revision="f" * 40, path="src/payments.py",
-                                         language="python", content_hash="abc")],
+        source_files=[
+            SourceFileIdentity(
+                tenant_id=tenant_id,
+                repository_id="acme--pay",
+                revision="f" * 40,
+                path="src/payments.py",
+                language="python",
+                content_hash="abc",
+            )
+        ],
         ast_nodes=[node],
         payload_hash=sha256(canonical.encode()).hexdigest(),
     )
@@ -88,10 +97,15 @@ def _adapter():  # type: ignore[no-untyped-def]
         Neo4jTopologyAdapter,
     )
 
-    return Neo4jTopologyAdapter(TopologyConfig(uri=SecretStr(NEO4J_URI),
-                                               username=SecretStr(NEO4J_USER),
-                                               password=SecretStr(NEO4J_PASSWORD),
-                                               database=NEO4J_DATABASE, encrypted=False))
+    return Neo4jTopologyAdapter(
+        TopologyConfig(
+            uri=SecretStr(NEO4J_URI),
+            username=SecretStr(NEO4J_USER),
+            password=SecretStr(NEO4J_PASSWORD),
+            database=NEO4J_DATABASE,
+            encrypted=False,
+        )
+    )
 
 
 @requires_containers
@@ -152,11 +166,16 @@ async def test_register_ownership_chain() -> None:
     try:
         await adapter.install_constraints()
         await adapter.register_ownership(
-            RepositoryIdentity(tenant_id="tenant-a", repository_id="acme--pay",
-                               name="acme/pay", locator="https://github.com/acme/pay.git",
-                               git_org_id="github:acme"),
-            GitOrganizationIdentity(tenant_id="tenant-a", git_org_id="github:acme",
-                                    name="acme", provider="github"),
+            RepositoryIdentity(
+                tenant_id="tenant-a",
+                repository_id="acme--pay",
+                name="acme/pay",
+                locator="https://github.com/acme/pay.git",
+                git_org_id="github:acme",
+            ),
+            GitOrganizationIdentity(
+                tenant_id="tenant-a", git_org_id="github:acme", name="acme", provider="github"
+            ),
             "@team-payments",
         )
     finally:

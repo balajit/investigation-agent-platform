@@ -41,9 +41,13 @@ class LLMConfig(BaseModel):
 
     api_key: SecretStr = Field(..., min_length=1)
     model_name: str = Field(default="gpt-4o", min_length=1)
-    provider: str = Field(default="openai", description="openai|anthropic|azure")
+    provider: str = Field(default="openai", description="openai|anthropic|azure|muse")
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     max_tokens: int = Field(default=4096, ge=128)
+    # Custom OpenAI-compatible endpoint (e.g. a gateway or local proxy).
+    # Empty (default) uses the provider SDK default. Only http/https URLs
+    # are accepted; the gateway refuses anything else at client build time.
+    openai_base_url: str = Field(default="", max_length=512)
     # Azure OpenAI wiring (only required when provider == "azure").
     azure_endpoint: str = Field(default="", max_length=512)
     azure_api_version: str = Field(default="2024-02-01", min_length=1, max_length=64)
@@ -51,6 +55,7 @@ class LLMConfig(BaseModel):
     azure_embedding_deployment: str = Field(default="", max_length=128)
     azure_embedding_api_version: str = Field(default="", max_length=64)
     azure_embedding_endpoint: str = Field(default="", max_length=512)
+    azure_embedding_api_key: SecretStr = Field(default=SecretStr(""))
 
 
 def _first_env(*names: str, default: str = "") -> str:
@@ -62,6 +67,11 @@ def _first_env(*names: str, default: str = "") -> str:
     return default
 
 
+def _provider_var(provider: str, setting: str) -> str:
+    """Canonical per-provider env name: ``IAP_<NAME>_<SETTING>``."""
+    return f"IAP_{provider.upper()}_{setting}"
+
+
 def _llm_config_from_env(
     *,
     model_default: str = "gpt-4o",
@@ -70,50 +80,52 @@ def _llm_config_from_env(
     max_tokens_default: int = 4096,
     api_key_override: str | None = None,
 ) -> LLMConfig:
-    """Build ``LLMConfig`` from env, accepting Azure aliases.
+    """Build ``LLMConfig`` from env using the per-provider standard.
 
-    Canonical: ``IAP_LLM_*`` / ``IAP_AZURE_OPENAI_*``.
-    Aliases (for existing Azure setups): ``ACCOUNT_LLM_PROVIDER``,
-    ``AZURE_OPENAI_API_KEY``, ``AZURE_OPENAI_ENDPOINT`` / ``AZURE_API_BASE``,
-    ``AZURE_OPENAI_API_VERSION`` / ``AZURE_API_VERSION``,
-    ``AZURE_OPENAI_DEPLOYMENT_NAME`` / ``MODEL_NAME``.
+    ``IAP_LLM_PROVIDER`` selects the provider (openai|anthropic|azure|muse);
+    every other setting lives under ``IAP_<NAME>_*`` with no
+    fallback aliases:
+
+    - openai: MODEL, API_KEY, ENDPOINT (optional custom gateway)
+    - anthropic: MODEL, API_KEY
+    - azure: MODEL (base id), API_KEY, ENDPOINT, DEPLOYMENT, API_VERSION,
+      EMBEDDING_DEPLOYMENT, EMBEDDING_ENDPOINT, EMBEDDING_API_VERSION,
+      EMBEDDING_API_KEY
+    - muse: MODEL, API_KEY, ENDPOINT (required — Muse is never sent to the
+      default OpenAI endpoint)
+
+    Shared: ``IAP_LLM_TEMPERATURE``, ``IAP_LLM_MAX_TOKENS``.
     """
-    provider = _first_env("IAP_LLM_PROVIDER", "ACCOUNT_LLM_PROVIDER", default=provider_default)
-    api_key = api_key_override or _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
+    provider = _first_env("IAP_LLM_PROVIDER", default=provider_default)
+    key = provider.lower()
+    api_key = api_key_override or os.environ.get(_provider_var(key, "API_KEY"), "")
+    if not api_key:
+        raise PlatformConfigurationError(
+            f"LLM api key is missing for provider '{provider}'; set "
+            f"{_provider_var(key, 'API_KEY')} "
+            "(refusing to build an unauthenticated gateway)"
+        )
+    model_name = _first_env(_provider_var(key, "MODEL"), default=model_default)
+    base_url = os.environ.get(_provider_var(key, "ENDPOINT"), "")
     cfg = LLMConfig(
         api_key=SecretStr(api_key),
-        model_name=os.environ.get("IAP_LLM_MODEL", model_default),
+        model_name=model_name,
         provider=provider,
         temperature=float(os.environ.get("IAP_LLM_TEMPERATURE", str(temperature_default))),
         max_tokens=int(os.environ.get("IAP_LLM_MAX_TOKENS", str(max_tokens_default))),
-        azure_endpoint=_first_env(
-            "IAP_AZURE_OPENAI_ENDPOINT",
-            "AZURE_OPENAI_ENDPOINT",
-            "AZURE_API_BASE",
+        openai_base_url=base_url,
+        azure_endpoint=os.environ.get(_provider_var("azure", "ENDPOINT"), ""),
+        azure_api_version=os.environ.get(_provider_var("azure", "API_VERSION"), "2024-02-01"),
+        azure_deployment=os.environ.get(_provider_var("azure", "DEPLOYMENT"), ""),
+        azure_embedding_deployment=os.environ.get(
+            _provider_var("azure", "EMBEDDING_DEPLOYMENT"), ""
         ),
-        azure_api_version=_first_env(
-            "IAP_AZURE_OPENAI_API_VERSION",
-            "AZURE_OPENAI_API_VERSION",
-            "AZURE_API_VERSION",
-            default="2024-02-01",
+        azure_embedding_api_version=os.environ.get(
+            _provider_var("azure", "EMBEDDING_API_VERSION"), ""
         ),
-        azure_deployment=_first_env(
-            "IAP_AZURE_OPENAI_DEPLOYMENT",
-            "AZURE_OPENAI_DEPLOYMENT_NAME",
-            "MODEL_NAME",
-        ),
-        azure_embedding_deployment=_first_env(
-            "IAP_AZURE_EMBEDDING_DEPLOYMENT",
-            "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
-            "AZURE_EMBEDDING_DEPLOYMENT",
-        ),
-        azure_embedding_api_version=_first_env(
-            "IAP_AZURE_EMBEDDING_API_VERSION",
-            "AZURE_EMBEDDING_VERSION",
-        ),
-        azure_embedding_endpoint=_first_env(
-            "IAP_AZURE_EMBEDDING_ENDPOINT",
-            "AZURE_EMBEDDING_API_BASE",
+        azure_embedding_endpoint=os.environ.get(_provider_var("azure", "EMBEDDING_ENDPOINT"), ""),
+        azure_embedding_api_key=SecretStr(
+            os.environ.get(_provider_var("azure", "EMBEDDING_API_KEY"), "")
         ),
     )
     if cfg.provider.lower() == "azure":
@@ -129,10 +141,17 @@ def _llm_config_from_env(
             msg = (
                 "Boot halted: provider 'azure' requires missing settings: "
                 + ", ".join(missing)
-                + " (set IAP_AZURE_OPENAI_ENDPOINT / IAP_AZURE_OPENAI_DEPLOYMENT)"
+                + " (set IAP_AZURE_ENDPOINT / IAP_AZURE_DEPLOYMENT)"
             )
             logger.critical(msg, extra={"missing": missing})
             raise PlatformConfigurationError(msg)
+    if cfg.provider.lower() == "muse" and not cfg.openai_base_url:
+        msg = (
+            "Boot halted: provider 'muse' requires IAP_MUSE_ENDPOINT; "
+            "refusing to send Muse models to the default OpenAI endpoint"
+        )
+        logger.critical(msg)
+        raise PlatformConfigurationError(msg)
     return cfg
 
 
@@ -660,13 +679,17 @@ def load_application_config_from_yaml(
         settings = load_platform_settings(path)
 
         db_uri = database_uri or os.environ.get("IAP_DATABASE_URI", "")
-        llm_key = llm_api_key or _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
+        provider_name = _first_env("IAP_LLM_PROVIDER", default="openai")
+        llm_key = llm_api_key or os.environ.get(_provider_var(provider_name.lower(), "API_KEY"), "")
         if not db_uri or not llm_key:
             missing = [
                 name
                 for name, value in (
                     ("IAP_DATABASE_URI", db_uri),
-                    ("IAP_LLM_API_KEY|AZURE_OPENAI_API_KEY", llm_key),
+                    (
+                        f"IAP_{provider_name.upper()}_API_KEY",
+                        llm_key,
+                    ),
                 )
                 if not value
             ]
@@ -755,14 +778,15 @@ def load_application_config_from_env() -> ApplicationConfig:
     """Loads and validates configuration from environment, halting boot on failure."""
     with tracer.start_as_current_span("load_application_config_from_env"):
         db_uri = os.environ.get("IAP_DATABASE_URI", "")
-        llm_key = _first_env("IAP_LLM_API_KEY", "AZURE_OPENAI_API_KEY")
+        provider_name = _first_env("IAP_LLM_PROVIDER", default="openai")
+        llm_key = os.environ.get(_provider_var(provider_name.lower(), "API_KEY"), "")
 
         if not db_uri or not llm_key:
             missing = []
             if not db_uri:
                 missing.append("IAP_DATABASE_URI")
             if not llm_key:
-                missing.append("IAP_LLM_API_KEY|AZURE_OPENAI_API_KEY")
+                missing.append(f"IAP_{provider_name.upper()}_API_KEY")
             msg = f"Boot halted: missing required environment variables: {', '.join(missing)}"
             logger.critical(msg, extra={"missing_vars": missing})
             raise PlatformConfigurationError(msg)

@@ -311,9 +311,13 @@ class TestLiveLlmWiring:
             create_llm_gateway,
         )
 
-        # Needs IAP_LLM_API_KEY (or AZURE_OPENAI_API_KEY) present in the environment;
-        # verify-platform.sh sources .env.local so this holds for real runs.
-        if not (os.environ.get("IAP_LLM_API_KEY") or os.environ.get("AZURE_OPENAI_API_KEY")):
+        # Needs a provider API key (IAP_<PROVIDER>_API_KEY) present in the
+        # environment; verify-platform.sh sources the env file so this holds
+        # for real runs.
+        if not any(
+            os.environ.get(f"IAP_{name}_API_KEY")
+            for name in ("OPENAI", "ANTHROPIC", "AZURE", "MUSE")
+        ):
             pytest.skip("no LLM api key in environment")
         cfg = _llm_config_from_env()
         gw = create_llm_gateway(cfg)

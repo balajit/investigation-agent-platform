@@ -8,7 +8,7 @@
 #   ./scripts/start-platform.sh --restart  # restart API/worker only (infra untouched)
 #   ./scripts/start-platform.sh --stop     # stop API/worker + compose stop (volumes kept)
 #
-# Required env: IAP_DATABASE_URI, IAP_LLM_API_KEY
+# Required env: IAP_DATABASE_URI, IAP_<PROVIDER>_API_KEY (per IAP_LLM_PROVIDER)
 # Optional env: IAP_TOPOLOGY_* (see docs/IAP-implementation-part7-knowledge-v1.md D7),
 #   PORT (default 8000), COMPOSE_FILE (default docker/docker-compose.yml).
 set -euo pipefail
@@ -56,8 +56,13 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "${IAP_DATABASE_URI:-}" || -z "${IAP_LLM_API_KEY:-}" ]]; then
-  echo "error: IAP_DATABASE_URI and IAP_LLM_API_KEY must be set" >&2
+if [[ -z "${IAP_DATABASE_URI:-}" ]]; then
+  echo "error: IAP_DATABASE_URI must be set" >&2
+  exit 2
+fi
+provider_key="IAP_$(echo "${IAP_LLM_PROVIDER:-openai}" | tr '[:lower:]' '[:upper:]')_API_KEY"
+if [[ -z "${!provider_key:-}" ]]; then
+  echo "error: ${provider_key} must be set for IAP_LLM_PROVIDER=${IAP_LLM_PROVIDER:-openai}" >&2
   exit 2
 fi
 if [[ ! -f "$COMPOSE_FILE" ]]; then

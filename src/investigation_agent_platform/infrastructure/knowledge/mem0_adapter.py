@@ -63,6 +63,14 @@ class Mem0KnowledgeStore:
         embedding_dims: int = 1536,
         collection_name: str = "iap_memories",
         pgvector_url: str = "",
+        llm_provider: str = "openai",
+        azure_endpoint: str = "",
+        azure_api_version: str = "2025-01-01-preview",
+        azure_deployment: str = "",
+        azure_embedding_deployment: str = "",
+        azure_embedding_endpoint: str = "",
+        azure_embedding_api_version: str = "",
+        azure_embedding_api_key: str = "",
     ) -> None:
         self._model = model
         self._api_key = api_key
@@ -70,18 +78,77 @@ class Mem0KnowledgeStore:
         self._embedding_dims = embedding_dims
         self._collection_name = collection_name
         self._pgvector_url = pgvector_url
+        self._llm_provider = llm_provider
+        self._azure_endpoint = azure_endpoint
+        self._azure_api_version = azure_api_version
+        self._azure_deployment = azure_deployment
+        self._azure_embedding_deployment = azure_embedding_deployment
+        self._azure_embedding_endpoint = azure_embedding_endpoint
+        self._azure_embedding_api_version = azure_embedding_api_version
+        self._azure_embedding_api_key = azure_embedding_api_key
         self._memory: Any | None = None
 
     def _client(self) -> Any:
         if self._memory is None:
             from mem0 import Memory  # type: ignore[import-untyped]
 
-            config: dict[str, Any] = {
-                "llm": {"provider": "openai", "config": {"model": self._model}},
-                "embedder": {
+            if self._llm_provider == "azure_openai":
+                if not self._azure_endpoint or not self._azure_deployment:
+                    raise ValueError(
+                        "Mem0 Azure provider requires azure_endpoint and azure_deployment"
+                    )
+                if not self._azure_embedding_deployment:
+                    raise ValueError("Mem0 Azure provider requires azure_embedding_deployment")
+                azure_kwargs = {
+                    "api_key": self._api_key,
+                    "azure_endpoint": self._azure_endpoint,
+                    "api_version": self._azure_api_version,
+                    "azure_deployment": self._azure_deployment,
+                }
+                llm_config: dict[str, Any] = {
+                    "provider": "azure_openai",
+                    "config": {
+                        "model": self._azure_deployment,
+                        "api_key": self._api_key,
+                        "azure_kwargs": azure_kwargs,
+                    },
+                }
+                embedder_config: dict[str, Any] = {
+                    "provider": "azure_openai",
+                    "config": {
+                        "model": self._azure_embedding_deployment,
+                        "api_key": self._azure_embedding_api_key or self._api_key,
+                        "embedding_dims": self._embedding_dims,
+                        "azure_kwargs": {
+                            "api_key": self._azure_embedding_api_key or self._api_key,
+                            "azure_endpoint": self._azure_embedding_endpoint
+                            or self._azure_endpoint,
+                            "api_version": self._azure_embedding_api_version
+                            or self._azure_api_version,
+                            "azure_deployment": self._azure_embedding_deployment,
+                        },
+                    },
+                }
+            elif self._llm_provider == "openai":
+                llm_config = {
+                    "provider": "openai",
+                    "config": {"model": self._model},
+                }
+                embedder_config = {
                     "provider": "openai",
                     "config": {"model": self._embedder_model},
-                },
+                }
+                if self._api_key:
+                    llm_config["config"]["api_key"] = self._api_key
+                    embedder_config["config"]["api_key"] = self._api_key
+            else:
+                raise ValueError(
+                    f"Unsupported mem0 llm_provider: {self._llm_provider!r} "
+                    "(expected 'openai' or 'azure_openai')"
+                )
+            config: dict[str, Any] = {
+                "llm": llm_config,
+                "embedder": embedder_config,
                 "vector_store": {
                     "provider": "pgvector",
                     "config": {
@@ -91,9 +158,6 @@ class Mem0KnowledgeStore:
                     },
                 },
             }
-            if self._api_key:
-                config["llm"]["config"]["api_key"] = self._api_key
-                config["embedder"]["config"]["api_key"] = self._api_key
             self._memory = Memory.from_config(config)
         return self._memory
 
@@ -108,14 +172,14 @@ class Mem0KnowledgeStore:
 
         tenant_id = _require_tenant(tenant_id)
         client = self._client()
+        # mem0 >=2.2 validates top-level user_id/agent_id/run_id in filters;
+        # tenant isolation = namespaced user_id AND stamped tenant_id metadata.
         raw = await asyncio.to_thread(
             client.search,
             query,
             filters={
-                "AND": [
-                    {"user_id": tenant_agent_id(tenant_id)},
-                    {"tenant_id": tenant_id},
-                ]
+                "user_id": tenant_agent_id(tenant_id),
+                "AND": [{"tenant_id": tenant_id}],
             },
             top_k=limit,
         )

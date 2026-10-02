@@ -474,6 +474,8 @@ async def _verify_replay_insert(
         if entry.repo == "investigation_repo" and entry.op == "save":
             tenant = entry.tenant
             inv = kwargs.get("investigation") or (args[1] if len(args) > 1 else None)
+            if inv is None:
+                return False
             expected = kwargs.get("expected_version", 0)
             found = await primary.get_by_id(tenant, inv.id if hasattr(inv, "id") else inv["id"])
             return found is not None and getattr(found, "version", 0) >= expected

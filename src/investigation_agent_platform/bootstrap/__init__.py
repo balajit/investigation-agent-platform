@@ -621,6 +621,14 @@ def _wire_knowledge_dependencies(ctx: AppContext, config: ApplicationConfig) -> 
             embedding_dims=config.knowledge.mem0_embedding_dims,
             collection_name=config.knowledge.mem0_collection,
             pgvector_url=pgvector_url,
+            llm_provider=("azure_openai" if config.llm.provider.lower() == "azure" else "openai"),
+            azure_endpoint=config.llm.azure_endpoint,
+            azure_api_version=config.llm.azure_api_version,
+            azure_deployment=config.llm.azure_deployment,
+            azure_embedding_deployment=config.llm.azure_embedding_deployment,
+            azure_embedding_endpoint=config.llm.azure_embedding_endpoint,
+            azure_embedding_api_version=config.llm.azure_embedding_api_version,
+            azure_embedding_api_key=config.llm.azure_embedding_api_key.get_secret_value(),
         )
         logger.info("Mem0 knowledge projection wired")
     except Exception as exc:

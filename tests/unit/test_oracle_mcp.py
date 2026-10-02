@@ -20,21 +20,24 @@ from investigation_agent_platform.domain.profile.models import StateProfile
 
 
 def _state_profile() -> StateProfile:
-    return StateProfile.model_validate({
-        "provider": "oracle-mcp-tolam-stg",
-        "database": "TOLAM",
-        "schema": "TOLAMOWNER",
-        "tables": ["ORDERS"],
-        "primaryIdentifiers": ["ORDER_ID"],
-        "stateFields": ["STATUS"],
-        "timestampFields": ["UPDATED_AT"],
-        "queryTemplates": {},
-    })
+    return StateProfile.model_validate(
+        {
+            "provider": "oracle-mcp-tolam-stg",
+            "database": "TOLAM",
+            "schema": "TOLAMOWNER",
+            "tables": ["ORDERS"],
+            "primaryIdentifiers": ["ORDER_ID"],
+            "stateFields": ["STATUS"],
+            "timestampFields": ["UPDATED_AT"],
+            "queryTemplates": {},
+        }
+    )
 
 
 def _request(sql: str) -> ApplicationStateRequest:
-    return ApplicationStateRequest(environment="staging", template_id="adhoc_select",
-                                   parameters={"sql": sql}, limit=10)
+    return ApplicationStateRequest(
+        environment="staging", template_id="adhoc_select", parameters={"sql": sql}, limit=10
+    )
 
 
 class TestSelectOnlyGate:
@@ -47,21 +50,26 @@ class TestSelectOnlyGate:
         policy = QuerySafetyPolicy()
         out = await policy.validate_generated_sql("t", "SELECT a FROM t WHERE x = 1")
         assert "SELECT" in out.upper()
-        out = await policy.validate_generated_sql("t", "WITH x AS (SELECT 1 FROM dual) SELECT * FROM x")
+        out = await policy.validate_generated_sql(
+            "t", "WITH x AS (SELECT 1 FROM dual) SELECT * FROM x"
+        )
         assert "SELECT" in out.upper()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad", [
-        "INSERT INTO t VALUES (1)",
-        "UPDATE t SET a = 1",
-        "DELETE FROM t",
-        "DROP TABLE t",
-        "CREATE TABLE x (a INT)",
-        "BEGIN DBMS_OUTPUT.PUT_LINE('x'); END;",
-        "SELECT 1; DELETE FROM t",
-        "",
-        "not sql at all ((((",
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET a = 1",
+            "DELETE FROM t",
+            "DROP TABLE t",
+            "CREATE TABLE x (a INT)",
+            "BEGIN DBMS_OUTPUT.PUT_LINE('x'); END;",
+            "SELECT 1; DELETE FROM t",
+            "",
+            "not sql at all ((((",
+        ],
+    )
     async def test_rejects_non_select(self, bad: str) -> None:
         from investigation_agent_platform.infrastructure.evidence.security import (
             QuerySafetyPolicy,
@@ -121,11 +129,14 @@ class TestMcpStateQuery:
         client_session = MagicMock()
         client_session.__aenter__ = AsyncMock(return_value=session)
         client_session.__aexit__ = AsyncMock(return_value=False)
-        with patch("mcp.client.stdio.stdio_client", return_value=stdio), patch(
-            "mcp.ClientSession", return_value=client_session
+        with (
+            patch("mcp.client.stdio.stdio_client", return_value=stdio),
+            patch("mcp.ClientSession", return_value=client_session),
         ):
             result = await adapter.search_application_state(
-                "tenant-a", UUID(int=1), _request("SELECT * FROM orders WHERE id = 123"),
+                "tenant-a",
+                UUID(int=1),
+                _request("SELECT * FROM orders WHERE id = 123"),
                 _state_profile(),
             )
         assert result.total_count == 2
@@ -136,7 +147,9 @@ class TestMcpStateQuery:
         with patch("mcp.client.stdio.stdio_client") as stdio:
             with pytest.raises(SecurityPolicyViolationException):
                 await adapter.search_application_state(
-                    "tenant-a", UUID(int=1), _request("DELETE FROM orders"),
+                    "tenant-a",
+                    UUID(int=1),
+                    _request("DELETE FROM orders"),
                     _state_profile(),
                 )
             stdio.assert_not_called()
@@ -146,7 +159,9 @@ class TestMcpStateQuery:
         adapter = self._adapter()
         with pytest.raises(SecurityPolicyViolationException, match="may not use"):
             await adapter.search_application_state(
-                "tenant-evil", UUID(int=1), _request("SELECT 1 FROM dual"),
+                "tenant-evil",
+                UUID(int=1),
+                _request("SELECT 1 FROM dual"),
                 _state_profile(),
             )
 
@@ -172,7 +187,8 @@ class TestMcpRegistration:
         )
 
         cfg = ApplicationConfig(
-            environment="production", application_id="t",
+            environment="production",
+            application_id="t",
             database=DatabaseConfig(connection_uri=SecretStr("x")),
             llm=LLMConfig(api_key=SecretStr("y")),
             budget=BudgetConfig(),
@@ -200,7 +216,8 @@ class TestMcpRegistration:
             "  - {name: good, command: docker, args: [x], connection: C, tenants: [t]}\n"
         )
         cfg = ApplicationConfig(
-            environment="production", application_id="t",
+            environment="production",
+            application_id="t",
             database=DatabaseConfig(connection_uri=SecretStr("x")),
             llm=LLMConfig(api_key=SecretStr("y")),
             budget=BudgetConfig(),

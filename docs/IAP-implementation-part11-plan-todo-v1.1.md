@@ -1,5 +1,33 @@
 # IAP Implementation Part 11: Plan TODO v1.1 — Knowledge and Extensibility
 
+> **Status: DONE (2026-10-01).** All phases 11.0–11.12 complete.
+> Final gate: full suite **1260 passed, 31 skipped** (baseline 1200 passed +
+> 43 `tests/unit/test_part11_phase12.py` + 14 `test_llm_gateway.py` additions
+> + 3 Postgres RLS tests now executing live, zero regressions). `ruff check` + `ruff format --check` clean
+> for all touched files (2 pre-existing `ruff check` errors remain in
+> `scripts/elastic_ind_mapping.py` / `scripts/elastic_indexes.py`; 17
+> pre-existing format deviations elsewhere — none introduced by Part 11).
+> `mypy src`: 10 pre-existing errors, 0 new. Migration head:
+> `015_batch_intake` (linear chain, every revision has upgrade + downgrade).
+> Live/container gate run 2026-10-01 against the compose stack: plain suite
+> **1246 passed, 31 skipped** (3 Postgres RLS tests now execute); container
+> batch **165 passed, 2 env-skips** (mem0 round-trip needs a real OpenAI key
+> — skips cleanly on placeholder — cognee pilot needs `IAP_COGNEE_ENABLED`);
+> live suite **21/21** via the documented `.env.local` path. Required live
+> knobs: `IAP_TEST_PGVECTOR_URL` → compose Postgres (`:5452`, `iap_test` DB
+> created), `IAP_TEST_NEO4J_PASSWORD=iap-neo4j-dev`, `IAP_LIVE_TESTS=1`.
+> Follow-up 2026-10-01: `muse-spark-1.3` registered in `MODEL_REGISTRY`
+> (openai transport, 128k context, $1.00 cap) with `IAP_OPENAI_ENDPOINT`
+> custom-base-URL support in completion + streaming gateways (fail-closed on
+> non-http schemes) and matching pricing rates; live completion verified
+> end to end (`SMOKE-OK`, cost telemetry flowing).
+> Follow-up 2026-10-01 (muse provider): `IAP_LLM_PROVIDER=muse` is a
+> first-class provider — policy ownership moved to `muse`, direct factory
+> path, `IAP_MUSE_API_KEY`/`IAP_MUSE_ENDPOINT` aliases, boot halt without an
+> explicit endpoint, and Muse models require an explicit endpoint under any
+> provider label; openai-labeled transport stays compatible for
+> muse-registered models. Live `MUSE-DIRECT-OK` via the muse path.
+
 This plan implements `docs/IAP-implementation-part11-knowledge-v1.1.md` and supersedes `docs/IAP-implementation-part11-plan-todo.md`.
 
 The sequence intentionally puts platform correctness, extension contracts, and shared operational controls before product features. No feature phase should build on an assumed persistence, storage, Kafka subscription, profile revision, or composition capability that does not exist yet.
@@ -612,14 +640,14 @@ DELETE /api/v1/chat/sessions/{id}
 
 ### Final gates
 
-- [ ] Full test suite has zero regressions against the repository baseline plus all Part 11 tests.
+- [x] Full test suite has zero regressions against the repository baseline plus all Part 11 tests.
 - [ ] Ruff and formatting clean.
-- [ ] No new mypy errors.
-- [ ] Migration upgrade and downgrade tested from the current production head.
-- [ ] API/MCP/Kafka contract fixtures versioned and pinned.
-- [ ] Security test suite covers SSRF, traversal, symlink escape, XSS, cursor tampering, WebSocket authorization, quota races, and cross-tenant identifier collisions.
-- [ ] Performance baseline recorded for vector search, clustering batch, bulk child concurrency, report generation, and event fan-out.
-- [ ] Mark this plan DONE with date and actual test counts.
+- [x] No new mypy errors.
+- [x] Migration upgrade and downgrade tested from the current production head.
+- [x] API/MCP/Kafka contract fixtures versioned and pinned.
+- [x] Security test suite covers SSRF, traversal, symlink escape, XSS, cursor tampering, WebSocket authorization, quota races, and cross-tenant identifier collisions.
+- [x] Performance baseline recorded for vector search, clustering batch, bulk child concurrency, report generation, and event fan-out.
+- [x] Mark this plan DONE with date and actual test counts.
 
 ---
 

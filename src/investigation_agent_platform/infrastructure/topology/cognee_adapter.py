@@ -60,9 +60,7 @@ def derive_dataset_id(tenant_id: str, repository_id: str, revision: str, salt: s
 
 
 if COGNEE_AVAILABLE:
-    from cognee.infrastructure.engine import (
-        DataPoint,  # type: ignore[import-not-found, import-untyped]
-    )
+    from cognee.infrastructure.engine import DataPoint  # type: ignore[import-untyped]
     from pydantic import Field
 
     class TopologySymbolPoint(DataPoint):  # type: ignore[no-redef, misc]
@@ -85,7 +83,10 @@ if COGNEE_AVAILABLE:
         ownership_path: list[str]
         linked: list[Any] = Field(default_factory=list)
 
-        metadata: dict[str, Any] = {"index_fields": ["qualified_name"], "identity_fields": ["node_id"]}  # noqa: RUF012 - DataPoint field metadata must be a plain dict per Cognee custom-model docs
+        metadata: dict[str, Any] = {  # noqa: RUF012 - DataPoint field metadata must be a plain dict per Cognee custom-model docs
+            "index_fields": ["qualified_name"],
+            "identity_fields": ["node_id"],
+        }
 
 else:
 
@@ -227,22 +228,26 @@ class CogneeTopologyAdapter:
         engine, no embedder, no LLM calls.
         """
         self._require_cognee()
-        from cognee.tasks.storage import (
-            add_data_points,  # type: ignore[import-not-found, import-untyped]
-        )
+        from cognee.tasks.storage import add_data_points  # type: ignore[import-untyped]
 
-        dataset = derive_dataset_id(payload.tenant_id, payload.repository_id, payload.revision,
-                                    self._salt)
+        dataset = derive_dataset_id(
+            payload.tenant_id, payload.repository_id, payload.revision, self._salt
+        )
         points = map_payload_to_points(
-            payload, payload.calls, payload.references, ownership_path or [])
+            payload, payload.calls, payload.references, ownership_path or []
+        )
         await add_data_points(points, graph_only=True)
         canonical = "|".join(sorted(p.node_id for p in points))
         projection_hash = hashlib.sha256(f"{dataset}|{canonical}".encode()).hexdigest()
-        logger.info("Cognee pilot projection written",
-                    extra={"dataset": dataset, "points": len(points)})
-        return PilotProjectionResult(dataset=dataset, point_count=len(points),
-                                     edge_count=len(payload.calls) + len(payload.references),
-                                     projection_hash=projection_hash)
+        logger.info(
+            "Cognee pilot projection written", extra={"dataset": dataset, "points": len(points)}
+        )
+        return PilotProjectionResult(
+            dataset=dataset,
+            point_count=len(points),
+            edge_count=len(payload.calls) + len(payload.references),
+            projection_hash=projection_hash,
+        )
 
     async def drop_projection(self, tenant_id: str, repository_id: str, revision: str) -> None:
         """Delete one projection's points (retention janitor hook).
@@ -281,8 +286,9 @@ class CogneeTopologyAdapter:
                 deleted = record["deleted"] if record else 0
         finally:
             await driver.close()
-        logger.info("Cognee pilot projection dropped",
-                    extra={"dataset": dataset, "deleted": deleted})
+        logger.info(
+            "Cognee pilot projection dropped", extra={"dataset": dataset, "deleted": deleted}
+        )
 
     async def search_symbols(
         self, tenant_id: str, query_text: str, search_type: str, dataset: str, limit: int = 10

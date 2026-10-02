@@ -194,9 +194,9 @@ class GraphitiTemporalKnowledge:
             # (mirrors the log-truncation "pointer to Elastic" pattern) rather
             # than raising.
             budget = self._max_episode_bytes - len(
-                json.dumps({"_truncated": True, "_pointer": "elastic:evidence-summary"}, default=str).encode(
-                    "utf-8"
-                )
+                json.dumps(
+                    {"_truncated": True, "_pointer": "elastic:evidence-summary"}, default=str
+                ).encode("utf-8")
             )
             raw = artifact.statement.encode("utf-8")[: max(budget - 1024, 256)].decode(
                 "utf-8", errors="ignore"
@@ -208,9 +208,10 @@ class GraphitiTemporalKnowledge:
             payload["_truncated"] = True
             payload["_pointer"] = "elastic:evidence-summary"
             body = json.dumps(payload, default=str)
-            while len(body.encode("utf-8")) > self._max_episode_bytes and len(
-                payload["statement"]
-            ) > 256:
+            while (
+                len(body.encode("utf-8")) > self._max_episode_bytes
+                and len(payload["statement"]) > 256
+            ):
                 payload["statement"] = payload["statement"][: len(payload["statement"]) // 2]
                 body = json.dumps(payload, default=str)
         result = await client.add_episode(
