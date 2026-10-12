@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from investigation_agent_platform.api.dependencies import get_app_context
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.domain.common.exceptions import (
     ConcurrencyError,
     IdempotencyConflictError,
@@ -40,25 +41,27 @@ router = APIRouter(tags=["investigations"])
 class CreateInvestigationBody(BaseModel):
     # F-061: edge payload bounds — oversized descriptions/parameter blobs are
     # rejected at the API boundary before they reach services, workflows, or
-    # model prompts.
+    # model prompts. Bounds are kept <= the domain InvestigationRequest bounds
+    # (application/session/requested_by 128, problem_description 4096) so
+    # boundary-valid payloads can never 500 in domain re-validation.
     application_id: str = Field(
         ..., min_length=1, max_length=128, description="Target application profile identifier"
     )
     problem_description: str = Field(
         ...,
         min_length=1,
-        max_length=8000,
+        max_length=4096,
         description="Description of the observed incident or system anomaly",
     )
     session_id: str | None = Field(
-        default=None, max_length=256, description="Optional telemetry session correlation ID"
+        default=None, max_length=128, description="Optional telemetry session correlation ID"
     )
     priority: str = Field(
         default="NORMAL",
         max_length=16,
         description="Investigation priority level (LOW, NORMAL, HIGH, CRITICAL)",
     )
-    requested_by: str = Field(default="api-user", max_length=256)
+    requested_by: str = Field(default="api-user", max_length=128)
     parameters: dict[str, Any] = Field(
         default_factory=dict, max_length=50, description="Custom parameters for analysis workflow"
     )
@@ -705,7 +708,9 @@ async def retry_investigation(
 @router.post("/investigations/{investigation_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
 async def cancel_investigation(
     investigation_id: str,
-    reason: str = Query(default="API cancellation requested", max_length=1000),
+    reason: str = Query(
+        default="API cancellation requested", max_length=1000, pattern=NO_NUL_PATTERN
+    ),
     x_tenant_id: str = Depends(require_tenant),
 ) -> dict[str, str]:
     """Issues cancellation signal to Temporal workflow execution and updates persistence status."""

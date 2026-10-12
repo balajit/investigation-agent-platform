@@ -1,0 +1,81 @@
+# config/profiles/gen-verbose.yaml
+# ---------------------------------------------------------------------------
+# Real production profile for the `gen` backend HTTP-transaction log family.
+# Observability is grounded in config/observability-mappings/gen-verbose.yaml
+# (mappingSourceId below); the legacy singular *Field entries are UNENFORCED on
+# the Elastic path and are recorded here only for readers of the older schema.
+#
+# Honesty note: we only know the observability contract. The code repository
+# and any state database for this workload are not yet captured, so those
+# blocks are explicit TBD placeholders and the profile stays DRAFT — it enables
+# LOG evidence only until code/state facts are supplied.
+# ---------------------------------------------------------------------------
+
+application:
+  id: gen-verbose
+  tenant_id: tenant-a
+  name: Gen Service - Verbose HTTP Transaction Log
+  description: >-
+    DRAFT: production observability for the `gen` verbose HTTP-transaction
+    stream. Code and state sections are placeholders pending onboarding facts.
+  environment: production
+  version: 1
+  status: DRAFT
+  owner: platform-team
+  allowed_capabilities:
+    - SEARCH_LOGS
+
+observability:
+  provider: elastic
+  indices:
+    - logz-gen-verbose-prod-es-*
+    - logz-gen-verbose-prod-blue-es-*
+    - logz-gen-verbose-prod-cloud-es-*
+    - logz-gen-verbose-prod-micro-es-*
+  # Legacy singular fields below are informational only; field resolution is
+  # driven by mappingSourceId (see config/observability-mappings/gen-verbose.yaml).
+  timestampField: "@timestamp"
+  serviceField: appName
+  environmentField: ""
+  sessionField: sessionId
+  requestField: trackingId
+  traceField: traceId
+  logLevelField: error
+  mappingSourceId: gen-verbose
+
+state:
+  provider: unknown
+  database: TBD
+  schema: TBD
+  tables: []
+  primaryIdentifiers: []
+  stateFields: []
+  timestampFields: []
+  queryTemplates: {}
+
+code:
+  provider: git
+  repository: TBD
+  defaultBranch: main
+  language: unknown
+  sourceRoots:
+    - TBD
+  buildSystem: unknown
+  moduleStructure: unknown
+
+correlation:
+  fields:
+    - traceId
+    - trackingId
+    - sessionId
+    - XCOSSessionId
+    - transactionKey
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+  correlationDepth: 2
+  maximumHypotheses: 5

@@ -475,6 +475,21 @@ class TestPublicErrorsAndRedaction:
         assert extra["prompt"] == "[REDACTED]"
         assert extra["tenant_id"] == "t-a"
 
+    def test_redact_bytes_and_arbitrary_objects_stay_json_serializable(self) -> None:
+        import json
+
+        from investigation_agent_platform.api.errors import redact_value, sanitize_extra
+
+        # Raw-body bytes from undeclared media types must not crash the 422 envelope.
+        assert redact_value(b'{"a": 1}') == '{"a": 1}'
+        assert redact_value(b"\xff\xfe") == "��"
+        # Exception instances / other non-scalars in pydantic ctx fall back to str.
+        assert redact_value(ValueError("boom")) == "boom"
+        assert redact_value({"fields": [{"input": b"raw", "ctx": {"error": ValueError("x")}}]}) == {
+            "fields": [{"input": "raw", "ctx": {"error": "x"}}]
+        }
+        json.dumps(sanitize_extra({"fields": [{"input": b"raw"}]}))
+
 
 # ===========================================================================
 # F-031: RLS rollback on error

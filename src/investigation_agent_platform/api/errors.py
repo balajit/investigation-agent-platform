@@ -70,7 +70,20 @@ def public_error(code: str, http_status: int) -> dict[str, Any]:
 
 
 def redact_value(value: Any) -> Any:
-    """Redact a single log/response value."""
+    """Redact a single log/response value.
+
+    The result is always JSON-serializable: ``bytes`` are decoded (with
+    replacement) and non-scalar objects (exception instances, URLs, ...)
+    fall back to their truncated ``str()`` form. This keeps the API error
+    envelope renderable for every ``RequestValidationError`` payload —
+    including raw-body ``bytes`` inputs from undeclared media types.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            decoded = bytes(value).decode("utf-8", errors="replace")
+        except Exception:
+            decoded = repr(value)
+        return redact_value(decoded)
     if isinstance(value, str):
         redacted = _SECRET_PATTERN.sub("[REDACTED]", value)
         if len(redacted) > _MAX_FIELD_CHARS:
@@ -85,7 +98,9 @@ def redact_value(value: Any) -> Any:
         }
     if isinstance(value, (list, tuple)):
         return [redact_value(v) for v in value][:50]
-    return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return redact_value(str(value))
 
 
 def sanitize_extra(extra: dict[str, Any]) -> dict[str, Any]:

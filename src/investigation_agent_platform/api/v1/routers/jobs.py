@@ -12,6 +12,7 @@ from investigation_agent_platform.api.tenant import (
     require_tenant,
     resolve_identity_from_headers,
 )
+from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.domain.common.background_job import (
     TERMINAL_JOB_STATUSES,
     BackgroundJobStatus,
@@ -51,7 +52,7 @@ async def get_job(
 @router.get("/jobs")
 async def list_jobs(
     x_tenant_id: str = Depends(require_tenant),
-    kind: str | None = Query(default=None, max_length=64),
+    kind: str | None = Query(default=None, max_length=64, pattern=NO_NUL_PATTERN),
     status_filter: BackgroundJobStatus | None = Query(  # noqa: B008 - FastAPI Query idiom
         default=None, alias="status"
     ),

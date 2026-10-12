@@ -13,8 +13,10 @@ wheels/
 llm_source/
 tmp/
 
-# Local buffered-persistence WAL (dev fallback journal; restorable via volume)
-data/*.sqlite3*
+# Local runtime state: buffered-persistence WAL + on-disk artifact store.
+# Both are dev fallback journals / test residue (e.g. system-api-suite fuzz
+# runs); restorable via volume, never commit.
+data/*
 !data/.gitkeep
 
 # Oracle/SQLcl connection material — credentials, never commit

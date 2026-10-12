@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
 from investigation_agent_platform.api.tenant import require_tenant
+from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 
 router = APIRouter(tags=["knowledge"])
 
@@ -83,8 +84,8 @@ async def list_knowledge(
 @router.get("/knowledge/search")
 async def search_knowledge(
     x_tenant_id: str = Depends(require_tenant),
-    application_id: str = Query(default="", max_length=128),
-    kind: str | None = Query(default=None, max_length=64),
+    application_id: str = Query(default="", max_length=128, pattern=NO_NUL_PATTERN),
+    kind: str | None = Query(default=None, max_length=64, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Tenant-scoped semantic-list search across own ACTIVE artifacts.

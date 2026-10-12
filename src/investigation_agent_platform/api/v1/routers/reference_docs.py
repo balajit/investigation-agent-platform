@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from investigation_agent_platform.api.dependencies import get_app_context
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.application.reference.job_kinds import (
     REFERENCE_DOCS_INDEX_WORKFLOW,
     REFERENCE_DOCS_REINDEX_JOB_KIND,
@@ -68,7 +69,7 @@ class RollbackBody(BaseModel):
 @router.get("/reference-docs/sources")
 async def list_reference_sources(
     x_tenant_id: str = Depends(require_tenant),
-    application_id: str | None = Query(default=None, max_length=128),
+    application_id: str | None = Query(default=None, max_length=128, pattern=NO_NUL_PATTERN),
 ) -> dict[str, Any]:
     """Configured reference sources with stable ids."""
     service = _service(get_app_context())
@@ -80,12 +81,15 @@ async def list_reference_sources(
 @router.get("/reference-docs/search")
 async def search_reference_docs(
     x_tenant_id: str = Depends(require_tenant),
-    q: str = Query(..., min_length=1, max_length=2000),
-    application_id: str | None = Query(default=None, max_length=128),
+    q: str = Query(..., min_length=1, max_length=2000, pattern=NO_NUL_PATTERN),
+    application_id: str | None = Query(default=None, max_length=128, pattern=NO_NUL_PATTERN),
     kinds: str | None = Query(
-        default=None, max_length=256, description="Comma-separated source kinds."
+        default=None,
+        max_length=256,
+        pattern=NO_NUL_PATTERN,
+        description="Comma-separated source kinds.",
     ),
-    cursor: str | None = Query(default=None, max_length=4096),
+    cursor: str | None = Query(default=None, max_length=4096, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Hybrid search over active reference chunks (tombstones excluded)."""
@@ -111,8 +115,8 @@ async def search_reference_docs(
 @router.get("/reference-docs/status")
 async def reference_docs_status(
     x_tenant_id: str = Depends(require_tenant),
-    source_id: str = Query(..., min_length=1, max_length=256),
-    application_id: str | None = Query(default=None, max_length=128),
+    source_id: str = Query(..., min_length=1, max_length=256, pattern=NO_NUL_PATTERN),
+    application_id: str | None = Query(default=None, max_length=128, pattern=NO_NUL_PATTERN),
 ) -> dict[str, Any]:
     """Current generation status for one source."""
     service = _service(get_app_context())
