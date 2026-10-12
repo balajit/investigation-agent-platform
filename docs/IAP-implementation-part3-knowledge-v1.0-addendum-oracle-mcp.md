@@ -4,7 +4,7 @@ Status: design approved for implementation. Parent: `docs/IAP-implementation-par
 
 ## Mandatory scope (beyond the POC)
 
-The POC covers one database (`TOLAM_STG`) and one implicit schema. Production requires: N databases (dev/stage/prod investigation replicas plus distinct application databases), each with M application schemas, all queryable through one gateway with tenant isolation. Single-DB assumptions (one connection file, one secret mount, one provider key) must not leak into the implementation.
+The POC covers one database (one example connection) and one implicit schema. Production requires: N databases (dev/stage/prod investigation replicas plus distinct application databases), each with M application schemas, all queryable through one gateway with tenant isolation. Single-DB assumptions (one connection file, one secret mount, one provider key) must not leak into the implementation.
 
 ## Topology: one image, one running instance per database
 
@@ -12,9 +12,9 @@ Build one container image (Temurin 17 + pinned SQLcl, non-root, no secrets in la
 
 ```mermaid
 flowchart LR
-    GW["Evidence Gateway"] --> M1["MCP adapter<br/>oracle-mcp-tolam-stg"]
+    GW["Evidence Gateway"] --> M1["MCP adapter<br/>oracle-mcp-exampledb"]
     GW --> M2["MCP adapter<br/>oracle-mcp-prodreplica"]
-    M1 --> C1["container: tolam_stg<br/>secret A"]
+    M1 --> C1["container: exampledb<br/>secret A"]
     M2 --> C2["container: prod replica<br/>secret B"]
     C1 --> DB1[("Oracle STG<br/>schemas S1..Sn")]
     C2 --> DB2[("Oracle replica<br/>schemas S1..Sm")]

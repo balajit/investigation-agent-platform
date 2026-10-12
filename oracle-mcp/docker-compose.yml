@@ -1,5 +1,10 @@
 services:
-  oracle-sqlcl-mcp-tolam-stg:
+  # Generic single instance: connections + key live OUTSIDE the repo.
+  # Override the store location with (defaults shown):
+  #   IAP_ORACLE_MCP_CONNECTIONS_DIR=${HOME}/workspace/docker/iap/oracle-mcp/connections
+  #   IAP_ORACLE_MCP_SECRETS_DIR=${HOME}/workspace/docker/iap/oracle-mcp/secrets
+  # Add datasources with oracle-mcp/add-datasource.sh (never commit them here).
+  oracle-sqlcl-mcp:
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,18 +12,18 @@ services:
     stdin_open: true
     tty: false
     volumes:
-      - ./connections:/config:ro
-      - ./secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro
+      - ${IAP_ORACLE_MCP_CONNECTIONS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/connections}:/config:ro
+      - ${IAP_ORACLE_MCP_SECRETS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/secrets}/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro
     restart: "no"
 
   # Per-database instances share the image; each mounts its own
   # connections + secret (see the Part 3 Oracle/MCP addendum):
   #
-  # oracle-sqlcl-mcp-prodreplica:
+  # oracle-sqlcl-mcp-otherdb:
   #   image: oracle-sqlcl-mcp:26.2
   #   stdin_open: true
   #   tty: false
   #   volumes:
-  #     - ./connections-prod:/config:ro
-  #     - ./secrets/prod-key:/run/secrets/sqlcl-encryption-key:ro
+  #     - ${IAP_ORACLE_MCP_CONNECTIONS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/connections}/otherdb:/config:rw
+  #     - ${IAP_ORACLE_MCP_SECRETS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/secrets}/otherdb-key:/run/secrets/sqlcl-encryption-key:ro
   #   restart: "no"

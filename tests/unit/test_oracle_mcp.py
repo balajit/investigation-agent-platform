@@ -22,9 +22,9 @@ from investigation_agent_platform.domain.profile.models import StateProfile
 def _state_profile() -> StateProfile:
     return StateProfile.model_validate(
         {
-            "provider": "oracle-mcp-tolam-stg",
-            "database": "TOLAM",
-            "schema": "TOLAMOWNER",
+            "provider": "oracle-mcp-example",
+            "database": "EXAMPLEDB",
+            "schema": "EXAMPLE_OWNER",
             "tables": ["ORDERS"],
             "primaryIdentifiers": ["ORDER_ID"],
             "stateFields": ["STATUS"],
@@ -93,7 +93,7 @@ def _session_mock(rows: list[str]):  # type: ignore[no-untyped-def]
 
     async def _call_tool(name, arguments=None):  # type: ignore[no-untyped-def]
         assert name == "run-sql"
-        assert arguments["connection"] == "TOLAM-stg"
+        assert arguments["connection"] == "EXAMPLEDB-conn"
         assert "SELECT" in arguments["sql"].upper()
         assert arguments["max_rows"] <= 10
         return MagicMock(content=content)
@@ -113,8 +113,8 @@ class TestMcpStateQuery:
         kwargs = {
             "server_params": {"command": "docker", "args": ["run"]},
             "allowed_tools": ["run-sql"],
-            "connection_name": "TOLAM-stg",
-            "tenant_allowlist": {"tenant-a": {"TOLAM-stg"}},
+            "connection_name": "EXAMPLEDB-conn",
+            "tenant_allowlist": {"tenant-a": {"EXAMPLEDB-conn"}},
         }
         kwargs.update(over)
         return McpEvidenceAdapter(**kwargs)  # type: ignore[arg-type]

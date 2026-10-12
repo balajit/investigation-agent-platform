@@ -57,7 +57,7 @@ class McpEvidenceAdapter:
         self._allowed_tools: set[str] = set(allowed_tools)
         self._tool_timeout_seconds = tool_timeout_seconds
         self._max_items_per_call = max_items_per_call
-        # SQLcl connection name selected per call (e.g. "TOLAM-stg"). Empty
+        # SQLcl connection name selected per call (e.g. "EXAMPLEDB-conn"). Empty
         # means the server exposes exactly one connection; anything else is
         # resolved per call from the allowlisted set below.
         self._connection_name = connection_name

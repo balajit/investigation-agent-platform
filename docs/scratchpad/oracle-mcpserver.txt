@@ -115,7 +115,7 @@ oracle-mcp/
 ├── .gitignore
 ├── README.md
 ├── connections/
-│   └── tolam_stg.json
+│   └── <conn-name>.json
 └── secrets/
     └── sqlcl-encryption-key
 ```
@@ -254,7 +254,7 @@ ENTRYPOINT ["/entrypoint.sh"]
  Required files:
 
 ```
-/config/tolam_stg.json
+/config/<conn-name>.json
 /run/secrets/sqlcl-encryption-key
 ```
 
@@ -264,7 +264,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 #!/bin/bash
 set -euo pipefail
 
-CONNECTION_FILE="/config/tolam_stg.json"
+CONNECTION_FILE="/config/<conn-name>.json"
 KEY_FILE="/run/secrets/sqlcl-encryption-key"
 
 echo "Starting Oracle SQLcl MCP Server..."
@@ -320,7 +320,7 @@ exec sql -mcp
  The user has an existing SQL Developer connection export:
 
 ```
-scripts/tolam_stg.json
+scripts/<conn-name>.json
 ```
 
  Use this file as the initial Oracle connection.
@@ -328,7 +328,7 @@ scripts/tolam_stg.json
  Copy it to:
 
 ```
-connections/tolam_stg.json
+connections/<conn-name>.json
 ```
 
  Do not modify the file unless SQLcl requires a documented format conversion.
@@ -440,7 +440,7 @@ connections/example.json
  Never commit:
 
 ```
-tolam_stg.json
+<conn-name>.json
 sqlcl-encryption-key
 ```
 
@@ -524,19 +524,19 @@ CONNMGR LIST
  The expected connection is:
 
 ```
-TOLAM_STG
+<CONN_NAME>
 ```
 
  Test it:
 
 ```
-CONNMGR TEST TOLAM_STG
+CONNMGR TEST <CONN_NAME>
 ```
 
  Then:
 
 ```
-CONNECT TOLAM_STG
+CONNECT <CONN_NAME>
 ```
 
  The implementation must confirm that the connection succeeds before attempting MCP integration.
@@ -1065,12 +1065,12 @@ Agentic Investigation
  ## Connection
 
 ```
-[ ] tolam_stg.json can be mounted.
+[ ] <conn-name>.json can be mounted.
 [ ] Encryption key can be mounted separately.
 [ ] SQL Developer connection can be imported.
-[ ] CONNMGR LIST shows TOLAM_STG.
+[ ] CONNMGR LIST shows <CONN_NAME>.
 [ ] CONNMGR TEST succeeds.
-[ ] CONNECT TOLAM_STG succeeds.
+[ ] CONNECT <CONN_NAME> succeeds.
 ```
 
  ## Database
@@ -1089,7 +1089,7 @@ Agentic Investigation
 [ ] sql -mcp starts successfully.
 [ ] MCP client can launch the Docker container.
 [ ] MCP client discovers SQLcl MCP tools.
-[ ] Agent can connect to TOLAM_STG.
+[ ] Agent can connect to <CONN_NAME>.
 [ ] Agent can execute SELECT queries.
 [ ] Agent can inspect schema metadata.
 [ ] Agent can iteratively execute multiple read queries.

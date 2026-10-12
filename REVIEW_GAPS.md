@@ -1,5 +1,7 @@
 # REVIEW_GAPS.md
 
+> Status as of 2026-09: Blockers + HIGH + MEDIUM are resolved (see Resolution log). The tooling snapshot and capability matrix below describe the tree **at review time** and are stale where they contradict the current tree: `ruff check src/` reports 32 errors in 5 files (down from 303; pre-existing baseline, none from post-review work); `pytest tests/unit` passes 480+ tests (test dirs are populated: unit, integration, benchmarks, fixtures); `pyproject.toml` includes `tenacity`, `mcp`, `tree-sitter`, `temporalio`, `minio`, `fsspec`, `faststream`; `docker/`, `migrations/` (7 revisions), and `tests/` are populated. Temporal workflows/activities, the FastAPI gateway + health endpoints, RLS, OCC, and the profile YAMLs all exist now. The per-finding details below remain valid as history; the open-items rollup lives in `docs/AP-implementation-part1-8-issues.md`.
+
 Code review of `src/` against the `docs/` specification set
 (`HLD.md`, `IAP-implementation-part1..part4`).
 

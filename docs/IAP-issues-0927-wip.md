@@ -38,7 +38,7 @@ Audited: every outer activity handler raises typed `ApplicationFailure` via the 
 
 ## 4. New follow-ups from this implementation pass
 
-- Oracle SQLcl MCP container: rebased on the official image (`container-registry.oracle.com/database/sqlcl`, digest-pinned, SQLcl 26.2.2) after proving the vendored zip hollow. Verified: build, non-root user, Java 17, version display, clean mount-missing errors, `sql -mcp` startup. Remaining is enterprise-side: encryption key, `CONNMGR TEST`, live read + negative tests, read-only grants. Note: connection user is TOLAMOWNER (schema owner) — prefer a dedicated `MCP_INVESTIGATION_READ` account before production.
+- Oracle SQLcl MCP container: rebased on the official image (`container-registry.oracle.com/database/sqlcl`, digest-pinned, SQLcl 26.2.2) after proving the vendored zip hollow. Verified: build, non-root user, Java 17, version display, clean mount-missing errors, `sql -mcp` startup. Remaining is enterprise-side: encryption key, `CONNMGR TEST`, live read + negative tests, read-only grants. Note: POC connection user is a schema owner — prefer a dedicated `MCP_INVESTIGATION_READ` account before production.
 - `EvidenceStorePort` and `CorrelationExpander` are still unwired on `AppContext` — these unblock the parked `evidence/{id}/source` and `graph` endpoints (§2.2).
 - Cognee production read flip per-application with quotas, after the comparison report (§1.2 remainder).
 

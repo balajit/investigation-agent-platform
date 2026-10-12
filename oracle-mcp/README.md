@@ -2,12 +2,39 @@
 
 Native SQLcl MCP over stdio; no Python MCP code anywhere in this path.
 Full design: `docs/IAP-implementation-part3-knowledge-v1.0-addendum-oracle-mcp.md`.
-Source requirements: `docs/scratchpad/oracle-mcpserver.txt`.
 
 Base: `container-registry.oracle.com/database/sqlcl` pinned by digest
 (current: SQLcl 26.2.2.233.1901, Java 17, non-root `sqlcl` user added here).
 The vendored `docker/dependencies/sqlcl-latest.zip` is an incomplete bundle
 (hollow `dbtools-sqlcl.jar`) and is NOT used — do not wire it back in.
+
+## Datasource store (outside the repo)
+
+No datasource names, connections, or keys live in this repo. All state lives
+under (override with env vars, defaults shown):
+
+```text
+${IAP_ORACLE_MCP_HOME:-${HOME}/workspace/docker/iap/oracle-mcp}/
+  connections/   ($IAP_ORACLE_MCP_CONNECTIONS_DIR) one *.backup per datasource
+  secrets/       ($IAP_ORACLE_MCP_SECRETS_DIR)     sqlcl-encryption-key (0600)
+```
+
+Add a datasource (needs local `sql` on PATH and DB reachability):
+
+```bash
+# TNS descriptor (default merges into the single existing *.backup, if one):
+oracle-mcp/add-datasource.sh --name <conn-name> --tns <tns> --user <db-user>
+# ...or a full custom JDBC string, merged into the existing connections:
+oracle-mcp/add-datasource.sh --name <conn-name> \
+  --jdbc 'jdbc:oracle:thin:@(DESCRIPTION=...)' --user <db-user> \
+  --into ~/workspace/docker/iap/oracle-mcp/connections/<existing>.backup
+# ...or a standalone single-connection archive:
+oracle-mcp/add-datasource.sh --name <conn-name> --tns <tns> --user <db-user> --standalone
+```
+
+Quoting rules: user/target are quoted, password is saved unquoted, so
+passwords containing `/ @ "` or whitespace are rejected. `--password-env`
+/ `--password-file` avoid the interactive prompt; `--replace` overwrites.
 
 ## Build (no download needed)
 
@@ -19,9 +46,9 @@ docker run --rm --entrypoint /opt/oracle/sqlcl/bin/sql oracle-sqlcl-mcp:26.2 -ve
 ## Run (one instance per database)
 
 ```bash
-cp scripts/tolam_stg.json oracle-mcp/connections/
-# place the SQLcl encryption key at oracle-mcp/secrets/sqlcl-encryption-key (0600)
-docker compose -f oracle-mcp/docker-compose.yml run --rm -T oracle-sqlcl-mcp-tolam-stg
+docker compose -f oracle-mcp/docker-compose.yml run --rm -T oracle-sqlcl-mcp
 ```
 
-`connections/` and `secrets/` are git-ignored and mounted read-only; they never enter image layers.
+The external store is mounted read-only; it never enters image layers.
+`oracle-mcp/connections/` and `oracle-mcp/secrets/` are legacy git-ignored
+placeholders — do not put real exports or keys there.

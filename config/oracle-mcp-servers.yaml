@@ -3,14 +3,15 @@
 # mounted read-only into each container at runtime. Missing file = no MCP servers.
 # tenants: explicit allowlist per server (default-deny); empty list registers nothing.
 servers: []
-# Example (uncomment per database, keep secrets out):
-# - name: tolam-stg
+# Example (uncomment per database, keep secrets out — connection names and
+# mount paths come from the external store, see oracle-mcp/add-datasource.sh):
+# - name: exampledb
 #   command: docker
-#   args: ["run", "-i", "--rm", "--name", "oracle-sqlcl-mcp-tolam-stg",
-#          "-v", "/absolute/path/oracle-mcp/connections:/config:ro",
-#          "-v", "/absolute/path/oracle-mcp/secrets/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro",
+#   args: ["run", "-i", "--rm", "--name", "oracle-sqlcl-mcp-exampledb",
+#          "-v", "${IAP_ORACLE_MCP_CONNECTIONS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/connections}:/config:ro",
+#          "-v", "${IAP_ORACLE_MCP_SECRETS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/secrets}/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro",
 #          "oracle-sqlcl-mcp:25.2"]
-#   connection: TOLAM-stg
+#   connection: EXAMPLEDB-conn
 #   allowed_tools: ["run-sql"]
 #   timeout_seconds: 30.0
 #   max_rows: 1000
