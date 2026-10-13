@@ -286,7 +286,12 @@ def build_query_body(
         "size": normalized.effective_limit,
         "sort": [
             {mapping.sort.field: sort_spec},
-            {"_id": "asc"},
+            # Tiebreaker for deterministic pagination (search_after cursors
+            # encode one value per sort element). Must be _seq_no: sorting on
+            # _id requires _id fielddata, which Elasticsearch disallows by
+            # default (every such query 400s), and _shard_doc requires a
+            # point-in-time context the paged-search contract does not use.
+            {"_seq_no": "asc"},
         ],
         # Defense against unbounded aggregations/deep pagination via crafted bodies.
         "track_total_hits": normalized.effective_limit,

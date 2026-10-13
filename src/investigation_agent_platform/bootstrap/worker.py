@@ -190,7 +190,29 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
         worker_ctx = AppContext()
         set_app_context(worker_ctx)
 
-    client = await Client.connect(temporal_cfg.target_host, namespace=temporal_cfg.namespace)
+    # Retry with backoff: a transient handshake timeout under host
+    # contention must not kill the worker outright (previously a single
+    # failed connect raised out of startup and left no worker running).
+    last_exc: Exception | None = None
+    client: Client | None = None
+    for attempt in range(10):
+        try:
+            client = await Client.connect(
+                temporal_cfg.target_host, namespace=temporal_cfg.namespace
+            )
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Temporal connect failed; retrying",
+                extra={"attempt": attempt + 1, "error": str(exc)[:200]},
+            )
+            await asyncio.sleep(min(30.0, 2.0 * (attempt + 1)))
+    if client is None:
+        raise RuntimeError(
+            f"Temporal unreachable after retries: {last_exc}"
+        ) from last_exc
     # Part 11.12: dev worker reads/writes the same Postgres-backed stores as
     # the API (buffered proxies); otherwise jobs/records created by the API
     # are invisible here and vice versa. Production already uses SQL.
@@ -203,6 +225,20 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
             await ensure_buffered_dev_context(worker_ctx, config)
         except Exception as exc:
             logger.warning("Buffered worker context unavailable", extra={"error": str(exc)})
+        # Re-wire the evidence gateway AFTER proxy installation so it
+        # captures the Postgres-backed proxies, not the bare in-memory
+        # repos. A gateway built during build_app_context holds stale
+        # in-memory references: worker-saved evidence would be invisible
+        # to API reads (and vice versa). Best-effort in dev.
+        try:
+            from investigation_agent_platform.bootstrap import _wire_evidence_gateway
+
+            _wire_evidence_gateway(worker_ctx, config)
+        except Exception as exc:
+            logger.warning(
+                "Worker evidence gateway unavailable; evidence actions will fail",
+                extra={"error": str(exc)},
+            )
     # Part 11.12: the worker publishes job progress events; start its broker
     # handle best-effort (dev has none; Kafka outages degrade to DB state).
     # Bounded wait: broker.start() can hang on unresolvable listeners.

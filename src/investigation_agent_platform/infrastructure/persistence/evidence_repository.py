@@ -35,7 +35,7 @@ class SqlAlchemyEvidenceRepository:
             content_reference=evidence.content_uri or None,
             classification=evidence.classification.value,
             is_sanitized=evidence.is_redacted,
-            evidence_key=evidence.evidence_id,
+            evidence_key=str(evidence.evidence_id),
             fingerprint=evidence.fingerprint,
             payload_json=evidence.model_dump(mode="json"),
         )
@@ -71,7 +71,7 @@ class SqlAlchemyEvidenceRepository:
                 content_reference=evidence.content_uri or None,
                 classification=evidence.classification.value,
                 is_sanitized=evidence.is_redacted,
-                evidence_key=evidence.evidence_id,
+                evidence_key=str(evidence.evidence_id),
                 fingerprint=evidence.fingerprint,
                 payload_json=evidence.model_dump(mode="json"),
             )
@@ -107,7 +107,7 @@ class SqlAlchemyEvidenceRepository:
                     content_reference=evidence.content_uri or None,
                     classification=evidence.classification.value,
                     is_sanitized=evidence.is_redacted,
-                    evidence_key=evidence.evidence_id,
+                    evidence_key=str(evidence.evidence_id),
                     fingerprint=evidence.fingerprint,
                     payload_json=evidence.model_dump(mode="json"),
                 )

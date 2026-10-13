@@ -584,7 +584,7 @@ async def list_investigations(
                 "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
             }
         )
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": len(items), "offset": 0, "limit": limit}
 
 
 @router.get("/investigations/{investigation_id}/conclusion")

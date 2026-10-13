@@ -14,6 +14,7 @@ from investigation_agent_platform.domain.investigation.models import (
     ActionType,
     EvidenceManifest,
     Fact,
+    InvestigationAction,
     InvestigationState,
 )
 from investigation_agent_platform.ports.reasoning.reasoner import (
@@ -78,13 +79,70 @@ class ReasoningCoordinator(InvestigationReasoner):
         self._llm_gateway: Any | None = llm_gateway
         self._observability: Any | None = observability
 
-    def _validate_llm_decision(self, parsed: dict[str, Any]) -> InvestigationDecision:
+    def _validate_llm_decision(
+        self, parsed: dict[str, Any], tenant_id: str, investigation_id: UUID
+    ) -> InvestigationDecision:
         """Validate raw LLM JSON via Pydantic and ensure action is allowed.
 
         Uses ``InvestigationDecision.model_validate`` for schema enforcement and
         checks that any embedded ``action`` has an allowed ``ActionType``.
+
+        Two json_object-fallback tolerances (strict provider-native schema
+        remains the primary enforcement, F-027):
+
+        - Unknown top-level keys are dropped with a warning (key names only,
+          never values). The model in free-form JSON mode emits advisory
+          extras (e.g. ``next_action``); the workflow consumes only the
+          fields the activity propagates, so extras are display noise.
+        - A missing ``action.execution_hash`` is derived server-side via the
+          F-057 factory instead of failing validation. The model must never
+          invent idempotency hashes; deterministic derivation keeps Temporal
+          retries idempotent.
         """
-        decision = InvestigationDecision.model_validate(parsed)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"LLM decision is not an object: {type(parsed).__name__}")
+        known = set(InvestigationDecision.model_fields)
+        unknown = sorted(k for k in parsed if k not in known)
+        if unknown:
+            # Field names only (never values) — safe for logs, vital for
+            # diagnosing provider fallback-shape drift.
+            logger.warning(
+                f"LLM decision carries unknown fields; ignoring: {','.join(unknown)}",
+                extra={"tenant_id": tenant_id},
+            )
+        clean = {k: v for k, v in parsed.items() if k in known}
+        action_raw = clean.get("action")
+        if action_raw is None:
+            # json_object-fallback alternate: the model may emit the
+            # workflow's own vocabulary (next_action/action_parameters)
+            # instead of the nested action object. Honor it — the workflow
+            # dispatches on exactly these names.
+            next_action = parsed.get("next_action")
+            if isinstance(next_action, str):
+                try:
+                    action_type = ActionType(next_action)
+                except ValueError:
+                    action_type = None
+                if action_type is not None:
+                    params = parsed.get("action_parameters", {}) or {}
+                    action_raw = {
+                        "action_type": action_type.value,
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
+        if isinstance(action_raw, dict) and "execution_hash" not in action_raw:
+            try:
+                action_type = ActionType(action_raw.get("action_type"))
+            except ValueError as exc:
+                raise ValueError(
+                    f"LLM decision contains disallowed action_type: {action_raw.get('action_type')}"
+                ) from exc
+            parameters = action_raw.get("parameters", {}) or {}
+            if not isinstance(parameters, dict):
+                raise ValueError("LLM decision action.parameters is not an object")
+            clean["action"] = InvestigationAction.create(
+                tenant_id, investigation_id, action_type, parameters
+            ).model_dump(mode="json")
+        decision = InvestigationDecision.model_validate(clean)
         if decision.action is not None:
             allowed = {a.value for a in ActionType}
             if decision.action.action_type.value not in allowed:
@@ -122,6 +180,14 @@ class ReasoningCoordinator(InvestigationReasoner):
             facts_block = {
                 "investigation_id": str(state.investigation.id),
                 "lifecycle_state": state.investigation.status.value,
+                "application_id": state.investigation.application_id,
+                # The incident itself: without this the model searches blind
+                # (it previously guessed service names, matching nothing).
+                "problem_description": getattr(
+                    getattr(state.investigation, "request", None),
+                    "problem_description",
+                    "",
+                ),
                 "facts": [
                     f.model_dump(mode="json") if hasattr(f, "model_dump") else str(f)
                     for f in getattr(state, "known_facts", [])[:50]
@@ -187,7 +253,29 @@ class ReasoningCoordinator(InvestigationReasoner):
                 )
                 req = LLMGatewayRequest(
                     prompt=prompt_summary,
-                    system_prompt="You are an investigation assistant. Return JSON matching the decision schema.",
+                    system_prompt=(
+                        "You are an investigation orchestrator. Analyze the state and "
+                        "return ONLY a JSON object with EXACTLY these keys (no markdown, "
+                        "no prose outside the JSON): "
+                        '"action": {"action_type": "<one of QUERY_STATE|SEARCH_LOGS|'
+                        'GET_CODE|CORRELATE|FORMULATE_HYPOTHESIS|VERIFY_HYPOTHESIS|'
+                        'CONCLUDE>", "parameters": {...}} — the single next step. '
+                        "When evidence_records is empty, use SEARCH_LOGS with "
+                        '{"keywords": [terms taken from the problem_description], '
+                        '"services": []} to gather log evidence '
+                        "first — leave services EMPTY unless the state names exact "
+                        "service identifiers (a wrong service filter matches "
+                        "nothing). After evidence exists, use FORMULATE_HYPOTHESIS. "
+                        "Use VERIFY_HYPOTHESIS/CONCLUDE only when confident. "
+                        "Do NOT include execution_hash (derived server-side). "
+                        '"observations": ["..."], '
+                        '"hypotheses_evaluated": ["candidate root-cause statements; '
+                        "MANDATORY non-empty whenever evidence_records is non-empty — "
+                        "these are persisted as hypotheses and required for "
+                        'verification"], '
+                        '"conclusion_readiness": 0.0-1.0, '
+                        '"reasoning_chain": "brief rationale".'
+                    ),
                     response_schema=schema,
                     envelope=envelope,
                 )
@@ -220,7 +308,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 return self._unavailable_decision("empty_llm_response")
 
             try:
-                return self._validate_llm_decision(resp.parsed)
+                return self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
             except Exception as exc:
                 logger.warning(
                     "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",

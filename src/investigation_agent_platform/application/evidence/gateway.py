@@ -192,11 +192,20 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self._failure_attribution_service = failure_attribution_service
 
     async def _enforce_authorization(
-        self, tenant_id: str, capability: str, resource: str = ""
+        self,
+        tenant_id: str,
+        capability: str,
+        resource: str = "",
+        application_id: str | None = None,
     ) -> None:
+        # The profile authorizer scopes by application: without the
+        # application_id it fail-closes (no profile → deny). Every public
+        # gateway method holds application_id and must thread it through —
+        # omitting it denies all provider calls unconditionally.
+        context = {"application_id": application_id} if application_id else {}
         if self._authorizer is not None:
             authorized = await self._authorizer.authorize_action(
-                tenant_id, capability, resource, {}
+                tenant_id, capability, resource, context
             )
             if not authorized:
                 raise SecurityPolicyViolationException(
@@ -236,7 +245,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("application_id", application_id)
-            await self._enforce_authorization(tenant_id, "SEARCH_LOGS")
+            await self._enforce_authorization(tenant_id, "SEARCH_LOGS", application_id=application_id)
             await self._validate_structured_output(request)
             await self._query_safety_policy.validate_runtime_request(tenant_id, request)
             provider = await self._provider_selector.get_runtime_provider(
@@ -292,7 +301,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: ApplicationStateRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_application_state"):
-            await self._enforce_authorization(tenant_id, "QUERY_STATE")
+            await self._enforce_authorization(tenant_id, "QUERY_STATE", application_id=application_id)
             await self._validate_structured_output(request)
             await self._query_safety_policy.validate_state_request(
                 tenant_id, request.template_id, request.parameters
@@ -336,7 +345,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: CodeSearchRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.search_code"):
-            await self._enforce_authorization(tenant_id, "SEARCH_CODE")
+            await self._enforce_authorization(tenant_id, "SEARCH_CODE", application_id=application_id)
             await self._validate_structured_output(request)
             # Validate via policy if method exists
             validate_fn = getattr(self._query_safety_policy, "validate_code_search_request", None)
@@ -367,7 +376,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SymbolRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_symbol"):
-            await self._enforce_authorization(tenant_id, "GET_CODE")
+            await self._enforce_authorization(tenant_id, "GET_CODE", application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -398,7 +407,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SourceRequest
     ) -> Evidence:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_source"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path)
+            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path, application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_source_request", None)
             if callable(validate_fn):
@@ -424,7 +433,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: CallGraphRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_call_graph"):
-            await self._enforce_authorization(tenant_id, "GET_CODE")
+            await self._enforce_authorization(tenant_id, "GET_CODE", application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -459,7 +468,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: CodeHistoryRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_code_history"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path)
+            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path, application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_code_history_request", None)
             if callable(validate_fn):
@@ -492,7 +501,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         max_depth: int,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.correlate"):
-            await self._enforce_authorization(tenant_id, "CORRELATE")
+            await self._enforce_authorization(tenant_id, "CORRELATE", application_id=application_id)
             if not self._correlation_engine:
                 raise ExecutionError("Correlation engine is not configured in AsyncEvidenceGateway")
             graph = await asyncio.wait_for(
@@ -530,7 +539,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         )
 
         with tracer.start_as_current_span("AsyncEvidenceGateway.resolve_code_ownership"):
-            await self._enforce_authorization(tenant_id, "QUERY_CODE_TOPOLOGY", file_path)
+            await self._enforce_authorization(tenant_id, "QUERY_CODE_TOPOLOGY", file_path, application_id=application_id)
             if self._repository_registry is None or self._failure_attribution_service is None:
                 raise TopologyNotConfiguredError(
                     f"No topology provider configured for tenant={tenant_id}",
@@ -581,7 +590,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
         with tracer.start_as_current_span("AsyncEvidenceGateway.attribute_failure_frames"):
             await self._enforce_authorization(
-                tenant_id, "RESOLVE_DOMAIN_ATTRIBUTION", failure_frame.repository_id
+                tenant_id,
+                "RESOLVE_DOMAIN_ATTRIBUTION",
+                failure_frame.repository_id,
+                application_id=application_id,
             )
             if self._failure_attribution_service is None:
                 raise TopologyNotConfiguredError(

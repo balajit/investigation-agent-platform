@@ -273,10 +273,16 @@ class AsyncElasticAdapter:
     ) -> Any:
         """Execute one bounded provider search with typed error mapping."""
         try:
-            return await asyncio.wait_for(
+            response = await asyncio.wait_for(
                 self._client.search(index=index, body=body),
                 timeout=float(self._request_timeout),
             )
+            # The async client returns an ObjectApiResponse wrapper, not a
+            # plain dict — unwrap at the provider boundary so downstream
+            # envelope validation sees the raw response shape. (Unit tests
+            # inject raw dicts, which pass through untouched.)
+            body_attr = getattr(response, "body", None)
+            return body_attr if isinstance(body_attr, dict) else response
         except asyncio.CancelledError:
             # Cancellation is a control signal, never an execution failure.
             raise

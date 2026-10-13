@@ -791,6 +791,21 @@ def build_app_context(config: ApplicationConfig) -> AppContext:
                 "Filesystem artifact store unavailable; continuing in-memory",
                 extra={"error": str(exc)},
             )
+        # Best-effort evidence gateway outside production: without it the
+        # worker's execute_action_activity fails every evidence-producing
+        # action (EVIDENCE_PROVIDER_UNAVAILABLE) and investigations stall in
+        # INVESTIGATING forever. Providers register only when configured
+        # (same rule as production); failure degrades to gateway-absent,
+        # never aborts dev boot. NOTE: callers that install buffered
+        # Postgres proxies afterwards (API lifespan, worker startup) must
+        # re-wire so the gateway captures the proxies, not the bare repos.
+        try:
+            _wire_evidence_gateway(ctx, config)
+        except Exception as exc:
+            logger.warning(
+                "Evidence gateway unavailable in dev; evidence actions will fail",
+                extra={"error": str(exc)},
+            )
     set_app_context(ctx)
     return ctx
 

@@ -87,12 +87,18 @@ class TestGatewayComposition:
 
         assert _hop_resolver_for(MagicMock(spec=[])) is None
 
-    def test_dev_context_unchanged(self) -> None:
+    def test_dev_context_gets_gateway(self) -> None:
+        # Non-production contexts receive the same best-effort gateway
+        # wiring: without it the worker's execute_action_activity fails every
+        # evidence-producing action and investigations stall in INVESTIGATING.
+        from investigation_agent_platform.application.evidence.gateway import (
+            AsyncEvidenceGateway,
+        )
         from investigation_agent_platform.bootstrap import build_app_context
 
         cfg = _production_config(environment="test")
         ctx = build_app_context(cfg)
-        assert getattr(ctx, "evidence_gateway", None) is None
+        assert isinstance(ctx.evidence_gateway, AsyncEvidenceGateway)
 
 
 class _StaticMappingLookup:

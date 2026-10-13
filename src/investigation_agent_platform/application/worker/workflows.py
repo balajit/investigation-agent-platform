@@ -168,6 +168,49 @@ class RunInvestigationWorkflow:
 
     @workflow.run
     async def run(self, input_data: RunInvestigationInput) -> RunInvestigationResult:
+        """Entry point: reconcile-then-report wrapper around the main loop.
+
+        An unhandled exception anywhere in the loop previously failed the
+        Temporal execution while the investigation aggregate stayed stranded
+        in a non-terminal state (no FAILED marking, no audit record, control
+        verbs 502ing against a closed execution). Now the aggregate is
+        transitioned to FAILED first, and the execution reports the failure
+        instead of dying silently. Cancellation always propagates.
+        """
+        try:
+            return await self._run_inner(input_data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            workflow.logger.warning(
+                "RunInvestigationWorkflow unhandled error; reconciling to FAILED: %s",
+                type(exc).__name__,
+            )
+            try:
+                await workflow.execute_activity(
+                    transition_investigation_activity,
+                    TransitionInvestigationInput(
+                        tenant_id=input_data.tenant_id,
+                        investigation_id=input_data.investigation_id,
+                        target_status="FAILED",
+                        reason=f"Workflow error reconciled: {type(exc).__name__}",
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+            except Exception as reconcile_exc:
+                workflow.logger.warning(
+                    "FAILED reconciliation transition failed: %s",
+                    type(reconcile_exc).__name__,
+                )
+            return RunInvestigationResult(
+                investigation_id=input_data.investigation_id,
+                status="FAILED",
+                error=f"workflow_error:{type(exc).__name__}",
+            )
+
+    async def _run_inner(
+        self, input_data: RunInvestigationInput
+    ) -> RunInvestigationResult:
         retry_policy = RetryPolicy(
             maximum_attempts=3,
             non_retryable_error_types=[
@@ -382,6 +425,7 @@ class RunInvestigationWorkflow:
                     investigation_id=inv_id,
                     action=str(reason_res.data.get("next_action", "QUERY_STATE")),
                     parameters=dict(reason_res.data.get("action_parameters", {})),
+                    hypotheses=list(reason_res.data.get("hypotheses_evaluated", []) or []),
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=retry_policy,
@@ -392,6 +436,11 @@ class RunInvestigationWorkflow:
                 break
             if input_state == "expired":
                 last_error = "input_expired"
+                break
+            # Budget guard (execute side): the ledger routes here instead of
+            # raising, so break to CONCLUDING with the gathered corpus.
+            if execute_res.data.get("budget_exceeded"):
+                last_error = "budget_exceeded"
                 break
 
             # Retrieve evidence (EvidenceGateway).

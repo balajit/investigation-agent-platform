@@ -173,19 +173,33 @@ class InvestigationOutboxWorker:
                 logger.error("Outbox worker processing error", extra={"error": str(err)})
 
 
+def _cors_origins_from_env() -> str:
+    """Comma-separated CORS allow-list from ``IAP_CORS_ALLOW_ORIGINS``.
+
+    Empty (default) means no CORS middleware — same as before. Set e.g.
+    ``http://localhost:8081,http://192.168.1.200:8081`` for Expo web dev.
+    Read at instantiation time (not import time) so tests and restarts
+    pick up the current environment.
+    """
+    return os.environ.get("IAP_CORS_ALLOW_ORIGINS", "")
+
+
 class ApiSettings(BaseModel):
     """Minimal API settings for local/dev composition root."""
 
     model_config = ConfigDict(extra="allow")
 
-    environment: str = Field(default="development")
+    environment: str = Field(default_factory=lambda: os.environ.get("IAP_ENVIRONMENT", "development"))
     # F-065: docs are opt-in. The app factory additionally forces docs off in
     # production unless IAP_ENABLE_DOCS=true is set explicitly.
-    enable_docs: bool = Field(default=False)
+    enable_docs: bool = Field(
+        default_factory=lambda: os.environ.get("IAP_ENABLE_DOCS", "").lower()
+        in ("1", "true", "yes")
+    )
     # F-064: CORS allow-list (comma-separated origins). Empty = no CORS.
-    cors_allow_origins: str = Field(default="")
+    cors_allow_origins: str = Field(default_factory=_cors_origins_from_env)
     # F-064: trusted hosts (comma-separated). Empty = no TrustedHost enforcement.
-    trusted_hosts: str = Field(default="")
+    trusted_hosts: str = Field(default_factory=lambda: os.environ.get("IAP_TRUSTED_HOSTS", ""))
 
 
 class Container:
@@ -1779,6 +1793,10 @@ class AppContext:
         # Shutdown idempotency guard for shutdown_app_context().
         self._shutdown_done: bool = False
         self._seed_default_profile()
+        # NOTE: the UI dev-dataset seed (api/dev_seed.py) is NOT run here.
+        # It must run after lifespan wiring (buffered Postgres proxies) so
+        # seeded rows are visible to API reads and the Temporal worker.
+        # See main.py _maybe_seed_dev().
 
     def get_outbox_queue(self) -> asyncio.Queue[WorkflowStatusEvent]:
         return self.outbox_queue

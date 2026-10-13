@@ -82,9 +82,23 @@ def _create_lifespan_app() -> FastAPI:
             cfg = _cfg or load_application_config_from_env()
             from temporalio.client import Client as _TemporalClient
 
-            ctx.temporal_client = await _TemporalClient.connect(  # type: ignore[attr-defined]
-                cfg.temporal.target_host, namespace=cfg.temporal.namespace
-            )
+            # Retry with backoff: under host contention the handshake can time
+            # out transiently while the server itself is healthy. Failing fast
+            # here permanently disables dispatch (/start -> 503) until the
+            # next restart, so keep trying for a few minutes before degrading.
+            last_exc: Exception | None = None
+            for attempt in range(8):
+                try:
+                    ctx.temporal_client = await _TemporalClient.connect(  # type: ignore[attr-defined]
+                        cfg.temporal.target_host, namespace=cfg.temporal.namespace
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    await asyncio.sleep(min(30.0, 2.0 * (attempt + 1)))
+            if last_exc is not None:
+                raise last_exc
             ctx.temporal_config = cfg.temporal  # type: ignore[attr-defined]
             logger.info(
                 "Wired API Temporal client",
@@ -117,6 +131,18 @@ def _create_lifespan_app() -> FastAPI:
             cfg = _cfg or load_application_config_from_env()
             ctx = get_app_context()
             await ensure_buffered_dev_context(ctx, cfg)
+            # Re-wire the evidence gateway AFTER proxy installation (same
+            # reason as the worker path in bootstrap/worker.py): the
+            # build-time gateway holds bare in-memory repo references.
+            try:
+                from investigation_agent_platform.bootstrap import _wire_evidence_gateway
+
+                _wire_evidence_gateway(ctx, cfg)
+            except Exception as exc2:
+                logger.warning(
+                    "API evidence gateway re-wire unavailable",
+                    extra={"error": str(exc2)},
+                )
             start_buffer_flusher(get_app_context())
         except Exception as exc:
             logger.warning(
@@ -141,6 +167,32 @@ def _create_lifespan_app() -> FastAPI:
         except Exception as exc:
             logger.warning("Job messaging unavailable", extra={"error": str(exc)})
 
+    async def _maybe_seed_dev() -> None:
+        """Opt-in UI dev dataset (IAP_DEV_SEED_TENANTS, e.g. "n-a").
+
+        Runs AFTER _maybe_wire_buffered so rows go through the write-through
+        proxies into Postgres: API reads (primary-first) and the Temporal
+        worker (separate process) both see them. Seeding before proxy
+        installation leaves rows in raw memory, shadowed and worker-invisible.
+        Idempotent per tenant (skips when the profile exists). Never raises:
+        a seed failure must not break startup.
+        """
+        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+            return
+        try:
+            from investigation_agent_platform.api.dev_seed import (
+                seed_dev_tenants,
+                seed_tenants_from_env,
+            )
+            from investigation_agent_platform.api.dependencies import get_app_context
+
+            if not seed_tenants_from_env():
+                return
+            result = await seed_dev_tenants(get_app_context())
+            logger.info("Dev seed complete", extra={"seeded": result})
+        except Exception as exc:
+            logger.warning("Dev seed failed; continuing unseeded", extra={"error": str(exc)})
+
     @asynccontextmanager
     async def lifespan(api: FastAPI):  # type: ignore[no-untyped-def]
         # Graceful startup: AppContext already built via bootstrap above
@@ -149,11 +201,13 @@ def _create_lifespan_app() -> FastAPI:
             async with original_lifespan(api):
                 await _maybe_wire_temporal()
                 await _maybe_wire_buffered()
+                await _maybe_seed_dev()
                 await _maybe_start_job_messaging()
                 yield
         else:
             await _maybe_wire_temporal()
             await _maybe_wire_buffered()
+            await _maybe_seed_dev()
             await _maybe_start_job_messaging()
             yield
         # Graceful shutdown: the inner lifespan already ran the ordered

@@ -79,14 +79,14 @@ def test_sort_clause_comes_from_mapping():
     assert body["sort"][0] == {
         "@timestamp": {"order": "desc", "format": "epoch_millis", "unmapped_type": "long"}
     }
-    assert body["sort"][1] == {"_id": "asc"}
+    assert body["sort"][1] == {"_seq_no": "asc"}
 
     root_cause = registry.resolve("gen-root-cause")
     normalized = normalize_request(TENANT, iid, _request(), ceilings, root_cause)
     body = build_query_body(normalized, root_cause, search_after=None, query_timeout_seconds=25.0)
     # Epoch-long sort field: no date format assumptions, tiebreak preserved.
     assert body["sort"][0] == {"updatedAt": {"order": "desc"}}
-    assert body["sort"][1] == {"_id": "asc"}
+    assert body["sort"][1] == {"_seq_no": "asc"}
 
 
 def test_fingerprint_binds_mapping_and_sort():

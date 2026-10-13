@@ -117,6 +117,10 @@ class ExecuteActionInput:
     investigation_id: str
     action: str = "QUERY_STATE"
     parameters: dict[str, Any] = field(default_factory=dict)
+    # Reason-proposed hypotheses (decision.hypotheses_evaluated) carried by
+    # the workflow so FORMULATE_HYPOTHESIS can persist them. Empty for all
+    # other actions.
+    hypotheses: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -393,13 +397,77 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
             if state is None:
                 state = InvestigationState(investigation=investigation)
 
+            # Enrich reasoning state from the repositories. Checkpoints (and
+            # fresh states) carry the aggregate only — evidence, hypotheses,
+            # findings, and timeline live in their own repos. Without this
+            # the model reasons over an eternally empty evidence_records list:
+            # it keeps gathering, never formulates, readiness stays 0, and
+            # every run ends FAILED at the iteration cap.
+            try:
+                evidence_repo: Any = getattr(ctx, "evidence_repo", None)
+                if evidence_repo is not None:
+                    items = await evidence_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    state = state.model_copy(update={"evidence": list(items)[:100]})
+                hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
+                if hypothesis_repo is not None:
+                    hyps = await hypothesis_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    state = state.model_copy(update={"active_hypotheses": list(hyps)[:50]})
+                finding_repo: Any = getattr(ctx, "finding_repo", None)
+                if finding_repo is not None:
+                    found, _ = await finding_repo.list_findings(
+                        tenant_id, investigation_id, limit=50
+                    )
+                    state = state.model_copy(update={"findings": list(found)[:50]})
+                timeline_repo: Any = getattr(ctx, "timeline_repo", None)
+                if timeline_repo is not None:
+                    events = await timeline_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    state = state.model_copy(update={"timeline": list(events)[-100:]})
+            except Exception as exc:
+                logger.warning(
+                    "reason_activity state enrichment failed; reasoning unassisted",
+                    extra={"error": str(exc)},
+                )
+
             decision = await coordinator.reason(tenant_id, state)
+            # Choreography: the workflow dispatches on next_action /
+            # action_parameters — they must be propagated here, not dropped.
+            # (Previously only readiness/observations were returned, so the
+            # workflow always fell back to QUERY_STATE and reasoning was
+            # effectively severed from execution.)
+            action = getattr(decision, "action", None)
+            action_type_value = getattr(
+                getattr(action, "action_type", None), "value", None
+            )
+            hypotheses_out = list(
+                getattr(decision, "hypotheses_evaluated", None) or []
+            )
+            # Operational telemetry: type names and counts only, never prompt
+            # or payload values (prompt content stays out of logs). Values are
+            # inline in the message because the worker log formatter drops
+            # structlog extras.
+            logger.warning(
+                f"reason_activity decision action={action_type_value or 'QUERY_STATE'} "
+                f"readiness={decision.conclusion_readiness} "
+                f"hypotheses={len(hypotheses_out)} "
+                f"observations={len(decision.observations or [])} tenant={tenant_id}",
+            )
             return GenericActivityResult(
                 success=True,
                 data={
                     "conclusion_readiness": decision.conclusion_readiness,
                     "observations": decision.observations,
                     "iteration": iteration,
+                    "next_action": action_type_value or "QUERY_STATE",
+                    "action_parameters": dict(
+                        getattr(action, "parameters", None) or {}
+                    ),
+                    "hypotheses_evaluated": hypotheses_out,
                 },
             )
         except Exception as exc:
@@ -423,6 +491,10 @@ async def execute_action_activity(
         inv_id_str = str(data.get("investigation_id", ""))
         action_type = str(data.get("action", "QUERY_STATE"))
         parameters: dict[str, Any] = dict(data.get("parameters", {}))
+        # Reason-proposed hypothesis strings for FORMULATE_HYPOTHESIS.
+        proposed_hypotheses: list[str] = [
+            str(h) for h in (data.get("hypotheses", []) or []) if str(h).strip()
+        ]
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -500,8 +572,24 @@ async def execute_action_activity(
                 raise InvestigationLimitExceededException(
                     f"Maximum evidence limit reached: {limits.max_evidence_items}"
                 )
-        except InvestigationLimitExceededException:
-            raise
+        except InvestigationLimitExceededException as exc:
+            # Budget exhaustion is a ROUTING signal, not an execution failure:
+            # the workflow breaks to CONCLUDING with the gathered corpus
+            # instead of dying mid-flight (previously this raised out of the
+            # activity, failed the whole execution, and stranded the aggregate
+            # in a non-terminal state with no audit record).
+            logger.warning(
+                "execute_action_activity budget exhausted; routing to conclude",
+                extra={"tenant_id": tenant_id, "error": str(exc)},
+            )
+            return GenericActivityResult(
+                success=True,
+                data={
+                    "status": "BUDGET_EXCEEDED",
+                    "budget_exceeded": True,
+                    "items_count": 0,
+                },
+            )
         except Exception as exc:
             logger.warning("budget ledger check failed; failing closed", extra={"error": str(exc)})
             raise _application_failure_from_exc(exc) from exc
@@ -599,10 +687,60 @@ async def execute_action_activity(
             return len(qres.items)
 
         async def _handle_internal_reasoning_action() -> int:
-            # FORMULATE_HYPOTHESIS / VERIFY_HYPOTHESIS / CONCLUDE never touch an
-            # external evidence provider — they operate purely on already
-            # persisted domain state, so there is nothing to dispatch here.
-            return 0
+            # VERIFY_HYPOTHESIS / CONCLUDE never touch an external evidence
+            # provider — they operate purely on already persisted domain
+            # state, so there is nothing to dispatch here.
+            #
+            # Hypothesis persistence happens for EVERY action type, not just
+            # FORMULATE_HYPOTHESIS: the model attaches hypotheses_evaluated
+            # to whatever action it proposes (often VERIFY_HYPOTHESIS), so
+            # gating persistence on FORMULATE leaves the repo empty forever —
+            # verification can never verify, and the ConclusionGate can never
+            # approve COMPLETED. Statements dedupe against existing rows.
+            if not proposed_hypotheses:
+                return 0
+            hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
+            if hypothesis_repo is None:
+                return 0
+            from investigation_agent_platform.domain.hypothesis.models import (
+                Hypothesis,
+            )
+
+            try:
+                existing = await hypothesis_repo.find_by_investigation_id(
+                    tenant_id, investigation_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "hypothesis dedupe read failed", extra={"error": str(exc)}
+                )
+                existing = []
+            known = {str(getattr(h, "statement", "")).strip() for h in (existing or [])}
+            saved = 0
+            for text in proposed_hypotheses[:20]:
+                statement = str(text or "").strip()[:2048]
+                if not statement or statement in known:
+                    continue
+                known.add(statement)
+                try:
+                    await hypothesis_repo.save(
+                        tenant_id,
+                        Hypothesis(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            title=statement[:256],
+                            description=statement[:4096],
+                            statement=statement,
+                        ),
+                        investigation_id,
+                    )
+                    saved += 1
+                except Exception as exc:
+                    logger.warning(
+                        "hypothesis persistence failed",
+                        extra={"error": str(exc)},
+                    )
+            return saved
 
         _HANDLERS: dict[Any, Any] = {
             ActionType.QUERY_STATE: _handle_query_state,
@@ -634,6 +772,12 @@ async def execute_action_activity(
 
         try:
             items_count = await handler()
+            # Operational telemetry: action type + result counts only (inline:
+            # the worker log formatter drops structlog extras).
+            logger.warning(
+                f"execute_action_activity dispatched action={resolved_action_type.value} "
+                f"items={items_count} hypotheses={len(proposed_hypotheses)} tenant={tenant_id}",
+            )
         except ApplicationFailure:
             raise
         except Exception as exc:
@@ -815,9 +959,25 @@ def _find_transition_path(
 
 
 async def _transition_via_path(
-    tenant_id: str, inv: Any, target: Any, reason: str, inv_repo: Any
+    tenant_id: str,
+    inv: Any,
+    target: Any,
+    reason: str,
+    inv_repo: Any,
+    transition_repo: Any | None = None,
+    timeline_repo: Any | None = None,
 ) -> Any:
-    """Walk domain graph step-by-step, persisting each transition."""
+    """Walk domain graph step-by-step, persisting each transition.
+
+    Every edge is recorded to transition_repo (when available) in addition
+    to saving the aggregate — previously the audit trail only captured
+    API-driven transitions (e.g. cancel) while the entire workflow-driven
+    lifecycle was invisible in investigation_transitions.
+
+    Every edge also appends a STATE_CHANGE timeline event (when available):
+    previously nothing on the live path ever wrote timeline_events, so the
+    timeline tab could only ever render seeded rows.
+    """
     # Reuse same valid_transitions as Investigation.transition_to for path finding
     # Build graph via temporary instance call by inspecting valid_transitions from method closure?
     # Instead import and reconstruct consistent graph via a dummy investigation.
@@ -887,16 +1047,73 @@ async def _transition_via_path(
         InvestigationStatus.CANCELLED: set(),
     }
     path = _find_transition_path(inv.status, target, graph)
+
+    async def _record_edge(from_status: Any, to_status: Any) -> None:
+        if transition_repo is None:
+            return
+        try:
+            await transition_repo.record_transition(
+                tenant_id=tenant_id,
+                investigation_id=inv.id,
+                from_state=getattr(from_status, "value", str(from_status)),
+                to_state=getattr(to_status, "value", str(to_status)),
+                reason=reason,
+            )
+        except Exception as exc:
+            # Audit recording must never break the lifecycle itself.
+            logger.warning(
+                "transition audit record failed", extra={"error": str(exc)}
+            )
+
+    async def _append_timeline(from_status: Any, to_status: Any) -> None:
+        if timeline_repo is None:
+            return
+        try:
+            from datetime import UTC, datetime
+
+            from investigation_agent_platform.domain.timeline.models import (
+                TimelineEvent,
+                TimelineEventType,
+            )
+
+            existing = await timeline_repo.find_by_investigation_id(
+                tenant_id, inv.id
+            )
+            seq = len(existing or [])
+            from_value = getattr(from_status, "value", str(from_status))
+            to_value = getattr(to_status, "value", str(to_status))
+            await timeline_repo.append(
+                tenant_id,
+                TimelineEvent(
+                    tenant_id=tenant_id,
+                    investigation_id=inv.id,
+                    sequence_number=seq,
+                    timestamp=datetime.now(UTC),
+                    event_type=TimelineEventType.STATE_CHANGE,
+                    description=f"Status {from_value} -> {to_value}: {reason}",
+                ),
+                inv.id,
+            )
+        except Exception as exc:
+            # Timeline is observability: never break the lifecycle.
+            logger.warning(
+                "timeline append failed", extra={"error": str(exc)}
+            )
+
     if path is None:
         # No path - try direct transition to surface proper exception
         updated, _ = inv.transition_to(target, ActorType.SYSTEM, reason)
         await inv_repo.save(tenant_id, updated, expected_version=inv.version)
+        await _record_edge(inv.status, target)
+        await _append_timeline(inv.status, target)
         return updated
     current = inv
     # Walk edges excluding start node
     for nxt in path[1:]:
         updated, _ = current.transition_to(nxt, ActorType.SYSTEM, reason)
         await inv_repo.save(tenant_id, updated, expected_version=current.version)
+        await _record_edge(current.status, nxt)
+        await _append_timeline(current.status, nxt)
         current = updated
     return current
 
@@ -934,7 +1151,15 @@ async def transition_investigation_activity(
             return GenericActivityResult(
                 success=True, data={"status": target.value, "already": True}
             )
-        await _transition_via_path(tenant_id, inv, target, reason, inv_repo)
+        await _transition_via_path(
+            tenant_id,
+            inv,
+            target,
+            reason,
+            inv_repo,
+            getattr(ctx, "transition_repo", None),
+            getattr(ctx, "timeline_repo", None),
+        )
         return GenericActivityResult(success=True, data={"status": target.value})
     except ApplicationFailure:
         raise
@@ -1089,6 +1314,8 @@ async def conclude_investigation_activity(
                             target,
                             f"Workflow concluded with {target.value}",
                             inv_repo,
+                            getattr(ctx, "transition_repo", None),
+                            getattr(ctx, "timeline_repo", None),
                         )
                     return GenericActivityResult(success=True, data={"status": target.value})
             except ApplicationFailure:
