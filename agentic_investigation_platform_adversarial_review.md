@@ -3,7 +3,6 @@
 ## Target package
 
 **Package:** `investigation_agent_platform`  
-**Source artifact reviewed:** `src_20260925_101545.txt`  
 **Review mode:** adversarial, production-readiness, security, correctness, distributed-systems, agentic-AI, persistence, and operability review.
 
 ## How GPT-SOL should use this document

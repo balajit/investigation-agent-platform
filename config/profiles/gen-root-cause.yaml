@@ -1,0 +1,75 @@
+# config/profiles/gen-root-cause.yaml
+# ---------------------------------------------------------------------------
+# Real production profile for the `gen` root-cause record family.
+# Observability is grounded in config/observability-mappings/gen-root-cause.yaml
+# (mappingSourceId below). Note this stream has NO @timestamp (observation time
+# is epoch-millis updatedAt/createdAt) and NO severity signal, so severity
+# filters reject rather than degrade silently.
+#
+# Honesty note: code repository and state database for this workload are not
+# yet captured; those blocks are TBD placeholders and the profile stays DRAFT,
+# enabling LOG evidence only.
+# ---------------------------------------------------------------------------
+
+application:
+  id: gen-root-cause
+  tenant_id: tenant-a
+  name: Gen Service - Root Cause Records
+  description: >-
+    DRAFT: production observability for the `gen` root-cause record family.
+    Code and state sections are placeholders pending onboarding facts.
+  environment: production
+  version: 1
+  status: DRAFT
+  owner: platform-team
+  allowed_capabilities:
+    - SEARCH_LOGS
+
+observability:
+  provider: elastic
+  indices:
+    - logz-gen-root_cause-prod-es-*
+  # Legacy singular fields below are informational only; field resolution is
+  # driven by mappingSourceId. This stream has no service/trace/log-level field.
+  timestampField: updatedAt
+  serviceField: ""
+  environmentField: ""
+  sessionField: XCOSSessionId
+  requestField: requestId
+  traceField: ""
+  logLevelField: ""
+  mappingSourceId: gen-root-cause
+
+state:
+  provider: unknown
+  database: TBD
+  schema: TBD
+  tables: []
+  primaryIdentifiers: []
+  stateFields: []
+  timestampFields: []
+  queryTemplates: {}
+
+code:
+  provider: git
+  repository: TBD
+  defaultBranch: main
+  language: unknown
+  sourceRoots:
+    - TBD
+  buildSystem: unknown
+  moduleStructure: unknown
+
+correlation:
+  fields:
+    - requestId
+    - XCOSSessionId
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+  correlationDepth: 2
+  maximumHypotheses: 5

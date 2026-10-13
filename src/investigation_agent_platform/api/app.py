@@ -16,6 +16,8 @@ import structlog.contextvars
 from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy.exc import DBAPIError
 
 # Ensure structlog is configured with contextvars merging if not already configured.
 try:
@@ -87,6 +89,28 @@ from investigation_agent_platform.domain.common.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+# F-061: NUL bytes are rejected at the API boundary (free-text query params
+# carry NO_NUL_PATTERN) but JSON bodies and future params can still carry
+# them to the database, where asyncpg raises CharacterNotInRepertoireError
+# (wrapped by SQLAlchemy as DBAPIError) → unhandled 500. This chain-walk
+# maps exactly that driver-level encoding failure to 422; every other
+# DBAPIError is re-raised untouched so genuine persistence faults still 500.
+
+
+def _caused_by_nul_encoding_failure(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        if name == "CharacterNotInRepertoireError" or (
+            "invalid byte sequence" in str(current) and "0x00" in str(current)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 
 # F-016: correlation IDs are caller-controlled input — bound length and
 # restricted to a safe character set to prevent log injection / oversized
@@ -361,6 +385,46 @@ def create_app(
                 }
             },
         )
+
+    @app.exception_handler(PydanticValidationError)
+    async def handle_pydantic_validation_exception(
+        request: Request, exc: PydanticValidationError
+    ) -> JSONResponse:
+        # Domain models re-validate inside endpoints (e.g. API-body bounds
+        # are wider than domain bounds); surface those as 422, not 500.
+        correlation_id = getattr(request.state, "correlation_id", "unknown")
+        details = sanitize_extra({"fields": exc.errors()})
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "error": {
+                    "code": "ValidationError",
+                    "message": "Invalid request parameters or payload",
+                    "details": details,
+                    "correlation_id": correlation_id,
+                }
+            },
+        )
+
+    @app.exception_handler(DBAPIError)
+    async def handle_dbapi_exception(request: Request, exc: DBAPIError) -> JSONResponse:
+        if _caused_by_nul_encoding_failure(exc):
+            correlation_id = getattr(request.state, "correlation_id", "unknown")
+            logger.warning(
+                "Rejected NUL-byte input with HTTP 422",
+                extra=sanitize_extra({"correlation_id": correlation_id}),
+            )
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={
+                    "error": {
+                        "code": "ValidationError",
+                        "message": "Invalid request parameters or payload",
+                        "correlation_id": correlation_id,
+                    }
+                },
+            )
+        raise exc
 
     api_v1 = "/api/v1"
     app.include_router(health_router, prefix=api_v1)

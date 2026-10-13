@@ -65,6 +65,8 @@ dev = [
     "oracledb>=26.0.1",
     "pytest-tornasync>=0.6.0.post2",
     "pytest-trio>=0.8.0",
+    "schemathesis>=4.31,<5",
+    "httpx>=0.28,<1",
 ]
 
 [tool.hatch.build.targets.wheel]

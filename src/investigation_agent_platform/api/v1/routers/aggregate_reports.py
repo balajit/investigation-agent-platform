@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from investigation_agent_platform.api.dependencies import get_app_context
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.application.reporting.artifacts import (
     history_prefix,
     job_id_from_history_key,
@@ -202,7 +203,7 @@ async def get_latest_report(
 @router.get("/aggregate-reports/history")
 async def get_report_history(
     x_tenant_id: str = Depends(require_tenant),
-    cursor: str | None = Query(default=None, max_length=4096),
+    cursor: str | None = Query(default=None, max_length=4096, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Paginated stored report runs (newest first where the adapter orders so)."""
