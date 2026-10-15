@@ -99,25 +99,19 @@ class EphemeralCorrelationEngine(CorrelationExpander):
             edge_count = 0
             for rel in records:
                 # F-037: provenance/ownership check before graph construction.
-                rel_tenant = rel.get("tenant_id", tenant_id)
-                rel_app = rel.get("application_id", application_id)
-                if rel_tenant != tenant_id or rel_app != application_id:
+                if rel.tenant_id != tenant_id or rel.application_id != application_id:
                     quarantined += 1
                     continue
-                try:
-                    confidence = float(rel.get("confidence", 1.0))
-                except (TypeError, ValueError):
-                    quarantined += 1
-                    continue
+                confidence = rel.confidence
                 if not (0.0 <= confidence <= 1.0):
                     quarantined += 1
                     continue
                 # Probabilistic pruning: discard hypothesis links below threshold
-                if rel.get("type") == "hypothesis" and confidence < self.confidence_threshold:
+                if rel.type == "hypothesis" and confidence < self.confidence_threshold:
                     quarantined += 1
                     continue
-                src = str(rel["source_id"])
-                tgt = str(rel["target_id"])
+                src = rel.source_id
+                tgt = rel.target_id
                 if (
                     len(node_indices) >= node_cap
                     and src not in node_indices
@@ -136,9 +130,9 @@ class EphemeralCorrelationEngine(CorrelationExpander):
                     index_to_id[idx] = tgt
 
                 edge_data: dict[str, Any] = {
-                    "relationship_type": rel.get("type", "CORRELATES_WITH"),
+                    "relationship_type": rel.type,
                     "weight": confidence,
-                    "metadata": rel.get("metadata", {}),
+                    "metadata": rel.metadata,
                 }
                 graph.add_edge(node_indices[src], node_indices[tgt], edge_data)
                 edge_count += 1

@@ -16,6 +16,7 @@ from mcp.types import ToolAnnotations
 from opentelemetry import trace
 from pydantic import Field
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.composition import (
     InvestigationServices,
 )
@@ -74,26 +75,33 @@ async def search_reference_docs_core(
             span.set_attribute("result_count", len(output.items))
             logger.info(
                 "MCP search_reference_docs completed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.search_reference_docs.completed",
                         "result_count": len(output.items),
                     }
-                },
+                ),
             )
             return output
         except Exception as exc:
-            envelope = error_envelope(exc)
+            envelope = error_envelope(
+                exc,
+                tenant_id=scope.tenant_id,
+                investigation_id=str(scope.investigation_id),
+            )
             span.set_attribute("error_code", envelope.error.code.value)
-            logger.info(
+            logger.exception(
                 "MCP search_reference_docs failed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.search_reference_docs.failed",
+                        "error_code": envelope.error.code.value,
                     }
-                },
+                ),
             )
             return envelope
 

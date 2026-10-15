@@ -77,8 +77,21 @@ class ProfileBasedActionAuthorizer:
             # Unrecognized-but-valid action type with no explicit policy: deny by default.
             return False
 
-        enabled_types = set(profile.investigation_configuration.enabled_evidence_types)
-        return required_type in enabled_types
+        enabled_types = set(profile.investigation.enabled_evidence_types)
+        if required_type not in enabled_types:
+            return False
+        # allowed_capabilities is enforced when non-empty; empty preserves
+        # the evidence-type gate alone so pre-capability profiles keep working.
+        allowed = set(profile.allowed_capabilities or [])
+        if not allowed:
+            return True
+        capability_for_action = {
+            ActionType.SEARCH_LOGS: "SEARCH_LOGS",
+            ActionType.QUERY_STATE: "QUERY_STATE",
+            ActionType.GET_CODE: "GET_CODE",
+            ActionType.CORRELATE: "CORRELATE",
+        }.get(action)
+        return capability_for_action in allowed
 
 
 class ProfileBasedCapabilityRegistry:

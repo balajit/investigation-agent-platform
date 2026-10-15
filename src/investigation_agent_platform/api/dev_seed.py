@@ -478,7 +478,11 @@ async def seed_dev_tenants(ctx: object) -> dict[str, dict[str, int]]:
     API reads (primary-first) and the Temporal worker (separate process)
     both see them. In-memory-only seeds are shadowed and worker-invisible.
     """
-    if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+    from investigation_agent_platform.infrastructure.configuration.layers import (
+        effective_environment,
+    )
+
+    if effective_environment() == "production":
         raise RuntimeError("Dev seed is refused in production")
     result: dict[str, dict[str, int]] = {}
     for tenant in seed_tenants_from_env():

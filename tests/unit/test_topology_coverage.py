@@ -26,6 +26,40 @@ from investigation_agent_platform.domain.common.exceptions import (
 )
 
 
+def _service_profile(
+    app_id: str = "app-1",
+    service: str = "svc",
+    org: str | None = "acme",
+    repo: str = "checkout-service",
+    branch: str = "main",
+    repository_id: str | None = "repo-1",
+    service_names: list[str] | None = None,
+):  # type: ignore[no-untyped-def]
+    """Real canonical ApplicationProfile with one service (no mocks)."""
+    from investigation_agent_platform.domain.profile.models import (
+        ApplicationProfile,
+        Service,
+        ServiceCode,
+        ServiceTelemetry,
+    )
+
+    return ApplicationProfile(
+        id=app_id,
+        tenant_id="tenant-a",
+        name="n",
+        description="d",
+        environment="production",
+        services=[
+            Service(
+                name=service,
+                telemetry=ServiceTelemetry(service_names=service_names or []),
+                code=ServiceCode(org=org, repos=[repo], default_branch=branch),
+                repository_id=repository_id,
+            )
+        ],
+    )
+
+
 def _node(
     tenant_id: str = "tenant-a",
     repository_id: str = "repo-1",
@@ -511,10 +545,7 @@ class TestProfileBackedRepositoryRegistry:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "org/svc"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org="org", repo="svc")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
         registry = ProfileBackedRepositoryRegistry(profile_repo)
         repo = await registry.resolve_for_application("tenant-a", "app-1")
@@ -529,10 +560,7 @@ class TestProfileBackedRepositoryRegistry:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "org/svc"
-        profile.code_configuration.repository_id = None
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org="org", repo="svc", repository_id=None)
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
         registry = ProfileBackedRepositoryRegistry(profile_repo)
         assert await registry.resolve_for_application("tenant-a", "app-1") is None
@@ -1737,16 +1765,13 @@ class TestProfileRegistryOwnershipWriteThrough:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org="acme", repo="checkout-service")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
 
         registry = ProfileBackedRepositoryRegistry(profile_repo)
         repo = await registry.resolve_for_application("tenant-a", "app-1")
         assert repo is not None
-        assert repo.git_org_id == "github:acme"
+        assert repo.git_org_id == "git:acme"
 
     @pytest.mark.asyncio
     async def test_falls_back_to_unassigned_for_unparseable_locator(self) -> None:
@@ -1755,10 +1780,7 @@ class TestProfileRegistryOwnershipWriteThrough:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "/local/checkout-service"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org=None, repo="/local/checkout-service")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
 
         registry = ProfileBackedRepositoryRegistry(profile_repo)
@@ -1773,10 +1795,7 @@ class TestProfileRegistryOwnershipWriteThrough:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org="acme", repo="checkout-service")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
 
         ownership_registry = MagicMock()
@@ -1788,7 +1807,7 @@ class TestProfileRegistryOwnershipWriteThrough:
         await registry.resolve_for_application("tenant-a", "app-1")
         ownership_registry.register_ownership.assert_awaited_once()
         _, kwargs = ownership_registry.register_ownership.await_args
-        assert kwargs["git_org"].git_org_id == "github:acme"
+        assert kwargs["git_org"].git_org_id == "git:acme"
 
     @pytest.mark.asyncio
     async def test_no_ownership_registry_configured_is_a_noop(self) -> None:
@@ -1797,10 +1816,7 @@ class TestProfileRegistryOwnershipWriteThrough:
         )
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "https://github.com/acme/checkout-service"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org="acme", repo="checkout-service")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
 
         registry = ProfileBackedRepositoryRegistry(profile_repo)
@@ -1819,10 +1835,7 @@ class TestProfileRegistryOwnershipWriteThrough:
         (repo_dir / "CODEOWNERS").write_text("* @team-platform\n", encoding="utf-8")
 
         profile_repo = MagicMock()
-        profile = MagicMock()
-        profile.code_configuration.repository = "acme-checkout-service"
-        profile.code_configuration.repository_id = "repo-1"
-        profile.code_configuration.default_branch = "main"
+        profile = _service_profile(org=None, repo="acme-checkout-service")
         profile_repo.get_by_application_id = AsyncMock(return_value=profile)
 
         ownership_registry = MagicMock()
@@ -2751,12 +2764,13 @@ class TestServiceNameRepositoryMapping:
             ProfileBackedRepositoryRegistry,
         )
 
-        profile = MagicMock()
-        profile.id = "app-1"
-        profile.code_configuration.repository = "https://github.com/acme/payments-library"
-        profile.code_configuration.repository_id = "repo-2"
-        profile.code_configuration.default_branch = "main"
-        profile.code_configuration.service_name = "payments"
+        profile = _service_profile(
+            service="payments-library",
+            org="acme",
+            repo="payments-library",
+            repository_id="repo-2",
+            service_names=["payments"],
+        )
 
         profile_repo = MagicMock()
         profile_repo.list = AsyncMock(return_value=[profile])

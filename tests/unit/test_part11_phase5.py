@@ -502,12 +502,17 @@ class TestInputActivities:
     @pytest.mark.asyncio
     async def test_record_requires_ids(self, _restore_context: None) -> None:
         from investigation_agent_platform.application.worker.activities import (
+            ApplicationFailure,
             record_input_requirement_activity,
         )
 
         set_app_context(AppContext())
-        result = await record_input_requirement_activity({})
-        assert result.success is False
+        # TO_DO-016: a dict missing required IDs fails closed validation
+        # (non-retryable ApplicationFailure) instead of returning a failure
+        # envelope. Present-but-empty IDs still return success=False (see
+        # test_remediation_coverage failure-envelope tests).
+        with pytest.raises(ApplicationFailure):
+            await record_input_requirement_activity({})
 
     @pytest.mark.asyncio
     async def test_set_state_paths(self, _restore_context: None) -> None:

@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from investigation_agent_platform.domain.common.background_job import (
     BackgroundJob,
     BackgroundJobStatus,
@@ -36,6 +38,20 @@ from investigation_agent_platform.domain.investigation.models import (
 )
 from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.timeline.models import TimelineEvent
+
+
+class EvidenceRelationshipRecord(BaseModel):
+    """Typed evidence-relationship edge (TO_DO-017: replaces raw dicts)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tenant_id: str = Field(min_length=1)
+    application_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    type: str = Field(default="CORRELATES_WITH", min_length=1)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @runtime_checkable
@@ -128,16 +144,24 @@ class ApplicationProfileRepository(Protocol):
     """
 
     async def get_by_application_id(
-        self, tenant_id: str, application_id: str, version: str | None = None
+        self, tenant_id: str, application_id: str, version: str | int | None = None
     ) -> ApplicationProfile | None: ...
 
     async def list_revisions(self, tenant_id: str, application_id: str) -> list[ApplicationProfile]:
         """All historical revisions for one application id, newest first."""
         ...
 
-    async def list(self, tenant_id: str) -> list[ApplicationProfile]: ...
+    async def list(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[ApplicationProfile]: ...
 
     async def save(self, tenant_id: str, profile: ApplicationProfile) -> None: ...
+
+    async def delete(
+        self, tenant_id: str, application_id: str, version: str | int | None = None
+    ) -> int:
+        """Delete revisions; returns rows removed. DRAFT-only gating is the caller's job."""
+        ...
 
 
 @runtime_checkable
@@ -162,7 +186,13 @@ class TransitionEventRepository(Protocol):
     """Repository for recording investigation state transition events."""
 
     async def record_transition(
-        self, tenant_id: str, investigation_id: UUID, from_state: str, to_state: str, reason: str
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        from_state: str,
+        to_state: str,
+        reason: str,
+        actor: str = "SYSTEM",
     ) -> None: ...
 
 
@@ -237,12 +267,17 @@ class EvidenceRelationshipRepository(Protocol):
         application_id: str,
         root_evidence_ids: list[str],
         max_depth: int,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[EvidenceRelationshipRecord]: ...
 
 
 @runtime_checkable
 class BackgroundJobRepository(Protocol):
-    """Tenant-scoped background job persistence with OCC (Part 11.3B)."""
+    """Tenant-scoped background job persistence with OCC (Part 11.3B).
+
+    Tenant scope travels inside the ``BackgroundJob`` model itself;
+    implementations must fail closed on an empty ``job.tenant_id`` and open
+    the RLS session for that tenant (never a caller-supplied different one).
+    """
 
     async def create(self, job: BackgroundJob) -> None: ...
 
@@ -367,7 +402,7 @@ class ChatSessionRepository(Protocol):
     async def delete_session(self, tenant_id: str, session_id: UUID) -> None: ...
 
     async def sessions_older_than(
-        self, tenant_id: str, cutoff: Any, limit: int = 500
+        self, tenant_id: str, cutoff: datetime, limit: int = 500
     ) -> list[InvestigationChatSession]: ...
 
 

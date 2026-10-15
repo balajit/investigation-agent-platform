@@ -14,11 +14,15 @@ from pydantic import SecretStr
 
 from investigation_agent_platform.domain.profile.models import (
     ApplicationProfile,
-    CodeProfile,
-    CorrelationProfile,
-    InvestigationProfile,
-    ObservabilityProfile,
-    StateProfile,
+    CorrelationConfig,
+    Datasource,
+    DatasourceKind,
+    DatasourceRole,
+    InvestigationConfig,
+    QueryTemplate,
+    Service,
+    ServiceCode,
+    ServiceTelemetry,
 )
 from investigation_agent_platform.infrastructure.configuration.config import (
     LLMConfig,
@@ -33,50 +37,63 @@ from investigation_agent_platform.infrastructure.reasoning.factory import create
 from investigation_agent_platform.ports.reasoning.llm_gateway import LLMGatewayRequest
 
 
-# Helper to make CodeProfile
-def _make_code_profile(repo: str = "myrepo", source_roots: list[str] | None = None) -> CodeProfile:
-    return CodeProfile(
-        provider="git",
-        repository=repo,
-        defaultBranch="main",
-        language="python",
-        sourceRoots=source_roots or ["src"],
-        buildSystem="uv",
-        moduleStructure="src/mod",
-    )
-
-
-def _make_profile_for_code() -> ApplicationProfile:
+# Helper to make a single-service canonical profile for code tests.
+def _make_code_profile(
+    repo: str = "myrepo", source_roots: list[str] | None = None
+) -> ApplicationProfile:
+    if "/" in repo:
+        org, _, name = repo.partition("/")
+    else:
+        org, name = None, repo
     return ApplicationProfile(
         id="app1",
         tenant_id="t1",
         name="n",
         description="d",
         environment="production",
-        observability=ObservabilityProfile(
-            provider="es",
-            indices=["idx"],
-            timestampField="@timestamp",
-            serviceField="service.name",
-            environmentField="deployment.environment",
-            sessionField="session.id",
-            requestField="request.id",
-            traceField="trace.id",
-            logLevelField="severity",
-        ),
-        state=StateProfile(
-            provider="postgres",
-            database="db",
-            schema="public",
-            tables=["t"],
-            primaryIdentifiers=["id"],
-            stateFields=["status"],
-            timestampFields=["created_at"],
-            queryTemplates={"find": "SELECT * FROM t WHERE id=:id"},
-        ),
-        code=_make_code_profile(),
-        correlation=CorrelationProfile(fields=["session.id"]),
-        investigation=InvestigationProfile(),
+        services=[
+            Service(
+                name=name or repo,
+                code=ServiceCode(
+                    org=org or None,
+                    repos=[name or repo],
+                    default_branch="main",
+                    language="python",
+                    source_roots=source_roots or ["src"],
+                    build_system="uv",
+                    module_structure="src/mod",
+                ),
+                repository_id="repo-1",
+            )
+        ],
+    )
+
+
+def _make_profile_for_code() -> ApplicationProfile:
+    profile = _make_code_profile()
+    return profile.model_copy(
+        update={
+            "mapping_source_id": "generic-ecs",
+            "correlation": CorrelationConfig(fields=["session.id"]),
+            "investigation": InvestigationConfig(),
+            "datasources": [
+                Datasource(
+                    id="primary",
+                    name="db (postgres)",
+                    kind=DatasourceKind.POSTGRES,
+                    role=DatasourceRole.STATE,
+                    allowed_tables=["t"],
+                    query_templates={
+                        "find": QueryTemplate(
+                            description=None,
+                            sql="SELECT * FROM t WHERE id=:id",
+                            read_only=True,
+                            allowed_tables=["t"],
+                        )
+                    },
+                )
+            ],
+        }
     )
 
 
@@ -96,15 +113,7 @@ class TestTreeSitterProvider:
             evidences = await provider.search_code(
                 "tenant-a",
                 "hello",
-                CodeProfile(
-                    provider="git",
-                    repository="myrepo",
-                    defaultBranch="main",
-                    language="python",
-                    sourceRoots=["src"],
-                    buildSystem="uv",
-                    moduleStructure="src",
-                ),
+                _make_code_profile(),
             )
             assert len(evidences) >= 1
             assert "hello" in evidences[0].content_snippet.lower()
@@ -173,27 +182,33 @@ class TestTreeSitterProvider:
         with tempfile.TemporaryDirectory() as tmp:
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
             # repo with traversal — bypass validation via model_construct
-            profile = CodeProfile.model_construct(
-                provider="git",
-                repository="../evil",
-                default_branch="main",
-                language="python",
-                source_roots=["src"],
-                build_system="uv",
-                module_structure="src",
+            profile = ApplicationProfile.model_construct(
+                services=[
+                    Service.model_construct(
+                        name="evil",
+                        code=ServiceCode.model_construct(
+                            repos=["../evil"],
+                            source_roots=["src"],
+                            default_branch="main",
+                        ),
+                    )
+                ],
             )
             roots = provider._resolve_roots(profile)  # type: ignore[attr-defined]
             assert roots == []
             # source root traversal
             Path(tmp, "myrepo").mkdir(parents=True, exist_ok=True)
-            profile2 = CodeProfile.model_construct(
-                provider="git",
-                repository="myrepo",
-                default_branch="main",
-                language="python",
-                source_roots=["../escape"],
-                build_system="uv",
-                module_structure="src",
+            profile2 = ApplicationProfile.model_construct(
+                services=[
+                    Service.model_construct(
+                        name="svc",
+                        code=ServiceCode.model_construct(
+                            repos=["myrepo"],
+                            source_roots=["../escape"],
+                            default_branch="main",
+                        ),
+                    )
+                ],
             )
             roots2 = provider._resolve_roots(profile2)  # type: ignore[attr-defined]
             # should not include escaped path
@@ -258,15 +273,7 @@ class TestTreeSitterProvider:
             src = repo / "src"
             src.mkdir(parents=True)
             provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
-            profile = CodeProfile(
-                provider="git",
-                repository="myrepo",
-                defaultBranch="main",
-                language="python",
-                sourceRoots=["src", "src"],
-                buildSystem="uv",
-                moduleStructure="src",
-            )
+            profile = _make_code_profile(source_roots=["src", "src"])
             roots = provider._resolve_roots(profile)  # type: ignore[attr-defined]
             assert len(roots) == 1
 

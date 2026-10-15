@@ -23,6 +23,18 @@ from investigation_agent_platform.ports.security.redactor import PromptSafetyPol
 logger = logging.getLogger(__name__)
 
 
+def _normalize_async_uri(db_uri: str) -> str:
+    """Map sync ``postgresql://`` URIs to the async driver scheme.
+
+    Operator env files carry the sync scheme (alembic, psql); SQLAlchemy's
+    asyncio extension needs ``postgresql+asyncpg://``. Single home for the
+    rule so production, buffered-dev, and evidence wiring agree.
+    """
+    from investigation_agent_platform.bootstrap.buffered_dev import _async_db_uri
+
+    return _async_db_uri(db_uri)
+
+
 def _run_async(coro: Any) -> Any:
     """Run an awaitable to completion whether or not a loop is already running.
 
@@ -75,7 +87,7 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         raise PlatformConfigurationError("IAP_DATABASE_URI is required in production")
 
     engine: AsyncEngine = create_async_engine(
-        db_uri,
+        _normalize_async_uri(db_uri),
         pool_size=config.database.pool_size,
         max_overflow=config.database.max_overflow,
         pool_pre_ping=True,
@@ -426,6 +438,36 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             )
         else:
             logger.info("Elastic provider unconfigured; key elastic-primary stays unregistered")
+        # Generic file-log runtime provider: serves file_log datasources for
+        # any profile. Default route only when no Elastic deployment serves
+        # all contexts; otherwise it answers explicit file-log requests.
+        file_roots = [
+            root.strip()
+            for root in (config.evidence.file_log_roots or "").split(",")
+            if root.strip()
+        ]
+        if file_roots:
+            from investigation_agent_platform.infrastructure.evidence.logs.file_provider import (
+                FileLogAdapter,
+                FileLogSettings,
+            )
+
+            selector.register_runtime_provider(
+                "file-log",
+                FileLogAdapter(
+                    settings=FileLogSettings(
+                        roots=file_roots,
+                        max_bytes_per_file=config.evidence.file_log_max_bytes_per_file,
+                        max_files=config.evidence.file_log_max_files,
+                        cursor_signing_key=config.evidence.cursor_signing_key,
+                    ),
+                    provider_id="file-log",
+                ),
+                default=not bool(config.evidence.elasticsearch_url),
+            )
+            logger.info("File-log provider registered", extra={"roots": file_roots})
+        else:
+            logger.info("File-log roots empty; key file-log stays unregistered")
         if config.evidence.oracle_dsn.get_secret_value():
             import importlib.util
 
@@ -456,6 +498,33 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 )
         else:
             logger.info("Oracle DSN unconfigured; key oracle-primary stays unregistered")
+        if config.evidence.postgres_dsn.get_secret_value():
+            from sqlalchemy.ext.asyncio import create_async_engine as _create_pg_engine
+
+            from investigation_agent_platform.bootstrap.buffered_dev import (
+                _async_db_uri,
+            )
+            from investigation_agent_platform.infrastructure.evidence.state.oracle import (
+                SqlglotTemplateValidator as _SqlglotTemplateValidator,
+            )
+            from investigation_agent_platform.infrastructure.evidence.state.postgres import (
+                AsyncPostgresStateAdapter,
+            )
+
+            selector.register_state_provider(
+                "postgres-primary",
+                AsyncPostgresStateAdapter(
+                    engine=_create_pg_engine(
+                        _async_db_uri(config.evidence.postgres_dsn.get_secret_value())
+                    ),
+                    template_repository={},
+                    validator=_SqlglotTemplateValidator(set(), dialect="postgres"),
+                    provider_id="postgres-primary",
+                    query_timeout=config.evidence.postgres_query_timeout,
+                ),
+            )
+        else:
+            logger.info("Postgres DSN unconfigured; key postgres-primary stays unregistered")
         if config.topology.code_repo_base_path:
             from investigation_agent_platform.infrastructure.evidence.code.git import (
                 PyGit2Adapter,
@@ -490,6 +559,46 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             logger.info(
                 "MCP Oracle server registered", extra={"key": f"oracle-mcp-{entry['name']}"}
             )
+        # Profile-driven datasources (§7.4): static registrations keep
+        # priority; contexts with no static provider resolve from the
+        # profile's own datasources via the selector fallback.
+        from investigation_agent_platform.infrastructure.evidence.datasources.registry import (
+            DatasourceRegistry,
+        )
+        from investigation_agent_platform.infrastructure.secrets.resolver import (
+            ChainedSecretResolver,
+            EnvSecretResolver,
+            SecretStoreSecretResolver,
+        )
+        from investigation_agent_platform.infrastructure.secrets.stores.factory import (
+            build_secret_store_from_env,
+        )
+
+        mcp_entries = _oracle_mcp_servers(config)
+        secret_store = build_secret_store_from_env()
+        if secret_store is not None:
+            logger.info(
+                "Secret store backend wired", extra={"provider": secret_store.name}
+            )
+            secret_chain: ChainedSecretResolver = ChainedSecretResolver(
+                environment=config.environment,
+                resolvers=[
+                    EnvSecretResolver(),
+                    SecretStoreSecretResolver(
+                        store_get=secret_store.get, environment=config.environment
+                    ),
+                ],
+            )
+        else:
+            secret_chain = ChainedSecretResolver(environment=config.environment)
+        selector.attach_datasource_registry(
+            DatasourceRegistry(
+                profile_repo=ctx.profile_repo,
+                secret_resolver=secret_chain,
+                mcp_catalog={entry["name"]: entry for entry in mcp_entries},
+                environment=config.environment,
+            )
+        )
         selector.freeze()
 
         from investigation_agent_platform.infrastructure.security.profile_authorizer import (
@@ -508,6 +617,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             capability_registry=ProfileBasedCapabilityRegistry(ctx.profile_repo),
             evidence_repository=ctx.evidence_repo,
             repository_registry=ProfileBackedRepositoryRegistry(ctx.profile_repo),
+            profile_repo=ctx.profile_repo,
         )
         logger.info("Evidence gateway composed")
 

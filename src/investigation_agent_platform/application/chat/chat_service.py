@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 from investigation_agent_platform.domain.common.extension import CapabilityScope
@@ -103,14 +103,54 @@ class ChatService:
         artifact_repo: Any | None = None,
         quota_enforcer: Any | None = None,
         quota_policy: Any | None = None,
+        profile_repo: Any | None = None,
     ) -> None:
         self._chat_repo = chat_repo
         self._artifact_repo = artifact_repo
         self._quota_enforcer = quota_enforcer
         self._quota_policy = quota_policy
+        self._profile_repo = profile_repo
         self._context_builder = KnowledgeChatContextBuilder(artifact_repo)
 
     # -- sessions --------------------------------------------------------
+
+    _CLASSIFICATION_RANK: ClassVar[dict[str, int]] = {
+        "PUBLIC": 0,
+        "INTERNAL": 1,
+        "CONFIDENTIAL": 2,
+        "RESTRICTED": 3,
+    }
+
+    async def _apply_classification_ceiling(
+        self, tenant_id: str, application_id: str | None, classification: str
+    ) -> str:
+        """Clamp the session classification to the profile's data_classification.
+
+        A session may quote at most what the application profile allows.
+        Unknown session/ceiling values are left untouched (validated
+        elsewhere); lookup failures fail open to the requested value so chat
+        degrades gracefully when the profile store is unavailable.
+        """
+        if not application_id or self._profile_repo is None:
+            return classification
+        try:
+            profile = await self._profile_repo.get_by_application_id(tenant_id, application_id)
+        except Exception:
+            return classification
+        ceiling = getattr(profile, "data_classification", None) if profile else None
+        rank = self._CLASSIFICATION_RANK
+        if (
+            isinstance(ceiling, str)
+            and ceiling in rank
+            and classification in rank
+            and rank[classification] > rank[ceiling]
+        ):
+            logger.info(
+                "Chat classification clamped to profile ceiling",
+                extra={"tenant_id": tenant_id, "ceiling": ceiling},
+            )
+            return ceiling
+        return classification
 
     async def create_session(
         self,
@@ -122,6 +162,9 @@ class ChatService:
         authorization_reference: str = "",
     ) -> InvestigationChatSession:
         """Create one session, quota-guarded when an enforcer is present."""
+        classification = await self._apply_classification_ceiling(
+            tenant_id, application_id, classification
+        )
         if self._quota_enforcer is not None and self._quota_policy is not None:
             scope = CapabilityScope(tenant_id=tenant_id, application_id=application_id)
             decision = await self._quota_enforcer.check(scope, "chat.session", self._quota_policy)

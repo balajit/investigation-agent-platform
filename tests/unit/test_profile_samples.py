@@ -3,9 +3,10 @@
 
 Guards the ``config/profiles/*.yaml`` documents against schema drift: every
 file is parsed through the production loader, must validate, must carry a
-unique ``(tenant_id, id)``, and must name an observability mapping that the
-runtime can actually resolve (built-in ``generic-ecs`` or a shipped
-``config/observability-mappings/*.yaml`` ``source_id``).
+unique ``(tenant_id, id)``, must declare at least one service, and must name
+an observability mapping that the runtime can actually resolve (built-in
+``generic-ecs`` or a shipped ``config/observability-mappings/*.yaml``
+``source_id``).
 """
 
 from pathlib import Path
@@ -34,13 +35,13 @@ def test_profile_samples_exist() -> None:
 def test_shipped_profiles_load_and_validate() -> None:
     for path in _profile_paths():
         profile = load_application_profile_from_file(path)
-        # Required identity/section content is structurally ensured by the
+        # Required identity/content is structurally ensured by the
         # loader; assert the values that other components key off.
         assert profile.id, f"{path.name}: empty id"
         assert profile.tenant_id, f"{path.name}: empty tenant_id"
         assert profile.environment, f"{path.name}: empty environment"
-        assert profile.observability_configuration.indices, f"{path.name}: no indices"
-        assert profile.investigation_configuration.enabled_evidence_types, (
+        assert profile.services, f"{path.name}: no services"
+        assert profile.investigation.enabled_evidence_types, (
             f"{path.name}: no enabledEvidenceTypes"
         )
 
@@ -58,7 +59,19 @@ def test_shipped_profiles_reference_resolvable_mapping() -> None:
     registry = load_mapping_profiles(MAPPINGS_DIR)
     for path in _profile_paths():
         profile = load_application_profile_from_file(path)
-        source_id = profile.observability_configuration.mapping_source_id
+        source_id = profile.mapping_source_id
         assert source_id == GENERIC_ECS_SOURCE_ID or source_id in registry.source_ids, (
-            f"{path.name}: mappingSourceId {source_id!r} does not resolve"
+            f"{path.name}: mapping_source_id {source_id!r} does not resolve"
         )
+
+
+def test_shipped_profile_reads_are_sanitized() -> None:
+    for path in _profile_paths():
+        profile = load_application_profile_from_file(path)
+        sanitized = profile.sanitized()
+        for ds in sanitized.get("datasources", []):
+            for tpl in ds.get("query_templates", {}).values():
+                assert "sql" not in tpl, f"{path.name}: template SQL leaked into read shape"
+            ref = ds.get("connection_ref")
+            if ref is not None:
+                assert set(ref) == {"present", "scheme"}, f"{path.name}: raw connection_ref leaked"

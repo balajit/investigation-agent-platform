@@ -127,7 +127,8 @@ class SqlAlchemyArtifactRepository:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
                 select(KnowledgeArtifactORM).where(
-                    KnowledgeArtifactORM.investigation_id == investigation_id
+                    KnowledgeArtifactORM.tenant_id == tenant_id,
+                    KnowledgeArtifactORM.investigation_id == investigation_id,
                 )
             )
             return [_artifact_from_orm(row) for row in result.all()]
@@ -204,7 +205,10 @@ class SqlAlchemySessionRepository:
         async with rls_session(self._session_factory, tenant_id) as session_ctx:
             result = await session_ctx.scalars(
                 select(InvestigationSessionORM)
-                .where(InvestigationSessionORM.investigation_id == investigation_id)
+                .where(
+                    InvestigationSessionORM.tenant_id == tenant_id,
+                    InvestigationSessionORM.investigation_id == investigation_id,
+                )
                 .order_by(InvestigationSessionORM.session_number)
             )
             return [_session_from_orm(row) for row in result.all()]
@@ -213,7 +217,8 @@ class SqlAlchemySessionRepository:
         async with rls_session(self._session_factory, tenant_id) as session_ctx:
             result = await session_ctx.scalars(
                 select(func.count(InvestigationSessionORM.id)).where(
-                    InvestigationSessionORM.investigation_id == investigation_id
+                    InvestigationSessionORM.tenant_id == tenant_id,
+                    InvestigationSessionORM.investigation_id == investigation_id,
                 )
             )
             return int(result.first() or 0)

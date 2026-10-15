@@ -658,11 +658,12 @@ class TestConclusionEndpoints:
         items = resp.json()["items"]
         assert items, "expected seeded example-app profile"
         for item in items:
-            assert "state" in item, "aliased state block must be present"
-            assert "state_configuration" not in item
-            state = item["state"]
-            assert "queryTemplates" not in state
-            assert "connectionUrl" not in state
+            for ds in item.get("datasources", []):
+                for tpl in ds.get("query_templates", {}).values():
+                    assert "sql" not in tpl, "template SQL must never appear in reads"
+                ref = ds.get("connection_ref")
+                if ref is not None:
+                    assert set(ref) == {"present", "scheme"}
 
 
 # ===========================================================================

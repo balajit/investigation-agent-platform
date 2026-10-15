@@ -103,14 +103,16 @@ class InvestigationActionValidator:
 
         if action.action_type == ActionType.QUERY_STATE:
             template_key = params.get("template_key") or params.get("template_id")
-            if not template_key or template_key not in profile.state_configuration.query_templates:
+            template_index = profile.query_template_index()
+            if not template_key or template_key not in template_index:
                 raise SecurityPolicyViolationException(
                     "Query must reference valid static queryTemplate key"
                 )
             if "sql" in params or "query_string" in params or "raw_sql" in params:
                 raise SecurityPolicyViolationException("Dynamic SQL payload detected in parameters")
-            # Validate template content against forbidden keywords
-            template_sql = profile.state_configuration.query_templates.get(str(template_key), "")
+            # Structured templates are pre-validated at profile load; re-check
+            # defense-in-depth since the validator is a security boundary.
+            template_sql = template_index[str(template_key)].sql
             if _FORBIDDEN_SQL_TOKENS.search(template_sql):
                 raise SecurityPolicyViolationException(
                     "Forbidden DDL/DML keyword in query template"
@@ -136,7 +138,7 @@ class InvestigationActionValidator:
             requested_limit = params.get("limit")
             if (
                 isinstance(requested_limit, int)
-                and requested_limit > profile.investigation_configuration.max_evidence_per_query
+                and requested_limit > profile.investigation.max_evidence_per_query
             ):
                 raise SecurityPolicyViolationException(
                     "Requested log limit exceeds allowed maximumEvidencePerQuery"
@@ -154,7 +156,7 @@ class InvestigationActionValidator:
                 raise SecurityPolicyViolationException(
                     "Path traversal attempt detected in file request"
                 )
-            allowed_roots = profile.code_configuration.source_roots
+            allowed_roots = profile.all_source_roots()
             if not _is_within_roots(file_path, allowed_roots):
                 raise SecurityPolicyViolationException(
                     "File path resides outside allowed source roots"

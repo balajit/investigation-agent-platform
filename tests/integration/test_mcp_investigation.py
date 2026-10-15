@@ -139,8 +139,9 @@ class _Stack:
             async def get_by_application_id(self, tenant_id, application_id, version=None):  # type: ignore[no-untyped-def]
                 return SimpleNamespace(
                     environment="production",
-                    observability_configuration=SimpleNamespace(mapping_source_id=None),
-                    investigation_configuration=SimpleNamespace(max_evidence_per_query=100),
+                    mapping_source_id=None,
+                    investigation=SimpleNamespace(max_evidence_per_query=100),
+                    all_service_names=lambda: ["checkout", "billing"],
                 )
 
         self.services = build_investigation_services(

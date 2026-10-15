@@ -161,6 +161,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         max_tokens_per_stream: int = 3000,
         repository_registry: Any | None = None,
         failure_attribution_service: Any | None = None,
+        profile_repo: Any | None = None,
     ) -> None:
         if sanitizer is None:
             raise ValueError(
@@ -190,6 +191,28 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         # than a silent no-op.
         self._repository_registry = repository_registry
         self._failure_attribution_service = failure_attribution_service
+        self._profile_repo = profile_repo
+
+    async def _effective_profile(
+        self, provider: Any, tenant_id: str, application_id: str
+    ) -> Any | None:
+        """Profile for provider calls: attached provider profile first.
+
+        Static providers (Elastic) carry their construction-time profile;
+        per-app providers (file-log, registry-built state) resolve sources
+        from the live revision so declarations stay single-sourced.
+        Fail-open (None) — callers treat absence as "no declared sources".
+        """
+        profile = getattr(provider, "profile", None)
+        if profile is not None:
+            return profile
+        repo = self._profile_repo
+        if repo is None:
+            return None
+        try:
+            return await repo.get_by_application_id(tenant_id, application_id)
+        except Exception:
+            return None
 
     async def _enforce_authorization(
         self,
@@ -258,7 +281,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
             result = await asyncio.wait_for(
                 provider.search_runtime_evidence(
-                    tenant_id, investigation_id, request, provider.profile
+                    tenant_id,
+                    investigation_id,
+                    request,
+                    await self._effective_profile(provider, tenant_id, application_id),
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -267,6 +293,43 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 await self._sanitizer.sanitize_evidence(tenant_id, item) for item in result.items
             ]
             deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+
+            if not deduped:
+                # Generic file-log fallback: when the default deployment has
+                # no rows for this context (e.g. no Elastic integration),
+                # consult file_log datasources before reporting empty. The
+                # adapter resolves sources from the live profile revision.
+                find_fallback = getattr(
+                    self._provider_selector, "find_runtime_provider", None
+                )
+                fallback = find_fallback("file-log") if callable(find_fallback) else None
+                if fallback is not None and fallback is not provider:
+                    try:
+                        fallback_result = await asyncio.wait_for(
+                            fallback.search_runtime_evidence(
+                                tenant_id,
+                                investigation_id,
+                                request,
+                                await self._effective_profile(
+                                    fallback, tenant_id, application_id
+                                ),
+                            ),
+                            timeout=self._timeout_seconds,
+                        )
+                        fallback_items = [
+                            await self._sanitizer.sanitize_evidence(tenant_id, item)
+                            for item in fallback_result.items
+                        ]
+                        deduped = await self._deduplicator.deduplicate(
+                            tenant_id, fallback_items
+                        )
+                        if deduped:
+                            result = fallback_result
+                    except Exception as exc:
+                        logger.warning(
+                            "File-log fallback failed; keeping primary result",
+                            extra={"error": str(exc)},
+                        )
 
             # Apply token budget compression to log streams in evidence payload
             for item in deduped:
@@ -357,7 +420,12 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
             raw_items = await asyncio.wait_for(
-                provider.search_code(tenant_id, request.query, provider.profile),
+                provider.search_code(
+                    tenant_id,
+                    request.query,
+                    provider.profile,
+                    investigation_id=investigation_id,
+                ),
                 timeout=self._timeout_seconds,
             )
             sanitized_items = [
@@ -387,7 +455,12 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
             symbols = await asyncio.wait_for(
-                provider.find_symbol(tenant_id, request.symbol_name, provider.profile),
+                provider.find_symbol(
+                    tenant_id,
+                    request.symbol_name,
+                    provider.profile,
+                    investigation_id=investigation_id,
+                ),
                 timeout=self._timeout_seconds,
             )
             # Symbols are metadata; sanitize not applicable but ensure no raw source leak — return via sanitized envelope
@@ -445,7 +518,12 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
             callers = await asyncio.wait_for(
-                provider.find_callers(tenant_id, request.symbol, provider.profile),
+                provider.find_callers(
+                    tenant_id,
+                    request.symbol,
+                    provider.profile,
+                    investigation_id=investigation_id,
+                ),
                 timeout=self._timeout_seconds,
             )
             return EvidenceQueryResult(

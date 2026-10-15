@@ -10,6 +10,9 @@ from sqlalchemy import ARRAY, bindparam, text
 from sqlalchemy import UUID as PostgresUUID
 
 from investigation_agent_platform.domain.common.exceptions import ExecutionError
+from investigation_agent_platform.ports.persistence.repositories import (
+    EvidenceRelationshipRecord,
+)
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -30,7 +33,7 @@ class PostgresRelationshipRepository:
         application_id: str,
         root_evidence_ids: list[str],
         max_depth: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[EvidenceRelationshipRecord]:
         """Fetch directed and bidirectional evidence relationship edges up to a bounded recursion depth."""
         with tracer.start_as_current_span(
             "PostgresRelationshipRepository.fetch_relationships_for_evidence"
@@ -110,12 +113,14 @@ class PostgresRelationshipRepository:
                     rows = result.mappings().all()
                     span.set_attribute("result_count", len(rows))
                     return [
-                        {
-                            "source_id": str(row["source_node_id"]),
-                            "target_id": str(row["target_node_id"]),
-                            "type": str(row["relationship_type"]),
-                            "confidence": float(row["confidence"]),
-                        }
+                        EvidenceRelationshipRecord(
+                            tenant_id=tenant_id,
+                            application_id=application_id,
+                            source_id=str(row["source_node_id"]),
+                            target_id=str(row["target_node_id"]),
+                            type=str(row["relationship_type"]),
+                            confidence=float(row["confidence"]),
+                        )
                         for row in rows
                     ]
             except Exception as exc:

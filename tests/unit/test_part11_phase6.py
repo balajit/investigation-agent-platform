@@ -70,7 +70,7 @@ def _profile(app_id: str, sources: list[dict], roots: list[str] | None = None):
     return _DEFAULT_PROFILE.model_copy(
         update={
             "id": app_id,
-            "reference_docs_configuration": ReferenceDocsProfile(
+            "reference_docs": ReferenceDocsProfile(
                 sources=sources, local_allowed_roots=roots or []
             ),
         }

@@ -17,7 +17,7 @@ from investigation_agent_platform.domain.evidence.models import (
     Evidence,
     EvidenceType,
 )
-from investigation_agent_platform.domain.profile.models import CodeProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -63,26 +63,54 @@ class PyGit2Adapter:
                 "Path traversal attempt blocked in git tree lookup"
             )
 
-    def _require_tenant_scope(self, tenant_id: str, profile: CodeProfile) -> None:
+    @staticmethod
+    def _service_locators(profile: ApplicationProfile) -> list[str]:
+        """Checkout locators for every service: ``{org}/{repos[0]}``."""
+        locators: list[str] = []
+        for svc in profile.services:
+            if svc.code.org and svc.code.repos:
+                locators.append(f"{svc.code.org}/{svc.code.repos[0]}")
+            elif svc.code.repos:
+                locators.append(svc.code.repos[0])
+            else:
+                locators.append(svc.name)
+        return locators
+
+    @staticmethod
+    def _primary_locator(profile: ApplicationProfile) -> tuple[str, str]:
+        """Locator + branch of the primary service (fail-closed when none)."""
+        svc = profile.primary_service
+        if svc is None:
+            raise ExecutionError("Application profile declares no services")
+        locator = (
+            f"{svc.code.org}/{svc.code.repos[0]}"
+            if svc.code.org and svc.code.repos
+            else (svc.code.repos[0] if svc.code.repos else svc.name)
+        )
+        return locator, svc.code.default_branch
+
+    def _require_tenant_scope(self, tenant_id: str, profile: ApplicationProfile) -> None:
         from investigation_agent_platform.domain.common.exceptions import (
             SecurityPolicyViolationException,
         )
 
         if not tenant_id or tenant_id == "anonymous":
             raise SecurityPolicyViolationException("Code access requires an authenticated tenant")
+        locators = self._service_locators(profile)
         if self._tenant_allowlist is None:
             logger.warning(
                 "Git repository access without tenant allow-list (dev mode)",
-                extra={"tenant_id": tenant_id, "repository": profile.repository},
+                extra={"tenant_id": tenant_id, "repository": locators},
             )
             return
-        if profile.repository not in self._tenant_allowlist.get(tenant_id, set()):
+        allowed = self._tenant_allowlist.get(tenant_id, set())
+        if not any(loc in allowed for loc in locators):
             raise SecurityPolicyViolationException(
-                f"Tenant '{tenant_id}' is not authorized for repository '{profile.repository}'"
+                f"Tenant '{tenant_id}' is not authorized for repositories {locators}"
             )
 
     async def get_source(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
     ) -> Evidence:
         """Asynchronously fetch bounded source code snippet from git tree."""
         with tracer.start_as_current_span("PyGit2Adapter.get_source") as span:
@@ -94,18 +122,18 @@ class PyGit2Adapter:
             )
 
     def _get_source_sync(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
     ) -> Evidence:
         self._require_tenant_scope(tenant_id, profile)
         self._validate_tree_path(file_path)
-        repository = profile.repository
+        repository, branch = self._primary_locator(profile)
         repo_path = (self._repo_base_path / repository).resolve()
         if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
             raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
 
         try:
             repo = pygit2.Repository(str(repo_path))
-            commit = repo.revparse_single(profile.default_branch)
+            commit = repo.revparse_single(branch)
             entry = commit.tree[file_path]
             if not isinstance(entry, pygit2.Blob):
                 raise ExecutionError(f"Path is not a blob: {file_path}")
@@ -181,7 +209,7 @@ class PyGit2Adapter:
         )
 
     async def get_code_history(
-        self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, path: str, profile: ApplicationProfile
     ) -> list[Evidence]:
         """Fetch git commit history for a specified file path."""
         with tracer.start_as_current_span("PyGit2Adapter.get_code_history") as span:
@@ -193,7 +221,12 @@ class PyGit2Adapter:
             )
 
     async def compare_versions(
-        self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        source_ref: str,
+        target_ref: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> CodeDiffResult:
         """Diff two revisions within the tenant-scoped repository.
 
@@ -203,15 +236,17 @@ class PyGit2Adapter:
         """
         with tracer.start_as_current_span("PyGit2Adapter.compare_versions") as span:
             span.set_attribute("tenant_id", tenant_id)
+            if investigation_id is not None:
+                span.set_attribute("investigation_id", str(investigation_id))
             return await asyncio.to_thread(
                 self._compare_versions_sync, tenant_id, source_ref, target_ref, profile
             )
 
     def _compare_versions_sync(
-        self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
+        self, tenant_id: str, source_ref: str, target_ref: str, profile: ApplicationProfile
     ) -> CodeDiffResult:
         self._require_tenant_scope(tenant_id, profile)
-        repository = profile.repository
+        repository, _ = self._primary_locator(profile)
         repo_path = (self._repo_base_path / repository).resolve()
         if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
             raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
@@ -251,7 +286,7 @@ class PyGit2Adapter:
         )
 
     def _get_code_history_sync(
-        self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, path: str, profile: ApplicationProfile
     ) -> list[Evidence]:
         self._require_tenant_scope(tenant_id, profile)
         self._validate_tree_path(path)

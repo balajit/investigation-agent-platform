@@ -23,7 +23,7 @@ from investigation_agent_platform.domain.evidence.models import (
     Evidence,
     EvidenceType,
 )
-from investigation_agent_platform.domain.profile.models import CodeProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -88,7 +88,7 @@ ORM_PATTERNS = re.compile(
 class TreeSitterCodeIntelligenceProvider:
     """Filesystem and Rustworkx backed implementation of CodeIntelligenceProviderProtocol.
 
-    Scans repo_base_path / CodeProfile.repository / sourceRoots and uses tree-sitter
+    Scans repo_base_path / services[].code (org/repos + sourceRoots) and uses tree-sitter
     and pre-computed Rustworkx (PyDiGraph) call graph artifacts for high-performance analysis.
     """
 
@@ -120,66 +120,88 @@ class TreeSitterCodeIntelligenceProvider:
         self._graphify_artifact_name = graphify_artifact_name
         self._graph_cache: dict[str, rx.PyDiGraph] = {}
 
-    def _require_tenant_scope(self, tenant_id: str, profile: CodeProfile) -> None:
-        """Fail closed unless this tenant is authorized for the repository."""
+    @staticmethod
+    def _service_locators(profile: ApplicationProfile) -> list[str]:
+        """Checkout locators for every service: ``{org}/{repos[0]}``."""
+        locators: list[str] = []
+        for svc in profile.services:
+            if svc.code.org and svc.code.repos:
+                locators.append(f"{svc.code.org}/{svc.code.repos[0]}")
+            elif svc.code.repos:
+                locators.append(svc.code.repos[0])
+            else:
+                locators.append(svc.name)
+        return locators
+
+    def _authorized_locators(self, tenant_id: str, profile: ApplicationProfile) -> list[str]:
+        """Service locators this tenant may scan (allowlist-filtered, fail-closed)."""
+        locators = self._service_locators(profile)
+        if self._tenant_allowlist is None:
+            return locators
+        return [loc for loc in locators if loc in self._tenant_allowlist.get(tenant_id, set())]
+
+    def _require_tenant_scope(self, tenant_id: str, profile: ApplicationProfile) -> None:
+        """Fail closed unless this tenant is authorized for at least one service repo."""
         from investigation_agent_platform.domain.common.exceptions import (
             SecurityPolicyViolationException,
         )
 
         if not tenant_id or tenant_id == "anonymous":
             raise SecurityPolicyViolationException("Code access requires an authenticated tenant")
+        locators = self._service_locators(profile)
         if self._tenant_allowlist is None:
             logger.warning(
                 "Code repository access without tenant allow-list (dev mode)",
-                extra={"tenant_id": tenant_id, "repository": profile.repository},
+                extra={"tenant_id": tenant_id, "repository": locators},
             )
             return
-        allowed = self._tenant_allowlist.get(tenant_id, set())
-        if profile.repository not in allowed:
+        if not self._authorized_locators(tenant_id, profile):
             raise SecurityPolicyViolationException(
-                f"Tenant '{tenant_id}' is not authorized for repository '{profile.repository}'"
+                f"Tenant '{tenant_id}' is not authorized for repositories {locators}"
             )
 
     # -- Rustworkx Graph Helpers ---------------------------------------
 
-    def _load_graphify_graph(self, profile: CodeProfile) -> rx.PyDiGraph | None:
+    def _load_graphify_graph(self, profile: ApplicationProfile) -> rx.PyDiGraph | None:
         """Attempts to load a Graphify JSON artifact into a rustworkx.PyDiGraph."""
-        repo_path = self._repo_base_path / profile.repository
-        graph_file = repo_path / self._graphify_artifact_name
+        for locator in self._service_locators(profile):
+            repo_path = self._repo_base_path / locator
+            graph_file = repo_path / self._graphify_artifact_name
 
-        if not graph_file.exists():
-            return None
+            if not graph_file.exists():
+                continue
 
-        cache_key = str(graph_file)
-        if cache_key in self._graph_cache:
-            return self._graph_cache[cache_key]
+            cache_key = str(graph_file)
+            if cache_key in self._graph_cache:
+                return self._graph_cache[cache_key]
 
-        try:
-            with open(graph_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            try:
+                with open(graph_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
-            graph = rx.PyDiGraph()
-            node_lookup: dict[str, int] = {}
+                graph = rx.PyDiGraph()
+                node_lookup: dict[str, int] = {}
 
-            for node_info in data.get("nodes", []):
-                node_id = node_info.get("id", "")
-                idx = graph.add_node(node_info)
-                if node_id:
-                    node_lookup[node_id] = idx
+                for node_info in data.get("nodes", []):
+                    node_id = node_info.get("id", "")
+                    idx = graph.add_node(node_info)
+                    if node_id:
+                        node_lookup[node_id] = idx
 
-            for edge in data.get("links", []):
-                src_id = edge.get("source")
-                dst_id = edge.get("target")
-                if src_id in node_lookup and dst_id in node_lookup:
-                    graph.add_edge(node_lookup[src_id], node_lookup[dst_id], edge)
+                for edge in data.get("links", []):
+                    src_id = edge.get("source")
+                    dst_id = edge.get("target")
+                    if src_id in node_lookup and dst_id in node_lookup:
+                        graph.add_edge(node_lookup[src_id], node_lookup[dst_id], edge)
 
-            self._graph_cache[cache_key] = graph
-            return graph
-        except Exception as exc:
-            logger.warning(
-                "Failed to load Graphify artifact at %s with rustworkx: %s", graph_file, exc
-            )
-            return None
+                self._graph_cache[cache_key] = graph
+                return graph
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load Graphify artifact at %s with rustworkx: %s", graph_file, exc
+                )
+                continue
+        return None
 
     # -- Internal Parser & Path Helpers --------------------------------
 
@@ -197,49 +219,55 @@ class TreeSitterCodeIntelligenceProvider:
             self._parsers[language] = None
             return None
 
-    def _resolve_roots(self, profile: CodeProfile) -> list[Path]:
-        try:
-            base = Path(profile.repository)
-            if base.is_absolute():
-                logger.warning("Absolute repository path rejected: %s", profile.repository)
-                return []
-            repo_path = (self._repo_base_path / base).resolve()
-        except Exception:
-            return []
-        try:
-            if not repo_path.is_relative_to(self._repo_base_path):
-                logger.warning("Repository path traversal blocked: %s", profile.repository)
-                return []
-        except Exception:
-            return []
-        # Symlink-escape rejection: the resolved repo root itself must be a
-        # real directory under base, not a symlink pointing elsewhere.
-        if repo_path.is_symlink():
-            logger.warning("Repository root is a symlink; access denied: %s", profile.repository)
-            return []
-        if not repo_path.is_dir():
-            return []
+    def _resolve_roots(self, profile: ApplicationProfile) -> list[Path]:
         roots: list[Path] = []
-        source_roots = profile.source_roots or ["."]
-        for sr in source_roots:
-            if not sr or sr.startswith("/") or sr.startswith("~"):
-                continue
-            if _has_traversal(sr):
-                continue
+        for svc in profile.services:
+            locator = (
+                f"{svc.code.org}/{svc.code.repos[0]}"
+                if svc.code.org and svc.code.repos
+                else (svc.code.repos[0] if svc.code.repos else svc.name)
+            )
             try:
-                candidate = (repo_path / sr).resolve()
+                base = Path(locator)
+                if base.is_absolute():
+                    logger.warning("Absolute repository path rejected: %s", locator)
+                    continue
+                repo_path = (self._repo_base_path / base).resolve()
             except Exception:
                 continue
             try:
-                if not candidate.is_relative_to(repo_path):
+                if not repo_path.is_relative_to(self._repo_base_path):
+                    logger.warning("Repository path traversal blocked: %s", locator)
                     continue
             except Exception:
                 continue
-            if candidate.is_symlink():
+            # Symlink-escape rejection: the resolved repo root itself must be a
+            # real directory under base, not a symlink pointing elsewhere.
+            if repo_path.is_symlink():
+                logger.warning("Repository root is a symlink; access denied: %s", locator)
                 continue
-            if candidate.exists():
-                roots.append(candidate)
-        # deduplicate
+            if not repo_path.is_dir():
+                continue
+            source_roots = [*svc.code.source_roots, *svc.code.paths] or ["."]
+            for sr in source_roots:
+                if not sr or sr.startswith("/") or sr.startswith("~"):
+                    continue
+                if _has_traversal(sr):
+                    continue
+                try:
+                    candidate = (repo_path / sr).resolve()
+                except Exception:
+                    continue
+                try:
+                    if not candidate.is_relative_to(repo_path):
+                        continue
+                except Exception:
+                    continue
+                if candidate.is_symlink():
+                    continue
+                if candidate.exists():
+                    roots.append(candidate)
+        # deduplicate across services
         uniq: list[Path] = []
         seen: set[str] = set()
         for r in roots:
@@ -350,7 +378,7 @@ class TreeSitterCodeIntelligenceProvider:
     # -- protocol methods (sync cores) ---------------------------------
 
     def _search_code_sync(
-        self, tenant_id: str, investigation_id: UUID, query: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, query: str, profile: ApplicationProfile
     ) -> list[Evidence]:
         roots = self._resolve_roots(profile)
         if not roots:
@@ -428,7 +456,7 @@ class TreeSitterCodeIntelligenceProvider:
             )
         return evidences
 
-    def _find_symbol_sync(self, symbol_name: str, profile: CodeProfile) -> list[CodeSymbol]:
+    def _find_symbol_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CodeSymbol]:
         roots = self._resolve_roots(profile)
         if not roots:
             return []
@@ -455,7 +483,7 @@ class TreeSitterCodeIntelligenceProvider:
                     results.append(s)
         return results
 
-    def _find_callers_sync(self, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
+    def _find_callers_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CallGraphNode]:
         # Fast path: Check Rustworkx PyDiGraph artifact
         graph = self._load_graphify_graph(profile)
         if graph is not None:
@@ -585,7 +613,7 @@ class TreeSitterCodeIntelligenceProvider:
                 visited_children = True
         return nodes
 
-    def _find_callees_sync(self, symbol_name: str, profile: CodeProfile) -> list[CallGraphNode]:
+    def _find_callees_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CallGraphNode]:
         # Fast path: Check Rustworkx PyDiGraph artifact
         graph = self._load_graphify_graph(profile)
         if graph is not None:
@@ -735,7 +763,7 @@ class TreeSitterCodeIntelligenceProvider:
         return nodes
 
     def _find_exception_handlers_sync(
-        self, exception_class: str, profile: CodeProfile
+        self, exception_class: str, profile: ApplicationProfile
     ) -> list[CodeLocation]:
         roots = self._resolve_roots(profile)
         if not roots:
@@ -800,7 +828,7 @@ class TreeSitterCodeIntelligenceProvider:
         return results
 
     def _find_database_operations_sync(
-        self, entity_or_table: str, profile: CodeProfile
+        self, entity_or_table: str, profile: ApplicationProfile
     ) -> list[CodeLocation]:
         roots = self._resolve_roots(profile)
         if not roots:
@@ -884,7 +912,7 @@ class TreeSitterCodeIntelligenceProvider:
         self,
         tenant_id: str,
         query: str,
-        profile: CodeProfile,
+        profile: ApplicationProfile,
         investigation_id: UUID | None = None,
     ) -> list[Evidence]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.search_code"):
@@ -901,28 +929,44 @@ class TreeSitterCodeIntelligenceProvider:
             )
 
     async def find_symbol(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeSymbol]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_symbol"):
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_symbol_sync, symbol_name, profile)
 
     async def find_callers(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callers"):
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callers_sync, symbol_name, profile)
 
     async def find_callees(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callees"):
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callees_sync, symbol_name, profile)
 
     async def find_exception_handlers(
-        self, tenant_id: str, exception_class: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        exception_class: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeLocation]:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_exception_handlers"
@@ -933,7 +977,11 @@ class TreeSitterCodeIntelligenceProvider:
             )
 
     async def find_database_operations(
-        self, tenant_id: str, entity_or_table: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        entity_or_table: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeLocation]:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_database_operations"

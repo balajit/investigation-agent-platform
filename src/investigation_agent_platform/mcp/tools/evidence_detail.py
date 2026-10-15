@@ -13,6 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from opentelemetry import trace
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.composition import (
     InvestigationServices,
 )
@@ -53,28 +54,34 @@ async def get_evidence_core(
             output = EvidenceDetailOutput.from_domain(evidence)
             logger.info(
                 "MCP get_evidence completed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.get_evidence.completed",
                         "correlation_id": scope.correlation_id,
                     }
-                },
+                ),
             )
             return output
         except Exception as exc:
-            envelope = error_envelope(exc)
+            envelope = error_envelope(
+                exc,
+                tenant_id=scope.tenant_id,
+                investigation_id=str(scope.investigation_id),
+            )
             span.set_attribute("error_code", envelope.error.code.value)
-            logger.info(
+            logger.exception(
                 "MCP get_evidence failed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.get_evidence.failed",
                         "correlation_id": scope.correlation_id,
                         "error_code": envelope.error.code.value,
                     }
-                },
+                ),
             )
             return envelope
 

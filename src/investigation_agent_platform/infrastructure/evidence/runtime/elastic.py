@@ -43,7 +43,7 @@ from investigation_agent_platform.domain.observability.mapping import (
     ObservabilitySourceMapping,
     generic_ecs_mapping,
 )
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.infrastructure.configuration.mapping_registry import (
     MappingProfileRegistry,
 )
@@ -174,7 +174,7 @@ class AsyncElasticAdapter:
         settings: ElasticAdapterSettings,
         provider_id: str = "elastic-primary",
         request_timeout: int = 30,
-        profile: ObservabilityProfile | None = None,
+        profile: ApplicationProfile | None = None,
         mapping_registry: MappingProfileRegistry | None = None,
     ) -> None:
         if not settings.cursor_signing_key:
@@ -392,7 +392,7 @@ class AsyncElasticAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: RuntimeEvidenceRequest,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncElasticAdapter.search_runtime_evidence") as span:

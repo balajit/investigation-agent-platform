@@ -40,8 +40,8 @@ def _investigation(iid, app_id=APP_ID):  # type: ignore[no-untyped-def]
 def _profile(environment="production", mapping_source_id=None):  # type: ignore[no-untyped-def]
     return SimpleNamespace(
         environment=environment,
-        observability_configuration=SimpleNamespace(mapping_source_id=mapping_source_id),
-        investigation_configuration=SimpleNamespace(max_evidence_per_query=100),
+        mapping_source_id=mapping_source_id,
+        investigation=SimpleNamespace(max_evidence_per_query=100),
     )
 
 

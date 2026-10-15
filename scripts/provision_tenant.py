@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Provision tenant application profiles from a loader manifest (WIP §2.1).
+"""Provision tenant application profiles from a loader manifest.
 
-Reads READY rows, grounds the `code` section in observed checkouts (language
-by dominant extension, source roots by layout, locator/branch from the
-manifest), and saves DRAFT profiles via `profile_repo.save`. Observability
-and state sections are explicit TBD placeholders — DRAFT status plus the
+Reads READY rows, grounds the service code in observed checkouts (language
+by dominant extension, source roots by layout, org/repo/branch from the
+manifest), and saves DRAFT profiles via `profile_repo.save`. Telemetry and
+datasources are explicit TBD placeholders — DRAFT status plus the
 description say so; activation requires operator-supplied facts. Never
 fabricates indices, tables, or query templates.
 
@@ -122,44 +122,34 @@ async def run(args: argparse.Namespace) -> int:
                     "tenant_id": tenant_id,
                     "name": full_name,
                     "description": (
-                        "DRAFT auto-provisioned from ingest manifest; code section "
-                        "observed, observability/state are TBD placeholders — replace "
+                        "DRAFT auto-provisioned from ingest manifest; service code "
+                        "observed, telemetry/datasources are TBD placeholders — replace "
                         "with real facts before activating."
                     ),
                     "environment": "production",
                     "status": "DRAFT",
                     "owner": "tenant-provisioning",
-                    "observability": {
-                        "provider": "elastic",
-                        "indices": ["TBD"],
-                        "timestampField": "@timestamp",
-                        "serviceField": "service.name",
-                        "environmentField": "service.environment",
-                        "sessionField": "labels.sessionId",
-                        "requestField": "labels.requestId",
-                        "traceField": "trace.id",
-                        "logLevelField": "log.level",
-                    },
-                    "state": {
-                        "provider": "unknown",
-                        "database": "TBD",
-                        "schema": "TBD",
-                        "tables": ["TBD"],
-                        "primaryIdentifiers": ["TBD"],
-                        "stateFields": ["TBD"],
-                        "timestampFields": ["TBD"],
-                        "queryTemplates": {},
-                    },
-                    "code": {
-                        "provider": "git",
-                        "repository": f"https://github.com/{full_name}.git",
-                        "defaultBranch": row.get("default_branch") or "main",
-                        "language": language,
-                        "sourceRoots": roots or ["src"],
-                        "buildSystem": _BUILD_SYSTEM.get(language, "unknown"),
-                        "moduleStructure": "multi-module" if len(roots) > 3 else "single-module",
-                        "repositoryId": rid,
-                    },
+                    "planes": ["backend"],
+                    "mapping_source_id": "generic-ecs",
+                    "services": [
+                        {
+                            "name": rid,
+                            "role": "edge",
+                            "code": {
+                                "org": full_name.split("/")[0] if "/" in full_name else None,
+                                "repos": [full_name.split("/")[-1]],
+                                "default_branch": row.get("default_branch") or "main",
+                                "language": language,
+                                "source_roots": roots or ["src"],
+                                "build_system": _BUILD_SYSTEM.get(language, "unknown"),
+                                "module_structure": "multi-module"
+                                if len(roots) > 3
+                                else "single-module",
+                            },
+                            "repository_id": rid,
+                        }
+                    ],
+                    "datasources": [],
                     "correlation": {
                         "fields": ["sessionId", "requestId", "traceId", "correlationId"]
                     },

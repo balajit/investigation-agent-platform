@@ -50,4 +50,6 @@ def job_topic_for(tenant_id: str, topic_prefix: str = "iap") -> str:
 class TopicEventPublisher(Protocol):
     """Topic-aware publishing; extends EventPublisher without changing it."""
 
-    async def publish_to_topic(self, topic: str, payload: dict[str, Any]) -> None: ...
+    async def publish_to_topic(
+        self, tenant_id: str, topic: str, payload: EventEnvelope
+    ) -> None: ...

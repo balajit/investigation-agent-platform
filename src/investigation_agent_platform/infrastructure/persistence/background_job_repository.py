@@ -84,6 +84,10 @@ class SqlAlchemyBackgroundJobRepository:
         )
 
     async def create(self, job: BackgroundJob) -> None:
+        # TO_DO-017: tenant scope travels inside the job model; fail closed
+        # when it is missing instead of writing into the wrong RLS context.
+        if not job.tenant_id or not job.tenant_id.strip():
+            raise ValueError("BackgroundJob requires a non-empty tenant_id.")
         async with rls_session(self._session_factory, job.tenant_id) as session:
             session.add(self._to_orm(job))
 

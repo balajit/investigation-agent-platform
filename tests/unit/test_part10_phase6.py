@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -31,17 +31,13 @@ SHIPPED_DIR = Path(__file__).resolve().parents[2] / "config" / "observability-ma
 
 
 def _profile(mapping_source_id="generic-ecs"):  # type: ignore[no-untyped-def]
-    return ObservabilityProfile(
-        provider="elastic",
-        indices=["logs-app"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="deployment.environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="severity",
-        mappingSourceId=mapping_source_id,
+    return ApplicationProfile(
+        id="app",
+        tenant_id="tenant-a",
+        name="n",
+        description="d",
+        environment="production",
+        mapping_source_id=mapping_source_id,
     )
 
 

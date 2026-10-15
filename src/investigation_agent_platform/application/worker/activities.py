@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -75,6 +79,365 @@ def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
     return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=True)
 
 
+# ---------------------------------------------------------------------------
+# Wave 2 shared helpers (TO_DO-007/011/012/013/016): telemetry extras,
+# strict input coercion, idempotency wiring, actor threading, domain graph.
+# ---------------------------------------------------------------------------
+
+
+def _sanitize(extra: dict[str, Any]) -> dict[str, Any]:
+    """Apply the api/errors.py redaction policy to a log ``extra`` dict (TO_DO-009).
+
+    Function-level import with cycle justification (C13): importing
+    ``investigation_agent_platform.api.errors`` at module top executes the
+    ``api`` package ``__init__`` (FastAPI app wiring); this module already
+    keeps ``api`` imports lazy (see ``_get_ctx``) to avoid a worker->api
+    import cycle.     ``sys.modules`` caching makes repeat calls cheap.
+    """
+    # Function-level: top-level import would execute api/__init__ (FastAPI app) -> cycle (C13).
+    from investigation_agent_platform.api.errors import sanitize_extra
+
+    return sanitize_extra(extra)
+
+
+def _log_extra(
+    *,
+    tenant_id: str = "",
+    investigation_id: Any = "",
+    event: str = "",
+    error: str | None = None,
+    error_type: str | None = None,
+    **data: Any,
+) -> dict[str, Any]:
+    """Build a C3 telemetry ``extra`` dict: IDs plus stable ``event`` (TO_DO-007).
+
+    ``investigation_id`` accepts ``UUID``/``None`` and is stringified. Every
+    value passes through ``sanitize_extra`` so secret-bearing keys can never
+    leak outside the API layer (TO_DO-009).
+    """
+    extra: dict[str, Any] = {
+        "tenant_id": tenant_id or "",
+        "investigation_id": "" if investigation_id is None else str(investigation_id),
+        "event": event,
+    }
+    if error is not None:
+        extra["error"] = error
+    if error_type is not None:
+        extra["error_type"] = error_type
+    extra.update(data)
+    return _sanitize(extra)
+
+
+def _coerced_data(cls: type, params: object, *, activity: str) -> dict[str, Any]:
+    """Strict activity-input coercion replacing ``X | dict[str, Any]`` unions (TO_DO-016).
+
+    Temporal may deliver inputs as plain dicts; both typed dataclass
+    instances and dicts are accepted, but dicts are validated field-by-field:
+    every required dataclass field must be present as a key. Violations raise
+    non-retryable ``ApplicationFailure`` instead of surfacing later as
+    ``KeyError``/``ValueError`` deep in workflow logic. Present-but-empty
+    values still flow to the existing per-activity guards, which return the
+    ``success=False`` envelope (backward compatible with validation-style
+    tests). (Inputs stay stdlib dataclasses — not Pydantic ``BaseModel`` —
+    because the Temporal payload converter in this repo is dataclass-based;
+    this helper is the functional equivalent of ``Model.model_validate`` at
+    the boundary.)
+    """
+    import dataclasses as _dataclasses
+
+    if isinstance(params, cls):
+        return {f.name: getattr(params, f.name) for f in _dataclasses.fields(cls)}
+    if isinstance(params, dict):
+        fields = _dataclasses.fields(cls)
+        known = {f.name for f in fields}
+        problems = sorted(
+            f.name
+            for f in fields
+            if f.default is _dataclasses.MISSING
+            and f.default_factory is _dataclasses.MISSING  # type: ignore[comparison-overlap]
+            and f.name not in params
+        )
+        if problems:
+            logger.warning(
+                "%s rejected invalid activity input: %s",
+                activity,
+                ", ".join(problems),
+                extra=_log_extra(event=f"{activity} input rejected"),
+            )
+            raise ApplicationFailure(
+                f"{activity} received invalid input: missing {', '.join(problems)}",
+                type="ActivityInputValidationError",
+                non_retryable=True,
+            )
+        try:
+            instance = cls(**{k: v for k, v in params.items() if k in known})
+        except TypeError as exc:
+            logger.exception(
+                "%s rejected malformed activity input",
+                activity,
+                extra=_log_extra(event=f"{activity} input rejected", error=str(exc)),
+            )
+            raise ApplicationFailure(
+                f"{activity} received invalid input: {exc}",
+                type="ActivityInputValidationError",
+                non_retryable=True,
+            ) from exc
+        return {f.name: getattr(instance, f.name) for f in fields}
+    logger.warning(
+        "%s rejected unsupported input type %s",
+        activity,
+        type(params).__name__,
+        extra=_log_extra(event=f"{activity} input rejected"),
+    )
+    raise ApplicationFailure(
+        f"{activity} received unsupported input of type {type(params).__name__}; "
+        f"expected {cls.__name__} or dict",
+        type="ActivityInputValidationError",
+        non_retryable=True,
+    )
+
+
+def _idempotency_store_for(ctx: Any) -> Any | None:
+    """Return the ctx idempotency store when it speaks the durable protocol.
+
+    ``Any`` is justified: ``AppContext`` is assembled in bootstrap/api layers
+    and intentionally untyped at the worker boundary; the structural check
+    keeps activities backward compatible with minimal/test contexts that
+    carry no store (idempotency then degrades to downstream dedup, logged).
+    """
+    store = getattr(ctx, "idempotency_store", None)
+    if store is None:
+        return None
+    if not (hasattr(store, "reserve_or_get") and hasattr(store, "complete")):
+        return None
+    return store
+
+
+def _request_hash(payload: dict[str, Any]) -> str:
+    """Deterministic F-014 request hash for an idempotency reservation."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _reserve_or_replay(
+    *,
+    ctx: Any,
+    tenant_id: str,
+    key: str,
+    request_payload: dict[str, Any],
+    operation: str,
+    activity: str,
+    investigation_id: Any = "",
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Reserve an idempotency key or return the stored replay response (TO_DO-011).
+
+    Returns ``(replayed_response, active_key)``: when ``replayed_response`` is
+    not ``None`` the caller must return it without re-executing. When the
+    store is unwired, returns ``(None, None)`` and the caller proceeds —
+    downstream dedup (deterministic ``action_id`` F-057, evidence fingerprint,
+    outbox key) remains the safety net, and the skip is logged loudly.
+    """
+    store = _idempotency_store_for(ctx)
+    if store is None:
+        logger.warning(
+            "%s proceeding without idempotency reservation; store unwired",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency skipped",
+                idempotency_key=key,
+            ),
+        )
+        return None, None
+    # Function-level: keeps the worker import graph light (C13).
+    from investigation_agent_platform.domain.common.exceptions import (
+        IdempotencyConflictError,
+        IdempotencyInProgressError,
+    )
+
+    try:
+        cached, reserved = await store.reserve_or_get(
+            tenant_id, key, _request_hash(request_payload), operation=operation
+        )
+    except IdempotencyConflictError as exc:
+        logger.warning(
+            "%s idempotency conflict; refusing duplicate",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency conflict",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
+        raise ApplicationFailure(
+            str(exc), type="IdempotencyKeyConflict", non_retryable=True
+        ) from exc
+    except IdempotencyInProgressError as exc:
+        logger.warning(
+            "%s idempotency already in progress; yielding to owner",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency in progress",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
+        raise ApplicationFailure(
+            str(exc), type="IdempotencyRequestInProgress", non_retryable=False
+        ) from exc
+    if not reserved:
+        logger.info(
+            "%s idempotency replay; skipping re-execution",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency replay",
+                idempotency_key=key,
+            ),
+        )
+        return (cached or {}), None
+    return None, key
+
+
+async def _complete_reservation(
+    *,
+    ctx: Any,
+    tenant_id: str,
+    key: str,
+    operation: str,
+    response: dict[str, Any],
+    activity: str,
+    investigation_id: Any = "",
+) -> None:
+    """Store an idempotency response; failures are loud but never fail the activity.
+
+    The mutation already succeeded at this point: a pending reservation only
+    means a later retry re-executes (downstream dedup still applies), so a
+    ``complete`` failure must not convert success into failure.
+    """
+    store = _idempotency_store_for(ctx)
+    if store is None:
+        return
+    try:
+        await store.complete(tenant_id, key, response, operation=operation)
+    except Exception as exc:
+        logger.exception(
+            "%s idempotency complete failed; reservation left pending",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency complete failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                idempotency_key=key,
+            ),
+        )
+
+
+async def _abandon_reservation(
+    *,
+    ctx: Any,
+    tenant_id: str,
+    key: str | None,
+    operation: str,
+    activity: str,
+    investigation_id: Any = "",
+) -> None:
+    """Release a pending reservation after the reserved body raised.
+
+    Without this, a failed attempt leaves an in-progress lease that turns
+    every Temporal retry into IdempotencyRequestInProgress until TTL expiry.
+    Safe to call when no lease is active (None/empty key or operation) and
+    when the store is unwired or lacks ``abandon``; failures are loud but
+    never mask the original error.
+    """
+    if not key or not operation:
+        return
+    store = _idempotency_store_for(ctx)
+    if store is None:
+        return
+    abandon = getattr(store, "abandon", None)
+    if not callable(abandon):
+        return
+    try:
+        await abandon(tenant_id, key, operation)
+    except Exception as exc:
+        logger.exception(
+            "%s idempotency abandon failed; retry may see a stale lease",
+            activity,
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event=f"{activity} idempotency abandon failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                idempotency_key=key,
+            ),
+        )
+
+
+_DOMAIN_TRANSITION_GRAPH: dict[Any, set[Any]] | None = None
+# Any-keyed: statuses are domain InvestigationStatus enums resolved lazily to
+# honor this module's no-top-level-domain-import convention beyond ActionType.
+
+
+def _domain_transition_graph() -> dict[Any, set[Any]]:
+    """Derive lifecycle adjacency from the domain single source (TO_DO-013).
+
+    Probes ``Investigation.transition_to`` on scratch instances instead of
+    duplicating the edge table: any future domain edge edit is picked up
+    without a worker change. Computed once per process.
+    """
+    global _DOMAIN_TRANSITION_GRAPH
+    if _DOMAIN_TRANSITION_GRAPH is not None:
+        return _DOMAIN_TRANSITION_GRAPH
+    # Function-level imports: keeps the worker import graph light (C13).
+    from investigation_agent_platform.domain.common.exceptions import (
+        InvalidLifecycleTransitionException,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
+        ActorType,
+        Investigation,
+        InvestigationStatus,
+    )
+
+    graph: dict[Any, set[Any]] = {}
+    for source in InvestigationStatus:
+        probe = Investigation.model_construct(status=source, version=1, started_at=None)
+        reachable: set[Any] = set()
+        for target in InvestigationStatus:
+            try:
+                probe.transition_to(target, ActorType.SYSTEM, "graph probe")
+            except InvalidLifecycleTransitionException:
+                continue
+            reachable.add(target)
+        graph[source] = reachable
+    _DOMAIN_TRANSITION_GRAPH = graph
+    return graph
+
+
+def _normalize_actor(value: Any) -> Any:
+    """Coerce an actor value to domain ActorType, defaulting to SYSTEM (TO_DO-012)."""
+    # Function-level: keeps the worker import graph light (C13).
+    from investigation_agent_platform.domain.investigation.models import (
+        ActorType,
+    )
+
+    if isinstance(value, ActorType):
+        return value
+    try:
+        return ActorType(str(value or "SYSTEM"))
+    except ValueError:
+        return ActorType.SYSTEM
+
+
 @dataclass
 class CreateInvestigationInput:
     application_id: str
@@ -140,7 +503,7 @@ class VerifyRootCauseInput:
 class CheckpointInput:
     tenant_id: str
     investigation_id: str
-    step: int
+    step: int = 0
     state_snapshot: dict[str, Any] | None = None
 
 
@@ -157,6 +520,10 @@ class TransitionInvestigationInput:
     investigation_id: str
     target_status: str
     reason: str = ""
+    # Domain actor for the audit trail (TO_DO-012): threaded through
+    # _transition_via_path into transition_to/record_transition. Defaults to
+    # SYSTEM for workflow-driven edges; callers acting for a user pass USER.
+    actor: str = "SYSTEM"
 
 
 @dataclass
@@ -180,6 +547,8 @@ class CaptureKnowledgeInput:
 
 
 def _get_ctx() -> Any:
+    # Any justified: AppContext is assembled in bootstrap/api layers and
+    # intentionally untyped at the worker boundary (see _idempotency_store_for).
     from investigation_agent_platform.api.dependencies import get_app_context
 
     return get_app_context()
@@ -189,10 +558,22 @@ def _get_ctx() -> Any:
 async def create_investigation_activity(
     params: CreateInvestigationInput,
 ) -> CreateInvestigationOutput:
+    # TO_DO-011: not idempotency-wired — creation mints a new identity per
+    # call so no deterministic key exists; the F-IDENTITY load path
+    # (investigation_id set) is idempotent by lookup instead.
     try:
-        activity.logger.info(
-            "create_investigation_activity",
-            extra={"app_id": getattr(params, "application_id", None)},
+        data = _coerced_data(
+            CreateInvestigationInput, params, activity="create_investigation_activity"
+        )
+        params = CreateInvestigationInput(**data)
+        logger.info(
+            "create_investigation_activity started",
+            extra=_log_extra(
+                tenant_id=params.tenant_id,
+                investigation_id=params.investigation_id or "",
+                event="create_investigation_activity started",
+                application_id=params.application_id,
+            ),
         )
         ctx = _get_ctx()
 
@@ -220,6 +601,15 @@ async def create_investigation_activity(
                     type="InvestigationNotFoundError",
                     non_retryable=True,
                 )
+            logger.info(
+                "create_investigation_activity completed",
+                extra=_log_extra(
+                    tenant_id=params.tenant_id,
+                    investigation_id=str(existing.id),
+                    event="create_investigation_activity completed",
+                    outcome="loaded_existing",
+                ),
+            )
             return CreateInvestigationOutput(
                 investigation_id=str(existing.id), status=existing.status.value
             )
@@ -234,21 +624,54 @@ async def create_investigation_activity(
             requested_by=params.tenant_id,
         )
         inv = await svc.execute(req, tenant_id=params.tenant_id)
+        logger.info(
+            "create_investigation_activity completed",
+            extra=_log_extra(
+                tenant_id=params.tenant_id,
+                investigation_id=str(inv.id),
+                event="create_investigation_activity completed",
+                outcome="created",
+            ),
+        )
         return CreateInvestigationOutput(investigation_id=str(inv.id), status=inv.status.value)
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("create_investigation_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "create_investigation_activity failed",
+            extra=_log_extra(
+                tenant_id=getattr(params, "tenant_id", "") if isinstance(params, CreateInvestigationInput) else "",
+                investigation_id=getattr(params, "investigation_id", "") if isinstance(params, CreateInvestigationInput) else "",
+                event="create_investigation_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def retrieve_evidence_activity(
-    params: RetrieveEvidenceInput | dict[str, Any],
+    params: RetrieveEvidenceInput,
 ) -> GenericActivityResult:
-    activity.logger.info("retrieve_evidence_activity")
+    # TO_DO-011: not idempotency-wired — this is a read path whose
+    # side-effect writes dedupe on evidence fingerprint, and the workflow
+    # loop intentionally re-queries every iteration expecting fresh results;
+    # an activity-level replay key would freeze a point-in-time count.
+    data = _coerced_data(
+        RetrieveEvidenceInput, params, activity="retrieve_evidence_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "retrieve_evidence_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="retrieve_evidence_activity started",
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id: str = str(data.get("tenant_id", ""))
         inv_id_str: str = str(data.get("investigation_id", ""))
         if not tenant_id or not inv_id_str:
@@ -296,11 +719,11 @@ async def retrieve_evidence_activity(
             profile = await profile_repo.get_by_application_id(tenant_id, app_id)
             if profile is not None:
                 environment = profile.environment
-                window_seconds = profile.investigation_configuration.default_time_window
+                window_seconds = profile.investigation.default_time_window
                 # Part 9: RuntimeEvidenceRequest caps limit at the provider
                 # ceiling (200); clamp here so a generous profile knob cannot
                 # fail request validation (provider clamped identically before).
-                max_results = min(profile.investigation_configuration.max_evidence_per_query, 200)
+                max_results = min(profile.investigation.max_evidence_per_query, 200)
 
         now = datetime.now(UTC)
         req = RuntimeEvidenceRequest(
@@ -312,9 +735,27 @@ async def retrieve_evidence_activity(
             result = await gateway.search_runtime_evidence(tenant_id, investigation_id, app_id, req)
         except Exception as exc:
             logger.exception(
-                "retrieve_evidence_activity gateway call failed", extra={"error": str(exc)}
+                "retrieve_evidence_activity gateway call failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="retrieve_evidence_activity gateway call failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
             raise _application_failure_from_exc(exc) from exc
+        logger.info(
+            "retrieve_evidence_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="retrieve_evidence_activity completed",
+                outcome="retrieved",
+                items_count=len(result.items),
+                total_count=result.total_count,
+            ),
+        )
         return GenericActivityResult(
             success=True,
             data={"items_count": len(result.items), "total_count": result.total_count},
@@ -322,15 +763,36 @@ async def retrieve_evidence_activity(
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("retrieve_evidence_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "retrieve_evidence_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="retrieve_evidence_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
-async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivityResult:
-    activity.logger.info("reason_activity")
+async def reason_activity(params: ReasonInput) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — pure compute over persisted state,
+    # no durable writes of its own; re-execution is safe by construction.
+    data = _coerced_data(ReasonInput, params, activity="reason_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "reason_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="reason_activity started",
+            iteration=int(data.get("iteration", 0)),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         iteration = int(data.get("iteration", 0))
@@ -357,7 +819,13 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
                 logger.exception(
                     "reason_activity: failed to construct reasoning coordinator; "
                     "refusing to process prompts with a permissive fallback",
-                    extra={"error": str(exc)},
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="reason_activity coordinator init failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 raise ApplicationFailure(
                     "Reasoning/safety policy could not be initialized; refusing to process",
@@ -366,6 +834,21 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
                 ) from exc
 
         # Build minimal InvestigationState for reasoning.
+        attach = getattr(coordinator, "attach_profile_repo", None)
+        if callable(attach):
+            try:
+                attach(getattr(ctx, "profile_repo", None))
+            except Exception as exc:
+                logger.warning(
+                    "reason profile attach failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="reason profile attach failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
+                )
         try:
             inv_repo: Any = getattr(ctx, "investigation_repo", None)
             investigation: Any = None
@@ -392,7 +875,14 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
                         state = InvestigationState.model_validate(snap)
                 except Exception as exc:
                     logger.warning(
-                        "reason_activity checkpoint hydration failed", extra={"error": str(exc)}
+                        "reason_activity checkpoint hydration failed",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="reason_activity checkpoint hydration failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        ),
                     )
             if state is None:
                 state = InvestigationState(investigation=investigation)
@@ -431,7 +921,13 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
             except Exception as exc:
                 logger.warning(
                     "reason_activity state enrichment failed; reasoning unassisted",
-                    extra={"error": str(exc)},
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="reason_activity state enrichment failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
 
             decision = await coordinator.reason(tenant_id, state)
@@ -448,14 +944,33 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
                 getattr(decision, "hypotheses_evaluated", None) or []
             )
             # Operational telemetry: type names and counts only, never prompt
-            # or payload values (prompt content stays out of logs). Values are
-            # inline in the message because the worker log formatter drops
-            # structlog extras.
+            # or payload values (prompt content stays out of logs). Values ride
+            # as extra keys (TO_DO-007/019); the message keeps lazy %-style.
             logger.warning(
-                f"reason_activity decision action={action_type_value or 'QUERY_STATE'} "
-                f"readiness={decision.conclusion_readiness} "
-                f"hypotheses={len(hypotheses_out)} "
-                f"observations={len(decision.observations or [])} tenant={tenant_id}",
+                "reason_activity decision action=%s readiness=%s hypotheses=%s observations=%s",
+                action_type_value or "QUERY_STATE",
+                decision.conclusion_readiness,
+                len(hypotheses_out),
+                len(decision.observations or []),
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="reason_activity decision",
+                    action=action_type_value or "QUERY_STATE",
+                    readiness=decision.conclusion_readiness,
+                    hypotheses_count=len(hypotheses_out),
+                    observations_count=len(decision.observations or []),
+                ),
+            )
+            logger.info(
+                "reason_activity completed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="reason_activity completed",
+                    outcome="reasoned",
+                    iteration=iteration,
+                ),
             )
             return GenericActivityResult(
                 success=True,
@@ -471,22 +986,89 @@ async def reason_activity(params: ReasonInput | dict[str, Any]) -> GenericActivi
                 },
             )
         except Exception as exc:
-            logger.exception("reason_activity reasoning call failed", extra={"error": str(exc)})
+            logger.exception(
+                "reason_activity reasoning call failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="reason_activity reasoning call failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
+            )
             raise _application_failure_from_exc(exc) from exc
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("reason_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "reason_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="reason_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
+
+
+_BUDGET_FIELDS = (
+    "max_tool_calls",
+    "max_evidence_items",
+    "max_hypotheses",
+    "max_correlation_depth",
+    "max_source_files",
+    "max_database_rows",
+    "max_log_query_window_minutes",
+    "max_duration_seconds",
+)
+
+
+def overlay_evidence_budget(limits: Any, profile: Any) -> Any:
+    """Overlay a profile's evidence_budget onto base limits (§7.6).
+
+    Only known fields with positive-int values apply; anything else is
+    ignored (fail-closed to the global default). Never raises.
+    """
+    try:
+        budget = profile.investigation.evidence_budget or {}
+        updates = {
+            field: budget[field]
+            for field in _BUDGET_FIELDS
+            if isinstance(budget.get(field), int) and budget[field] >= 1
+        }
+        if updates:
+            return limits.model_copy(update=updates)
+    except Exception as exc:
+        logger.exception(
+            "evidence_budget overlay failed; using global limits",
+            extra=_log_extra(
+                event="evidence_budget overlay failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
+    return limits
 
 
 @activity.defn
 async def execute_action_activity(
-    params: ExecuteActionInput | dict[str, Any],
+    params: ExecuteActionInput,
 ) -> GenericActivityResult:
-    activity.logger.info("execute_action_activity")
+    data = _coerced_data(ExecuteActionInput, params, activity="execute_action_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "execute_action_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="execute_action_activity started",
+            action=str(data.get("action", "QUERY_STATE")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         action_type = str(data.get("action", "QUERY_STATE"))
@@ -535,6 +1117,35 @@ async def execute_action_activity(
             parameters=parameters,
         )
 
+        # TO_DO-011: idempotency-wired — action_id is deterministic (UUIDv5
+        # over the execution hash, F-057), so a Temporal retry of the same
+        # logical action reserves the same key instead of double-recording.
+        _idem_active_key: str | None = None
+        _idem_operation = "activity:execute_action"
+        _idem_key = f"execute:{inv_action.action_id}"
+        _idem_request = {
+            "action_id": str(inv_action.action_id),
+            "tenant_id": tenant_id,
+            "investigation_id": inv_id_str,
+            "action_type": resolved_action_type.value,
+            "parameters": parameters,
+        }
+        _replayed, _idem_active_key = await _reserve_or_replay(
+            ctx=ctx,
+            tenant_id=tenant_id,
+            key=_idem_key,
+            request_payload=_idem_request,
+            operation=_idem_operation,
+            activity="execute_action_activity",
+            investigation_id=inv_id_str,
+        )
+        if _replayed is not None:
+            return GenericActivityResult(
+                success=bool(_replayed.get("success", True)),
+                data=dict(_replayed.get("data") or {}),
+                error=_replayed.get("error"),
+            )
+
         action_service = ctx.execute_action_service()
         principal_id = str(data.get("principal_id", "worker"))
 
@@ -548,6 +1159,35 @@ async def execute_action_activity(
         from investigation_agent_platform.domain.investigation.models import InvestigationLimits
 
         limits = InvestigationLimits()
+        # Per-app evidence budget (§7.6): profile evidence_budget overlays the
+        # process-global defaults; unknown/invalid keys are ignored, never
+        # trusted. Also resolves the profile once for the correlate clamp.
+        _budget_profile: Any = None
+        profile_repo_for_limits: Any = getattr(ctx, "profile_repo", None)
+        if profile_repo_for_limits is not None and application_id:
+            try:
+                _budget_profile = await profile_repo_for_limits.get_by_application_id(
+                    tenant_id, application_id
+                )
+            except Exception as exc:
+                logger.exception(
+                    "profile budget lookup failed; using global limits",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="profile budget lookup failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
+                )
+                _budget_profile = None
+        if _budget_profile is not None:
+            limits = overlay_evidence_budget(limits, _budget_profile)
+        app_correlation_depth = (
+            _budget_profile.investigation.correlation_depth
+            if _budget_profile is not None
+            else limits.max_correlation_depth
+        )
         try:
             action_repo_for_budget: Any = getattr(ctx, "action_repo", None)
             evidence_repo_for_budget: Any = getattr(ctx, "evidence_repo", None)
@@ -580,8 +1220,31 @@ async def execute_action_activity(
             # in a non-terminal state with no audit record).
             logger.warning(
                 "execute_action_activity budget exhausted; routing to conclude",
-                extra={"tenant_id": tenant_id, "error": str(exc)},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="execute_action_activity budget exhausted",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
+            if _idem_active_key is not None:
+                await _complete_reservation(
+                    ctx=ctx,
+                    tenant_id=tenant_id,
+                    key=_idem_active_key,
+                    operation=_idem_operation,
+                    response={
+                        "success": True,
+                        "data": {
+                            "status": "BUDGET_EXCEEDED",
+                            "budget_exceeded": True,
+                            "items_count": 0,
+                        },
+                    },
+                    activity="execute_action_activity",
+                    investigation_id=inv_id_str,
+                )
             return GenericActivityResult(
                 success=True,
                 data={
@@ -591,7 +1254,16 @@ async def execute_action_activity(
                 },
             )
         except Exception as exc:
-            logger.warning("budget ledger check failed; failing closed", extra={"error": str(exc)})
+            logger.exception(
+                "budget ledger check failed; failing closed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="budget ledger check failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
+            )
             raise _application_failure_from_exc(exc) from exc
 
         try:
@@ -603,9 +1275,16 @@ async def execute_action_activity(
                 application_id=application_id or None,
             )
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "execute_action_activity denied by authorization gate",
-                extra={"error": str(exc), "action_type": action_type, "tenant_id": tenant_id},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="execute_action_activity denied by authorization gate",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    action_type=action_type,
+                ),
             )
             raise _application_failure_from_exc(exc) from exc
 
@@ -678,7 +1357,9 @@ async def execute_action_activity(
 
         async def _handle_correlate() -> int:
             root_ids = [UUID(str(i)) for i in parameters.get("root_evidence_ids", [])]
-            max_depth = int(parameters.get("max_depth", 2))
+            # Agent depth is clamped to the profile's correlation depth: the
+            # planner may ask for less, never more.
+            max_depth = min(int(parameters.get("max_depth", 2)), app_correlation_depth)
             qres = await gateway.correlate(
                 tenant_id, investigation_id, application_id or "example-app", root_ids, max_depth
             )
@@ -711,8 +1392,15 @@ async def execute_action_activity(
                     tenant_id, investigation_id
                 )
             except Exception as exc:
-                logger.warning(
-                    "hypothesis dedupe read failed", extra={"error": str(exc)}
+                logger.exception(
+                    "hypothesis dedupe read failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="hypothesis dedupe read failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 existing = []
             known = {str(getattr(h, "statement", "")).strip() for h in (existing or [])}
@@ -736,9 +1424,15 @@ async def execute_action_activity(
                     )
                     saved += 1
                 except Exception as exc:
-                    logger.warning(
+                    logger.exception(
                         "hypothesis persistence failed",
-                        extra={"error": str(exc)},
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="hypothesis persistence failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        ),
                     )
             return saved
 
@@ -772,18 +1466,35 @@ async def execute_action_activity(
 
         try:
             items_count = await handler()
-            # Operational telemetry: action type + result counts only (inline:
-            # the worker log formatter drops structlog extras).
+            # Operational telemetry: action type + result counts only (values
+            # ride as extra keys per TO_DO-007/019; lazy %-style message).
             logger.warning(
-                f"execute_action_activity dispatched action={resolved_action_type.value} "
-                f"items={items_count} hypotheses={len(proposed_hypotheses)} tenant={tenant_id}",
+                "execute_action_activity dispatched action=%s items=%s hypotheses=%s",
+                resolved_action_type.value,
+                items_count,
+                len(proposed_hypotheses),
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="execute_action_activity dispatched",
+                    action=resolved_action_type.value,
+                    items_count=items_count,
+                    hypotheses_count=len(proposed_hypotheses),
+                ),
             )
         except ApplicationFailure:
             raise
         except Exception as exc:
             logger.exception(
                 "execute_action_activity gateway dispatch failed",
-                extra={"error": str(exc), "action_type": action_type},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="execute_action_activity gateway dispatch failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    action_type=action_type,
+                ),
             )
             raise _application_failure_from_exc(exc) from exc
 
@@ -795,27 +1506,94 @@ async def execute_action_activity(
             )
         except Exception as exc:
             logger.exception(
-                "execute_action_activity record_action failed", extra={"error": str(exc)}
+                "execute_action_activity record_action failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="execute_action_activity record_action failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
             raise _application_failure_from_exc(exc) from exc
 
+        if _idem_active_key is not None:
+            await _complete_reservation(
+                ctx=ctx,
+                tenant_id=tenant_id,
+                key=_idem_active_key,
+                operation=_idem_operation,
+                response={
+                    "success": True,
+                    "data": {"status": result_status, "items_count": items_count},
+                },
+                activity="execute_action_activity",
+                investigation_id=inv_id_str,
+            )
+        logger.info(
+            "execute_action_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="execute_action_activity completed",
+                outcome="executed",
+                action=resolved_action_type.value,
+                items_count=items_count,
+            ),
+        )
         return GenericActivityResult(
             success=True, data={"status": result_status, "items_count": items_count}
         )
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="execute_action_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
         raise
     except Exception as exc:
-        logger.exception("execute_action_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="execute_action_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
+        logger.exception(
+            "execute_action_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="execute_action_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def verify_root_cause_activity(
-    params: VerifyRootCauseInput | dict[str, Any],
+    params: VerifyRootCauseInput,
 ) -> GenericActivityResult:
-    activity.logger.info("verify_root_cause_activity")
+    # TO_DO-011: not idempotency-wired — pure compute over persisted state,
+    # no durable writes of its own; re-execution is safe by construction.
+    data = _coerced_data(VerifyRootCauseInput, params, activity="verify_root_cause_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "verify_root_cause_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="verify_root_cause_activity started",
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         if not tenant_id or not inv_id_str:
@@ -836,7 +1614,14 @@ async def verify_root_cause_activity(
                 )
             except Exception as exc:
                 logger.exception(
-                    "verify_root_cause_activity evidence fetch failed", extra={"error": str(exc)}
+                    "verify_root_cause_activity evidence fetch failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="verify_root_cause_activity evidence fetch failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 raise _application_failure_from_exc(exc) from exc
         if hypothesis_repo is not None:
@@ -846,7 +1631,14 @@ async def verify_root_cause_activity(
                 )
             except Exception as exc:
                 logger.exception(
-                    "verify_root_cause_activity hypothesis fetch failed", extra={"error": str(exc)}
+                    "verify_root_cause_activity hypothesis fetch failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="verify_root_cause_activity hypothesis fetch failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 raise _application_failure_from_exc(exc) from exc
 
@@ -867,6 +1659,16 @@ async def verify_root_cause_activity(
         result = engine.evaluate_hypothesis(hypothesis, evidence_items, [], [], policy)
 
         verified = result.status.value == "VERIFIED"
+        logger.info(
+            "verify_root_cause_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="verify_root_cause_activity completed",
+                outcome="verified" if verified else "unverified",
+                verification_status=result.status.value,
+            ),
+        )
         return GenericActivityResult(
             success=True,
             data={
@@ -879,15 +1681,34 @@ async def verify_root_cause_activity(
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("verify_root_cause_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "verify_root_cause_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="verify_root_cause_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
-async def checkpoint_activity(params: CheckpointInput | dict[str, Any]) -> GenericActivityResult:
-    activity.logger.info("checkpoint_activity")
+async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
+    data = _coerced_data(CheckpointInput, params, activity="checkpoint_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "checkpoint_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="checkpoint_activity started",
+            step=data.get("step", 0),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         step = int(data.get("step", 0))
@@ -898,10 +1719,57 @@ async def checkpoint_activity(params: CheckpointInput | dict[str, Any]) -> Gener
             )
         investigation_id = UUID(inv_id_str)
         ctx = _get_ctx()
+
+        # TO_DO-011: idempotency-wired — (investigation_id, step) is the
+        # deterministic key, so a retried checkpoint step cannot duplicate
+        # the snapshot row.
+        _idem_active_key: str | None = None
+        _idem_operation = "activity:checkpoint"
+        _idem_key = f"checkpoint:{inv_id_str}:{step}"
+        _replayed, _idem_active_key = await _reserve_or_replay(
+            ctx=ctx,
+            tenant_id=tenant_id,
+            key=_idem_key,
+            request_payload={
+                "tenant_id": tenant_id,
+                "investigation_id": inv_id_str,
+                "step": step,
+                "snapshot_present": state_snapshot is not None,
+            },
+            operation=_idem_operation,
+            activity="checkpoint_activity",
+            investigation_id=inv_id_str,
+        )
+        if _replayed is not None:
+            return GenericActivityResult(
+                success=bool(_replayed.get("success", True)),
+                data=dict(_replayed.get("data") or {"step": step}),
+                error=_replayed.get("error"),
+            )
+
         checkpoint_repo: Any = getattr(ctx, "checkpoint_repo", None)
         # Also try _InMemoryCheckpointRepository attached via resume service pattern.
         if checkpoint_repo is None:
             # No repo wired — treat as no-op but succeed so workflow progresses.
+            logger.error(
+                "checkpoint_activity repo unwired; checkpoint not persisted",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="checkpoint_activity repo unwired",
+                    step=step,
+                ),
+            )
+            if _idem_active_key is not None:
+                await _complete_reservation(
+                    ctx=ctx,
+                    tenant_id=tenant_id,
+                    key=_idem_active_key,
+                    operation=_idem_operation,
+                    response={"success": True, "data": {"step": step, "noop": True}},
+                    activity="checkpoint_activity",
+                    investigation_id=inv_id_str,
+                )
             return GenericActivityResult(success=True, data={"step": step})
 
         # Build snapshot from investigation if not supplied.
@@ -920,8 +1788,16 @@ async def checkpoint_activity(params: CheckpointInput | dict[str, Any]) -> Gener
                     else:
                         state_snapshot = {"step": step}
                 except Exception as exc:
-                    logger.warning(
-                        "checkpoint_activity snapshot build failed", extra={"error": str(exc)}
+                    logger.exception(
+                        "checkpoint_activity snapshot build failed",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="checkpoint_activity snapshot build failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                            step=step,
+                        ),
                     )
                     state_snapshot = {"step": step}
             else:
@@ -930,20 +1806,68 @@ async def checkpoint_activity(params: CheckpointInput | dict[str, Any]) -> Gener
         await checkpoint_repo.save_checkpoint(
             tenant_id, investigation_id, step, state_snapshot or {"step": step}
         )
+        if _idem_active_key is not None:
+            await _complete_reservation(
+                ctx=ctx,
+                tenant_id=tenant_id,
+                key=_idem_active_key,
+                operation=_idem_operation,
+                response={"success": True, "data": {"step": step}},
+                activity="checkpoint_activity",
+                investigation_id=inv_id_str,
+            )
+        logger.info(
+            "checkpoint_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="checkpoint_activity completed",
+                outcome="checkpointed",
+                step=step,
+            ),
+        )
         return GenericActivityResult(success=True, data={"step": step})
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="checkpoint_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
         raise
     except Exception as exc:
-        logger.exception("checkpoint_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="checkpoint_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
+        logger.exception(
+            "checkpoint_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="checkpoint_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 def _find_transition_path(
     start: Any, target: Any, transitions: dict[Any, set[Any]]
 ) -> list[Any] | None:
-    """BFS shortest path for graceful shutdown; returns list of statuses including start->target."""
-    from collections import deque
+    """BFS shortest path for graceful shutdown; returns list of statuses including start->target.
 
+    ``Any`` is justified: nodes are domain InvestigationStatus enums (or their
+    string values) resolved lazily; the helper stays decoupled from the domain
+    import graph.
+    """
     queue: deque[list[Any]] = deque([[start]])
     visited: set[Any] = {start}
     while queue:
@@ -966,8 +1890,10 @@ async def _transition_via_path(
     inv_repo: Any,
     transition_repo: Any | None = None,
     timeline_repo: Any | None = None,
-) -> Any:
-    """Walk domain graph step-by-step, persisting each transition.
+    *,
+    actor: Any = None,
+) -> tuple[Any, bool]:
+    """Walk the domain graph step-by-step, persisting each transition.
 
     Every edge is recorded to transition_repo (when available) in addition
     to saving the aggregate — previously the audit trail only captured
@@ -977,100 +1903,101 @@ async def _transition_via_path(
     Every edge also appends a STATE_CHANGE timeline event (when available):
     previously nothing on the live path ever wrote timeline_events, so the
     timeline tab could only ever render seeded rows.
-    """
-    # Reuse same valid_transitions as Investigation.transition_to for path finding
-    # Build graph via temporary instance call by inspecting valid_transitions from method closure?
-    # Instead import and reconstruct consistent graph via a dummy investigation.
-    from investigation_agent_platform.domain.investigation.models import (
-        ActorType,
-        InvestigationStatus,
-    )
 
-    # Duplicate graph to avoid calling private logic - keep in sync with models.py
-    graph: dict[InvestigationStatus, set[InvestigationStatus]] = {
-        InvestigationStatus.CREATED: {
-            InvestigationStatus.CONTEXTUALIZING,
-            InvestigationStatus.INVESTIGATING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.CONTEXTUALIZING: {
-            InvestigationStatus.INVESTIGATING,
-            InvestigationStatus.CORRELATING,
-            InvestigationStatus.HYPOTHESIZING,
-            InvestigationStatus.CONCLUDING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.INVESTIGATING: {
-            InvestigationStatus.CORRELATING,
-            InvestigationStatus.HYPOTHESIZING,
-            InvestigationStatus.CONCLUDING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.CORRELATING: {
-            InvestigationStatus.HYPOTHESIZING,
-            InvestigationStatus.INVESTIGATING,
-            InvestigationStatus.CONCLUDING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.HYPOTHESIZING: {
-            InvestigationStatus.VERIFYING,
-            InvestigationStatus.INVESTIGATING,
-            InvestigationStatus.CONCLUDING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.VERIFYING: {
-            InvestigationStatus.CONCLUDING,
-            InvestigationStatus.HYPOTHESIZING,
-            InvestigationStatus.INVESTIGATING,
-            InvestigationStatus.CORRELATING,
-            InvestigationStatus.CANCELLED,
-            InvestigationStatus.FAILED,
-        },
-        InvestigationStatus.CONCLUDING: {
-            InvestigationStatus.COMPLETED,
-            InvestigationStatus.FAILED,
-            InvestigationStatus.CANCELLED,
-        },
-        # Reopen edges mirror domain/investigation/models.py (Part 6 D8:
-        # recurring code issues reopen closed investigations).
-        InvestigationStatus.COMPLETED: {
-            InvestigationStatus.INVESTIGATING,
-        },
-        InvestigationStatus.FAILED: {
-            InvestigationStatus.INVESTIGATING,
-        },
-        InvestigationStatus.CANCELLED: set(),
-    }
-    path = _find_transition_path(inv.status, target, graph)
+    Returns ``(updated_investigation, audit_degraded)``: ``audit_degraded``
+    is True when any audit write was skipped or failed. Skips and failures
+    are logged loudly at error level (TO_DO-012 — no silent skip) but never
+    break the lifecycle itself.
+
+    The path-finding adjacency is derived from the domain single source via
+    ``_domain_transition_graph`` (TO_DO-013) — there is no duplicated edge
+    table here to drift. The domain ``actor`` is threaded into both
+    ``transition_to`` and ``record_transition`` (TO_DO-012).
+    """
+    graph = _domain_transition_graph()
+    resolved_actor = _normalize_actor(actor)
+    actor_value = getattr(resolved_actor, "value", str(resolved_actor))
+    audit_degraded = False
+    inv_id_str = str(getattr(inv, "id", ""))
 
     async def _record_edge(from_status: Any, to_status: Any) -> None:
+        nonlocal audit_degraded
         if transition_repo is None:
+            audit_degraded = True
+            logger.error(
+                "transition audit repo unwired; edge %s -> %s not recorded",
+                getattr(from_status, "value", str(from_status)),
+                getattr(to_status, "value", str(to_status)),
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="transition audit repo unwired",
+                    from_status=getattr(from_status, "value", str(from_status)),
+                    to_status=getattr(to_status, "value", str(to_status)),
+                ),
+            )
             return
         try:
-            await transition_repo.record_transition(
-                tenant_id=tenant_id,
-                investigation_id=inv.id,
-                from_state=getattr(from_status, "value", str(from_status)),
-                to_state=getattr(to_status, "value", str(to_status)),
-                reason=reason,
-            )
+            try:
+                await transition_repo.record_transition(
+                    tenant_id=tenant_id,
+                    investigation_id=inv.id,
+                    from_state=getattr(from_status, "value", str(from_status)),
+                    to_state=getattr(to_status, "value", str(to_status)),
+                    reason=reason,
+                    actor=actor_value,
+                )
+            except TypeError:
+                # Wave 3 owns the repository signature: the SQL implementation
+                # still hardcodes actor="SYSTEM" while the port carries the new
+                # actor kwarg — fall back loudly rather than losing the row.
+                await transition_repo.record_transition(
+                    tenant_id=tenant_id,
+                    investigation_id=inv.id,
+                    from_state=getattr(from_status, "value", str(from_status)),
+                    to_state=getattr(to_status, "value", str(to_status)),
+                    reason=reason,
+                )
+                audit_degraded = True
+                logger.error(
+                    "transition audit actor downgraded; repo signature predates actor",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="transition audit actor downgraded",
+                        actor=actor_value,
+                    ),
+                )
         except Exception as exc:
             # Audit recording must never break the lifecycle itself.
-            logger.warning(
-                "transition audit record failed", extra={"error": str(exc)}
+            audit_degraded = True
+            logger.exception(
+                "transition audit record failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="transition audit record failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
 
     async def _append_timeline(from_status: Any, to_status: Any) -> None:
+        nonlocal audit_degraded
         if timeline_repo is None:
+            audit_degraded = True
+            logger.error(
+                "timeline repo unwired; STATE_CHANGE event not appended",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="timeline repo unwired",
+                    from_status=getattr(from_status, "value", str(from_status)),
+                    to_status=getattr(to_status, "value", str(to_status)),
+                ),
+            )
             return
         try:
-            from datetime import UTC, datetime
-
             from investigation_agent_platform.domain.timeline.models import (
                 TimelineEvent,
                 TimelineEventType,
@@ -1096,39 +2023,62 @@ async def _transition_via_path(
             )
         except Exception as exc:
             # Timeline is observability: never break the lifecycle.
-            logger.warning(
-                "timeline append failed", extra={"error": str(exc)}
+            audit_degraded = True
+            logger.exception(
+                "timeline append failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="timeline append failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
+
+    path = _find_transition_path(inv.status, target, graph)
 
     if path is None:
         # No path - try direct transition to surface proper exception
-        updated, _ = inv.transition_to(target, ActorType.SYSTEM, reason)
+        updated, _ = inv.transition_to(target, resolved_actor, reason)
         await inv_repo.save(tenant_id, updated, expected_version=inv.version)
         await _record_edge(inv.status, target)
         await _append_timeline(inv.status, target)
-        return updated
+        return updated, audit_degraded
     current = inv
     # Walk edges excluding start node
     for nxt in path[1:]:
-        updated, _ = current.transition_to(nxt, ActorType.SYSTEM, reason)
+        updated, _ = current.transition_to(nxt, resolved_actor, reason)
         await inv_repo.save(tenant_id, updated, expected_version=current.version)
         await _record_edge(current.status, nxt)
         await _append_timeline(current.status, nxt)
         current = updated
-    return current
+    return current, audit_degraded
 
 
 @activity.defn
 async def transition_investigation_activity(
-    params: TransitionInvestigationInput | dict[str, Any],
+    params: TransitionInvestigationInput,
 ) -> GenericActivityResult:
-    activity.logger.info("transition_investigation_activity")
+    data = _coerced_data(
+        TransitionInvestigationInput, params, activity="transition_investigation_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "transition_investigation_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="transition_investigation_activity started",
+            target_status=str(data.get("target_status", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         target_status = str(data.get("target_status", ""))
         reason = str(data.get("reason", "")) or f"Transition to {target_status}"
+        actor = str(data.get("actor", "SYSTEM")) or "SYSTEM"
         if not tenant_id or not inv_id_str or not target_status:
             return GenericActivityResult(
                 success=False, error="tenant_id, investigation_id and target_status required"
@@ -1137,6 +2087,15 @@ async def transition_investigation_activity(
         ctx = _get_ctx()
         inv_repo: Any = getattr(ctx, "investigation_repo", None)
         if inv_repo is None:
+            logger.error(
+                "transition_investigation_activity repo unwired; transition not applied",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="transition_investigation_activity repo unwired",
+                    target_status=target_status,
+                ),
+            )
             return GenericActivityResult(success=True, data={"status": target_status, "noop": True})
         inv = await inv_repo.get_by_id(tenant_id, investigation_id)
         if inv is None:
@@ -1151,7 +2110,37 @@ async def transition_investigation_activity(
             return GenericActivityResult(
                 success=True, data={"status": target.value, "already": True}
             )
-        await _transition_via_path(
+
+        # TO_DO-011: idempotency-wired — (investigation_id, target, version)
+        # is deterministic: a retry after a lost response either replays the
+        # stored outcome or no-ops on "already" when the version advanced.
+        _idem_active_key: str | None = None
+        _idem_operation = "activity:transition"
+        _idem_key = f"transition:{inv_id_str}:{target.value}:{inv.version}"
+        _replayed, _idem_active_key = await _reserve_or_replay(
+            ctx=ctx,
+            tenant_id=tenant_id,
+            key=_idem_key,
+            request_payload={
+                "tenant_id": tenant_id,
+                "investigation_id": inv_id_str,
+                "target": target.value,
+                "version": inv.version,
+                "reason": reason,
+                "actor": actor,
+            },
+            operation=_idem_operation,
+            activity="transition_investigation_activity",
+            investigation_id=inv_id_str,
+        )
+        if _replayed is not None:
+            return GenericActivityResult(
+                success=bool(_replayed.get("success", True)),
+                data=dict(_replayed.get("data") or {"status": target.value}),
+                error=_replayed.get("error"),
+            )
+
+        _, audit_degraded = await _transition_via_path(
             tenant_id,
             inv,
             target,
@@ -1159,12 +2148,65 @@ async def transition_investigation_activity(
             inv_repo,
             getattr(ctx, "transition_repo", None),
             getattr(ctx, "timeline_repo", None),
+            actor=actor,
         )
-        return GenericActivityResult(success=True, data={"status": target.value})
+        if _idem_active_key is not None:
+            await _complete_reservation(
+                ctx=ctx,
+                tenant_id=tenant_id,
+                key=_idem_active_key,
+                operation=_idem_operation,
+                response={
+                    "success": True,
+                    "data": {"status": target.value, "audit_degraded": audit_degraded},
+                },
+                activity="transition_investigation_activity",
+                investigation_id=inv_id_str,
+            )
+        logger.info(
+            "transition_investigation_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="transition_investigation_activity completed",
+                outcome="transitioned",
+                target_status=target.value,
+                actor=actor,
+                audit_degraded=audit_degraded,
+            ),
+        )
+        return GenericActivityResult(
+            success=True, data={"status": target.value, "audit_degraded": audit_degraded}
+        )
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="transition_investigation_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
         raise
     except Exception as exc:
-        logger.exception("transition_investigation_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="transition_investigation_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
+        logger.exception(
+            "transition_investigation_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="transition_investigation_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -1202,7 +2244,15 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     if hypothesis_repo is not None:
         hypotheses = await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
     if not hypotheses:
-        logger.warning("ConclusionGate: no hypotheses; denying COMPLETED")
+        logger.warning(
+            "ConclusionGate: no hypotheses; denying COMPLETED",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event="ConclusionGate denied COMPLETED",
+                reason="no_hypotheses",
+            ),
+        )
         return InvestigationStatus.FAILED
 
     engine = VerificationEngine()
@@ -1224,7 +2274,12 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         logger.warning(
             "ConclusionGate denied COMPLETED: %s",
             "; ".join(decision.blockers),
-            extra={"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event="ConclusionGate denied COMPLETED",
+                blockers=list(decision.blockers),
+            ),
         )
         return InvestigationStatus.FAILED
 
@@ -1263,22 +2318,36 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         except Exception as exc:
             logger.exception(
                 "Failed to persist finding/conclusion after gate approval",
-                extra={
-                    "tenant_id": tenant_id,
-                    "investigation_id": str(investigation_id),
-                    "error": str(exc),
-                },
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    event="finding/conclusion persist failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
     return InvestigationStatus.COMPLETED
 
 
 @activity.defn
 async def conclude_investigation_activity(
-    params: ConcludeInvestigationInput | dict[str, Any],
+    params: ConcludeInvestigationInput,
 ) -> GenericActivityResult:
-    activity.logger.info("conclude_investigation_activity")
+    data = _coerced_data(
+        ConcludeInvestigationInput, params, activity="conclude_investigation_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "conclude_investigation_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="conclude_investigation_activity started",
+            status=str(data.get("status", "COMPLETED")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         status = str(data.get("status", "COMPLETED"))
@@ -1308,7 +2377,33 @@ async def conclude_investigation_activity(
                         # blockers recorded, never silent COMPLETED.
                         target = await _gate_conclusion_or_fail(tenant_id, investigation_id, ctx)
                     if inv.status != target:
-                        await _transition_via_path(
+                        # TO_DO-011: idempotency-wired — (investigation_id,
+                        # target, version) is deterministic; see transition
+                        # activity for the replay contract.
+                        _idem_active_key: str | None = None
+                        _idem_operation = "activity:conclude"
+                        _idem_key = f"conclude:{inv_id_str}:{target.value}:{inv.version}"
+                        _replayed, _idem_active_key = await _reserve_or_replay(
+                            ctx=ctx,
+                            tenant_id=tenant_id,
+                            key=_idem_key,
+                            request_payload={
+                                "tenant_id": tenant_id,
+                                "investigation_id": inv_id_str,
+                                "target": target.value,
+                                "version": inv.version,
+                            },
+                            operation=_idem_operation,
+                            activity="conclude_investigation_activity",
+                            investigation_id=inv_id_str,
+                        )
+                        if _replayed is not None:
+                            return GenericActivityResult(
+                                success=bool(_replayed.get("success", True)),
+                                data=dict(_replayed.get("data") or {"status": target.value}),
+                                error=_replayed.get("error"),
+                            )
+                        _, audit_degraded = await _transition_via_path(
                             tenant_id,
                             inv,
                             target,
@@ -1317,29 +2412,102 @@ async def conclude_investigation_activity(
                             getattr(ctx, "transition_repo", None),
                             getattr(ctx, "timeline_repo", None),
                         )
+                        if _idem_active_key is not None:
+                            await _complete_reservation(
+                                ctx=ctx,
+                                tenant_id=tenant_id,
+                                key=_idem_active_key,
+                                operation=_idem_operation,
+                                response={
+                                    "success": True,
+                                    "data": {
+                                        "status": target.value,
+                                        "audit_degraded": audit_degraded,
+                                    },
+                                },
+                                activity="conclude_investigation_activity",
+                                investigation_id=inv_id_str,
+                            )
+                        logger.info(
+                            "conclude_investigation_activity completed",
+                            extra=_log_extra(
+                                tenant_id=tenant_id,
+                                investigation_id=inv_id_str,
+                                event="conclude_investigation_activity completed",
+                                outcome="concluded",
+                                status=target.value,
+                                audit_degraded=audit_degraded,
+                            ),
+                        )
                     return GenericActivityResult(success=True, data={"status": target.value})
             except ApplicationFailure:
                 raise
             except Exception as exc:
                 logger.exception(
-                    "conclude_investigation_activity transition failed", extra={"error": str(exc)}
+                    "conclude_investigation_activity transition failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="conclude_investigation_activity transition failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 raise _application_failure_from_exc(exc) from exc
         return GenericActivityResult(success=True, data={"status": status})
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="conclude_investigation_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
         raise
     except Exception as exc:
-        logger.exception("conclude_investigation_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="conclude_investigation_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
+        logger.exception(
+            "conclude_investigation_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="conclude_investigation_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def publish_event_activity(
-    params: PublishEventInput | dict[str, Any],
+    params: PublishEventInput,
 ) -> GenericActivityResult:
-    activity.logger.info("publish_event_activity")
+    # TO_DO-011: not additionally idempotency-wired — the outbox row itself
+    # IS the idempotency record (F-058: durable, idempotent on
+    # (tenant_id, idempotency_key) with investigation_id:event_type key);
+    # a second reserve/complete layer would be redundant.
+    data = _coerced_data(PublishEventInput, params, activity="publish_event_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "publish_event_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="publish_event_activity started",
+            event_type=str(data.get("event", "INVESTIGATION_FINISHED")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         event_type = str(data.get("event", "INVESTIGATION_FINISHED"))
@@ -1359,9 +2527,15 @@ async def publish_event_activity(
                 if inv_obj is not None:
                     app_id = str(inv_obj.application_id)
             except Exception as exc:
-                logger.warning(
+                logger.exception(
                     "publish_event_activity investigation fetch failed",
-                    extra={"error": str(exc)},
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="publish_event_activity investigation fetch failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
 
         # F-058: transactional outbox — persist the event first (durable,
@@ -1381,7 +2555,15 @@ async def publish_event_activity(
                 )
             except Exception as exc:
                 logger.exception(
-                    "publish_event_activity outbox enqueue failed", extra={"error": str(exc)}
+                    "publish_event_activity outbox enqueue failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="publish_event_activity outbox enqueue failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        idempotency_key=idempotency_key,
+                    ),
                 )
                 raise _application_failure_from_exc(exc) from exc
             if publisher is not None:
@@ -1390,8 +2572,24 @@ async def publish_event_activity(
                 except Exception as exc:
                     logger.warning(
                         "publish_event_activity dispatch deferred; event stays queued",
-                        extra={"error": str(exc)},
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="publish_event_activity dispatch deferred",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        ),
                     )
+            logger.info(
+                "publish_event_activity completed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="publish_event_activity completed",
+                    outcome="queued",
+                    event_type=event_type,
+                ),
+            )
             return GenericActivityResult(success=True, data={"event": event_type, "queued": True})
 
         if publisher is None:
@@ -1431,31 +2629,70 @@ async def publish_event_activity(
                 await publisher.publish(envelope)
             except Exception as exc:
                 logger.exception(
-                    "publish_event_activity fallback failed", extra={"error": str(exc)}
+                    "publish_event_activity fallback failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="publish_event_activity fallback failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 raise _application_failure_from_exc(exc) from exc
 
+        logger.info(
+            "publish_event_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="publish_event_activity completed",
+                outcome="published",
+                event_type=event_type,
+            ),
+        )
         return GenericActivityResult(success=True, data={"event": event_type})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("publish_event_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "publish_event_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="publish_event_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def retrieve_knowledge_activity(
-    params: RetrieveKnowledgeInput | dict[str, Any],
+    params: RetrieveKnowledgeInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — read-only retrieval; an empty
+    # context degrades to unassisted reasoning rather than failing.
     """Validity-gated knowledge retrieval before reasoning (Part 6 D4, Slice 0).
 
     Returns verified facts + excluded_stale_count. Never raises on store
     trouble: an empty context degrades the investigation to unassisted
     reasoning rather than failing it.
     """
-    activity.logger.info("retrieve_knowledge_activity")
+    data = _coerced_data(
+        RetrieveKnowledgeInput, params, activity="retrieve_knowledge_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "retrieve_knowledge_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="retrieve_knowledge_activity started",
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         kinds = data.get("kinds")
@@ -1487,9 +2724,15 @@ async def retrieve_knowledge_activity(
                 },
             )
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "retrieve_knowledge_activity degraded to empty context",
-                extra={"error": str(exc)},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="retrieve_knowledge_activity degraded",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
             return GenericActivityResult(
                 success=True, data={"verified_facts": [], "excluded_stale_count": -1}
@@ -1497,7 +2740,16 @@ async def retrieve_knowledge_activity(
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("retrieve_knowledge_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "retrieve_knowledge_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="retrieve_knowledge_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -1527,15 +2779,29 @@ async def _application_id_for(ctx: Any, tenant_id: str, investigation_id: UUID) 
 
 @activity.defn
 async def capture_knowledge_activity(
-    params: CaptureKnowledgeInput | dict[str, Any],
+    params: CaptureKnowledgeInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — best-effort post-conclusion capture
+    # with a never-fail contract; a reserve/raise reservation would convert
+    # degraded-0 outcomes into activity failures, violating that contract.
     """Distill concluded state into envelopes (Part 6 D4, Slice 0).
 
     Runs after conclusion. Capture failures never fail the investigation.
     """
-    activity.logger.info("capture_knowledge_activity")
+    data = _coerced_data(
+        CaptureKnowledgeInput, params, activity="capture_knowledge_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "capture_knowledge_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="capture_knowledge_activity started",
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         if not tenant_id or not inv_id_str:
@@ -1547,17 +2813,42 @@ async def capture_knowledge_activity(
         try:
             service = ctx.knowledge_capture_service()
             stored = await service.capture_for_investigation(tenant_id, investigation_id)
+            logger.info(
+                "capture_knowledge_activity completed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="capture_knowledge_activity completed",
+                    outcome="captured",
+                    artifacts_stored=len(stored),
+                ),
+            )
             return GenericActivityResult(success=True, data={"artifacts_stored": len(stored)})
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "capture_knowledge_activity failed; investigation unaffected",
-                extra={"error": str(exc)},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="capture_knowledge_activity degraded",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
             return GenericActivityResult(success=True, data={"artifacts_stored": 0})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("capture_knowledge_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "capture_knowledge_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="capture_knowledge_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -1571,16 +2862,24 @@ class SweepKnowledgeInput:
 
 @activity.defn
 async def sweep_knowledge_activity(
-    params: SweepKnowledgeInput | dict[str, Any],
+    params: SweepKnowledgeInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — the TTL sweep is idempotent by
+    # design (re-running expires nothing new); never fails a workflow.
     """Proactive TTL-expiry sweep. Idempotent; never fails a workflow on error."""
-    activity.logger.info("sweep_knowledge_activity")
+    data = _coerced_data(SweepKnowledgeInput, params, activity="sweep_knowledge_activity")
+    logger.info(
+        "sweep_knowledge_activity started",
+        extra=_log_extra(
+            event="sweep_knowledge_activity started",
+            tenants=list(data.get("tenants", []) or []),
+        ),
+    )
     try:
         from investigation_agent_platform.application.knowledge.janitor import (
             KnowledgeArtifactJanitor,
         )
 
-        data = params if isinstance(params, dict) else params.__dict__
         tenants = list(data.get("tenants", []) or [])
         reverify = bool(data.get("reverify_conditional", False))
         ctx = _get_ctx()
@@ -1594,11 +2893,24 @@ async def sweep_knowledge_activity(
                 per_tenant[tenant_id] = result.expired_count
                 total_expired += result.expired_count
             except Exception as exc:
-                logger.warning(
+                logger.exception(
                     "Knowledge sweep failed for tenant; continuing",
-                    extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        event="sweep_knowledge_activity tenant failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
                 )
                 per_tenant[tenant_id] = -1
+        logger.info(
+            "sweep_knowledge_activity completed",
+            extra=_log_extra(
+                event="sweep_knowledge_activity completed",
+                outcome="swept",
+                expired_total=total_expired,
+            ),
+        )
         return GenericActivityResult(
             success=True,
             data={"expired_total": total_expired, "per_tenant": per_tenant},
@@ -1606,7 +2918,14 @@ async def sweep_knowledge_activity(
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("sweep_knowledge_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "sweep_knowledge_activity failed",
+            extra=_log_extra(
+                event="sweep_knowledge_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -1629,8 +2948,11 @@ class CollectSnapshotsOutput:
 
 @activity.defn
 async def collect_snapshots_activity(
-    params: CollectSnapshotsInput | dict[str, Any],
+    params: CollectSnapshotsInput,
 ) -> CollectSnapshotsOutput:
+    # TO_DO-011: not idempotency-wired — collection is idempotent by design
+    # (already-collected snapshots report, never duplicate; audit nodes are
+    # never deleted).
     """Classify one repository's topology snapshots and collect the
     unpinned, out-of-window ones (ISSUE-4 janitor).
 
@@ -1640,8 +2962,18 @@ async def collect_snapshots_activity(
     a transient Neo4j hiccup on one repository must not fail the whole
     scheduled pass (the workflow retries this activity per repository).
     """
-    activity.logger.info("collect_snapshots_activity")
-    data = params if isinstance(params, dict) else params.__dict__
+    data = _coerced_data(
+        CollectSnapshotsInput, params, activity="collect_snapshots_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "collect_snapshots_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="collect_snapshots_activity started",
+            repository_id=str(data.get("repository_id", "")),
+        ),
+    )
     tenant_id = str(data.get("tenant_id", ""))
     repository_id = str(data.get("repository_id", ""))
     if not tenant_id or not repository_id:
@@ -1693,6 +3025,16 @@ async def collect_snapshots_activity(
                 deleted_nodes += result.deleted_node_count
                 deleted_edges += result.deleted_edge_count
 
+        logger.info(
+            "collect_snapshots_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="collect_snapshots_activity completed",
+                outcome="collected",
+                repository_id=repository_id,
+                collected_count=len(collected),
+            ),
+        )
         return CollectSnapshotsOutput(
             collected_revisions=collected,
             pinned_count=len(classification.pinned),
@@ -1702,7 +3044,16 @@ async def collect_snapshots_activity(
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("collect_snapshots_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "collect_snapshots_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="collect_snapshots_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                repository_id=repository_id,
+            ),
+        )
         return CollectSnapshotsOutput(error=str(exc))
 
 
@@ -1742,8 +3093,12 @@ class PromoteFulfillmentEvidenceInput:
 
 @activity.defn
 async def record_input_requirement_activity(
-    params: RecordInputRequirementInput | dict[str, Any],
+    params: RecordInputRequirementInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — each call mints a fresh requirement
+    # row (new UUID), so no deterministic key is derivable from the inputs; a
+    # caller-supplied idempotency key would need repository-level dedup owned
+    # by Wave 3. The workflow emits one record call per input marker.
     """Persist one InputRequirement row and return its identity + wait budget."""
     from datetime import timedelta
 
@@ -1753,9 +3108,20 @@ async def record_input_requirement_activity(
     )
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
 
-    activity.logger.info("record_input_requirement_activity")
+    data = _coerced_data(
+        RecordInputRequirementInput, params, activity="record_input_requirement_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "record_input_requirement_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="record_input_requirement_activity started",
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         reason = str(data.get("reason", "") or "Additional input required")
@@ -1801,26 +3167,58 @@ async def record_input_requirement_activity(
         }
         if wait_timeout_seconds is not None:
             result_data["wait_timeout_seconds"] = wait_timeout_seconds
+        logger.info(
+            "record_input_requirement_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="record_input_requirement_activity completed",
+                outcome="recorded",
+                requirement_id=str(requirement.requirement_id),
+            ),
+        )
         return GenericActivityResult(success=True, data=result_data)
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("record_input_requirement_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "record_input_requirement_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="record_input_requirement_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def set_input_requirement_state_activity(
-    params: SetInputRequirementStateInput | dict[str, Any],
+    params: SetInputRequirementStateInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — the compare-and-set on
+    # (requirement_id, expected_version) IS the idempotency mechanism: a
+    # retry with the same version conflicts loudly instead of duplicating.
     """Compare-and-set a requirement's state (FULFILLED/EXPIRED/CANCELLED)."""
     from investigation_agent_platform.domain.investigation.input_requirements import (
         RequirementState,
     )
 
-    activity.logger.info("set_input_requirement_state_activity")
+    data = _coerced_data(
+        SetInputRequirementStateInput, params, activity="set_input_requirement_state_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "set_input_requirement_state_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="set_input_requirement_state_activity started",
+            requirement_id=str(data.get("requirement_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         req_id_str = str(data.get("requirement_id", ""))
         if not tenant_id or not req_id_str:
@@ -1839,17 +3237,36 @@ async def set_input_requirement_state_activity(
             return GenericActivityResult(success=False, error="expected_version invalid")
         ctx = _get_ctx()
         await ctx.input_repo.set_state(tenant_id, UUID(req_id_str), expected_version, state)
+        logger.info(
+            "set_input_requirement_state_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="set_input_requirement_state_activity completed",
+                outcome="state_set",
+                requirement_id=req_id_str,
+                state=state.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"state": state.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("set_input_requirement_state_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "set_input_requirement_state_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="set_input_requirement_state_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                requirement_id=str(data.get("requirement_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def promote_fulfillment_evidence_activity(
-    params: PromoteFulfillmentEvidenceInput | dict[str, Any],
+    params: PromoteFulfillmentEvidenceInput,
 ) -> GenericActivityResult:
     """Persist caller-supplied fulfillment data as DOCUMENTATION evidence.
 
@@ -1873,9 +3290,23 @@ async def promote_fulfillment_evidence_activity(
         SourceLocation,
     )
 
-    activity.logger.info("promote_fulfillment_evidence_activity")
+    data = _coerced_data(
+        PromoteFulfillmentEvidenceInput,
+        params,
+        activity="promote_fulfillment_evidence_activity",
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    inv_id_probe = str(data.get("investigation_id", ""))
+    logger.info(
+        "promote_fulfillment_evidence_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            investigation_id=inv_id_probe,
+            event="promote_fulfillment_evidence_activity started",
+            requirement_id=str(data.get("requirement_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         req_id_str = str(data.get("requirement_id", ""))
@@ -1929,12 +3360,86 @@ async def promote_fulfillment_evidence_activity(
             ).hexdigest(),
         )
         ctx = _get_ctx()
+        # TO_DO-011: idempotency-wired — the evidence fingerprint is
+        # deterministic over (requirement_id, canonical payload), so the
+        # requirement id is the deterministic reservation key.
+        _idem_active_key: str | None = None
+        _idem_operation = "activity:promote_fulfillment"
+        _idem_key = f"promote_fulfillment:{req_id_str}"
+        _replayed, _idem_active_key = await _reserve_or_replay(
+            ctx=ctx,
+            tenant_id=tenant_id,
+            key=_idem_key,
+            request_payload={
+                "tenant_id": tenant_id,
+                "investigation_id": inv_id_str,
+                "requirement_id": req_id_str,
+            },
+            operation=_idem_operation,
+            activity="promote_fulfillment_evidence_activity",
+            investigation_id=inv_id_str,
+        )
+        if _replayed is not None:
+            return GenericActivityResult(
+                success=bool(_replayed.get("success", True)),
+                data=dict(_replayed.get("data") or {}),
+                error=_replayed.get("error"),
+            )
         await ctx.evidence_repo.save(tenant_id, evidence, investigation_id)
+        if _idem_active_key is not None:
+            await _complete_reservation(
+                ctx=ctx,
+                tenant_id=tenant_id,
+                key=_idem_active_key,
+                operation=_idem_operation,
+                response={
+                    "success": True,
+                    "data": {"evidence_id": str(evidence.evidence_id)},
+                },
+                activity="promote_fulfillment_evidence_activity",
+                investigation_id=inv_id_str,
+            )
+        logger.info(
+            "promote_fulfillment_evidence_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="promote_fulfillment_evidence_activity completed",
+                outcome="promoted",
+                requirement_id=req_id_str,
+                evidence_id=str(evidence.evidence_id),
+            ),
+        )
         return GenericActivityResult(success=True, data={"evidence_id": str(evidence.evidence_id)})
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="promote_fulfillment_evidence_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
         raise
     except Exception as exc:
-        logger.exception("promote_fulfillment_evidence_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="promote_fulfillment_evidence_activity",
+            investigation_id=str(locals().get("inv_id_str", "") or ""),
+        )
+        logger.exception(
+            "promote_fulfillment_evidence_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                investigation_id=inv_id_probe,
+                event="promote_fulfillment_evidence_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -1964,8 +3469,11 @@ class UpdateClusteringJobInput:
 
 @activity.defn
 async def run_clustering_activity(
-    params: RunClusteringInput | dict[str, Any],
+    params: RunClusteringInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — a bounded incremental pass that is
+    # re-runnable by design (re-running assigns nothing new); quota-exhaustion
+    # returns a failure result rather than raising.
     """Run one bounded incremental clustering pass (Part 11.7)."""
     from investigation_agent_platform.application.finding.clustering_service import (
         FindingClusterService,
@@ -1974,9 +3482,17 @@ async def run_clustering_activity(
     from investigation_agent_platform.domain.common.extension import CapabilityScope
     from investigation_agent_platform.domain.common.quotas import QuotaPolicy
 
-    activity.logger.info("run_clustering_activity")
+    data = _coerced_data(RunClusteringInput, params, activity="run_clustering_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "run_clustering_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="run_clustering_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         if not tenant_id:
             return GenericActivityResult(success=False, error="tenant_id required")
@@ -2000,9 +3516,14 @@ async def run_clustering_activity(
         except Exception as exc:
             # Lexical-only degraded mode: taxonomy preserved, new findings
             # explicitly UNASSIGNED with provenance. Loud, never silent.
-            logger.warning(
+            logger.exception(
                 "Clustering without LLM gateway; lexical-only mode",
-                extra={"tenant_id": tenant_id, "error": str(exc)},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    event="run_clustering_activity lexical-only",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
 
         quota_policy: QuotaPolicy | None = None
@@ -2015,9 +3536,14 @@ async def run_clustering_activity(
             quota_policy = QuotaPolicy.model_validate(_load_cfg().quotas.model_dump(mode="json"))
             quota_guarded = True
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "Clustering without quota guard; config unavailable",
-                extra={"tenant_id": tenant_id, "error": str(exc)},
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    event="run_clustering_activity quota unguarded",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
             )
 
         service = FindingClusterService(
@@ -2045,18 +3571,38 @@ async def run_clustering_activity(
         result_data = result.model_dump(mode="json")
         result_data["quota_guarded"] = quota_guarded
         result_data["lexical_only"] = gateway is None
+        logger.info(
+            "run_clustering_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="run_clustering_activity completed",
+                outcome="clustered",
+                quota_guarded=quota_guarded,
+            ),
+        )
         return GenericActivityResult(success=True, data=result_data)
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("run_clustering_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "run_clustering_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="run_clustering_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def update_clustering_job_activity(
-    params: UpdateClusteringJobInput | dict[str, Any],
+    params: UpdateClusteringJobInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — optimistic-concurrency versioning
+    # (expected_version) IS the mechanism: a retried stale update conflicts
+    # loudly instead of duplicating.
     """Apply a status/stage/error update to the linked BackgroundJob row."""
     from uuid import UUID as _UUID
 
@@ -2065,9 +3611,19 @@ async def update_clustering_job_activity(
         BackgroundJobStatus,
     )
 
-    activity.logger.info("update_clustering_job_activity")
+    data = _coerced_data(
+        UpdateClusteringJobInput, params, activity="update_clustering_job_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "update_clustering_job_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="update_clustering_job_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id_str = str(data.get("job_id", ""))
         if not tenant_id or not job_id_str:
@@ -2116,11 +3672,30 @@ async def update_clustering_job_activity(
         )
 
         await maybe_publish_job_progress(ctx, tenant_id, updated)
+        logger.info(
+            "update_clustering_job_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="update_clustering_job_activity completed",
+                outcome="job_updated",
+                job_id=job_id_str,
+                status=updated.status.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"status": updated.status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("update_clustering_job_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "update_clustering_job_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="update_clustering_job_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -2144,7 +3719,7 @@ class UpdateReportJobInput:
 
 @activity.defn
 async def run_report_activity(
-    params: RunReportInput | dict[str, Any],
+    params: RunReportInput,
 ) -> GenericActivityResult:
     """Build, render, and store one aggregate report (Part 11.8)."""
     from uuid import UUID as _UUID
@@ -2159,9 +3734,17 @@ async def run_report_activity(
         HtmlAggregateReportRenderer,
     )
 
-    activity.logger.info("run_report_activity")
+    data = _coerced_data(RunReportInput, params, activity="run_report_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "run_report_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="run_report_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id_str = str(data.get("job_id", ""))
         if not tenant_id:
@@ -2189,10 +3772,60 @@ async def run_report_activity(
             return GenericActivityResult(
                 success=False, error="job_id required for artifact history"
             )
+        # TO_DO-011: idempotency-wired — (job_id) is deterministic per report
+        # run, so a retried run replays stored artifact keys instead of
+        # writing duplicate history artifacts.
+        _idem_active_key: str | None = None
+        _idem_operation = "activity:run_report"
+        _idem_key = f"run_report:{job_id}"
+        _replayed, _idem_active_key = await _reserve_or_replay(
+            ctx=ctx,
+            tenant_id=tenant_id,
+            key=_idem_key,
+            request_payload={
+                "tenant_id": tenant_id,
+                "job_id": job_id_str,
+                "legal_hold": legal_hold,
+            },
+            operation=_idem_operation,
+            activity="run_report_activity",
+        )
+        if _replayed is not None:
+            return GenericActivityResult(
+                success=bool(_replayed.get("success", True)),
+                data=dict(_replayed.get("data") or {}),
+                error=_replayed.get("error"),
+            )
         refs = await store_report_run(
             store, tenant_id, job_id, html, manifest_json, legal_hold=legal_hold
         )
         await _link_report_result(ctx, tenant_id, job_id, refs["history_html"].key)
+        if _idem_active_key is not None:
+            await _complete_reservation(
+                ctx=ctx,
+                tenant_id=tenant_id,
+                key=_idem_active_key,
+                operation=_idem_operation,
+                response={
+                    "success": True,
+                    "data": {
+                        "taxonomy_revision": report.taxonomy_revision,
+                        "assignment_count": report.assignment_count,
+                        "artifact_keys": [refs["history_html"].key, refs["history_json"].key],
+                    },
+                },
+                activity="run_report_activity",
+            )
+        logger.info(
+            "run_report_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="run_report_activity completed",
+                outcome="reported",
+                job_id=job_id_str,
+                assignment_count=report.assignment_count,
+            ),
+        )
         return GenericActivityResult(
             success=True,
             data={
@@ -2202,9 +3835,32 @@ async def run_report_activity(
             },
         )
     except ApplicationFailure:
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="run_report_activity",
+        )
         raise
     except Exception as exc:
-        logger.exception("run_report_activity failed", extra={"error": str(exc)})
+        await _abandon_reservation(
+            ctx=locals().get("ctx"),
+            tenant_id=str(locals().get("tenant_id", "") or ""),
+            key=locals().get("_idem_active_key"),
+            operation=str(locals().get("_idem_operation", "") or ""),
+            activity="run_report_activity",
+        )
+        logger.exception(
+            "run_report_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="run_report_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -2220,16 +3876,24 @@ async def _link_report_result(ctx: Any, tenant_id: str, job_id: Any, result_ref:
         updated = job.model_copy(update={"result_ref": result_ref, "version": job.version + 1})
         await repo.save(tenant_id, updated, expected_version=job.version)
     except Exception as exc:
-        logger.warning(
+        logger.exception(
             "Report result_ref linkage skipped",
-            extra={"tenant_id": tenant_id, "error": str(exc)},
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="report result_ref linkage skipped",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            ),
         )
 
 
 @activity.defn
 async def update_report_job_activity(
-    params: UpdateReportJobInput | dict[str, Any],
+    params: UpdateReportJobInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — optimistic-concurrency versioning
+    # (expected_version) IS the mechanism: a retried stale update conflicts
+    # loudly instead of duplicating.
     """Apply a status/stage/error update to the linked aggregate-report job."""
     from uuid import UUID as _UUID
 
@@ -2238,9 +3902,17 @@ async def update_report_job_activity(
         BackgroundJobStatus,
     )
 
-    activity.logger.info("update_report_job_activity")
+    data = _coerced_data(UpdateReportJobInput, params, activity="update_report_job_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "update_report_job_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="update_report_job_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id_str = str(data.get("job_id", ""))
         if not tenant_id or not job_id_str:
@@ -2289,11 +3961,30 @@ async def update_report_job_activity(
         )
 
         await maybe_publish_job_progress(ctx, tenant_id, updated)
+        logger.info(
+            "update_report_job_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="update_report_job_activity completed",
+                outcome="job_updated",
+                job_id=job_id_str,
+                status=updated.status.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"status": updated.status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("update_report_job_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "update_report_job_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="update_report_job_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -2318,16 +4009,27 @@ class UpdateReindexJobInput:
 
 @activity.defn
 async def run_reindex_activity(
-    params: RunReindexInput | dict[str, Any],
+    params: RunReindexInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — index_source writes a new generation
+    # per call and is re-runnable (a retry supersedes rather than duplicates);
+    # generation-scoped dedup lives in the reference service.
     """Index one reference source into a new generation (Part 11.6)."""
     from investigation_agent_platform.application.reference.reference_service import (
         ReferenceDocumentService,
     )
 
-    activity.logger.info("run_reindex_activity")
+    data = _coerced_data(RunReindexInput, params, activity="run_reindex_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "run_reindex_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="run_reindex_activity started",
+            source_id=str(data.get("source_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         source_id = str(data.get("source_id", ""))
         if not tenant_id or not source_id:
@@ -2347,18 +4049,39 @@ async def run_reindex_activity(
             )
         except (RuntimeError, ValueError) as exc:
             return GenericActivityResult(success=False, error=str(exc))
+        logger.info(
+            "run_reindex_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="run_reindex_activity completed",
+                outcome="indexed",
+                source_id=source_id,
+            ),
+        )
         return GenericActivityResult(success=True, data=summary.model_dump(mode="json"))
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("run_reindex_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "run_reindex_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="run_reindex_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                source_id=str(data.get("source_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def update_reindex_job_activity(
-    params: UpdateReindexJobInput | dict[str, Any],
+    params: UpdateReindexJobInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — optimistic-concurrency versioning
+    # (expected_version) IS the mechanism: a retried stale update conflicts
+    # loudly instead of duplicating.
     """Apply a status/stage/error update to the linked reindex job."""
     from uuid import UUID as _UUID
 
@@ -2367,9 +4090,19 @@ async def update_reindex_job_activity(
         BackgroundJobStatus,
     )
 
-    activity.logger.info("update_reindex_job_activity")
+    data = _coerced_data(
+        UpdateReindexJobInput, params, activity="update_reindex_job_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "update_reindex_job_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="update_reindex_job_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id_str = str(data.get("job_id", ""))
         if not tenant_id or not job_id_str:
@@ -2418,11 +4151,30 @@ async def update_reindex_job_activity(
         )
 
         await maybe_publish_job_progress(ctx, tenant_id, updated)
+        logger.info(
+            "update_reindex_job_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="update_reindex_job_activity completed",
+                outcome="job_updated",
+                job_id=job_id_str,
+                status=updated.status.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"status": updated.status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("update_reindex_job_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "update_reindex_job_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="update_reindex_job_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -2486,12 +4238,23 @@ def _batch_uuid(value: str) -> Any:
 
 @activity.defn
 async def load_batch_records_activity(
-    params: LoadBatchRecordsInput | dict[str, Any],
+    params: LoadBatchRecordsInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — read-only cursor load; no writes.
     """Load PENDING batch records from a dispatch cursor (Part 11.9)."""
-    activity.logger.info("load_batch_records_activity")
+    data = _coerced_data(
+        LoadBatchRecordsInput, params, activity="load_batch_records_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "load_batch_records_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="load_batch_records_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2518,24 +4281,56 @@ async def load_batch_records_activity(
             for record in records
             if record.record_index >= start_index and record.status.value == "PENDING"
         ]
+        logger.info(
+            "load_batch_records_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="load_batch_records_activity completed",
+                outcome="loaded",
+                pending_count=len(pending),
+                total=total,
+            ),
+        )
         return GenericActivityResult(success=True, data={"records": pending, "total": total})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("load_batch_records_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "load_batch_records_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="load_batch_records_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def mark_batch_records_activity(
-    params: MarkBatchRecordsInput | dict[str, Any],
+    params: MarkBatchRecordsInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — convergent status sets: re-marking
+    # the same records with the same status/child ids is semantically a
+    # no-op, so retries converge instead of duplicating.
     """Bulk-mark records DISPATCHED/RUNNING with child workflow ids."""
     from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
 
-    activity.logger.info("mark_batch_records_activity")
+    data = _coerced_data(
+        MarkBatchRecordsInput, params, activity="mark_batch_records_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "mark_batch_records_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="mark_batch_records_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2562,24 +4357,54 @@ async def mark_batch_records_activity(
                 record.model_copy(update={"status": status, "child_workflow_id": child_id}),
             )
             marked += 1
+        logger.info(
+            "mark_batch_records_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="mark_batch_records_activity completed",
+                outcome="marked",
+                marked=marked,
+            ),
+        )
         return GenericActivityResult(success=True, data={"marked": marked})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("mark_batch_records_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "mark_batch_records_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="mark_batch_records_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def mark_batch_record_result_activity(
-    params: MarkBatchRecordResultInput | dict[str, Any],
+    params: MarkBatchRecordResultInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — terminal marking is convergent
+    # (same status/error rewrite is a no-op); guarded to terminal states.
     """Mark one record terminal (DONE/FAILED/CANCELED) with an error."""
     from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
 
-    activity.logger.info("mark_batch_record_result_activity")
+    data = _coerced_data(
+        MarkBatchRecordResultInput, params, activity="mark_batch_record_result_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "mark_batch_record_result_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="mark_batch_record_result_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2610,18 +4435,39 @@ async def mark_batch_record_result_activity(
                 update={"status": status, "error": str(error)[:2048] if error else None}
             ),
         )
+        logger.info(
+            "mark_batch_record_result_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="mark_batch_record_result_activity completed",
+                outcome="marked",
+                status=status.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"status": status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("mark_batch_record_result_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "mark_batch_record_result_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="mark_batch_record_result_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def resolve_batch_stragglers_activity(
-    params: ResolveBatchStragglersInput | dict[str, Any],
+    params: ResolveBatchStragglersInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — classification from persisted
+    # investigation status is convergent (re-running re-derives the same
+    # AWAITING_INPUT/RUNNING labels); never invents terminal states.
     """Classify still-running records via the persisted investigation status.
 
     AWAITING_INPUT investigations keep running (parent completes partial);
@@ -2630,9 +4476,19 @@ async def resolve_batch_stragglers_activity(
     """
     from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
 
-    activity.logger.info("resolve_batch_stragglers_activity")
+    data = _coerced_data(
+        ResolveBatchStragglersInput, params, activity="resolve_batch_stragglers_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "resolve_batch_stragglers_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="resolve_batch_stragglers_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2665,20 +4521,43 @@ async def resolve_batch_stragglers_activity(
                     record.model_copy(update={"status": BatchRecordStatus.RUNNING}),
                 )
                 running += 1
+        logger.info(
+            "resolve_batch_stragglers_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="resolve_batch_stragglers_activity completed",
+                outcome="resolved",
+                awaiting_input=awaiting,
+                running=running,
+            ),
+        )
         return GenericActivityResult(
             success=True, data={"awaiting_input": awaiting, "running": running}
         )
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("resolve_batch_stragglers_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "resolve_batch_stragglers_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="resolve_batch_stragglers_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def cancel_batch_children_activity(
-    params: CancelBatchChildrenInput | dict[str, Any],
+    params: CancelBatchChildrenInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — Temporal workflow cancel is
+    # idempotent per child handle and each outcome is recorded on the batch
+    # row, so retries converge (already-canceled children are skipped by
+    # their CANCELED status filter).
     """Cancel live child executions for RUNNING records (Part 11.9).
 
     Explicit propagation: the declared parent-close policy is ABANDON (so
@@ -2688,9 +4567,19 @@ async def cancel_batch_children_activity(
     """
     from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
 
-    activity.logger.info("cancel_batch_children_activity")
+    data = _coerced_data(
+        CancelBatchChildrenInput, params, activity="cancel_batch_children_activity"
+    )
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "cancel_batch_children_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="cancel_batch_children_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2720,19 +4609,51 @@ async def cancel_batch_children_activity(
                 )
                 canceled += 1
             except Exception as exc:
+                logger.exception(
+                    "cancel_batch_children_activity child cancel failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        event="cancel_batch_children_activity child cancel failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        record_index=record.record_index,
+                    ),
+                )
                 failed.append(f"{record.record_index}:{exc}")
+        logger.info(
+            "cancel_batch_children_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="cancel_batch_children_activity completed",
+                outcome="canceled",
+                canceled=canceled,
+                failed_count=len(failed),
+            ),
+        )
         return GenericActivityResult(success=True, data={"canceled": canceled, "failed": failed})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("cancel_batch_children_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "cancel_batch_children_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="cancel_batch_children_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
 @activity.defn
 async def update_batch_job_activity(
-    params: UpdateBatchJobInput | dict[str, Any],
+    params: UpdateBatchJobInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — optimistic-concurrency versioning
+    # (expected_version) IS the mechanism: a retried stale update conflicts
+    # loudly instead of duplicating.
     """Apply a status/stage/error update to the linked batch job."""
     from uuid import UUID as _UUID
 
@@ -2741,9 +4662,17 @@ async def update_batch_job_activity(
         BackgroundJobStatus,
     )
 
-    activity.logger.info("update_batch_job_activity")
+    data = _coerced_data(UpdateBatchJobInput, params, activity="update_batch_job_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "update_batch_job_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="update_batch_job_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id_str = str(data.get("job_id", ""))
         if not tenant_id or not job_id_str:
@@ -2792,11 +4721,30 @@ async def update_batch_job_activity(
         )
 
         await maybe_publish_job_progress(ctx, tenant_id, updated)
+        logger.info(
+            "update_batch_job_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="update_batch_job_activity completed",
+                outcome="job_updated",
+                job_id=job_id_str,
+                status=updated.status.value,
+            ),
+        )
         return GenericActivityResult(success=True, data={"status": updated.status.value})
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("update_batch_job_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "update_batch_job_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="update_batch_job_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc
 
 
@@ -2808,12 +4756,22 @@ class SummarizeBatchInput:
 
 @activity.defn
 async def summarize_batch_activity(
-    params: SummarizeBatchInput | dict[str, Any],
+    params: SummarizeBatchInput,
 ) -> GenericActivityResult:
+    # TO_DO-011: not idempotency-wired — pure aggregation over record rows;
+    # no writes.
     """Aggregate batch counts over record rows (Part 11.9)."""
-    activity.logger.info("summarize_batch_activity")
+    data = _coerced_data(SummarizeBatchInput, params, activity="summarize_batch_activity")
+    tenant_id_probe = str(data.get("tenant_id", ""))
+    logger.info(
+        "summarize_batch_activity started",
+        extra=_log_extra(
+            tenant_id=tenant_id_probe,
+            event="summarize_batch_activity started",
+            job_id=str(data.get("job_id", "")),
+        ),
+    )
     try:
-        data = params if isinstance(params, dict) else params.__dict__
         tenant_id = str(data.get("tenant_id", ""))
         job_id = _batch_uuid(str(data.get("job_id", "")))
         if not tenant_id or job_id is None:
@@ -2840,9 +4798,27 @@ async def summarize_batch_activity(
                 counts["awaiting_input"] += 1
             elif status == "CANCELED":
                 counts["canceled"] += 1
+        logger.info(
+            "summarize_batch_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="summarize_batch_activity completed",
+                outcome="summarized",
+                total=counts["total"],
+            ),
+        )
         return GenericActivityResult(success=True, data=counts)
     except ApplicationFailure:
         raise
     except Exception as exc:
-        logger.exception("summarize_batch_activity failed", extra={"error": str(exc)})
+        logger.exception(
+            "summarize_batch_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id_probe,
+                event="summarize_batch_activity failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                job_id=str(data.get("job_id", "")),
+            ),
+        )
         raise _application_failure_from_exc(exc) from exc

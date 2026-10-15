@@ -45,6 +45,7 @@ class KnowledgeCaptureService:
         evidence_summary_ttl_days: int = 90,
         max_episodes_per_investigation: int = 50,
         observability: Any = None,
+        profile_repo: Any = None,
     ) -> None:
         self.artifact_repo = artifact_repo
         self.evidence_repo = evidence_repo
@@ -55,6 +56,7 @@ class KnowledgeCaptureService:
         self.evidence_summary_ttl_days = evidence_summary_ttl_days
         self.max_episodes_per_investigation = max_episodes_per_investigation
         self.observability = observability
+        self.profile_repo = profile_repo
         self._group_locks: dict[str, asyncio.Lock] = {}
 
     def _now(self) -> datetime:
@@ -169,9 +171,29 @@ class KnowledgeCaptureService:
         # SHARED artifacts require the investigation's code-issue fingerprint;
         # without one they downgrade to TENANT (fail closed, never share keyless).
         fingerprint: str | None = None
+        application_id: str | None = None
         if self.investigation_repo is not None:
             investigation = await self.investigation_repo.get_by_id(tenant_id, investigation_id)
             fingerprint = getattr(investigation, "code_issue_fingerprint", None)
+            application_id = getattr(investigation, "application_id", None)
+        ttl_days = self.evidence_summary_ttl_days
+        if self.profile_repo is not None and application_id:
+            # Profile KnowledgeConfig.retention_days overrides the constructor
+            # default — but ONLY when explicitly authored (fields_set), so
+            # default profiles keep the established 90-day behavior.
+            try:
+                profile = await self.profile_repo.get_by_application_id(
+                    tenant_id, application_id
+                )
+            except Exception:
+                profile = None
+            knowledge = getattr(profile, "knowledge", None) if profile else None
+            if (
+                knowledge is not None
+                and "retention_days" in knowledge.model_fields_set
+                and knowledge.retention_days >= 1
+            ):
+                ttl_days = knowledge.retention_days
         artifacts: list[KnowledgeArtifact] = []
         seen_signatures: set[str] = set()
         for item in items:
@@ -210,7 +232,7 @@ class KnowledgeCaptureService:
                     confidence=float(item.confidence),
                     refresh_policy=RefreshPolicy.TTL,
                     valid_from=now,
-                    valid_to=now + timedelta(days=self.evidence_summary_ttl_days),
+                    valid_to=now + timedelta(days=ttl_days),
                     source_evidence_ids=[item.evidence_id],
                     visibility=ArtifactVisibility.TENANT,
                 )

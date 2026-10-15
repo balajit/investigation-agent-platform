@@ -139,8 +139,19 @@ class RuntimeEvidenceService:
                     f"Request environment {request.environment!r} does not match "
                     f"the investigation profile {profile.environment!r}."
                 )
+            # Service allowlist (§7.1): unknown service names are a typo or a
+            # scope-escape attempt — reject fail-closed instead of querying
+            # blind. Empty request.services means "all profile services".
+            if request.services:
+                known = set(profile.all_service_names())
+                unknown = [s for s in request.services if s not in known]
+                if unknown:
+                    raise DomainValidationException(
+                        f"Unknown services for application "
+                        f"{investigation.application_id!r}: {unknown[:5]}"
+                    )
             scoped_request = request.model_copy(
-                update={"mapping_source_id": profile.observability_configuration.mapping_source_id}
+                update={"mapping_source_id": profile.mapping_source_id}
             )
             result = await self._gateway.search_runtime_evidence(
                 context.tenant_id,

@@ -1,11 +1,13 @@
 # src/investigation_agent_platform/infrastructure/persistence/hypothesis_repository.py
 """SQLAlchemy hypothesis repository."""
 
+import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.hypothesis.models import (
     Hypothesis,
     HypothesisEvidenceAssessment,
@@ -13,6 +15,8 @@ from investigation_agent_platform.domain.hypothesis.models import (
 )
 from investigation_agent_platform.infrastructure.persistence.models import HypothesisORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+
+logger = logging.getLogger(__name__)
 
 
 class SqlAlchemyHypothesisRepository:
@@ -69,10 +73,10 @@ class SqlAlchemyHypothesisRepository:
             title=row.title,
             description=row.description,
             supporting_evidence_ids=[
-                __import__("uuid").UUID(s) for s in (row.supporting_evidence_ids or []) if s
+                UUID(s) for s in (row.supporting_evidence_ids or []) if s
             ],
             refuting_evidence_ids=[
-                __import__("uuid").UUID(s) for s in (row.refuting_evidence_ids or []) if s
+                UUID(s) for s in (row.refuting_evidence_ids or []) if s
             ],
             required_verification=row.required_verification or [],
         )
@@ -81,33 +85,69 @@ class SqlAlchemyHypothesisRepository:
         self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
     ) -> None:
         orm = self._to_orm(hypothesis, tenant_id, investigation_id)
-        async with rls_session(self._session_factory, tenant_id) as session:
-            if orm.id is not None:
-                existing = await session.scalars(
-                    select(HypothesisORM).where(
-                        HypothesisORM.id == hypothesis.id,
-                        HypothesisORM.investigation_id == investigation_id,
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                if orm.id is not None:
+                    existing = await session.scalars(
+                        select(HypothesisORM).where(
+                            HypothesisORM.tenant_id == tenant_id,
+                            HypothesisORM.id == hypothesis.id,
+                            HypothesisORM.investigation_id == investigation_id,
+                        )
                     )
-                )
-                row = existing.first()
-                if row is not None:
-                    row.title = orm.title
-                    row.description = orm.description
-                    row.statement = orm.statement
-                    row.status = orm.status
-                    row.confidence_score = orm.confidence_score
-                    row.support_score = orm.support_score
-                    row.supporting_evidence_ids = orm.supporting_evidence_ids
-                    row.refuting_evidence_ids = orm.refuting_evidence_ids
-                    row.assessments_json = orm.assessments_json
-                    row.updated_at = orm.updated_at
-                    return
-            session.add(orm)
+                    row = existing.first()
+                    if row is not None:
+                        row.title = orm.title
+                        row.description = orm.description
+                        row.statement = orm.statement
+                        row.status = orm.status
+                        row.confidence_score = orm.confidence_score
+                        row.support_score = orm.support_score
+                        row.supporting_evidence_ids = orm.supporting_evidence_ids
+                        row.refuting_evidence_ids = orm.refuting_evidence_ids
+                        row.assessments_json = orm.assessments_json
+                        row.updated_at = orm.updated_at
+                        outcome = "updated"
+                    else:
+                        session.add(orm)
+                        outcome = "inserted"
+                else:
+                    session.add(orm)
+                    outcome = "inserted"
+        except Exception as exc:
+            logger.exception(
+                "hypothesis save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "hypothesis.save",
+                        "outcome": "failed",
+                        "hypothesis_id": str(hypothesis.id),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
+            )
+            raise
+        logger.info(
+            "hypothesis saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "event": "hypothesis.save",
+                    "outcome": outcome,
+                    "hypothesis_id": str(hypothesis.id),
+                }
+            ),
+        )
 
     async def get_by_id(self, tenant_id: str, hypothesis_id: UUID) -> Hypothesis | None:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
                 select(HypothesisORM).where(
+                    HypothesisORM.tenant_id == tenant_id,
                     HypothesisORM.id == hypothesis_id,
                 )
             )
@@ -120,6 +160,7 @@ class SqlAlchemyHypothesisRepository:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
                 select(HypothesisORM).where(
+                    HypothesisORM.tenant_id == tenant_id,
                     HypothesisORM.investigation_id == investigation_id,
                 )
             )
@@ -130,8 +171,6 @@ class SqlAlchemyHypothesisRepository:
     ) -> tuple[list[Hypothesis], int]:
         """Paginated tenant-scoped hypotheses (mirrors the in-memory repo
         semantics the hypotheses router relies on)."""
-        from sqlalchemy import func
-
         async with rls_session(self._session_factory, tenant_id) as session:
             total = await session.scalar(
                 select(func.count())

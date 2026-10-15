@@ -107,7 +107,7 @@ class ReferenceDocumentService:
             raise ValueError("Reference retrieval is unconfigured for this tenant")
         profiles = await self._profile_repo.list(tenant_id)
         for profile in profiles:
-            refdocs = getattr(profile, "reference_docs_configuration", None)
+            refdocs = getattr(profile, "reference_docs", None)
             if refdocs is None:
                 continue
             if application_id is not None and profile.id != application_id:
@@ -130,7 +130,7 @@ class ReferenceDocumentService:
         profiles = await self._profile_repo.list(tenant_id)
         sources: list[dict[str, Any]] = []
         for profile in profiles:
-            refdocs = getattr(profile, "reference_docs_configuration", None)
+            refdocs = getattr(profile, "reference_docs", None)
             if refdocs is None:
                 continue
             if application_id is not None and profile.id != application_id:

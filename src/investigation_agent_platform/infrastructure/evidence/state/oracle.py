@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -24,7 +25,7 @@ from investigation_agent_platform.domain.evidence.models import (
     EvidenceType,
 )
 from investigation_agent_platform.domain.evidence.requests import ApplicationStateRequest
-from investigation_agent_platform.domain.profile.models import StateProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -47,12 +48,13 @@ ORACLE_STATEMENT_TIMEOUT_SECONDS = 25
 class SqlglotTemplateValidator:
     """Validates pre-defined SQL templates using sqlglot AST parsing for SELECT-only bounds."""
 
-    def __init__(self, allowed_tables: set[str]) -> None:
+    def __init__(self, allowed_tables: set[str], dialect: str = "oracle") -> None:
         self._allowed_tables = {t.lower() for t in allowed_tables}
+        self._dialect = dialect
 
     def validate_and_bound_template(self, sql_template: str, max_rows: int) -> str:
         try:
-            parsed = sqlglot.parse_one(sql_template, read="oracle")
+            parsed = sqlglot.parse_one(sql_template, read=self._dialect)
         except Exception as exc:
             raise SecurityPolicyViolationException(
                 f"Invalid SQL syntax in template: {exc}"
@@ -70,7 +72,11 @@ class SqlglotTemplateValidator:
                 f"Template accesses unauthorized tables: {unauthorized}"
             )
 
-        return parsed.limit(max_rows).sql(dialect="oracle")
+        rendered = parsed.limit(max_rows).sql(dialect=self._dialect)
+        # sqlglot renders named binds in pyformat (%(name)s); SQLAlchemy
+        # text() binds colon-style (:name). Translate back so every
+        # :placeholder the profile declared stays bindable downstream.
+        return re.sub(r"%\((\w+)\)s", r":\1", rendered)
 
 
 class AsyncOracleStateAdapter:
@@ -95,7 +101,7 @@ class AsyncOracleStateAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncOracleStateAdapter.get_application_state") as span:
@@ -177,7 +183,7 @@ class AsyncOracleStateAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult:
         return await self.get_application_state(

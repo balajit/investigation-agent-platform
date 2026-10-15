@@ -51,7 +51,9 @@ class CodebaseGraphPipeline:
         glob_pattern = ext_map.get(language, "*.py")
 
         file_paths = list(repo_root.rglob(glob_pattern))
-        logger.info(f"Starting AST parsing for {len(file_paths)} files via TreeSitterParser...")
+        logger.info(
+            "Starting AST parsing for %d files via TreeSitterParser...", len(file_paths)
+        )
 
         table_names: list[str] = []
         if ddl_paths:
@@ -65,8 +67,10 @@ class CodebaseGraphPipeline:
                         len(tables),
                         ddl_path,
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to ingest schema file {ddl_path}: {e}")
+                except Exception:
+                    logger.exception(
+                        "Failed to ingest schema file %s", ddl_path
+                    )
 
         locations_by_table: dict[str, list[CodeLocation]] = defaultdict(list)
 
@@ -94,8 +98,8 @@ class CodebaseGraphPipeline:
                                         snippet=line.strip()[:500],
                                     )
                                 )
-            except Exception as e:
-                logger.warning(f"Failed to process file {file_path}: {e}")
+            except Exception:
+                logger.exception("Failed to process file %s", file_path)
 
         # Process AST parsing concurrently off-thread using gather
         await asyncio.gather(*[_process_file(fp) for fp in file_paths])

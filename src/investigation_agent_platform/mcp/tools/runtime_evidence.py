@@ -17,6 +17,7 @@ from mcp.types import ToolAnnotations
 from opentelemetry import trace
 from pydantic import Field
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.composition import (
     InvestigationServices,
 )
@@ -114,31 +115,37 @@ async def search_runtime_evidence_core(
             span.set_attribute("complete", output.completeness.complete)
             logger.info(
                 "MCP search_runtime_evidence completed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.search_runtime_evidence.completed",
                         "correlation_id": scope.correlation_id,
                         "result_count": len(output.items),
                         "has_more": output.has_more,
                     }
-                },
+                ),
             )
             return output
         except Exception as exc:
-            envelope = error_envelope(exc)
+            envelope = error_envelope(
+                exc,
+                tenant_id=scope.tenant_id,
+                investigation_id=str(scope.investigation_id),
+            )
             span.set_attribute("error_code", envelope.error.code.value)
-            logger.info(
+            logger.exception(
                 "MCP search_runtime_evidence failed",
-                extra={
-                    "context": {
+                extra=sanitize_extra(
+                    {
                         "tenant_id": scope.tenant_id,
                         "investigation_id": str(scope.investigation_id),
+                        "event": "mcp.search_runtime_evidence.failed",
                         "correlation_id": scope.correlation_id,
                         "error_code": envelope.error.code.value,
                         "retryable": envelope.error.retryable,
                     }
-                },
+                ),
             )
             return envelope
 

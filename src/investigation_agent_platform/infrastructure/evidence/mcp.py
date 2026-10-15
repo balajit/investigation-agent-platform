@@ -21,7 +21,7 @@ from investigation_agent_platform.domain.evidence.requests import (
     ApplicationStateRequest,
     RuntimeEvidenceRequest,
 )
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile, StateProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -98,7 +98,7 @@ class McpEvidenceAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: RuntimeEvidenceRequest,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("McpEvidenceAdapter.search_runtime_evidence") as span:
             span.set_attribute("tenant_id", tenant_id)
@@ -182,7 +182,7 @@ class McpEvidenceAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
     ) -> EvidenceQueryResult:
         """Single-state fetch via the same run-sql path (SQLcl has no point fetch).
 
@@ -197,7 +197,7 @@ class McpEvidenceAdapter:
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
     ) -> EvidenceQueryResult:
         """Execute agent-generated read-only SQL via SQLcl `run-sql` (Oracle MCP path).
 

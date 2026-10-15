@@ -1072,7 +1072,7 @@ class TestInvestigationActionValidator:
         v = InvestigationActionValidator()
         action = InvestigationAction(
             action_type=ActionType.QUERY_STATE,
-            parameters={"template_key": "find_transaction"},
+            parameters={"template_key": "primary.find_transaction"},
             execution_hash="h",
         )
         await v.validate_action(
@@ -1091,7 +1091,7 @@ class TestInvestigationActionValidator:
         v = InvestigationActionValidator()
         action = InvestigationAction(
             action_type=ActionType.QUERY_STATE,
-            parameters={"template_key": "find_transaction", "sql": "SELECT * FROM orders"},
+            parameters={"template_key": "primary.find_transaction", "sql": "SELECT * FROM orders"},
             execution_hash="h",
         )
         with pytest.raises(SecurityPolicyViolationException, match="Dynamic SQL"):
@@ -1111,7 +1111,7 @@ class TestInvestigationActionValidator:
         v = InvestigationActionValidator()
         action = InvestigationAction(
             action_type=ActionType.QUERY_STATE,
-            parameters={"template_key": "find_transaction", "filter": "DROP TABLE orders"},
+            parameters={"template_key": "primary.find_transaction", "filter": "DROP TABLE orders"},
             execution_hash="h",
         )
         with pytest.raises(SecurityPolicyViolationException):

@@ -10,13 +10,20 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from investigation_agent_platform.api.dependencies import (
     WorkflowStatusEvent,
     get_app_context,
 )
+from investigation_agent_platform.api.errors import ApiError
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
+from investigation_agent_platform.api.v1.schemas.events import (
+    ApproveActionAck,
+    PauseAck,
+    ResumeAck,
+)
 from investigation_agent_platform.domain.common.exceptions import (
     ConcurrencyError,
     InvalidLifecycleTransitionException,
@@ -45,9 +52,8 @@ async def _signal_workflow(
     """
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Workflow execution engine is unavailable; cannot signal investigation",
+        raise ApiError(
+            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; cannot signal investigation"
         )
     workflow_id = f"wf-investigation-{investigation_id}"
     try:
@@ -64,41 +70,48 @@ async def _signal_workflow(
             "Failed to signal workflow",
             extra={"workflow_id": workflow_id, "signal": signal_name, "error": str(exc)},
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to deliver '{signal_name}' signal to workflow",
+        raise ApiError(
+            code="WORKFLOW_SIGNAL_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message=f"Failed to deliver '{signal_name}' signal to workflow"
         ) from exc
 
 
-@router.post("/investigations/{investigation_id}/pause", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/investigations/{investigation_id}/pause",
+    response_model=PauseAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def pause_investigation(
     investigation_id: str,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
-) -> dict[str, Any]:
+) -> PauseAck:
     ctx = get_app_context()
     try:
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id"
+        raise ApiError(
+            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+        raise ApiError(
+            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+        )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        raise ApiError(
+            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
         )
     if investigation.status in _TERMINAL_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot pause investigation in terminal status {investigation.status.value}",
+        raise ApiError(
+            code="INVESTIGATION_TERMINAL", http_status=status.HTTP_409_CONFLICT, message=f"Cannot pause investigation in terminal status {investigation.status.value}"
         )
     if investigation.status == InvestigationStatus.PAUSED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Investigation is already paused"
+        raise ApiError(
+            code="ALREADY_PAUSED", http_status=status.HTTP_409_CONFLICT, message="Investigation is already paused"
         )
 
     await _signal_workflow(ctx, investigation_id, "pause")
@@ -107,11 +120,15 @@ async def pause_investigation(
             InvestigationStatus.PAUSED, ActorType.USER, f"pause requested by {principal_id}"
         )
     except InvalidLifecycleTransitionException as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
     try:
         await ctx.investigation_repo.save(x_tenant_id, paused, investigation.version)
     except ConcurrencyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
     await ctx.transition_repo.record_transition(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
@@ -133,34 +150,42 @@ async def pause_investigation(
         "Pause signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
     )
-    return {"investigation_id": investigation_id, "status": InvestigationStatus.PAUSED.value}
+    return PauseAck(investigation_id=investigation_id, status=InvestigationStatus.PAUSED.value)
 
 
-@router.post("/investigations/{investigation_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/investigations/{investigation_id}/resume",
+    response_model=ResumeAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def resume_investigation(
     investigation_id: str,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
-) -> dict[str, Any]:
+) -> ResumeAck:
     ctx = get_app_context()
     try:
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id"
+        raise ApiError(
+            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+        raise ApiError(
+            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+        )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        raise ApiError(
+            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
         )
     if investigation.status in _TERMINAL_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot resume investigation in terminal status {investigation.status.value}",
+        raise ApiError(
+            code="INVESTIGATION_TERMINAL", http_status=status.HTTP_409_CONFLICT, message=f"Cannot resume investigation in terminal status {investigation.status.value}"
         )
 
     await _signal_workflow(ctx, investigation_id, "resume")
@@ -172,11 +197,15 @@ async def resume_investigation(
                 f"resume requested by {principal_id}",
             )
         except InvalidLifecycleTransitionException as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise ApiError(
+                code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+            ) from exc
         try:
             await ctx.investigation_repo.save(x_tenant_id, resumed, investigation.version)
         except ConcurrencyError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise ApiError(
+                code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+            ) from exc
         to_state = InvestigationStatus.INVESTIGATING.value
     else:
         # Resume on an already-active investigation is a signal-only no-op;
@@ -203,32 +232,41 @@ async def resume_investigation(
         "Resume signal delivered",
         extra={"investigation_id": investigation_id, "tenant_id": x_tenant_id},
     )
-    return {"investigation_id": investigation_id, "status": to_state}
+    return ResumeAck(investigation_id=investigation_id, status=to_state)
 
 
-@router.post("/investigations/{investigation_id}/approve-action", status_code=status.HTTP_200_OK)
+@router.post(
+    "/investigations/{investigation_id}/approve-action",
+    response_model=ApproveActionAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_200_OK,
+)
 async def approve_action(
     investigation_id: str,
     action_id: str,
     approved: bool,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
-) -> dict[str, Any]:
+) -> ApproveActionAck:
     """Signals Temporal workflow to proceed or abort a Human-in-the-Loop restricted action."""
     ctx = get_app_context()
     try:
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid investigation id"
+        raise ApiError(
+            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+        raise ApiError(
+            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+        )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Tenant authorization mismatch"
+        raise ApiError(
+            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
         )
 
     signal_name = "action_approval_response"
@@ -239,9 +277,8 @@ async def approve_action(
             "Cannot signal workflow: Temporal client is not wired",
             extra={"investigation_id": investigation_id},
         )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Workflow execution engine is unavailable; approval signal was not sent",
+        raise ApiError(
+            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; approval signal was not sent"
         )
     await _signal_workflow(ctx, investigation_id, signal_name, payload)
 
@@ -264,4 +301,4 @@ async def approve_action(
             "tenant_id": x_tenant_id,
         },
     )
-    return {"investigation_id": investigation_id, "action_id": action_id, "approved": approved}
+    return ApproveActionAck(investigation_id=investigation_id, action_id=action_id, approved=approved)

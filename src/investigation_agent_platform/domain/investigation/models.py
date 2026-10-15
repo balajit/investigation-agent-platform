@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from investigation_agent_platform.domain.common.exceptions import (
     InvalidLifecycleTransitionException,
@@ -152,7 +152,17 @@ class InvestigationAction(BaseModel):
 
 
 class Fact(BaseModel):
-    """Verified domain observation derived from evidence."""
+    """Verified domain observation derived from evidence.
+
+    Append-only semantics (TO_DO-024): ``Fact`` instances are immutable
+    (``frozen=True``) and persistence only ever INSERTs new fact rows —
+    ``SqlAlchemyInvestigationRepository.save`` appends one
+    ``InvestigationFactORM`` row per fact and never UPDATEs or DELETEs
+    facts. There is no read-modify-write on facts, so concurrent appends
+    cannot lost-update each other; each concurrent writer's rows all
+    survive. No ``version``/CAS field is needed because facts are never
+    mutated after creation — only superseded by appending a newer fact.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -166,6 +176,20 @@ class Fact(BaseModel):
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("statement")
+    @classmethod
+    def _statement_must_be_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Fact statement must be non-blank")
+        return value
+
+    @field_validator("source_evidence_ids")
+    @classmethod
+    def _evidence_ids_must_be_unique(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Fact source_evidence_ids must not contain duplicates")
+        return value
 
 
 class InvestigationRequest(BaseModel):

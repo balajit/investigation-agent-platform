@@ -100,41 +100,46 @@ class ProfileBackedRepositoryRegistry:
     async def resolve_for_service_name(
         self, tenant_id: str, service_name: str
     ) -> RepositoryIdentity | None:
-        """ISSUE-5: reverse-lookup a repository by the runtime service name
-        its ``CodeProfile`` declares. Linear scan over the tenant's profiles
-        — correct and tenant-scoped; optimize with an indexed lookup only if
-        profile volume per tenant ever makes this a hot path."""
+        """Reverse-lookup a repository by canonical service name or OTel
+        ``service.name`` alias declared in any service's telemetry. Linear
+        scan over the tenant's profiles — correct and tenant-scoped; optimize
+        with an indexed lookup only if profile volume per tenant ever makes
+        this a hot path."""
         profiles = await self._profile_repo.list(tenant_id)
         for profile in profiles:
-            code = profile.code_configuration
-            if getattr(code, "service_name", None) == service_name:
+            if profile.service_by_name(service_name) is not None:
                 return await self._build_repository_identity(tenant_id, profile.id, profile)
         return None
 
     async def _build_repository_identity(
         self, tenant_id: str, application_id: str, profile: ApplicationProfile
     ) -> RepositoryIdentity | None:
-        code = profile.code_configuration
-        repository_id = getattr(code, "repository_id", None)
-        if not repository_id:
+        service = profile.primary_service
+        if service is None or not service.repository_id:
             logger.warning(
                 "Application profile has no linked repository_id; topology "
-                "attribution is unavailable until CodeProfile.repositoryId is set",
+                "attribution is unavailable until services[].repository_id is set",
                 extra={"tenant_id": tenant_id, "application_id": application_id},
             )
             return None
-        git_org = derive_git_organization(tenant_id, code.repository)
+        repository_id = service.repository_id
+        locator = (
+            f"{service.code.org}/{service.code.repos[0]}"
+            if service.code.org and service.code.repos
+            else (service.code.repos[0] if service.code.repos else service.name)
+        )
+        git_org = derive_git_organization(tenant_id, locator)
         repository = RepositoryIdentity(
             tenant_id=tenant_id,
             repository_id=repository_id,
-            name=code.repository,
-            locator=code.repository,
+            name=locator,
+            locator=locator,
             git_org_id=git_org.git_org_id if git_org is not None else f"{tenant_id}:unassigned",
             repository_type=RepositoryType.UNKNOWN,
-            default_branch=code.default_branch,
+            default_branch=service.code.default_branch,
             is_active=True,
         )
-        domain_id = self._derive_domain(tenant_id, code.repository)
+        domain_id = self._derive_domain(tenant_id, locator)
         await self._write_ownership(repository, git_org, domain_id)
         return repository
 

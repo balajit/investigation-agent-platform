@@ -5,16 +5,21 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.errors import ApiError
 from investigation_agent_platform.api.tenant import (
     require_tenant,
     resolve_identity_from_headers,
 )
+from investigation_agent_platform.api.v1.schemas.envelopes import ListEnvelope
+from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
+from investigation_agent_platform.api.v1.schemas.jobs import JobCancelResponse, JobDetail
 from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.domain.common.background_job import (
     TERMINAL_JOB_STATUSES,
+    BackgroundJob,
     BackgroundJobStatus,
 )
 
@@ -28,28 +33,42 @@ _STREAM_TIMEOUT_SECONDS = 20.0
 async def _get_job_or_404(ctx: Any, tenant_id: str, job_id: UUID) -> Any:
     job = await ctx.background_job_repo.get_by_id(tenant_id, job_id)
     if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        raise ApiError(
+            code="JOB_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Job not found"
+        )
     return job
 
 
-@router.get("/jobs/{job_id}")
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobDetail,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_job(
     job_id: str,
     x_tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
+) -> JobDetail:
     """Poll one background job (Postgres read model)."""
     ctx = get_app_context()
     try:
         job_uuid = UUID(job_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job id format"
+        raise ApiError(
+            code="INVALID_JOB_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid job id format"
         ) from exc
     job = await _get_job_or_404(ctx, x_tenant_id, job_uuid)
-    return {"job": job.model_dump(mode="json")}
+    return JobDetail.model_validate({"job": job.model_dump(mode="json")})
 
 
-@router.get("/jobs")
+@router.get(
+    "/jobs",
+    response_model=ListEnvelope[BackgroundJob],
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def list_jobs(
     x_tenant_id: str = Depends(require_tenant),
     kind: str | None = Query(default=None, max_length=64, pattern=NO_NUL_PATTERN),
@@ -58,36 +77,44 @@ async def list_jobs(
     ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
+) -> ListEnvelope[BackgroundJob]:
     """List background jobs for the tenant (newest first)."""
     ctx = get_app_context()
     jobs, total = await ctx.background_job_repo.list_jobs(
         x_tenant_id, kind=kind, status=status_filter, limit=limit, offset=offset
     )
-    return {
-        "items": [job.model_dump(mode="json") for job in jobs],
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-    }
+    return ListEnvelope[BackgroundJob].model_validate(
+        {
+            "items": [j.model_dump(mode="json") for j in jobs],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+    )
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post(
+    "/jobs/{job_id}/cancel",
+    response_model=JobCancelResponse,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def cancel_job(
     job_id: str,
     x_tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
+) -> JobCancelResponse:
     """Request cancellation (idempotent; terminal jobs return as-is)."""
     ctx = get_app_context()
     try:
         job_uuid = UUID(job_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job id format"
+        raise ApiError(
+            code="INVALID_JOB_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid job id format"
         ) from exc
     job = await _get_job_or_404(ctx, x_tenant_id, job_uuid)
     if job.status in TERMINAL_JOB_STATUSES:
-        return {"job": job.model_dump(mode="json"), "cancelled": False}
+        return JobCancelResponse.model_validate({"job": job.model_dump(mode="json"), "cancelled": False})
     updated = job.model_copy(
         update={"status": BackgroundJobStatus.CANCEL_REQUESTED, "version": job.version + 1}
     )
@@ -106,7 +133,7 @@ async def cancel_job(
             )
     refreshed = await ctx.background_job_repo.get_by_id(x_tenant_id, job_uuid)
     payload = refreshed if refreshed is not None else updated
-    return {"job": payload.model_dump(mode="json"), "cancelled": True}
+    return JobCancelResponse.model_validate({"job": payload.model_dump(mode="json"), "cancelled": True})
 
 
 @router.websocket("/jobs/{job_id}/stream")

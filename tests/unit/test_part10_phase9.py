@@ -14,7 +14,7 @@ from investigation_agent_platform.domain.common.exceptions import (
 )
 from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest, TimeRange
 from investigation_agent_platform.domain.observability.mapping import generic_ecs_mapping
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.infrastructure.configuration.mapping_registry import (
     load_mapping_profiles,
 )
@@ -53,6 +53,16 @@ def _request(**overrides):  # type: ignore[no-untyped-def]
     }
     kwargs.update(overrides)
     return RuntimeEvidenceRequest(**kwargs)
+
+
+def _profile():  # type: ignore[no-untyped-def]
+    return ApplicationProfile(
+        id="app",
+        tenant_id=TENANT,
+        name="n",
+        description="d",
+        environment="production",
+    )
 
 
 def _hit(doc_id, sort):  # type: ignore[no-untyped-def]
@@ -182,17 +192,7 @@ async def test_has_more_without_issuable_cursor_fails_loud():
     # Full page of hits carrying no usable sort state.
     client.search = AsyncMock(return_value=_response([_hit("d1", None), _hit("d2", "not-a-list")]))
     adapter = AsyncElasticAdapter(client=client, settings=_settings())
-    profile = ObservabilityProfile(
-        provider="elastic",
-        indices=["logs-app"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="deployment.environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="severity",
-    )
+    profile = _profile()
     with pytest.raises(ExecutionError) as exc_info:
         await adapter.search_runtime_evidence(TENANT, iid, _request(limit=2), profile)
     assert exc_info.value.retryable is False
@@ -208,17 +208,7 @@ async def test_cross_mapping_cursor_rejected():
         return_value=_response([_hit("d1", [1, "d1"]), _hit("d2", [2, "d2"])])
     )
     adapter = AsyncElasticAdapter(client=client, settings=_settings(), mapping_registry=registry)
-    profile = ObservabilityProfile(
-        provider="elastic",
-        indices=["logs-app"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="deployment.environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="severity",
-    )
+    profile = _profile()
     first = await adapter.search_runtime_evidence(TENANT, iid, _request(limit=2), profile)
     assert first.cursor is not None
     # Same logical query, different mapping: the fingerprint binds the

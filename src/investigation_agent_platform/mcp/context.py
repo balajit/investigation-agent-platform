@@ -11,12 +11,14 @@ misconfiguration, never an anonymous request.
 """
 
 import logging
+import os
 import re
 import uuid
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from uuid import UUID
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.context import InvestigationScope
 
 logger = logging.getLogger(__name__)
@@ -59,12 +61,12 @@ def require_mcp_context() -> McpRequestContext:
     return context
 
 
-def bind_mcp_context(context: McpRequestContext):  # type: ignore[no-untyped-def]
+def bind_mcp_context(context: McpRequestContext) -> Token[McpRequestContext | None]:
     """Bind an ambient context; returns the reset token for cleanup."""
     return _current_context.set(context)
 
 
-def reset_mcp_context(token) -> None:  # type: ignore[no-untyped-def]
+def reset_mcp_context(token: Token[McpRequestContext | None]) -> None:
     """Release an ambient context binding."""
     _current_context.reset(token)
 
@@ -89,6 +91,27 @@ def stdio_context_from_env(
         investigation_uuid = UUID(investigation_id)
     except (ValueError, AttributeError, TypeError) as exc:
         raise RuntimeError("IAP_MCP_INVESTIGATION_ID is not a valid UUID.") from exc
+    if not actor_id:
+        # Shared-host attribution limit (TO_DO-029): stdio has no per-request
+        # auth, so every tool call on a shared host attributes to one actor.
+        # The default stays for local dev; anything else must set
+        # IAP_MCP_ACTOR_ID explicitly. Requiring it outright would break
+        # existing local-dev setups, so non-local environments get a loud
+        # warning instead of a hard failure.
+        environment = os.environ.get("IAP_ENVIRONMENT", "local").lower()
+        if environment not in ("local", "development", "test"):
+            logger.warning(
+                "MCP stdio actor unattributed: IAP_MCP_ACTOR_ID is unset; "
+                "falling back to the shared 'local-operator' identity",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": investigation_id,
+                        "event": "mcp.stdio.default_actor",
+                        "environment": environment,
+                    }
+                ),
+            )
     return McpRequestContext(
         tenant_id=tenant_id,
         investigation_id=investigation_uuid,

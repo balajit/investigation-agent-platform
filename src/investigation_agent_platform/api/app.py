@@ -52,7 +52,7 @@ from investigation_agent_platform.api.dependencies import (
     set_app_context,
     shutdown_app_context,
 )
-from investigation_agent_platform.api.errors import public_error, sanitize_extra
+from investigation_agent_platform.api.errors import ApiError, public_error, sanitize_extra
 from investigation_agent_platform.api.rate_limit import check_rate_limit
 from investigation_agent_platform.api.v1.routers.aggregate_reports import (
     router as aggregate_reports_router,
@@ -215,9 +215,9 @@ def create_app(
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_credentials=False,
-            # UI issues GET + POST + DELETE (chat session delete);
-            # OPTIONS is the preflight method itself.
-            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            # UI issues GET + POST + PUT (profile update) + DELETE (chat session
+            # delete); OPTIONS is the preflight method itself.
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=[
                 "Authorization",
                 "Content-Type",
@@ -404,6 +404,28 @@ def create_app(
                     "correlation_id": correlation_id,
                 }
             },
+        )
+
+    @app.exception_handler(ApiError)
+    async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
+        from investigation_agent_platform.api.v1.schemas.errors import (
+            ErrorDetail,
+            ErrorResponse,
+        )
+
+        correlation_id = getattr(request.state, "correlation_id", "unknown")
+        body = ErrorResponse(
+            error=ErrorDetail(
+                code=exc.code,
+                message=exc.message,
+                correlation_id=correlation_id,
+                details=exc.details,
+            )
+        )
+        return JSONResponse(
+            status_code=exc.http_status,
+            content=body.model_dump(exclude_none=True),
+            headers=exc.headers,
         )
 
     @app.exception_handler(DBAPIError)

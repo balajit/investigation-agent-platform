@@ -45,7 +45,7 @@ from investigation_agent_platform.domain.observability.mapping import (
     ObservabilitySourceMapping,
     generic_ecs_mapping,
 )
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.infrastructure.configuration.mapping_registry import (
     MappingProfileRegistry,
 )
@@ -393,7 +393,7 @@ class TraceTelemetryExtractor(TraceTelemetryPort, TraceTelemetryDerivationPort):
         tenant_id: str,
         investigation_id: UUID,
         request: TraceTelemetryRequest,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> TraceTelemetry:
         """Retrieve, derive, and bound one trace view with completeness.

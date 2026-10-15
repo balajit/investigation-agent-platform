@@ -32,16 +32,24 @@ async def test_code_intelligence_provider_exists() -> None:
         src = pathlib.Path(tmp) / "example.py"
         src.write_text("def hello():\n    x = 1\n    return x\n")
         provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
-        from investigation_agent_platform.domain.profile.models import CodeProfile
+        from investigation_agent_platform.domain.profile.models import (
+            ApplicationProfile,
+            Service,
+            ServiceCode,
+        )
 
-        profile = CodeProfile(
-            provider="git",
-            repository="",
-            defaultBranch="main",
-            language="python",
-            sourceRoots=["."],
-            buildSystem="uv",
-            moduleStructure=".",
+        profile = ApplicationProfile(
+            id="app",
+            tenant_id="tenant-a",
+            name="n",
+            description="d",
+            environment="production",
+            services=[
+                Service(
+                    name="repo",
+                    code=ServiceCode(repos=["."], source_roots=["."]),
+                )
+            ],
         )
         syms = await provider.find_symbol("tenant-a", "hello", profile)
         # Should find at least via text search fallback

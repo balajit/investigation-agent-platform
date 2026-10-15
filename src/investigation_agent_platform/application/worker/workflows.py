@@ -1,6 +1,7 @@
 # src/investigation_agent_platform/application/worker/workflows.py
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -382,6 +383,15 @@ class RunInvestigationWorkflow:
         # 2. Main Investigation Loop — state authority is the workflow + checkpoint repo.
         while iteration < max_iterations and not self._is_cancelled:
             # Handle pause/resume/cancel signals.
+            if self._is_paused:
+                # TO_DO-013: a pause signal is a lifecycle event, not just an
+                # in-memory flag — persist PAUSED through the transition
+                # activity so investigation_transitions/timeline show it.
+                # Resuming needs no explicit edge back: the next _transition
+                # path-finds from PAUSED via the domain-derived graph (e.g.
+                # PAUSED -> INVESTIGATING -> CORRELATING). Already-PAUSED is a
+                # no-op inside the activity.
+                await _transition("PAUSED", "Workflow pause signal handled")
             await workflow.wait_condition(lambda: not self._is_paused)
             if self._is_cancelled:
                 break

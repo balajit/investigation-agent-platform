@@ -15,11 +15,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, Query, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.errors import ApiError, sanitize_extra
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.v1.schemas.aggregate_reports import (
+    BuildReportBody,
+    ReportBuildAck,
+    ReportMetadataView,
+    ReportPurgeAck,
+)
+from investigation_agent_platform.api.v1.schemas.envelopes import CursorEnvelope
+from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
 from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.application.reporting.artifacts import (
     history_prefix,
@@ -45,34 +53,38 @@ from investigation_agent_platform.domain.common.exceptions import (
 from investigation_agent_platform.domain.reporting.aggregate import (
     REPORT_HISTORY_RETENTION_DAYS,
 )
+from investigation_agent_platform.ports.artifacts.store import ArtifactRef
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["aggregate-reports"])
 
+# Router-local input models moved to api.v1.schemas.aggregate_reports
+# (TO_DO-018); re-exported here so existing imports keep working.
+__all__ = ["BuildReportBody", "router"]
+
 _SIGNED_URL_TTL_SECONDS = 3600
 _HISTORY_PAGE_CAP = 10
 
 
-class BuildReportBody(BaseModel):
-    legal_hold: bool = Field(
-        default=False,
-        description="Pin a legal hold on the produced artifacts (blocks purge).",
-    )
-
-
-@router.post("/aggregate-reports", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/aggregate-reports",
+    response_model=ReportBuildAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def build_report(
     body: BuildReportBody,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
-) -> dict[str, Any]:
+) -> ReportBuildAck:
     """Start one aggregate-report background job (idempotent)."""
     if not x_idempotency_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Idempotency-Key header is required",
+        raise ApiError(
+            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
         )
     ctx = get_app_context()
     canonical = json.dumps(body.model_dump(mode="json"), sort_keys=True)
@@ -85,12 +97,16 @@ async def build_report(
             operation="aggregate-reports",
         )
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="IDEMPOTENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
     except IdempotencyInProgressError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="IDEMPOTENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
     if not reserved:
         logger.info("Replaying cached aggregate-reports response for key=%s", x_idempotency_key)
-        return cached or {}
+        return ReportBuildAck.model_validate(cached or {})
 
     job = BackgroundJob(
         id=uuid4(),
@@ -104,13 +120,14 @@ async def build_report(
     try:
         await ctx.background_job_repo.create(job)
     except ConcurrencyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
 
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Workflow execution engine is unavailable; report was not started",
+        raise ApiError(
+            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; report was not started"
         )
     try:
         from investigation_agent_platform.application.worker.workflows import (
@@ -135,13 +152,12 @@ async def build_report(
             run_timeout=timedelta(seconds=3600),
         )
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Failed to start aggregate-report workflow",
-            extra={"error": str(exc), "job_id": str(job.id)},
+            extra=sanitize_extra({"job_id": str(job.id), "event": "report.dispatch_failed"}),
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to start report workflow; report was not started",
+        raise ApiError(
+            code="REPORT_DISPATCH_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start report workflow; report was not started"
         ) from exc
 
     try:
@@ -156,93 +172,119 @@ async def build_report(
             )
             await ctx.background_job_repo.save(x_tenant_id, queued, current.version)
     except ConcurrencyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
 
     from investigation_agent_platform.infrastructure.messaging.job_fanout import (
         maybe_publish_job_progress,
     )
 
     await maybe_publish_job_progress(ctx, x_tenant_id, queued if current is not None else job)
-    response_payload: dict[str, Any] = {
-        "job_id": str(job.id),
-        "workflow_id": f"wf-report-{job.id}",
-        "status": BackgroundJobStatus.QUEUED.value,
-    }
+    response_payload = ReportBuildAck(
+        job_id=str(job.id),
+        workflow_id=f"wf-report-{job.id}",
+        status=BackgroundJobStatus.QUEUED.value,
+    )
     await ctx.idempotency_store.complete(
-        x_tenant_id, x_idempotency_key, response_payload, operation="aggregate-reports"
+        x_tenant_id,
+        x_idempotency_key,
+        response_payload.model_dump(mode="json", exclude_unset=True),
+        operation="aggregate-reports",
     )
     return response_payload
 
 
-@router.get("/aggregate-reports/latest")
+@router.get(
+    "/aggregate-reports/latest",
+    response_model=ReportMetadataView,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_latest_report(
     x_tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
+) -> ReportMetadataView:
     """Latest report metadata plus a short-lived signed URL (no raw keys)."""
     ctx = get_app_context()
     store = getattr(ctx, "artifact_store", None)
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store is unavailable",
+        raise ApiError(
+            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
         )
     latest = await read_latest(store, x_tenant_id)
     if latest is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No report yet")
+        raise ApiError(
+            code="REPORT_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="No report yet"
+        )
     url = await store.signed_url(
         report_scope(x_tenant_id), latest.ref, ttl_seconds=_SIGNED_URL_TTL_SECONDS
     )
-    return {
-        "artifact": latest.ref.model_dump(mode="json"),
-        "metadata": latest.metadata,
-        "signed_url": url,
-        "expires_in_seconds": _SIGNED_URL_TTL_SECONDS,
-    }
+    return ReportMetadataView.model_validate(
+        {
+            "artifact": latest.ref.model_dump(mode="json"),
+            "metadata": latest.metadata,
+            "signed_url": url,
+            "expires_in_seconds": _SIGNED_URL_TTL_SECONDS,
+        }
+    )
 
 
-@router.get("/aggregate-reports/history")
+@router.get(
+    "/aggregate-reports/history",
+    response_model=CursorEnvelope[ArtifactRef],
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_report_history(
     x_tenant_id: str = Depends(require_tenant),
     cursor: str | None = Query(default=None, max_length=4096, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
-) -> dict[str, Any]:
+) -> CursorEnvelope[ArtifactRef]:
     """Paginated stored report runs (newest first where the adapter orders so)."""
     ctx = get_app_context()
     store = getattr(ctx, "artifact_store", None)
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store is unavailable",
+        raise ApiError(
+            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
         )
     page = await list_history(store, x_tenant_id, cursor, limit)
-    return {
-        "items": [ref.model_dump(mode="json") for ref in page.items],
-        "next_cursor": page.next_cursor,
-        "has_more": page.has_more,
-    }
+    return CursorEnvelope[ArtifactRef].model_validate(
+        {
+            "items": [ref.model_dump(mode="json") for ref in page.items],
+            "next_cursor": page.next_cursor,
+            "has_more": page.has_more,
+        }
+    )
 
 
-@router.delete("/aggregate-reports", status_code=status.HTTP_202_ACCEPTED)
+@router.delete(
+    "/aggregate-reports",
+    response_model=ReportPurgeAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def purge_reports(
     x_tenant_id: str = Depends(require_tenant),
     purge_latest: bool = Query(
         default=False,
         description="Also delete the latest artifact (blocked by legal hold).",
     ),
-) -> dict[str, Any]:
+) -> ReportPurgeAck:
     """Purge history past retention; honors legal hold (409 when held)."""
     ctx = get_app_context()
     store = getattr(ctx, "artifact_store", None)
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store is unavailable",
+        raise ApiError(
+            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
         )
     latest = await read_latest(store, x_tenant_id)
     if latest is not None and latest.metadata.get("legal_hold") == "true":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Legal hold is set; purge refused",
+        raise ApiError(
+            code="REPORT_LEGAL_HOLD", http_status=status.HTTP_409_CONFLICT, message="Legal hold is set; purge refused"
         )
     scope = report_scope(x_tenant_id)
     scope_id = scope_id_for_tenant(x_tenant_id)
@@ -273,9 +315,13 @@ async def purge_reports(
         try:
             await store.delete(scope, ref_for_key(json_key, "application/json", 0))
             purged.append(json_key)
-        except Exception as exc:
-            logger.warning("Latest sidecar purge skipped", extra={"error": str(exc)})
-    return {"status": "PURGED", "purged": purged}
+        except Exception:
+            logger.warning(
+                "Latest sidecar purge skipped",
+                extra=sanitize_extra({"event": "report.sidecar_purge_skipped"}),
+                exc_info=True,
+            )
+    return ReportPurgeAck(status="PURGED", purged=purged)
 
 
 async def _retention_expired(ctx: Any, tenant_id: str, job_id: UUID, now: datetime) -> bool:

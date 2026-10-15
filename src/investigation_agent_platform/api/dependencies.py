@@ -59,11 +59,16 @@ from investigation_agent_platform.domain.investigation.input_requirements import
 from investigation_agent_platform.domain.investigation.models import Investigation
 from investigation_agent_platform.domain.profile.models import (
     ApplicationProfile,
-    CodeProfile,
-    CorrelationProfile,
-    InvestigationProfile,
-    ObservabilityProfile,
-    StateProfile,
+    CorrelationConfig,
+    Datasource,
+    DatasourceKind,
+    DatasourceRole,
+    InvestigationConfig,
+    ProfileStatus,
+    QueryTemplate,
+    Service,
+    ServiceCode,
+    ServiceTelemetry,
 )
 from investigation_agent_platform.domain.timeline.models import TimelineEvent
 from investigation_agent_platform.ports.artifacts.store import (
@@ -170,7 +175,10 @@ class InvestigationOutboxWorker:
             except asyncio.CancelledError:
                 break
             except Exception as err:
-                logger.error("Outbox worker processing error", extra={"error": str(err)})
+                logger.exception(
+                    "Outbox worker processing error",
+                    extra={"event": "outbox_worker_error", "error": str(err)},
+                )
 
 
 def _cors_origins_from_env() -> str:
@@ -187,7 +195,7 @@ def _cors_origins_from_env() -> str:
 class ApiSettings(BaseModel):
     """Minimal API settings for local/dev composition root."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     environment: str = Field(default_factory=lambda: os.environ.get("IAP_ENVIRONMENT", "development"))
     # F-065: docs are opt-in. The app factory additionally forces docs off in
@@ -591,7 +599,7 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
         self._revisions: dict[tuple[str, str], dict[int, ApplicationProfile]] = {}
 
     async def get_by_application_id(
-        self, tenant_id: str, application_id: str, version: str | None = None
+        self, tenant_id: str, application_id: str, version: str | int | None = None
     ) -> ApplicationProfile | None:
         key = (tenant_id, application_id)
         if version is None:
@@ -618,8 +626,13 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
             revisions.setdefault(pointer.version, pointer)
         return [revisions[v] for v in sorted(revisions, reverse=True)]
 
-    async def list(self, tenant_id: str) -> list[ApplicationProfile]:
-        return [p for (t, _), p in self._profiles.items() if t == tenant_id]
+    async def list(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[ApplicationProfile]:
+        items = [p for (t, _), p in self._profiles.items() if t == tenant_id]
+        if status is not None:
+            items = [p for p in items if p.status.value == status]
+        return items
 
     async def save(self, tenant_id: str, profile: ApplicationProfile) -> None:
         key = (tenant_id, profile.id)
@@ -630,6 +643,35 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
         current = self._profiles.get(key)
         if current is None or profile.version > current.version:
             self._profiles[key] = profile
+
+    async def delete(
+        self, tenant_id: str, application_id: str, version: str | int | None = None
+    ) -> int:
+        key = (tenant_id, application_id)
+        if version is None:
+            revisions = self._revisions.pop(key, {})
+            pointer = self._profiles.pop(key, None)
+            versions = set(revisions)
+            if pointer is not None:
+                versions.add(pointer.version)
+            return len(versions)
+        try:
+            wanted = int(version)
+        except (TypeError, ValueError):
+            return 0
+        revisions = self._revisions.get(key, {})
+        pointer = self._profiles.get(key)
+        if wanted not in revisions and (
+            pointer is None or pointer.version != wanted
+        ):
+            return 0
+        revisions.pop(wanted, None)
+        if pointer is not None and pointer.version == wanted:
+            if revisions:
+                self._profiles[key] = revisions[max(revisions)]
+            else:
+                del self._profiles[key]
+        return 1
 
 
 class InMemoryEvidenceRepository(EvidenceRepository):
@@ -2058,38 +2100,49 @@ _DEFAULT_PROFILE = ApplicationProfile(
     name="Example Payments Service",
     description="Default example application profile for local development",
     environment="production",
-    observability=ObservabilityProfile(
-        provider="elasticsearch",
-        indices=["logs-app", "traces-app"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="deployment.environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="severity",
-    ),
-    state=StateProfile(
-        provider="postgres",
-        database="app_db",
-        schema="public",
-        tables=["orders", "payments", "ledger"],
-        primaryIdentifiers=["transaction_id", "order_id"],
-        stateFields=["status", "amount", "currency"],
-        timestampFields=["created_at", "updated_at"],
-        queryTemplates={"find_transaction": "SELECT * FROM {table} WHERE {pk} = :id"},
-    ),
-    code=CodeProfile(
-        provider="git",
-        repository="example/payments-service",
-        defaultBranch="main",
-        language="python",
-        sourceRoots=["src"],
-        buildSystem="uv",
-        moduleStructure="src/payments",
-    ),
-    correlation=CorrelationProfile(fields=["session.id", "request.id", "trace.id"]),
-    investigation=InvestigationProfile(
+    status=ProfileStatus.ACTIVE,
+    owner="platform-team",
+    mapping_source_id="generic-ecs",
+    services=[
+        Service(
+            name="payments-service",
+            role="edge",
+            description="Default example service",
+            telemetry=ServiceTelemetry(
+                log_indices=["logs-app", "traces-app"],
+                service_names=["payments-service"],
+            ),
+            code=ServiceCode(
+                org="example",
+                repos=["payments-service"],
+                default_branch="main",
+                language="python",
+                source_roots=["src"],
+                build_system="uv",
+                module_structure="src/payments",
+            ),
+            repository_id="example--payments-service",
+        )
+    ],
+    datasources=[
+        Datasource(
+            id="primary",
+            name="app_db (postgres)",
+            kind=DatasourceKind.POSTGRES,
+            role=DatasourceRole.STATE,
+            allowed_tables=["orders", "payments", "ledger"],
+            query_templates={
+                "find_transaction": QueryTemplate(
+                    description="Find transaction by id",
+                    sql="SELECT * FROM orders WHERE transaction_id = :id",
+                    read_only=True,
+                    allowed_tables=["orders"],
+                )
+            },
+        )
+    ],
+    correlation=CorrelationConfig(fields=["session.id", "request.id", "trace.id"]),
+    investigation=InvestigationConfig(
         defaultTimeWindow=3600,
         maximumEvidencePerQuery=50,
         maximumInvestigationDuration=7200,

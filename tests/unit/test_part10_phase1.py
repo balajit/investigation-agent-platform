@@ -90,22 +90,16 @@ def test_generic_ecs_snapshot_pins_pre_part10_behavior():
 
 
 def test_observability_profile_mapping_link_defaults():
-    from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+    from investigation_agent_platform.domain.profile.models import ApplicationProfile
 
-    profile = ObservabilityProfile(
-        provider="elastic",
-        indices=["logs-app"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="deployment.environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="severity",
+    profile = ApplicationProfile(
+        id="app",
+        tenant_id="tenant-a",
+        name="n",
+        description="d",
+        environment="production",
     )
     assert profile.mapping_source_id == "generic-ecs"
-    legacy = profile.model_dump(by_alias=True)
-    assert legacy["timestampField"] == "@timestamp"
 
 
 def test_requests_carry_internal_mapping_source_id():

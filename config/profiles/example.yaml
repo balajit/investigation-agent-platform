@@ -2,27 +2,16 @@
 # ---------------------------------------------------------------------------
 # Generic, portable application profile ("the one example").
 #
-# Conventions to watch when authoring a profile:
+# Canonical shape (single schema, no legacy blocks):
 #   * Top-level scalars are snake_case (tenant_id, allowed_capabilities,
-#     status, owner, version). There are NO camelCase aliases for these, and
-#     unknown keys are silently dropped by the model — a typo like
-#     `allowedCapabilities` becomes an empty list with no error.
-#   * Sub-blocks use camelCase keys (mappingSourceId, defaultBranch,
-#     queryTemplates, primaryIdentifiers, ...).
-#   * `allowed_capabilities` is currently informational; authorization is
-#     derived from `investigation.enabledEvidenceTypes` via
-#     infrastructure/security/profile_authorizer.py:
-#         SEARCH_LOGS -> LOG      QUERY_STATE -> DATABASE_STATE
-#         GET_CODE    -> COMMIT_HISTORY        CORRELATE   -> TRACE
-#   * `observability.mappingSourceId` must name a real
-#     config/observability-mappings/*.yaml source_id (here the built-in
-#     `generic-ecs`), or boot fails closed.
+#     status, owner, version, mapping_source_id).
+#   * Services carry per-service telemetry + code; datasources carry typed
+#     connections (secret:// or env:// references only — never credentials).
+#   * `allowed_capabilities` is enforced by the authorizer ANDed with
+#     `investigation.enabledEvidenceTypes`.
 #
 # Validate with:
 #   uv run python scripts/seed_profile.py --file config/profiles/example.yaml --dry-run
-# Load into the platform with (idempotent on (tenant_id, id, version)):
-#   IAP_DATABASE_URI='postgresql+asyncpg://...' \
-#     uv run python scripts/seed_profile.py --file config/profiles/example.yaml
 # ---------------------------------------------------------------------------
 
 application:
@@ -34,62 +23,58 @@ application:
   version: 1
   status: ACTIVE
   owner: platform-team
-  # snake_case (NOT allowedCapabilities). Keep in sync with enabledEvidenceTypes.
+  domain: reference
+  planes:
+    - backend
+  data_classification: INTERNAL
   allowed_capabilities:
     - SEARCH_LOGS
     - QUERY_STATE
     - CORRELATE
     - GET_CODE
-
-observability:
-  provider: elastic
-  # Index family this profile reads. For the built-in generic-ECS mapping the
-  # legacy path synthesizes `logs-{tenant}-*-{environment}-*`; this list is the
-  # anchor for mapping-bound profiles.
-  indices:
-    - example-application-logs-*
-  timestampField: "@timestamp"
-  serviceField: service.name
-  environmentField: service.environment
-  sessionField: labels.sessionId
-  requestField: labels.requestId
-  traceField: trace.id
-  logLevelField: log.level
-  mappingSourceId: generic-ecs
-
-state:
-  provider: postgresql
-  database: EXAMPLE_DB
-  schema: public
-  tables:
-    - APP_SESSION
-    - APP_TRANSACTION
-  primaryIdentifiers:
-    - SESSION_ID
-    - TRANSACTION_ID
-  stateFields:
-    - STATUS
-    - ERROR_CODE
-  timestampFields:
-    - CREATED_AT
-    - UPDATED_AT
-  # Read-only only: DROP/DELETE/TRUNCATE/ALTER/GRANT/REVOKE are rejected.
-  queryTemplates:
-    get_session_by_id: "SELECT * FROM APP_SESSION WHERE SESSION_ID = :session_id"
-    get_tx_by_session: "SELECT * FROM APP_TRANSACTION WHERE SESSION_ID = :session_id"
-
-code:
-  provider: git
-  repository: example-service
-  defaultBranch: main
-  language: python
-  sourceRoots:
-    - src
-  buildSystem: uv
-  moduleStructure: single-module
-  # Optional topology identity (enables cross-repo trace hops when registered):
-  repositoryId: example--example-service
-  serviceName: example-service
+  mapping_source_id: generic-ecs
+  services:
+    - name: example-service
+      role: edge
+      description: Reference single-module Python service.
+      telemetry:
+        log_indices:
+          - example-application-logs-*
+        service_names:
+          - example-service
+      code:
+        org: example
+        repos:
+          - example-service
+        default_branch: main
+        language: python
+        source_roots:
+          - src
+        build_system: uv
+        module_structure: single-module
+      repository_id: example--example-service
+  datasources:
+    - id: primary
+      name: EXAMPLE_DB (postgres)
+      kind: postgres
+      role: state
+      read_only: true
+      allowed_tables:
+        - APP_SESSION
+        - APP_TRANSACTION
+      query_templates:
+        get_session_by_id:
+          description: Fetch session by id.
+          sql: "SELECT * FROM APP_SESSION WHERE SESSION_ID = :session_id"
+          read_only: true
+          allowed_tables:
+            - APP_SESSION
+        get_tx_by_session:
+          description: Fetch transactions by session.
+          sql: "SELECT * FROM APP_TRANSACTION WHERE SESSION_ID = :session_id"
+          read_only: true
+          allowed_tables:
+            - APP_TRANSACTION
 
 correlation:
   fields:
@@ -102,7 +87,6 @@ investigation:
   defaultTimeWindow: 1800
   maximumEvidencePerQuery: 25
   maximumInvestigationDuration: 900
-  # Drives action authorization (see header). COMMIT_HISTORY enables GET_CODE.
   enabledEvidenceTypes:
     - LOG
     - TRACE
@@ -110,8 +94,6 @@ investigation:
     - COMMIT_HISTORY
   correlationDepth: 2
   maximumHypotheses: 5
-  # Optional JSON-Schema subset validating batch-intake `parameters`
-  # (type/required/properties/enum/maxLength/minimum/maximum/additionalProperties):
   parametersSchema:
     type: object
     required:
@@ -124,22 +106,3 @@ investigation:
         type: string
         maxLength: 64
     additionalProperties: false
-
-# ---------------------------------------------------------------------------
-# Optional: versioned reference-document retrieval (Part 11.6). Absent means
-# reference search fails closed. Uncomment and point at real sources to enable.
-# Every git host must also be listed in allowedHosts.
-# ---------------------------------------------------------------------------
-# referenceDocs:
-#   configVersion: "1.0"
-#   sources:
-#     - kind: git
-#       sourceVersion: "1.0"
-#       repoUrl: https://git.example.internal/example-service.git
-#       revision: HEAD            # prefer an immutable commit SHA
-#       paths:
-#         - docs/runbooks
-#   allowedHosts:
-#     - git.example.internal
-#   localAllowedRoots: []
-#   embeddingModel: text-embedding-3-small

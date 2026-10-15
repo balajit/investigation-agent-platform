@@ -12,7 +12,7 @@ from uuid import UUID
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.evidence.requests import TraceTelemetryRequest
 from investigation_agent_platform.domain.evidence.telemetry import TraceTelemetry
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 
 
 @runtime_checkable
@@ -25,7 +25,7 @@ class TraceTelemetryPort(Protocol):
         tenant_id: str,
         investigation_id: UUID,
         request: TraceTelemetryRequest,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> TraceTelemetry: ...
 

@@ -69,7 +69,10 @@ class TestGatewayComposition:
             gateway = mock_ctx.evidence_gateway
             assert isinstance(gateway, AsyncEvidenceGateway)
             assert gateway._provider_selector._is_frozen is True
-            assert set(gateway._provider_selector._runtime_providers) == {"elastic-primary"}
+            assert set(gateway._provider_selector._runtime_providers) == {
+                "elastic-primary",
+                "file-log",
+            }
             assert gateway._provider_selector._state_providers == {}
             assert gateway._query_safety_policy is not None
             assert gateway._sanitizer is not None

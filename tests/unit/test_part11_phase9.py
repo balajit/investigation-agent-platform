@@ -57,12 +57,10 @@ def _record(index: int, app: str = "app-1", **overrides) -> BatchIntakeRecord:
 
 
 def _profile(app_id: str = "app-1", schema: dict | None = None):
-    investigation = _DEFAULT_PROFILE.investigation_configuration.model_copy(
+    investigation = _DEFAULT_PROFILE.investigation.model_copy(
         update={"parameters_schema": schema}
     )
-    return _DEFAULT_PROFILE.model_copy(
-        update={"id": app_id, "investigation_configuration": investigation}
-    )
+    return _DEFAULT_PROFILE.model_copy(update={"id": app_id, "investigation": investigation})
 
 
 async def _service(ctx: AppContext, creator=None, quota=None) -> BulkIntakeService:
@@ -799,10 +797,10 @@ class TestMigration015:
         assert mod.revision == "015_batch_intake"
         assert mod.down_revision == "014_reference_documents"
 
-    def test_single_head_is_015(self) -> None:
+    def test_single_head_is_016(self) -> None:
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["015_batch_intake"]
+        assert script.get_heads() == ["016_profile_v2_columns"]

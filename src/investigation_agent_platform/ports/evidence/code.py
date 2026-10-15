@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.domain.evidence.models import Evidence
-from investigation_agent_platform.domain.profile.models import CodeProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 
 
 class CodeLocation(BaseModel):
@@ -59,15 +59,20 @@ class CodeEvidenceProviderProtocol(Protocol):
     """Port for querying raw source code repositories and historical versions."""
 
     async def get_source(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
     ) -> Evidence: ...
 
     async def get_code_history(
-        self, tenant_id: str, investigation_id: UUID, path: str, profile: CodeProfile
+        self, tenant_id: str, investigation_id: UUID, path: str, profile: ApplicationProfile
     ) -> list[Evidence]: ...
 
     async def compare_versions(
-        self, tenant_id: str, source_ref: str, target_ref: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        source_ref: str,
+        target_ref: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> CodeDiffResult: ...
 
 
@@ -76,25 +81,49 @@ class CodeIntelligenceProviderProtocol(Protocol):
     """Port for deep code-intelligence operations (AST, symbol graphs, call hierarchies)."""
 
     async def search_code(
-        self, tenant_id: str, query: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        query: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[Evidence]: ...
 
     async def find_symbol(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeSymbol]: ...
 
     async def find_callers(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CallGraphNode]: ...
 
     async def find_callees(
-        self, tenant_id: str, symbol_name: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        symbol_name: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CallGraphNode]: ...
 
     async def find_exception_handlers(
-        self, tenant_id: str, exception_class: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        exception_class: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeLocation]: ...
 
     async def find_database_operations(
-        self, tenant_id: str, entity_or_table: str, profile: CodeProfile
+        self,
+        tenant_id: str,
+        entity_or_table: str,
+        profile: ApplicationProfile,
+        investigation_id: UUID | None = None,
     ) -> list[CodeLocation]: ...

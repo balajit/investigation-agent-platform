@@ -19,7 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -62,6 +62,11 @@ class InvestigationORM(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     code_issue_fingerprint: Mapped[str | None] = mapped_column(
         String(128), nullable=True, index=True
+    )
+    # TO_DO-023: retention class for the core-table purge (see
+    # domain/common/lifecycle.py CORE_RETENTION_POLICIES).
+    retention_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="investigation", server_default="investigation"
     )
 
     checkpoints: Mapped[list["CheckpointORM"]] = relationship(
@@ -140,6 +145,10 @@ class EvidenceORM(Base):
     evidence_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # TO_DO-023: retention class for the core-table purge.
+    retention_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="evidence", server_default="evidence"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -201,6 +210,10 @@ class InvestigationTransitionORM(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+    # TO_DO-023: retention class for the core-table purge.
+    retention_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="transition", server_default="transition"
     )
 
     __table_args__ = (
@@ -300,6 +313,10 @@ class TimelineEventORM(Base):
     evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    # TO_DO-023: retention class for the core-table purge.
+    retention_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="timeline", server_default="timeline"
+    )
 
     __table_args__ = (
         Index("idx_timeline_inv_time", "investigation_id", "timestamp"),
@@ -526,12 +543,14 @@ class AgentActionORM(Base):
 class ApplicationProfileORM(Base):
     """Onboarded application configuration profile.
 
-    Part 11.2: immutable, tenant-aware revisions. ``row_id`` is the surrogate
+    Immutable, tenant-aware revisions. ``row_id`` is the surrogate
     primary key so multiple versions of the same ``(tenant_id, id)`` can
-    coexist; ``id`` is the caller-facing application id (no longer globally
-    unique — two tenants may reuse the same application id, and one tenant
-    may hold many historical revisions). ``save()`` never mutates an existing
-    revision row; each ``(tenant_id, id, version)`` triple is written once.
+    coexist; ``id`` is the caller-facing application id. ``save()`` never
+    mutates an existing revision row; each ``(tenant_id, id, version)``
+    triple is written once.
+
+    ``status`` / ``domain`` / ``planes`` mirror the canonical profile JSON
+    for indexed filtering (profile_json stays authoritative on conflict).
     """
 
     __tablename__ = "application_profiles"
@@ -543,6 +562,9 @@ class ApplicationProfileORM(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     environment: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
+    domain: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    planes: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)), nullable=True)
     profile_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
@@ -555,6 +577,8 @@ class ApplicationProfileORM(Base):
         Index("idx_app_profile_tenant", "tenant_id"),
         Index("idx_app_profile_tenant_env", "tenant_id", "environment"),
         Index("idx_app_profile_tenant_app", "tenant_id", "id"),
+        Index("idx_app_profile_tenant_status", "tenant_id", "status"),
+        Index("idx_app_profile_tenant_domain", "tenant_id", "domain"),
         UniqueConstraint("tenant_id", "id", "version", name="uq_app_profile_tenant_id_version"),
     )
 

@@ -1,14 +1,11 @@
 # config/profiles/gen-verbose.yaml
 # ---------------------------------------------------------------------------
 # Real production profile for the `gen` backend HTTP-transaction log family.
-# Observability is grounded in config/observability-mappings/gen-verbose.yaml
-# (mappingSourceId below); the legacy singular *Field entries are UNENFORCED on
-# the Elastic path and are recorded here only for readers of the older schema.
+# Observability mapping: config/observability-mappings/gen-verbose.yaml.
 #
-# Honesty note: we only know the observability contract. The code repository
-# and any state database for this workload are not yet captured, so those
-# blocks are explicit TBD placeholders and the profile stays DRAFT — it enables
-# LOG evidence only until code/state facts are supplied.
+# Code and state facts for this workload are not yet captured, so the
+# profile stays DRAFT with no datasources — it enables LOG evidence only
+# until code/datasource facts are supplied.
 # ---------------------------------------------------------------------------
 
 application:
@@ -17,51 +14,31 @@ application:
   name: Gen Service - Verbose HTTP Transaction Log
   description: >-
     DRAFT: production observability for the `gen` verbose HTTP-transaction
-    stream. Code and state sections are placeholders pending onboarding facts.
+    stream. Services carry the known telemetry; datasources pending onboarding facts.
   environment: production
   version: 1
   status: DRAFT
   owner: platform-team
+  domain: gen
+  planes:
+    - backend
+  data_classification: INTERNAL
   allowed_capabilities:
     - SEARCH_LOGS
-
-observability:
-  provider: elastic
-  indices:
-    - logz-gen-verbose-prod-es-*
-    - logz-gen-verbose-prod-blue-es-*
-    - logz-gen-verbose-prod-cloud-es-*
-    - logz-gen-verbose-prod-micro-es-*
-  # Legacy singular fields below are informational only; field resolution is
-  # driven by mappingSourceId (see config/observability-mappings/gen-verbose.yaml).
-  timestampField: "@timestamp"
-  serviceField: appName
-  environmentField: ""
-  sessionField: sessionId
-  requestField: trackingId
-  traceField: traceId
-  logLevelField: error
-  mappingSourceId: gen-verbose
-
-state:
-  provider: unknown
-  database: TBD
-  schema: TBD
-  tables: []
-  primaryIdentifiers: []
-  stateFields: []
-  timestampFields: []
-  queryTemplates: {}
-
-code:
-  provider: git
-  repository: TBD
-  defaultBranch: main
-  language: unknown
-  sourceRoots:
-    - TBD
-  buildSystem: unknown
-  moduleStructure: unknown
+  mapping_source_id: gen-verbose
+  services:
+    - name: gen-verbose
+      role: edge
+      description: Verbose HTTP-transaction log stream.
+      telemetry:
+        log_indices:
+          - logz-gen-verbose-prod-es-*
+          - logz-gen-verbose-prod-blue-es-*
+          - logz-gen-verbose-prod-cloud-es-*
+          - logz-gen-verbose-prod-micro-es-*
+        service_names:
+          - gen-verbose
+  datasources: []
 
 correlation:
   fields:

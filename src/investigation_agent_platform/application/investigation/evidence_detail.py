@@ -101,6 +101,6 @@ class EvidenceDetailService:
                 profile.environment,
                 _RepositoryMappingLookup(context.tenant_id, self._evidence_repo),
                 correlation_id=context.correlation_id,
-                mapping_source_id=profile.observability_configuration.mapping_source_id,
+                mapping_source_id=profile.mapping_source_id,
             )
             return await self._sanitizer.sanitize_evidence(context.tenant_id, evidence)

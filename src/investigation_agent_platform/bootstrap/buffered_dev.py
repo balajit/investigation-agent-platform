@@ -168,8 +168,13 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     }
 
 
-def _require_dev() -> None:
-    if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+def _require_dev(*, environment: str | None = None) -> None:
+    from investigation_agent_platform.infrastructure.configuration.layers import (
+        effective_environment,
+    )
+
+    resolved = environment.lower() if environment else effective_environment()
+    if resolved == "production":
         from investigation_agent_platform.domain.common.exceptions import (
             PlatformConfigurationError,
         )

@@ -226,7 +226,7 @@ class BulkIntakeService:
         profile = await self._require_profile(tenant_id, record.application_id)
         schema = None
         if profile is not None:
-            investigation_config = getattr(profile, "investigation_configuration", None)
+            investigation_config = getattr(profile, "investigation", None)
             schema = getattr(investigation_config, "parameters_schema", None)
         validate_parameters(dict(record.parameters), schema, f"record {record.external_key!r}")
 

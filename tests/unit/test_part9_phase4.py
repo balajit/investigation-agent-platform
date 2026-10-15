@@ -63,18 +63,14 @@ def _evidence(attrs, tenant_id=TENANT, investigation_id=None, evidence_id=None):
 
 
 def _profile():  # type: ignore[no-untyped-def]
-    from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+    from investigation_agent_platform.domain.profile.models import ApplicationProfile
 
-    return ObservabilityProfile(
-        provider="elastic",
-        indices=["logs-tenant-a-*-production-*"],
-        timestampField="@timestamp",
-        serviceField="service.name",
-        environmentField="environment",
-        sessionField="session.id",
-        requestField="request.id",
-        traceField="trace.id",
-        logLevelField="log.level",
+    return ApplicationProfile(
+        id="app",
+        tenant_id="tenant-a",
+        name="n",
+        description="d",
+        environment="production",
     )
 
 

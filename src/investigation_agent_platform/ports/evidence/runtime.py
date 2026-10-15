@@ -6,7 +6,7 @@ from uuid import UUID
 
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryResult
 from investigation_agent_platform.ports.evidence.mapping import EvidenceMappingLookup
 
@@ -20,7 +20,7 @@ class RuntimeEvidenceProviderProtocol(Protocol):
         tenant_id: str,
         investigation_id: UUID,
         request: RuntimeEvidenceRequest,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult: ...
 

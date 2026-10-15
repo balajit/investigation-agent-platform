@@ -109,3 +109,28 @@ def sanitize_extra(extra: dict[str, Any]) -> dict[str, Any]:
         k: ("[REDACTED]" if str(k).lower() in REDACTED_KEYS else redact_value(v))
         for k, v in extra.items()
     }
+
+
+class ApiError(Exception):
+    """The one HTTP error type for API handlers (OpenAPI spec 1.0 §4).
+
+    Handlers render it as ``ErrorResponse{error: {code, message,
+    correlation_id, details?}}``. Messages must be static, non-sensitive
+    operator guidance — never echoed caller input, URLs, tokens, or values.
+    """
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        http_status: int,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message or code)
+        self.code = code
+        self.http_status = http_status
+        self.message = message or _PUBLIC_MESSAGES.get(code, "An internal error occurred.")
+        self.details = details
+        self.headers = headers

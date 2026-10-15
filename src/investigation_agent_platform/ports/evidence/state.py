@@ -5,7 +5,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from investigation_agent_platform.domain.evidence.requests import ApplicationStateRequest
-from investigation_agent_platform.domain.profile.models import StateProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryResult
 
 
@@ -18,7 +18,7 @@ class StateEvidenceProviderProtocol(Protocol):
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
     ) -> EvidenceQueryResult: ...
 
     async def search_application_state(
@@ -26,5 +26,5 @@ class StateEvidenceProviderProtocol(Protocol):
         tenant_id: str,
         investigation_id: UUID,
         request: ApplicationStateRequest,
-        profile: StateProfile,
+        profile: ApplicationProfile,
     ) -> EvidenceQueryResult: ...

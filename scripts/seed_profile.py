@@ -91,7 +91,9 @@ async def run(args: argparse.Namespace) -> int:
                 f"DRY-RUN {path.name}: tenant={profile.tenant_id} id={profile.id} "
                 f"version={profile.version} status={profile.status.value} "
                 f"environment={profile.environment} "
-                f"mapping={profile.observability_configuration.mapping_source_id}"
+                f"mapping={profile.mapping_source_id} "
+                f"services={[s.name for s in profile.services]} "
+                f"datasources={[d.id for d in profile.datasources]}"
             )
         print(f"dry-run: {len(profiles)} profile(s) validated, nothing written")
         return 0

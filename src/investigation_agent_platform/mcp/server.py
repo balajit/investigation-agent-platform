@@ -16,6 +16,7 @@ application services, which call the evidence abstractions.
 
 import asyncio
 import logging
+import sys
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from fastapi import HTTPException
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.composition import (
     InvestigationServices,
 )
@@ -161,7 +163,10 @@ def create_mcp_http_app(services: InvestigationServices, mcp_config: McpConfig) 
 def mount_mcp(app: Any, services: InvestigationServices, mcp_config: McpConfig) -> None:
     """Mount the authenticated MCP app onto a FastAPI application."""
     app.mount(MCP_HTTP_PATH, create_mcp_http_app(services, mcp_config))
-    logger.info("MCP investigation service mounted", extra={"path": MCP_HTTP_PATH})
+    logger.info(
+        "MCP investigation service mounted",
+        extra=sanitize_extra({"event": "mcp.http.mounted", "path": MCP_HTTP_PATH}),
+    )
 
 
 async def _run_stdio_server(services: InvestigationServices, mcp_config: McpConfig) -> None:
@@ -175,12 +180,13 @@ async def _run_stdio_server(services: InvestigationServices, mcp_config: McpConf
     try:
         logger.info(
             "MCP stdio server starting",
-            extra={
-                "context": {
+            extra=sanitize_extra(
+                {
                     "tenant_id": context.tenant_id,
                     "investigation_id": str(context.investigation_id),
+                    "event": "mcp.stdio.starting",
                 }
-            },
+            ),
         )
         await server.run_stdio_async()
     finally:
@@ -203,18 +209,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_application_config_from_env()
     except PlatformConfigurationError as exc:
-        print(f"Invalid configuration: {exc.message}")
+        # CLI diagnostics go to stderr: stdout is the stdio-transport protocol
+        # channel and must carry only protocol frames.
+        print(f"Invalid configuration: {exc.message}", file=sys.stderr)
         return 2
     if not config.mcp.enabled:
-        print("MCP server is disabled (IAP_MCP_ENABLED=true to enable).")
+        print("MCP server is disabled (IAP_MCP_ENABLED=true to enable).", file=sys.stderr)
         return 2
     if config.mcp.transport not in ("stdio", "streamable-http", "http"):
-        print(f"Unsupported MCP transport: {config.mcp.transport}")
+        print(f"Unsupported MCP transport: {config.mcp.transport}", file=sys.stderr)
         return 2
     context = build_app_context(config)
     services = getattr(context, "investigation_services", None)
     if services is None:
-        print("Production context has no investigation services; cannot serve MCP.")
+        print(
+            "Production context has no investigation services; cannot serve MCP.",
+            file=sys.stderr,
+        )
         return 2
     if config.mcp.transport == "stdio":
         run_mcp_stdio(services, config.mcp)

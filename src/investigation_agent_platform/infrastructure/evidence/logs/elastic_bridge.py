@@ -15,7 +15,7 @@ from investigation_agent_platform.domain.evidence.requests import (
     TraceTelemetryRequest,
 )
 from investigation_agent_platform.domain.evidence.telemetry import TraceTelemetry
-from investigation_agent_platform.domain.profile.models import ObservabilityProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.infrastructure.configuration.mapping_registry import (
     MappingProfileRegistry,
 )
@@ -48,7 +48,7 @@ class ElasticIncidentBridge:
         tenant_id: str,
         investigation_id: UUID,
         trace_id: str,
-        profile: ObservabilityProfile,
+        profile: ApplicationProfile,
         environment: str = "production",
         time_range: TimeRange | None = None,
     ) -> TraceTelemetry:

@@ -2,12 +2,14 @@
 """SQLAlchemy evidence repository."""
 
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.infrastructure.persistence.models import EvidenceORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
@@ -44,49 +46,35 @@ class SqlAlchemyEvidenceRepository:
     def _from_orm(row: EvidenceORM) -> Evidence:
         return Evidence.model_validate(row.payload_json)
 
+    @staticmethod
+    def _values(
+        evidence: Evidence, tenant_id: str, investigation_id: UUID | None
+    ) -> dict[str, Any]:
+        return {
+            "investigation_id": investigation_id,
+            "tenant_id": tenant_id,
+            "type": evidence.evidence_type.value,
+            "source_type": evidence.provider,
+            "source_id": evidence.source,
+            "observed_at": evidence.observed_at,
+            "retrieved_at": evidence.retrieved_at,
+            "summary": evidence.summary,
+            "content_reference": evidence.content_uri or None,
+            "classification": evidence.classification.value,
+            "is_sanitized": evidence.is_redacted,
+            "evidence_key": str(evidence.evidence_id),
+            "fingerprint": evidence.fingerprint,
+            "payload_json": evidence.model_dump(mode="json"),
+        }
+
     async def save(
         self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None
     ) -> None:
-        async with rls_session(self._session_factory, tenant_id) as session:
-            # F-035: durable (tenant_id, fingerprint) dedup — semantically
-            # identical evidence returns the canonical row instead of silently
-            # inserting a duplicate.
-            existing = await session.scalars(
-                select(EvidenceORM).where(
-                    EvidenceORM.tenant_id == tenant_id,
-                    EvidenceORM.fingerprint == evidence.fingerprint,
-                )
-            )
-            if existing.first() is not None:
-                return
-            stmt = insert(EvidenceORM).values(
-                investigation_id=investigation_id,
-                tenant_id=tenant_id,
-                type=evidence.evidence_type.value,
-                source_type=evidence.provider,
-                source_id=evidence.source,
-                observed_at=evidence.observed_at,
-                retrieved_at=evidence.retrieved_at,
-                summary=evidence.summary,
-                content_reference=evidence.content_uri or None,
-                classification=evidence.classification.value,
-                is_sanitized=evidence.is_redacted,
-                evidence_key=str(evidence.evidence_id),
-                fingerprint=evidence.fingerprint,
-                payload_json=evidence.model_dump(mode="json"),
-            )
-            stmt = stmt.on_conflict_do_nothing(constraint="uq_evidence_tenant_fingerprint")
-            await session.execute(stmt)
-
-    async def save_batch(
-        self, tenant_id: str, evidence_list: list[Evidence], investigation_id: UUID | None = None
-    ) -> None:
-        async with rls_session(self._session_factory, tenant_id) as session:
-            seen: set[str] = set()
-            for evidence in evidence_list:
-                if evidence.fingerprint in seen:
-                    continue
-                seen.add(evidence.fingerprint)
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                # F-035: durable (tenant_id, fingerprint) dedup — semantically
+                # identical evidence returns the canonical row instead of silently
+                # inserting a duplicate.
                 existing = await session.scalars(
                     select(EvidenceORM).where(
                         EvidenceORM.tenant_id == tenant_id,
@@ -94,25 +82,121 @@ class SqlAlchemyEvidenceRepository:
                     )
                 )
                 if existing.first() is not None:
-                    continue
-                stmt = insert(EvidenceORM).values(
-                    investigation_id=investigation_id,
-                    tenant_id=tenant_id,
-                    type=evidence.evidence_type.value,
-                    source_type=evidence.provider,
-                    source_id=evidence.source,
-                    observed_at=evidence.observed_at,
-                    retrieved_at=evidence.retrieved_at,
-                    summary=evidence.summary,
-                    content_reference=evidence.content_uri or None,
-                    classification=evidence.classification.value,
-                    is_sanitized=evidence.is_redacted,
-                    evidence_key=str(evidence.evidence_id),
-                    fingerprint=evidence.fingerprint,
-                    payload_json=evidence.model_dump(mode="json"),
+                    outcome = "deduplicated"
+                else:
+                    stmt = insert(EvidenceORM).values(
+                        **self._values(evidence, tenant_id, investigation_id)
+                    )
+                    stmt = stmt.on_conflict_do_nothing(
+                        constraint="uq_evidence_tenant_fingerprint"
+                    )
+                    await session.execute(stmt)
+                    outcome = "inserted"
+        except Exception as exc:
+            logger.exception(
+                "evidence save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "evidence.save",
+                        "outcome": "failed",
+                        "evidence_id": str(evidence.evidence_id),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
+            )
+            raise
+        logger.info(
+            "evidence saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "event": "evidence.save",
+                    "outcome": outcome,
+                    "evidence_id": str(evidence.evidence_id),
+                    "fingerprint": evidence.fingerprint,
+                }
+            ),
+        )
+
+    async def save_batch(
+        self, tenant_id: str, evidence_list: list[Evidence], investigation_id: UUID | None = None
+    ) -> None:
+        # TO_DO-015: constant-query-count batch — one SELECT for existing
+        # fingerprints plus one multi-row INSERT ... ON CONFLICT DO NOTHING,
+        # regardless of batch size.
+        unique: dict[str, Evidence] = {}
+        for evidence in evidence_list:
+            unique.setdefault(evidence.fingerprint, evidence)
+        batch_size = len(evidence_list)
+        if not unique:
+            logger.info(
+                "evidence batch saved",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "evidence.save_batch",
+                        "outcome": "inserted",
+                        "batch_size": batch_size,
+                        "unique_count": 0,
+                        "inserted_count": 0,
+                    }
+                ),
+            )
+            return
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                existing = await session.scalars(
+                    select(EvidenceORM.fingerprint).where(
+                        EvidenceORM.tenant_id == tenant_id,
+                        EvidenceORM.fingerprint.in_(list(unique)),
+                    )
                 )
-                stmt = stmt.on_conflict_do_nothing(constraint="uq_evidence_tenant_fingerprint")
-                await session.execute(stmt)
+                already_stored = set(existing.all())
+                fresh = [e for fp, e in unique.items() if fp not in already_stored]
+                if fresh:
+                    stmt = insert(EvidenceORM).values(
+                        [self._values(e, tenant_id, investigation_id) for e in fresh]
+                    )
+                    stmt = stmt.on_conflict_do_nothing(
+                        constraint="uq_evidence_tenant_fingerprint"
+                    )
+                    await session.execute(stmt)
+                inserted_count = len(fresh)
+        except Exception as exc:
+            logger.exception(
+                "evidence batch save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "evidence.save_batch",
+                        "outcome": "failed",
+                        "batch_size": batch_size,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
+            )
+            raise
+        logger.info(
+            "evidence batch saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "event": "evidence.save_batch",
+                    "outcome": "inserted",
+                    "batch_size": batch_size,
+                    "unique_count": len(unique),
+                    "inserted_count": inserted_count,
+                }
+            ),
+        )
 
     async def get_by_id(self, tenant_id: str, evidence_id: UUID) -> Evidence | None:
         async with rls_session(self._session_factory, tenant_id) as session:
@@ -146,3 +230,60 @@ class SqlAlchemyEvidenceRepository:
                 )
             )
             return [self._from_orm(row) for row in result.all()]
+
+    async def purge_expired(self, tenant_id: str, cutoff: datetime, limit: int = 500) -> int:
+        """Hard-delete orphan evidence rows (NULL investigation) at/before cutoff.
+
+        Rows attached to an investigation are never purged standalone — they
+        cascade with their investigation's retention purge.
+        """
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                ids = (
+                    await session.scalars(
+                        select(EvidenceORM.id)
+                        .where(
+                            EvidenceORM.tenant_id == tenant_id,
+                            EvidenceORM.investigation_id.is_(None),
+                            EvidenceORM.created_at <= cutoff,
+                        )
+                        .order_by(EvidenceORM.created_at)
+                        .limit(max(1, min(limit, 5000)))
+                    )
+                ).all()
+                if not ids:
+                    purged = 0
+                else:
+                    result = await session.execute(
+                        delete(EvidenceORM).where(
+                            EvidenceORM.tenant_id == tenant_id,
+                            EvidenceORM.id.in_(ids),
+                        )
+                    )
+                    purged = int(result.rowcount or 0)
+        except Exception as exc:
+            logger.exception(
+                "evidence purge failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "evidence.purge_expired",
+                        "outcome": "failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
+            )
+            raise
+        logger.info(
+            "evidence purge completed",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "event": "evidence.purge_expired",
+                    "outcome": "purged",
+                    "purged_count": purged,
+                }
+            ),
+        )
+        return purged

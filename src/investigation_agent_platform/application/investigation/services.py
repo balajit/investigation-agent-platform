@@ -85,9 +85,31 @@ class CreateInvestigationService:
                 f"Application profile {request.application_id} not found",
                 details={"application_id": request.application_id},
             )
+        # Lifecycle gate (§4): retired profiles serve in-flight runs but block
+        # new creates. Resolve the latest ACTIVE revision for content.
+        revisions = await self.profile_repo.list_revisions(tenant_id, request.application_id)
+        if revisions and revisions[0].status.value in ("DEPRECATED", "ARCHIVED"):
+            from investigation_agent_platform.domain.common.exceptions import (
+                InvalidLifecycleTransitionException,
+            )
+
+            raise InvalidLifecycleTransitionException(
+                f"Application profile {request.application_id} is {revisions[0].status.value}; "
+                "new investigations are blocked.",
+                details={"application_id": request.application_id},
+            )
+        for rev in revisions:
+            if rev.status.value == "ACTIVE":
+                profile = rev
+                break
+        else:
+            raise ApplicationProfileNotFoundException(
+                f"No ACTIVE revision for application profile {request.application_id}",
+                details={"application_id": request.application_id},
+            )
 
         now = self.clock.utcnow()
-        window_seconds = profile.investigation_configuration.default_time_window
+        window_seconds = profile.investigation.default_time_window
         time_window = (now - timedelta(seconds=window_seconds), now)
 
         context = InvestigationContext(

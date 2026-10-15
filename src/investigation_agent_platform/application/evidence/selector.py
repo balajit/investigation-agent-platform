@@ -27,7 +27,16 @@ class EvidenceProviderSelector:
         self._code_providers: dict[str, CodeEvidenceProviderProtocol] = {}
         self._code_intelligence_providers: dict[str, CodeIntelligenceProviderProtocol] = {}
         self._default_runtime_key: str | None = None
+        self._datasource_registry: object | None = None
         self._is_frozen = False
+
+    def attach_datasource_registry(self, registry: object) -> None:
+        """Profile-driven state fallback (appl-profile 1.0 §7.4).
+
+        Static registrations keep priority; the registry serves contexts
+        with no static provider from the profile's own datasources.
+        """
+        self._datasource_registry = registry
 
     def freeze(self) -> None:
         """Freezes provider registrations to guarantee startup immutability."""
@@ -122,15 +131,43 @@ class EvidenceProviderSelector:
                 raise ExecutionError(f"No runtime provider configured for tenant context '{key}'")
             return provider
 
+    def find_runtime_provider(self, key: str) -> RuntimeEvidenceProviderProtocol | None:
+        """Return the provider under a registration key, or None when absent.
+
+        Non-raising lookup for optional fallbacks (e.g. file-log when the
+        default deployment returns no rows). Never fails closed by itself —
+        callers decide whether absence matters.
+        """
+        return self._runtime_providers.get(key)
+
     async def get_state_provider(
         self, tenant_id: str, application_id: str, environment: str
     ) -> StateEvidenceProviderProtocol:
         with tracer.start_as_current_span("EvidenceProviderSelector.get_state_provider"):
             key = f"{tenant_id}:{application_id}:{environment}"
             provider = self._state_providers.get(key)
-            if not provider:
-                raise ExecutionError(f"No state provider configured for tenant context '{key}'")
-            return provider
+            if provider is not None:
+                return provider
+            registry = self._datasource_registry
+            if registry is not None:
+                resolve_default = getattr(registry, "resolve_default", None)
+                if callable(resolve_default):
+                    try:
+                        resolved: StateEvidenceProviderProtocol = await resolve_default(
+                            tenant_id, application_id
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Datasource registry fallback failed; failing closed",
+                            extra={
+                                "tenant_id": tenant_id,
+                                "application_id": application_id,
+                                "error": str(exc),
+                            },
+                        )
+                    else:
+                        return resolved
+            raise ExecutionError(f"No state provider configured for tenant context '{key}'")
 
     async def get_code_provider(
         self, tenant_id: str, application_id: str

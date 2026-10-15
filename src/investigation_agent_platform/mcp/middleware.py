@@ -14,6 +14,8 @@ from typing import Any
 
 from mcp.shared.exceptions import MCPError
 
+from investigation_agent_platform.api.errors import sanitize_extra
+
 logger = logging.getLogger(__name__)
 
 _INVALID_PARAMS_CODE = -32602
@@ -41,7 +43,13 @@ class StrictToolArgumentsMiddleware:
                 if unknown:
                     logger.warning(
                         "MCP tool call rejected: unknown arguments",
-                        extra={"context": {"tool": name, "unknown": unknown}},
+                        extra=sanitize_extra(
+                            {
+                                "event": "mcp.tool.rejected_unknown_arguments",
+                                "tool": name,
+                                "unknown": unknown,
+                            }
+                        ),
                     )
                     raise MCPError(
                         _INVALID_PARAMS_CODE,

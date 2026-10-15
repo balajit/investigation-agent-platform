@@ -46,11 +46,14 @@ from investigation_agent_platform.domain.investigation.models import (
 )
 from investigation_agent_platform.domain.profile.models import (
     ApplicationProfile,
-    CodeProfile,
-    CorrelationProfile,
-    InvestigationProfile,
-    ObservabilityProfile,
-    StateProfile,
+    CorrelationConfig,
+    Datasource,
+    DatasourceKind,
+    DatasourceRole,
+    InvestigationConfig,
+    QueryTemplate,
+    Service,
+    ServiceCode,
 )
 from investigation_agent_platform.domain.timeline.models import TimelineEvent, TimelineEventType
 
@@ -317,38 +320,39 @@ class TestProfileValidation:
             name="n",
             description="d",
             environment="prod",
-            observability=ObservabilityProfile(
-                provider="es",
-                indices=["logs"],
-                timestampField="@ts",
-                serviceField="svc",
-                environmentField="env",
-                sessionField="sess",
-                requestField="req",
-                traceField="trace",
-                logLevelField="lvl",
-            ),
-            state=StateProfile(
-                provider="pg",
-                database="db",
-                schema="public",
-                tables=["t"],
-                primaryIdentifiers=["id"],
-                stateFields=["status"],
-                timestampFields=["created_at"],
-                queryTemplates={"q1": "SELECT * FROM t WHERE id=:id"},
-            ),
-            code=CodeProfile(
-                provider="git",
-                repository="org/repo",
-                defaultBranch="main",
-                language="python",
-                sourceRoots=["src"],
-                buildSystem="uv",
-                moduleStructure="src/mod",
-            ),
-            correlation=CorrelationProfile(fields=["trace.id"]),
-            investigation=InvestigationProfile(),
+            services=[
+                Service(
+                    name="svc",
+                    code=ServiceCode(
+                        org="org",
+                        repos=["repo"],
+                        default_branch="main",
+                        language="python",
+                        source_roots=["src"],
+                        build_system="uv",
+                        module_structure="src/mod",
+                    ),
+                )
+            ],
+            datasources=[
+                Datasource(
+                    id="primary",
+                    name="db (pg)",
+                    kind=DatasourceKind.POSTGRES,
+                    role=DatasourceRole.STATE,
+                    allowed_tables=["t"],
+                    query_templates={
+                        "q1": QueryTemplate(
+                            description=None,
+                            sql="SELECT * FROM t WHERE id=:id",
+                            read_only=True,
+                            allowed_tables=["t"],
+                        )
+                    },
+                )
+            ],
+            correlation=CorrelationConfig(fields=["trace.id"]),
+            investigation=InvestigationConfig(),
         )
 
     def test_valid_profile(self) -> None:
@@ -357,37 +361,29 @@ class TestProfileValidation:
 
     def test_forbidden_ddl_rejection(self) -> None:
         with pytest.raises(ValidationError):
-            StateProfile(
-                provider="pg",
-                database="db",
-                schema="public",
-                tables=["t"],
-                primaryIdentifiers=["id"],
-                stateFields=["status"],
-                timestampFields=["created_at"],
-                queryTemplates={"bad": "SELECT * FROM t; DROP TABLE t --"},
+            QueryTemplate(
+                description=None,
+                sql="SELECT * FROM t; DROP TABLE t --",
+                read_only=True,
             )
 
     def test_code_profile_path_traversal(self) -> None:
         with pytest.raises(ValidationError):
-            CodeProfile(
-                provider="git",
-                repository="../etc/passwd",
-                defaultBranch="main",
-                language="python",
-                sourceRoots=["src"],
-                buildSystem="uv",
-                moduleStructure="src/mod",
+            Service(
+                name="svc",
+                code=ServiceCode(
+                    org="org",
+                    repos=["repo"],
+                    source_roots=["../src"],
+                ),
             )
         with pytest.raises(ValidationError):
-            CodeProfile(
-                provider="git",
-                repository="org/repo",
-                defaultBranch="main",
-                language="python",
-                sourceRoots=["../src"],
-                buildSystem="uv",
-                moduleStructure="src/mod",
+            Datasource(
+                id="primary",
+                name="db",
+                kind=DatasourceKind.POSTGRES,
+                role=DatasourceRole.STATE,
+                connection_ref="postgresql://user:secret@host/db",
             )
 
 

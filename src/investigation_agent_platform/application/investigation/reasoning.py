@@ -74,10 +74,58 @@ class ReasoningCoordinator(InvestigationReasoner):
         prompt_safety_policy: PromptSafetyPolicyPort,
         llm_gateway: Any | None = None,
         observability: Any | None = None,
+        profile_repo: Any | None = None,
     ) -> None:
         self._prompt_safety_policy = prompt_safety_policy
         self._llm_gateway: Any | None = llm_gateway
         self._observability: Any | None = observability
+        self._profile_repo = profile_repo
+
+    def attach_profile_repo(self, profile_repo: Any | None) -> None:
+        """Attach the profile store for application-context enrichment."""
+        self._profile_repo = profile_repo
+
+    async def _application_context_block(
+        self, tenant_id: str, application_id: str
+    ) -> dict[str, Any]:
+        """Typed application context for the reason prompt (never secrets).
+
+        Fail-open context: a profile-store failure yields an empty block
+        rather than breaking reasoning — this is advisory context, not an
+        authorization boundary.
+        """
+        if self._profile_repo is None:
+            return {}
+        try:
+            profile = await self._profile_repo.get_by_application_id(tenant_id, application_id)
+        except Exception:
+            return {}
+        if profile is None:
+            return {}
+        state_templates: list[dict[str, Any]] = []
+        for ds in getattr(profile, "datasources", []) or []:
+            kind = getattr(getattr(ds, "kind", ""), "value", ds.kind) if getattr(ds, "kind", None) else ""
+            for name, tpl in (getattr(ds, "query_templates", {}) or {}).items():
+                state_templates.append(
+                    {
+                        "template_id": f"{ds.id}.{name}",
+                        "datasource_kind": str(kind),
+                        "description": str(getattr(tpl, "description", "") or "")[:300],
+                    }
+                )
+        return {
+            "domain": getattr(profile, "domain", None),
+            "planes": list(getattr(profile, "planes", []) or []),
+            "data_classification": getattr(profile, "data_classification", None),
+            "services": [
+                {"name": s.name, "role": s.role}
+                for s in (getattr(profile, "services", []) or [])
+            ],
+            # Generic capability catalog: every QUERY_STATE action must use
+            # one of these template_ids verbatim. Derived from whichever
+            # profile is attached — never provider- or app-specific.
+            "state_templates": state_templates,
+        }
 
     def _validate_llm_decision(
         self, parsed: dict[str, Any], tenant_id: str, investigation_id: UUID
@@ -181,6 +229,9 @@ class ReasoningCoordinator(InvestigationReasoner):
                 "investigation_id": str(state.investigation.id),
                 "lifecycle_state": state.investigation.status.value,
                 "application_id": state.investigation.application_id,
+                "application": await self._application_context_block(
+                    tenant_id, state.investigation.application_id
+                ),
                 # The incident itself: without this the model searches blind
                 # (it previously guessed service names, matching nothing).
                 "problem_description": getattr(
@@ -265,7 +316,11 @@ class ReasoningCoordinator(InvestigationReasoner):
                         '"services": []} to gather log evidence '
                         "first — leave services EMPTY unless the state names exact "
                         "service identifiers (a wrong service filter matches "
-                        "nothing). After evidence exists, use FORMULATE_HYPOTHESIS. "
+                        "nothing). For QUERY_STATE you MUST set "
+                        '"parameters": {"template_id": "<one of the '
+                        "state_templates template_id values in STRUCTURED_CONTEXT_JSON "
+                        'application.state_templates>"} — never invent a template '
+                        "id and never use raw SQL. After evidence exists, use FORMULATE_HYPOTHESIS. "
                         "Use VERIFY_HYPOTHESIS/CONCLUDE only when confident. "
                         "Do NOT include execution_hash (derived server-side). "
                         '"observations": ["..."], '

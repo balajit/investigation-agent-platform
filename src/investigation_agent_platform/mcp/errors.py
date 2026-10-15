@@ -14,6 +14,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.common.exceptions import (
     ApplicationProfileNotFoundException,
     DomainException,
@@ -68,8 +69,17 @@ def _safe_message(message: str) -> str:
     return text[:MAX_ERROR_MESSAGE_CHARS] if text else "Investigation operation failed."
 
 
-def map_exception_to_error(exc: BaseException) -> McpErrorDetail:
-    """Map any failure to a safe, retry-hinted agent error."""
+def map_exception_to_error(
+    exc: BaseException,
+    *,
+    tenant_id: str | None = None,
+    investigation_id: str | None = None,
+) -> McpErrorDetail:
+    """Map any failure to a safe, retry-hinted agent error.
+
+    Scope IDs are keyword-only and optional so existing callers keep working;
+    tool cores pass them so the unhandled-failure log carries top-level IDs.
+    """
     if isinstance(exc, InvalidCursorException):
         return McpErrorDetail(
             code=McpErrorCode.INVALID_CURSOR,
@@ -128,7 +138,20 @@ def map_exception_to_error(exc: BaseException) -> McpErrorDetail:
             message="The tool arguments failed validation.",
             retryable=False,
         )
-    logger.error("Unhandled MCP tool failure", exc_info=exc)
+    # Unhandled failure: full stack trace server-side only. Scope IDs are
+    # attached by the tool-core caller (top-level keys); envelope stays safe.
+    logger.exception(
+        "Unhandled MCP tool failure",
+        extra=sanitize_extra(
+            {
+                "tenant_id": tenant_id,
+                "investigation_id": investigation_id,
+                "event": "mcp.tool.unhandled_failure",
+                "error_code": McpErrorCode.INTERNAL_ERROR.value,
+                "error_type": type(exc).__name__,
+            }
+        ),
+    )
     return McpErrorDetail(
         code=McpErrorCode.INTERNAL_ERROR,
         message="An internal investigation failure occurred.",
@@ -136,6 +159,15 @@ def map_exception_to_error(exc: BaseException) -> McpErrorDetail:
     )
 
 
-def error_envelope(exc: BaseException) -> McpErrorEnvelope:
+def error_envelope(
+    exc: BaseException,
+    *,
+    tenant_id: str | None = None,
+    investigation_id: str | None = None,
+) -> McpErrorEnvelope:
     """Build the tool-result envelope for a failure (logs unexpected ones)."""
-    return McpErrorEnvelope(error=map_exception_to_error(exc))
+    return McpErrorEnvelope(
+        error=map_exception_to_error(
+            exc, tenant_id=tenant_id, investigation_id=investigation_id
+        )
+    )

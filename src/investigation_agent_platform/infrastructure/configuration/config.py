@@ -4,7 +4,6 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import yaml
 from opentelemetry import trace
@@ -266,7 +265,18 @@ class EvidenceConfig(BaseModel):
     elastic_max_services: int = Field(default=10, ge=1, le=10)
     oracle_dsn: SecretStr = Field(default=SecretStr(""))
     oracle_query_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
+    # PostgreSQL state backend (profile-driven datasources + optional global
+    # fallback). Same conventions as Oracle: full SQLAlchemy URL in the DSN.
+    postgres_dsn: SecretStr = Field(default=SecretStr(""))
+    postgres_query_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
     gateway_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # File-backed log evidence (generic file-log provider). Roots are
+    # relative to the process working directory unless absolute; every
+    # resolved file must stay inside one of them. Empty roots means the
+    # provider stays unregistered (fail closed, same rule as optionals).
+    file_log_roots: str = Field(default="data", max_length=1024)
+    file_log_max_bytes_per_file: int = Field(default=2097152, ge=1024, le=104857600)
+    file_log_max_files: int = Field(default=20, ge=1, le=200)
     # YAML listing Oracle SQLcl MCP servers (no secrets — mounts carry those).
     # Each entry: {name, command, args, connection, allowed_tools,
     # timeout_seconds, max_rows, tenants}. Missing file = no MCP servers.
@@ -440,7 +450,12 @@ def _evidence_config_from_env() -> EvidenceConfig:
         elastic_max_services=int(os.environ.get("IAP_ELASTICSEARCH_MAX_SERVICES", "10")),
         oracle_dsn=SecretStr(os.environ.get("IAP_ORACLE_DSN", "")),
         oracle_query_timeout=float(os.environ.get("IAP_ORACLE_QUERY_TIMEOUT", "30.0")),
+        postgres_dsn=SecretStr(os.environ.get("IAP_POSTGRES_DSN", "")),
+        postgres_query_timeout=float(os.environ.get("IAP_POSTGRES_QUERY_TIMEOUT", "30.0")),
         gateway_timeout_seconds=float(os.environ.get("IAP_GATEWAY_TIMEOUT_SECONDS", "30.0")),
+        file_log_roots=os.environ.get("IAP_FILE_LOG_ROOTS", "data"),
+        file_log_max_bytes_per_file=int(os.environ.get("IAP_FILE_LOG_MAX_BYTES", "2097152")),
+        file_log_max_files=int(os.environ.get("IAP_FILE_LOG_MAX_FILES", "20")),
         mapping_profiles_path=os.environ.get(
             "IAP_MAPPING_PROFILES_PATH", "config/observability-mappings"
         ),
@@ -580,16 +595,59 @@ class PlatformHeader(BaseModel):
     environment: str = Field(default="production", min_length=1)
 
 
+class InvestigationSettings(BaseModel):
+    """Non-secret investigation tuning knobs from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    default_timeout_seconds: int = Field(default=1800, ge=10)
+    max_tool_calls: int = Field(default=50, ge=1)
+    max_reasoning_calls: int = Field(default=20, ge=1)
+    max_duration_seconds: int = Field(default=1800, ge=10)
+    max_hypotheses: int = Field(default=10, ge=1)
+    max_evidence_items: int = Field(default=25, ge=1)
+
+
+class PersistenceSettings(BaseModel):
+    """Non-secret persistence tuning from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(default="postgresql", min_length=1)
+    connection_pool_size: int = Field(default=10, ge=1, le=100)
+    max_overflow: int = Field(default=20, ge=0)
+
+
+class ReasoningSettings(BaseModel):
+    """Non-secret reasoning defaults from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(default="openai", min_length=1)
+    model: str = Field(default="gpt-4o", min_length=1)
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=4096, ge=128)
+
+
+class ObservabilitySettings(BaseModel):
+    """Non-secret observability defaults from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tracing_enabled: bool = Field(default=True)
+    otlp_endpoint: str = Field(default="http://localhost:4317", min_length=1)
+
+
 class PlatformSettings(BaseModel):
     """Strongly typed application configuration settings document."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     platform: PlatformHeader = Field(default_factory=PlatformHeader)
-    investigation: dict[str, Any] = Field(default_factory=dict)
-    persistence: dict[str, Any] = Field(default_factory=dict)
-    reasoning: dict[str, Any] = Field(default_factory=dict)
-    observability: dict[str, Any] = Field(default_factory=dict)
+    investigation: InvestigationSettings = Field(default_factory=InvestigationSettings)
+    persistence: PersistenceSettings = Field(default_factory=PersistenceSettings)
+    reasoning: ReasoningSettings = Field(default_factory=ReasoningSettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
 
 def load_platform_settings(path: str | Path) -> PlatformSettings:
@@ -697,9 +755,9 @@ def load_application_config_from_yaml(
             logger.critical(msg, extra={"missing_vars": missing})
             raise PlatformConfigurationError(msg)
 
-        persistence = settings.persistence or {}
-        reasoning = settings.reasoning or {}
-        investigation = settings.investigation or {}
+        persistence = settings.persistence
+        reasoning = settings.reasoning
+        investigation = settings.investigation
         platform = settings.platform
         environment = os.environ.get("IAP_ENVIRONMENT", platform.environment)
 
@@ -711,32 +769,40 @@ def load_application_config_from_yaml(
                 application_id=os.environ.get("IAP_APP_ID", platform.name),
                 database=DatabaseConfig(
                     connection_uri=SecretStr(db_uri),
-                    pool_size=int(persistence.get("connection_pool_size", 10)),
-                    max_overflow=int(persistence.get("max_overflow", 20)),
+                    pool_size=int(
+                        os.environ.get(
+                            "IAP_DB_POOL_SIZE", str(persistence.connection_pool_size)
+                        )
+                    ),
+                    max_overflow=int(
+                        os.environ.get(
+                            "IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow)
+                        )
+                    ),
                 ),
                 llm=_llm_config_from_env(
-                    model_default=str(reasoning.get("model", "gpt-4o")),
-                    provider_default=str(reasoning.get("provider", "openai")),
-                    temperature_default=float(reasoning.get("temperature", 0.0)),
-                    max_tokens_default=int(reasoning.get("max_tokens", 4096)),
+                    model_default=reasoning.model,
+                    provider_default=reasoning.provider,
+                    temperature_default=reasoning.temperature,
+                    max_tokens_default=reasoning.max_tokens,
                     api_key_override=llm_key,
                 ),
                 budget=BudgetConfig(
                     max_tool_calls=int(
                         os.environ.get(
-                            "IAP_MAX_TOOL_CALLS", str(investigation.get("max_tool_calls", 50))
+                            "IAP_MAX_TOOL_CALLS", str(investigation.max_tool_calls)
                         )
                     ),
                     max_reasoning_calls=int(
                         os.environ.get(
                             "IAP_MAX_REASONING_CALLS",
-                            str(investigation.get("max_reasoning_calls", 20)),
+                            str(investigation.max_reasoning_calls),
                         )
                     ),
                     max_duration_seconds=int(
                         os.environ.get(
                             "IAP_MAX_DURATION_SECONDS",
-                            str(investigation.get("max_duration_seconds", 1800)),
+                            str(investigation.max_duration_seconds),
                         )
                     ),
                 ),

@@ -16,21 +16,16 @@ import pytest
 
 from investigation_agent_platform.domain.common.exceptions import SecurityPolicyViolationException
 from investigation_agent_platform.domain.evidence.requests import ApplicationStateRequest
-from investigation_agent_platform.domain.profile.models import StateProfile
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
 
 
-def _state_profile() -> StateProfile:
-    return StateProfile.model_validate(
-        {
-            "provider": "oracle-mcp-example",
-            "database": "EXAMPLEDB",
-            "schema": "EXAMPLE_OWNER",
-            "tables": ["ORDERS"],
-            "primaryIdentifiers": ["ORDER_ID"],
-            "stateFields": ["STATUS"],
-            "timestampFields": ["UPDATED_AT"],
-            "queryTemplates": {},
-        }
+def _state_profile() -> ApplicationProfile:
+    return ApplicationProfile(
+        id="app",
+        tenant_id="tenant-a",
+        name="n",
+        description="d",
+        environment="staging",
     )
 
 

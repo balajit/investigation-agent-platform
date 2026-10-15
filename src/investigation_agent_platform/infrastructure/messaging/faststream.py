@@ -81,9 +81,13 @@ class KafkaEventPublisher(EventPublisher):
     async def publish_raw(self, topic: str, payload: dict[str, Any]) -> None:
         await self._broker.publish(payload, topic=topic)
 
-    async def publish_to_topic(self, topic: str, payload: dict[str, Any]) -> None:
+    async def publish_to_topic(
+        self, tenant_id: str, topic: str, payload: EventEnvelope
+    ) -> None:
         """Topic-aware publish (Part 11.3C TopicEventPublisher)."""
-        await self.publish_raw(topic, payload)
+        if payload.tenant_id != tenant_id:
+            raise ValueError("Topic payload tenant does not match publish tenant.")
+        await self.publish_raw(topic, payload.model_dump(mode="json"))
 
 
 def build_faststream_app(

@@ -93,12 +93,12 @@ class TraceInvestigationService:
                     f"Request environment {request.environment!r} does not match "
                     f"the investigation profile {profile.environment!r}."
                 )
-            mapping_source_id = profile.observability_configuration.mapping_source_id
+            mapping_source_id = profile.mapping_source_id
             # Investigation policy caps the agent-supplied budget; the
             # extractor reports which bound truncated via completeness.
             effective_max = min(
                 request.max_evidence,
-                profile.investigation_configuration.max_evidence_per_query,
+                profile.investigation.max_evidence_per_query,
             )
             evidence_request = RuntimeEvidenceRequest(
                 environment=request.environment,

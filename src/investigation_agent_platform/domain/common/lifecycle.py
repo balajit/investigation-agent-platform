@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -52,3 +52,61 @@ class AuditEvent(BaseModel):
     outcome: str = Field(default="success", min_length=1, max_length=32)
     detail: dict[str, Any] = Field(default_factory=dict, max_length=20)
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class CoreRetentionClass(StrEnum):
+    """Retention class per core investigation table (TO_DO-023).
+
+    Stored on each core row (``retention_class`` column) and keyed into
+    ``CORE_RETENTION_POLICIES`` for purge cutoffs.
+    """
+
+    INVESTIGATION = "investigation"
+    EVIDENCE = "evidence"
+    TIMELINE = "timeline"
+    TRANSITION = "transition"
+
+
+#: Purge policy per core table (TO_DO-023). Only terminal investigations
+#: (COMPLETED/FAILED/CANCELLED) are ever purge-eligible — open, paused, or
+#: awaiting-input investigations are pinned regardless of age. Child rows
+#: (evidence, timeline, transitions, facts, findings) cascade with their
+#: investigation; standalone purge only collects orphan rows whose
+#: ``investigation_id`` is NULL and whose timestamp predates the cutoff.
+#: Transitions are never purged standalone: ``investigation_id`` is
+#: non-nullable and cascades, so they disappear with their investigation.
+CORE_RETENTION_POLICIES: dict[str, RetentionPolicy] = {
+    CoreRetentionClass.INVESTIGATION.value: RetentionPolicy(
+        retention_class=CoreRetentionClass.INVESTIGATION.value,
+        retain_days=365,
+        soft_delete=False,
+        legal_hold_supported=False,
+        purge_job_kind="core-retention-purge",
+    ),
+    CoreRetentionClass.EVIDENCE.value: RetentionPolicy(
+        retention_class=CoreRetentionClass.EVIDENCE.value,
+        retain_days=180,
+        soft_delete=False,
+        legal_hold_supported=False,
+        purge_job_kind="core-retention-purge",
+    ),
+    CoreRetentionClass.TIMELINE.value: RetentionPolicy(
+        retention_class=CoreRetentionClass.TIMELINE.value,
+        retain_days=180,
+        soft_delete=False,
+        legal_hold_supported=False,
+        purge_job_kind="core-retention-purge",
+    ),
+    CoreRetentionClass.TRANSITION.value: RetentionPolicy(
+        retention_class=CoreRetentionClass.TRANSITION.value,
+        retain_days=365,
+        soft_delete=False,
+        legal_hold_supported=False,
+        purge_job_kind="core-retention-purge",
+    ),
+}
+
+
+def retention_cutoff(policy: RetentionPolicy, now: datetime) -> datetime:
+    """Purge cutoff for a retention policy: rows at or before this instant expire."""
+    return now - timedelta(days=policy.retain_days)

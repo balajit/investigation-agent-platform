@@ -4,6 +4,10 @@
 Read paths serve platform-owned retrieval; reindex dispatches the
 indexing-queue workflow as a background job (idempotent). Deletion purges
 one source's chunks + generations.
+
+Serialization (OpenAPI spec 1.0): `response_model_exclude_unset=True`
+universally — explicit nulls (e.g. `next_cursor: null`) are preserved because
+constructors pass them explicitly, while never-provided optionals stay absent.
 """
 
 import hashlib
@@ -13,11 +17,22 @@ from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, Query, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.errors import ApiError, sanitize_extra
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.v1.schemas.envelopes import CursorEnvelope, ItemsEnvelope
+from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
+from investigation_agent_platform.api.v1.schemas.reference_docs import (
+    IndexStatusView,
+    ReferenceSearchHitView,
+    ReferenceSourceView,
+    ReindexAck,
+    ReindexBody,
+    RollbackBody,
+    SourceDeleteAck,
+)
 from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.application.reference.job_kinds import (
     REFERENCE_DOCS_INDEX_WORKFLOW,
@@ -41,12 +56,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["reference-docs"])
 
 
+# Router-local input models moved to api.v1.schemas.reference_docs (TO_DO-018);
+# re-exported here so existing imports keep working.
+__all__ = ["ReindexBody", "RollbackBody", "router"]
+
+
 def _service(ctx: Any) -> ReferenceDocumentService:
     chunk_repo = getattr(ctx, "reference_repo", None)
     if chunk_repo is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Reference store is unavailable",
+        raise ApiError(
+            code="REFERENCE_STORE_UNAVAILABLE",
+            http_status=503,
+            message="Reference store is unavailable",
         )
     return ReferenceDocumentService(
         chunk_repo=chunk_repo,
@@ -55,30 +76,32 @@ def _service(ctx: Any) -> ReferenceDocumentService:
     )
 
 
-class ReindexBody(BaseModel):
-    application_id: str | None = Field(default=None, max_length=128)
-    source_id: str = Field(..., min_length=1, max_length=256)
-
-
-class RollbackBody(BaseModel):
-    application_id: str | None = Field(default=None, max_length=128)
-    source_id: str = Field(..., min_length=1, max_length=256)
-    generation: int = Field(..., ge=1)
-
-
-@router.get("/reference-docs/sources")
+@router.get(
+    "/reference-docs/sources",
+    response_model=ItemsEnvelope[ReferenceSourceView],
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def list_reference_sources(
     x_tenant_id: str = Depends(require_tenant),
     application_id: str | None = Query(default=None, max_length=128, pattern=NO_NUL_PATTERN),
-) -> dict[str, Any]:
+) -> ItemsEnvelope[ReferenceSourceView]:
     """Configured reference sources with stable ids."""
     service = _service(get_app_context())
-    return {
-        "items": await service.list_sources(x_tenant_id, application_id),
-    }
+    rows = await service.list_sources(x_tenant_id, application_id)
+    return ItemsEnvelope[ReferenceSourceView](
+        items=[ReferenceSourceView.model_validate(r) for r in rows]
+    )
 
 
-@router.get("/reference-docs/search")
+@router.get(
+    "/reference-docs/search",
+    response_model=CursorEnvelope[ReferenceSearchHitView],
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def search_reference_docs(
     x_tenant_id: str = Depends(require_tenant),
     q: str = Query(..., min_length=1, max_length=2000, pattern=NO_NUL_PATTERN),
@@ -91,7 +114,7 @@ async def search_reference_docs(
     ),
     cursor: str | None = Query(default=None, max_length=4096, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
-) -> dict[str, Any]:
+) -> CursorEnvelope[ReferenceSearchHitView]:
     """Hybrid search over active reference chunks (tombstones excluded)."""
     service = _service(get_app_context())
     try:
@@ -104,42 +127,58 @@ async def search_reference_docs(
             limit=limit,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return {
-        "items": [hit.model_dump(mode="json") for hit in hits],
-        "next_cursor": next_cursor,
-        "has_more": next_cursor is not None,
-    }
+        raise ApiError(
+            code="REFERENCE_VALIDATION", http_status=400, message=str(exc)
+        ) from exc
+    return CursorEnvelope[ReferenceSearchHitView](
+        items=[ReferenceSearchHitView.model_validate(h.model_dump(mode="json")) for h in hits],
+        next_cursor=next_cursor,
+        has_more=next_cursor is not None,
+    )
 
 
-@router.get("/reference-docs/status")
+@router.get(
+    "/reference-docs/status",
+    response_model=IndexStatusView,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def reference_docs_status(
     x_tenant_id: str = Depends(require_tenant),
     source_id: str = Query(..., min_length=1, max_length=256, pattern=NO_NUL_PATTERN),
     application_id: str | None = Query(default=None, max_length=128, pattern=NO_NUL_PATTERN),
-) -> dict[str, Any]:
+) -> IndexStatusView:
     """Current generation status for one source."""
     service = _service(get_app_context())
     try:
         result = await service.index_status(x_tenant_id, source_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise ApiError(code="REFERENCE_NOT_FOUND", http_status=404, message=str(exc)) from exc
     _ = application_id
-    return result.model_dump(mode="json")
+    return IndexStatusView.model_validate(result.model_dump(mode="json"))
 
 
-@router.post("/reference-docs/reindex", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/reference-docs/reindex",
+    response_model=ReindexAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def reindex_reference_docs(
     body: ReindexBody,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
-) -> dict[str, Any]:
+) -> ReindexAck:
     """Start a source reindex as a background job on the indexing queue."""
     if not x_idempotency_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Idempotency-Key header is required",
+        raise ApiError(
+            code="REINDEX_KEY_REQUIRED",
+            http_status=400,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     canonical = json.dumps(body.model_dump(mode="json"), sort_keys=True)
@@ -152,12 +191,12 @@ async def reindex_reference_docs(
             operation="reference-docs-reindex",
         )
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(code="IDEMPOTENCY_CONFLICT", http_status=409, message=str(exc)) from exc
     except IdempotencyInProgressError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(code="IDEMPOTENCY_CONFLICT", http_status=409, message=str(exc)) from exc
     if not reserved:
         logger.info("Replaying cached reference reindex for key=%s", x_idempotency_key)
-        return cached or {}
+        return ReindexAck.model_validate(cached or {})
 
     job = BackgroundJob(
         id=uuid4(),
@@ -170,13 +209,14 @@ async def reindex_reference_docs(
     try:
         await ctx.background_job_repo.create(job)
     except ConcurrencyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(code="CONCURRENCY_CONFLICT", http_status=409, message=str(exc)) from exc
 
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Workflow execution engine is unavailable; reindex was not started",
+        raise ApiError(
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=503,
+            message="Workflow execution engine is unavailable; reindex was not started",
         )
     try:
         from investigation_agent_platform.application.worker.workflows import (
@@ -202,13 +242,14 @@ async def reindex_reference_docs(
             run_timeout=timedelta(seconds=3600),
         )
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Failed to start reindex workflow",
-            extra={"error": str(exc), "job_id": str(job.id)},
+            extra=sanitize_extra({"job_id": str(job.id), "event": "reindex.dispatch_failed"}),
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to start reindex workflow; reindex was not started",
+        raise ApiError(
+            code="REINDEX_DISPATCH_FAILED",
+            http_status=502,
+            message="Failed to start reindex workflow; reindex was not started",
         ) from exc
 
     try:
@@ -223,44 +264,63 @@ async def reindex_reference_docs(
             )
             await ctx.background_job_repo.save(x_tenant_id, queued, current.version)
     except ConcurrencyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ApiError(code="CONCURRENCY_CONFLICT", http_status=409, message=str(exc)) from exc
 
     from investigation_agent_platform.infrastructure.messaging.job_fanout import (
         maybe_publish_job_progress,
     )
 
     await maybe_publish_job_progress(ctx, x_tenant_id, queued if current is not None else job)
-    response_payload: dict[str, Any] = {
-        "job_id": str(job.id),
-        "workflow_id": f"wf-reindex-{job.id}",
-        "status": BackgroundJobStatus.QUEUED.value,
-    }
+    response_payload = ReindexAck(
+        job_id=str(job.id),
+        workflow_id=f"wf-reindex-{job.id}",
+        status=BackgroundJobStatus.QUEUED.value,
+    )
     await ctx.idempotency_store.complete(
-        x_tenant_id, x_idempotency_key, response_payload, operation="reference-docs-reindex"
+        x_tenant_id,
+        x_idempotency_key,
+        response_payload.model_dump(mode="json"),
+        operation="reference-docs-reindex",
     )
     return response_payload
 
 
-@router.post("/reference-docs/rollback")
+@router.post(
+    "/reference-docs/rollback",
+    response_model=IndexStatusView,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def rollback_reference_generation(
     body: RollbackBody,
     x_tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
-    """Reactivate a prior generation (blue/green rollback window)."""
+) -> IndexStatusView:
+    """Reactivate a prior generation (blue/green rollback window).
+
+    NOTE: the service returns the refreshed IndexStatus (not the generation
+    row) — the response model matches that wire shape.
+    """
     service = _service(get_app_context())
     try:
         result = await service.rollback_generation(x_tenant_id, body.source_id, body.generation)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return result.model_dump(mode="json")
+        raise ApiError(code="REFERENCE_NOT_FOUND", http_status=404, message=str(exc)) from exc
+    return IndexStatusView.model_validate(result.model_dump(mode="json"))
 
 
-@router.delete("/reference-docs/sources/{source_id}")
+@router.delete(
+    "/reference-docs/sources/{source_id}",
+    response_model=SourceDeleteAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def delete_reference_source(
     source_id: str,
     x_tenant_id: str = Depends(require_tenant),
-) -> dict[str, Any]:
+) -> SourceDeleteAck:
     """Hard-delete one source's chunks + generations."""
     service = _service(get_app_context())
     removed = await service.purge_source(x_tenant_id, source_id)
-    return {"source_id": source_id, "status": "DELETED", "rows_removed": removed}
+    return SourceDeleteAck(source_id=source_id, status="DELETED", rows_removed=removed)

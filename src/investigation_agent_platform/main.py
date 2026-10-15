@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
 import sys
 from contextlib import asynccontextmanager
@@ -19,6 +18,34 @@ from investigation_agent_platform.infrastructure.configuration.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# TO_DO-006: attach console + rotating-file JSON pipeline first so every
+# subsequent startup record (including the layer report) lands in the file.
+try:
+    from investigation_agent_platform.infrastructure.telemetry.logging import (
+        configure_logging,
+    )
+
+    configure_logging()
+except Exception as exc:  # pragma: no cover - logging must never break boot
+    logger.warning("Logging pipeline skipped", extra={"error": str(exc)})
+
+# TO_DO-004 hierarchy: `.env*` files, then `config/application.yaml` (when
+# present) fill unset names only; runtime env and the secret-manager chain
+# always win. Runs before any config load in this module or the worker entry.
+try:
+    from investigation_agent_platform.infrastructure.configuration.layers import (
+        apply_layered_config,
+        effective_environment,
+    )
+
+    _layer_report = apply_layered_config()
+    logger.info(
+        "Config layers ready",
+        extra={"dotenv": _layer_report.dotenv_files, "yaml": _layer_report.yaml_path},
+    )
+except Exception as exc:  # pragma: no cover - layering must never break boot
+    logger.warning("Layered config skipped", extra={"error": str(exc)})
 
 _cfg: ApplicationConfig | None = None
 try:
@@ -51,6 +78,17 @@ if _cfg is not None:
             )
 
 
+def _effective_env() -> str:
+    """Environment for gating dev-only paths (TO_DO-005: single source).
+
+    The loaded config wins; without one the process cannot be production.
+    """
+    try:
+        return effective_environment(_cfg)
+    except Exception:
+        return "development"
+
+
 def _create_lifespan_app() -> FastAPI:
     from investigation_agent_platform.api.dependencies import Container, get_app_context
 
@@ -71,7 +109,7 @@ def _create_lifespan_app() -> FastAPI:
         Production wires its client mandatorily in bootstrap; here a failure
         just leaves dispatch disabled (routers report 503, never silent 200).
         """
-        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+        if _effective_env() == "production":
             return
         try:
             from investigation_agent_platform.api.dependencies import get_app_context
@@ -108,6 +146,7 @@ def _create_lifespan_app() -> FastAPI:
             logger.warning(
                 "Temporal unavailable; workflow dispatch disabled in API",
                 extra={"error": str(exc)},
+                exc_info=True,
             )
 
     async def _maybe_wire_buffered() -> None:
@@ -119,7 +158,7 @@ def _create_lifespan_app() -> FastAPI:
         never takes this path (F-001). Any failure leaves the plain context
         untouched — startup must never break on buffering.
         """
-        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+        if _effective_env() == "production":
             return
         try:
             from investigation_agent_platform.api.dependencies import get_app_context
@@ -142,12 +181,14 @@ def _create_lifespan_app() -> FastAPI:
                 logger.warning(
                     "API evidence gateway re-wire unavailable",
                     extra={"error": str(exc2)},
+                    exc_info=True,
                 )
             start_buffer_flusher(get_app_context())
         except Exception as exc:
             logger.warning(
                 "Buffered persistence unavailable; continuing in-memory",
                 extra={"error": str(exc)},
+                exc_info=True,
             )
 
     async def _maybe_start_job_messaging() -> None:
@@ -165,7 +206,7 @@ def _create_lifespan_app() -> FastAPI:
 
             await ensure_job_messaging(get_app_context())
         except Exception as exc:
-            logger.warning("Job messaging unavailable", extra={"error": str(exc)})
+            logger.warning("Job messaging unavailable", extra={"error": str(exc)}, exc_info=True)
 
     async def _maybe_seed_dev() -> None:
         """Opt-in UI dev dataset (IAP_DEV_SEED_TENANTS, e.g. "n-a").
@@ -177,21 +218,23 @@ def _create_lifespan_app() -> FastAPI:
         Idempotent per tenant (skips when the profile exists). Never raises:
         a seed failure must not break startup.
         """
-        if os.environ.get("IAP_ENVIRONMENT", "development").lower() == "production":
+        if _effective_env() == "production":
             return
         try:
+            from investigation_agent_platform.api.dependencies import get_app_context
             from investigation_agent_platform.api.dev_seed import (
                 seed_dev_tenants,
                 seed_tenants_from_env,
             )
-            from investigation_agent_platform.api.dependencies import get_app_context
 
             if not seed_tenants_from_env():
                 return
             result = await seed_dev_tenants(get_app_context())
             logger.info("Dev seed complete", extra={"seeded": result})
         except Exception as exc:
-            logger.warning("Dev seed failed; continuing unseeded", extra={"error": str(exc)})
+            logger.warning(
+                "Dev seed failed; continuing unseeded", extra={"error": str(exc)}, exc_info=True
+            )
 
     @asynccontextmanager
     async def lifespan(api: FastAPI):  # type: ignore[no-untyped-def]

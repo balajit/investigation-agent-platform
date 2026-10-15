@@ -3,26 +3,39 @@
 import asyncio
 import logging
 import os
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Response, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
+from investigation_agent_platform.api.v1.schemas.health import HealthView
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health/live")
-async def liveness() -> dict[str, str]:
+@router.get(
+    "/health/live",
+    response_model=HealthView,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
+async def liveness() -> HealthView:
     """Process liveness probe returning immediately if execution process is responsive."""
-    return {"status": "UP"}
+    return HealthView(status="UP")
 
 
-@router.get("/health/ready")
-async def readiness(response: Response) -> dict[str, Any]:
+@router.get(
+    "/health/ready",
+    response_model=HealthView,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+)
+async def readiness(response: Response) -> HealthView:
     """Readiness probe evaluating the actual initialized production components (F-018).
 
     This probes the concrete client objects held on ``AppContext`` — the same
@@ -131,9 +144,9 @@ async def readiness(response: Response) -> dict[str, Any]:
     return _health_body("READY", checks)
 
 
-def _health_body(status_value: str, checks: dict[str, str]) -> dict[str, Any]:
+def _health_body(status_value: str, checks: dict[str, str]) -> HealthView:
     # F-066: public readiness stays minimal — dependency topology is internal.
     # Full per-dependency detail only when explicitly enabled for operators.
     if os.environ.get("IAP_HEALTH_DETAIL", "minimal").lower() == "full":
-        return {"status": status_value, "dependencies": checks}
-    return {"status": status_value}
+        return HealthView.model_validate({"status": status_value, "dependencies": checks})
+    return HealthView(status=status_value)

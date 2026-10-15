@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
+from investigation_agent_platform.api.errors import sanitize_extra
+from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
 from investigation_agent_platform.domain.finding.models import (
     ConclusionStatus,
     Finding,
@@ -97,98 +99,183 @@ class SqlAlchemyFindingConclusionRepository:
             return
         except Exception:
             logger.debug("save_finding details are not a Finding; storing minimal row")
-        async with rls_session(self._session_factory, tenant_id) as session:
-            existing = await session.scalars(
-                select(FindingORM).where(
-                    FindingORM.tenant_id == tenant_id,
-                    FindingORM.investigation_id == investigation_id,
-                    FindingORM.finding_type == finding_type,
-                    FindingORM.title == str(details.get("title", finding_type)),
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                existing = await session.scalars(
+                    select(FindingORM).where(
+                        FindingORM.tenant_id == tenant_id,
+                        FindingORM.investigation_id == investigation_id,
+                        FindingORM.finding_type == finding_type,
+                        FindingORM.title == str(details.get("title", finding_type)),
+                    )
                 )
+                if existing.first() is not None:
+                    outcome = "deduplicated"
+                else:
+                    session.add(
+                        FindingORM(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            finding_type=finding_type,
+                            title=str(details.get("title", finding_type))[:256],
+                            statement=str(details.get("statement", ""))[:2048] or finding_type,
+                        )
+                    )
+                    outcome = "inserted"
+        except Exception as exc:
+            logger.exception(
+                "finding save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "finding.save",
+                        "outcome": "failed",
+                        "finding_type": finding_type,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
             )
-            if existing.first() is not None:
-                return
-            session.add(
-                FindingORM(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    finding_type=finding_type,
-                    title=str(details.get("title", finding_type))[:256],
-                    statement=str(details.get("statement", ""))[:2048] or finding_type,
-                )
-            )
+            raise
+        logger.info(
+            "finding saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "event": "finding.save",
+                    "outcome": outcome,
+                    "finding_type": finding_type,
+                }
+            ),
+        )
 
     async def save_finding_record(self, tenant_id: str, finding: Finding) -> None:
         if finding.tenant_id != tenant_id:
-            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
-
             raise ConcurrencyError("Finding tenant mismatch")
-        async with rls_session(self._session_factory, tenant_id) as session:
-            stmt = (
-                insert(FindingORM)
-                .values(
-                    id=finding.id,
-                    tenant_id=tenant_id,
-                    investigation_id=finding.investigation_id,
-                    finding_type=finding.finding_type.value,
-                    title=finding.title,
-                    statement=finding.statement,
-                    severity=finding.severity.value,
-                    confidence=finding.confidence,
-                    evidence_ids=[str(e) for e in finding.evidence_ids],
-                    related_hypothesis_ids=[str(h) for h in finding.related_hypothesis_ids],
-                    causal_chain=[str(c) for c in finding.causal_chain],
-                    remediation_steps=list(finding.remediation_steps),
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                stmt = (
+                    insert(FindingORM)
+                    .values(
+                        id=finding.id,
+                        tenant_id=tenant_id,
+                        investigation_id=finding.investigation_id,
+                        finding_type=finding.finding_type.value,
+                        title=finding.title,
+                        statement=finding.statement,
+                        severity=finding.severity.value,
+                        confidence=finding.confidence,
+                        evidence_ids=[str(e) for e in finding.evidence_ids],
+                        related_hypothesis_ids=[str(h) for h in finding.related_hypothesis_ids],
+                        causal_chain=[str(c) for c in finding.causal_chain],
+                        remediation_steps=list(finding.remediation_steps),
+                    )
+                    .on_conflict_do_nothing(constraint="findings_pkey")
                 )
-                .on_conflict_do_nothing(constraint="findings_pkey")
+                await session.execute(stmt)
+        except Exception as exc:
+            logger.exception(
+                "finding record save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(finding.investigation_id),
+                        "event": "finding.save_record",
+                        "outcome": "failed",
+                        "finding_id": str(finding.id),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
             )
-            await session.execute(stmt)
+            raise
+        logger.info(
+            "finding record saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(finding.investigation_id),
+                    "event": "finding.save_record",
+                    "outcome": "inserted",
+                    "finding_id": str(finding.id),
+                    "finding_type": finding.finding_type.value,
+                }
+            ),
+        )
 
     async def save_conclusion(self, tenant_id: str, conclusion: InvestigationConclusion) -> None:
         if conclusion.tenant_id != tenant_id:
-            from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
-
             raise ConcurrencyError("Conclusion tenant mismatch")
-        async with rls_session(self._session_factory, tenant_id) as session:
-            stmt = (
-                insert(InvestigationConclusionORM)
-                .values(
-                    tenant_id=tenant_id,
-                    investigation_id=conclusion.investigation_id,
-                    status=conclusion.status.value,
-                    root_cause=conclusion.root_cause,
-                    confidence=conclusion.confidence,
-                    supporting_evidence_ids=[str(e) for e in conclusion.supporting_evidence_ids],
-                    supporting_hypothesis_ids=[
-                        str(h) for h in conclusion.supporting_hypothesis_ids
-                    ],
-                    contradicting_evidence_ids=[
-                        str(e) for e in conclusion.contradicting_evidence_ids
-                    ],
-                    limitations=list(conclusion.limitations),
-                    recommended_next_steps=list(conclusion.recommended_next_steps),
-                )
-                .on_conflict_do_update(
-                    constraint="uq_conclusion_investigation",
-                    set_={
-                        "status": conclusion.status.value,
-                        "root_cause": conclusion.root_cause,
-                        "confidence": conclusion.confidence,
-                        "supporting_evidence_ids": [
-                            str(e) for e in conclusion.supporting_evidence_ids
-                        ],
-                        "supporting_hypothesis_ids": [
+        try:
+            async with rls_session(self._session_factory, tenant_id) as session:
+                stmt = (
+                    insert(InvestigationConclusionORM)
+                    .values(
+                        tenant_id=tenant_id,
+                        investigation_id=conclusion.investigation_id,
+                        status=conclusion.status.value,
+                        root_cause=conclusion.root_cause,
+                        confidence=conclusion.confidence,
+                        supporting_evidence_ids=[str(e) for e in conclusion.supporting_evidence_ids],
+                        supporting_hypothesis_ids=[
                             str(h) for h in conclusion.supporting_hypothesis_ids
                         ],
-                        "contradicting_evidence_ids": [
+                        contradicting_evidence_ids=[
                             str(e) for e in conclusion.contradicting_evidence_ids
                         ],
-                        "limitations": list(conclusion.limitations),
-                        "recommended_next_steps": list(conclusion.recommended_next_steps),
-                    },
+                        limitations=list(conclusion.limitations),
+                        recommended_next_steps=list(conclusion.recommended_next_steps),
+                    )
+                    .on_conflict_do_update(
+                        constraint="uq_conclusion_investigation",
+                        set_={
+                            "status": conclusion.status.value,
+                            "root_cause": conclusion.root_cause,
+                            "confidence": conclusion.confidence,
+                            "supporting_evidence_ids": [
+                                str(e) for e in conclusion.supporting_evidence_ids
+                            ],
+                            "supporting_hypothesis_ids": [
+                                str(h) for h in conclusion.supporting_hypothesis_ids
+                            ],
+                            "contradicting_evidence_ids": [
+                                str(e) for e in conclusion.contradicting_evidence_ids
+                            ],
+                            "limitations": list(conclusion.limitations),
+                            "recommended_next_steps": list(conclusion.recommended_next_steps),
+                        },
+                    )
                 )
+                await session.execute(stmt)
+        except Exception as exc:
+            logger.exception(
+                "conclusion save failed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(conclusion.investigation_id),
+                        "event": "conclusion.save",
+                        "outcome": "failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
             )
-            await session.execute(stmt)
+            raise
+        logger.info(
+            "conclusion saved",
+            extra=sanitize_extra(
+                {
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(conclusion.investigation_id),
+                    "event": "conclusion.save",
+                    "outcome": "upserted",
+                    "status": conclusion.status.value,
+                }
+            ),
+        )
 
     # -- reads -----------------------------------------------------------
 

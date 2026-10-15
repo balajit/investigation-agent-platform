@@ -43,6 +43,7 @@ class KnowledgeRetrievalService:
         knowledge_store: Any = None,
         temporal_port: Any = None,
         attribution_port: Any = None,
+        profile_repo: Any = None,
     ) -> None:
         self.artifact_repo = artifact_repo
         self.checkers: dict[str, ReverifyChecker] = dict(checkers or {})
@@ -57,9 +58,24 @@ class KnowledgeRetrievalService:
         # ISSUE-11: optional Layer 3 cross-layer join. None = byte-for-byte
         # legacy behavior (refs stay opaque strings, no ownership attached).
         self.attribution_port = attribution_port
+        self.profile_repo = profile_repo
 
     def _now(self) -> datetime:
         return self._clock_now() if self._clock_now else datetime.now(UTC)
+
+    async def _confidence_floor(self, tenant_id: str, application_id: str) -> float | None:
+        """Profile min_confidence when explicitly authored, else None (no filter)."""
+        if self.profile_repo is None:
+            return None
+        try:
+            profile = await self.profile_repo.get_by_application_id(tenant_id, application_id)
+        except Exception:
+            return None
+        knowledge = getattr(profile, "knowledge", None) if profile else None
+        if knowledge is None or "min_confidence" not in knowledge.model_fields_set:
+            return None
+        floor = knowledge.min_confidence
+        return floor if isinstance(floor, (int, float)) and 0.0 <= floor <= 1.0 else None
 
     def register_checker(self, source_kind: str, checker: ReverifyChecker) -> None:
         self.checkers[source_kind] = checker
@@ -82,6 +98,7 @@ class KnowledgeRetrievalService:
         now = self._now()
         own = await self.artifact_repo.list_active_for_reuse(tenant_id, application_id, kinds)
         shared = await self._shared_for_caller(tenant_id, code_issue_fingerprints or [], kinds)
+        min_confidence = await self._confidence_floor(tenant_id, application_id)
         seen: set[UUID] = set()
         verified: list[ArtifactView] = []
         excluded_stale = 0
@@ -89,6 +106,11 @@ class KnowledgeRetrievalService:
             if artifact.id in seen:
                 continue
             seen.add(artifact.id)
+            # Profile KnowledgeConfig.min_confidence — explicit-only, so
+            # default profiles keep unfiltered reuse behavior.
+            if min_confidence is not None and artifact.confidence < min_confidence:
+                excluded_stale += 1
+                continue
             view = await self._gate_one(tenant_id, artifact, now)
             if view is None:
                 excluded_stale += 1

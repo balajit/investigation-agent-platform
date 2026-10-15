@@ -14,6 +14,7 @@ it (replay).
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -27,6 +28,8 @@ from investigation_agent_platform.domain.common.exceptions import (
 )
 from investigation_agent_platform.infrastructure.persistence.models import IdempotencyKeyORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+
+logger = logging.getLogger(__name__)
 
 _PENDING_STATUS = -1
 
@@ -126,3 +129,36 @@ class SqlAlchemyIdempotencyStore:
             if row is not None:
                 row.response_status = status_code
                 row.response_json = response
+
+    async def abandon(
+        self,
+        tenant_id: str,
+        key: str,
+        operation: str = "default",
+        application_id: str | None = None,
+    ) -> None:
+        """Release a pending reservation so a retry can reserve fresh.
+
+        Called when the reserved operation raised before ``complete``: the
+        owner is dead, so the lease must not block retries until TTL expiry.
+        Deletes only pending rows (a completed response is never removed —
+        that path is a replay, not a retry). Never raises.
+        """
+        from investigation_agent_platform.domain.common.idempotency import (
+            scoped_idempotency_key,
+        )
+
+        try:
+            key = scoped_idempotency_key(key, operation, application_id)
+            async with rls_session(self._session_factory, tenant_id) as session:
+                existing = await session.scalars(
+                    select(IdempotencyKeyORM).where(
+                        IdempotencyKeyORM.tenant_id == tenant_id,
+                        IdempotencyKeyORM.idempotency_key == key,
+                    )
+                )
+                row = existing.first()
+                if row is not None and row.response_status == _PENDING_STATUS:
+                    await session.delete(row)
+        except Exception as exc:
+            logger.warning("Idempotency abandon failed", extra={"error": str(exc)})

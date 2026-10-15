@@ -4,6 +4,12 @@
 Adapters build ``{tenant_id}/{application_id}/{key}`` internally; callers
 supply only logical keys. Absolute paths, ``..`` segments, backslashes, and
 empty segments are rejected by every implementation.
+
+Scoping note (TO_DO-028, code wins): the storage prefix is
+tenant/application, not tenant/investigation — every store operation is
+scoped to the caller's CapabilityScope (tenant + application), so a caller
+can only address keys under its own tenant prefix. This module guarantees
+that no key can escape that prefix. The negative tests pin both properties.
 """
 
 from __future__ import annotations
