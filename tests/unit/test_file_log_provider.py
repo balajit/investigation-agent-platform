@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest
+from investigation_agent_platform.domain.evidence.requests import RuntimeEvidenceRequest, TimeRange
 from investigation_agent_platform.domain.profile.models import (
     ApplicationProfile,
     Datasource,
@@ -185,6 +185,83 @@ class TestSearch:
         )
         assert len(second.items) == 2
         assert {i.summary for i in first.items}.isdisjoint({i.summary for i in second.items})
+
+    @pytest.mark.asyncio
+    async def test_multi_keyword_or_semantics_with_ranking(self, tmp_path) -> None:
+        # Regression: multi-facet incident queries must not require EVERY
+        # keyword in a single line (that guaranteed empty results against
+        # one-line-per-request access logs). OR match, most hits first.
+        self._write(
+            tmp_path,
+            "app.log",
+            [
+                json.dumps({"message": "alpha only"}),
+                json.dumps({"message": "alpha and beta together"}),
+                json.dumps({"message": "nothing relevant"}),
+            ],
+        )
+        adapter = _adapter(tmp_path)
+        result = await adapter.search_runtime_evidence(
+            "t", uuid4(), _request(keywords=["alpha", "beta"]), _profile(["*.log"])
+        )
+        assert result.total_count == 2
+        assert "together" in result.items[0].summary
+        assert "alpha only" in result.items[1].summary
+
+    @pytest.mark.asyncio
+    async def test_incident_query_matches_access_log_line(self, tmp_path) -> None:
+        # The self-investigation query ["profile", "iap", "tenant"] matched
+        # zero of 7,911 lines; a single discriminating term matched 178.
+        self._write(
+            tmp_path,
+            "iap.log",
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-10-15T19:50:00Z",
+                        "level": "INFO",
+                        "logger": "api.app",
+                        "message": "GET /api/v1/profiles/investigation-agent-platform HTTP/1.1 404",
+                    }
+                ),
+            ],
+        )
+        adapter = _adapter(tmp_path)
+        result = await adapter.search_runtime_evidence(
+            "n-a",
+            uuid4(),
+            _request(keywords=["profile", "iap", "tenant"]),
+            _profile(["iap.log"]),
+        )
+        assert result.total_count == 1
+        assert "404" in result.items[0].summary
+
+    @pytest.mark.asyncio
+    async def test_time_range_filters(self, tmp_path) -> None:
+        from datetime import datetime
+
+        self._write(
+            tmp_path,
+            "app.log",
+            [
+                json.dumps({"timestamp": "2026-10-15T18:00:00Z", "message": "old"}),
+                json.dumps({"timestamp": "2026-10-15T19:50:00Z", "message": "new"}),
+            ],
+        )
+        adapter = _adapter(tmp_path)
+        result = await adapter.search_runtime_evidence(
+            "t",
+            uuid4(),
+            _request(
+                time_range=TimeRange(
+                    start_time=datetime.fromisoformat("2026-10-15T19:00:00+00:00"),
+                    end_time=datetime.fromisoformat("2026-10-15T20:00:00+00:00"),
+                )
+            ),
+            _profile(["*.log"]),
+        )
+        assert result.total_count == 1
+        assert "new" in result.items[0].summary
 
     @pytest.mark.asyncio
     async def test_get_by_id_roundtrip(self, tmp_path) -> None:

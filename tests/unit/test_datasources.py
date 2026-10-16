@@ -403,3 +403,42 @@ class TestPostgresAdapter:
             await adapter.get_application_state(
                 "tenant-a", "00000000-0000-0000-0000-000000000000", request, _profile([])
             )
+
+
+class TestTemplateIdFormat:
+    def _policy(self):  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.evidence.security import (
+            QuerySafetyPolicy,
+        )
+
+        return QuerySafetyPolicy()
+
+    @pytest.mark.asyncio
+    async def test_namespaced_ids_accepted(self) -> None:
+        policy = self._policy()
+        # The registry namespaces templates "{datasource_id}.{name}" and the
+        # reasoner prompt teaches exactly that form — rejecting dots broke
+        # every QUERY_STATE with a documented ID (fail-closed the wrong way).
+        for template_id in ("primary.evidence_recent", "default", "a_b.c_d"):
+            await policy.validate_state_request("t", template_id, {})
+
+    @pytest.mark.asyncio
+    async def test_unsafe_ids_rejected(self) -> None:
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
+
+        policy = self._policy()
+        for template_id in (
+            "",
+            ".leading",
+            "trailing.",
+            "double..dot",
+            "semi;colon",
+            "dash-ed",
+            "space here",
+            "../traversal",
+            "x" * 257,
+        ):
+            with pytest.raises(SecurityPolicyViolationException):
+                await policy.validate_state_request("t", template_id, {})

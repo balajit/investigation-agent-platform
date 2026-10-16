@@ -203,7 +203,30 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
         _require_dev()
         buffer_cfg = getattr(config, "buffer", None)
         if buffer_cfg is not None and not getattr(buffer_cfg, "enabled", True):
-            logger.info("Buffered persistence disabled (IAP_BUFFER_ENABLED=false)")
+            # Split-brain guard: with buffering disabled this process serves
+            # process-local memory while direct-Postgres writers
+            # (scripts/seed_profile.py, Postgres-backed workers) converge on
+            # the database. That combination silently diverges: seeded
+            # profiles 404 here and workflow dispatch 503s (STORE_NOT_SHARED).
+            # It is only safe when no shared database exists, so probe and
+            # fail loud when one is reachable.
+            db_uri = ""
+            try:
+                db_uri = config.database.connection_uri.get_secret_value()
+            except Exception:
+                db_uri = ""
+            if db_uri and await _postgres_reachable(db_uri, timeout_seconds=3.0):
+                logger.error(
+                    "SPLIT-BRAIN RISK: IAP_BUFFER_ENABLED=false with a reachable "
+                    "Postgres; this process serves process-local memory while "
+                    "seed scripts and workers share Postgres. Unset "
+                    "IAP_BUFFER_ENABLED (or stop the database for true offline "
+                    "dev) so API and worker converge on the shared store."
+                )
+                ctx._store_divergence_risk = True  # type: ignore[attr-defined]
+            else:
+                logger.info("Buffered persistence disabled (IAP_BUFFER_ENABLED=false)")
+                ctx._store_divergence_risk = False  # type: ignore[attr-defined]
             return ctx
         path = getattr(buffer_cfg, "path", "data/iap-buffer.sqlite3") or ("data/iap-buffer.sqlite3")
         interval = float(getattr(buffer_cfg, "flush_interval_seconds", 5.0) or 5.0)
@@ -298,6 +321,9 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
         ctx._buffer_proxies = proxies
         ctx._buffer_interval = interval
         ctx._buffered = True
+        # Converged on the shared store (or the WAL fallback both processes
+        # journal to): no split-brain risk from this process's side.
+        ctx._store_divergence_risk = False  # type: ignore[attr-defined]
         pending = wal.pending_count()
         held = wal.held_count()
         logger.info(

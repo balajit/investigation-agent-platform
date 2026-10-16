@@ -167,15 +167,14 @@ class InvestigationActionValidator:
             if current_evidence_count >= limits.max_source_files:
                 raise SecurityPolicyViolationException("Maximum source files budget exceeded")
 
-        # Generic budget checks for correlation depth and hypotheses
+        # Generic budget checks for correlation depth and hypotheses.
+        # (Hypothesis totals are capped at persistence in
+        # execute_action_activity against limits.max_hypotheses; there is no
+        # per-action parameter to validate here.)
         if action.action_type == ActionType.CORRELATE:
             depth = params.get("max_depth") or params.get("depth") or 0
             if isinstance(depth, int) and depth > limits.max_correlation_depth:
                 raise SecurityPolicyViolationException("Correlation depth exceeds budget limit")
-
-        if action.action_type == ActionType.FORMULATE_HYPOTHESIS:
-            if current_evidence_count >= limits.max_hypotheses * 10:  # heuristic guard
-                pass
 
         # Forbidden patterns across all params: null bytes, script tags
         for key, val in params.items():

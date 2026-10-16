@@ -12,6 +12,9 @@ from investigation_agent_platform.infrastructure.configuration.config import LLM
 from investigation_agent_platform.infrastructure.reasoning.pricing import (
     estimate_cost as _estimate_cost_versioned,
 )
+from investigation_agent_platform.infrastructure.reasoning.streaming_adapters import (
+    count_text_tokens,
+)
 from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
 from investigation_agent_platform.ports.reasoning.llm_gateway import (
     LLMGateway,
@@ -234,6 +237,30 @@ class OpenAIGateway(LLMGateway):
                 },
             }
 
+        # Token visibility: estimate what is about to be sent (tiktoken,
+        # char fallback) so every LLM call logs its input size even when the
+        # provider omits usage telemetry. Counts only — never prompt text.
+        wire_model = str(kwargs["model"])
+        system_content = str(request.system_prompt or "You are an investigation assistant.")
+        schema_content = json.dumps(request.response_schema) if request.response_schema else ""
+        estimated_input_tokens = (
+            count_text_tokens(wire_model, system_content)
+            + count_text_tokens(wire_model, request.prompt)
+            + count_text_tokens(wire_model, schema_content)
+        )
+        logger.info(
+            "LLM request tokens model=%s estimated_input_tokens=%s max_tokens=%s",
+            wire_model,
+            estimated_input_tokens,
+            kwargs["max_tokens"],
+            extra={
+                "tenant_id": tenant_id,
+                "model": wire_model,
+                "estimated_input_tokens": estimated_input_tokens,
+                "max_tokens": kwargs["max_tokens"],
+            },
+        )
+
         # Dynamic dispatch — keep mypy happy with Any
         try:
             resp: object = await self._call_with_retry(client, kwargs)
@@ -296,5 +323,24 @@ class OpenAIGateway(LLMGateway):
             estimated_cost_usd=estimated_cost,
             latency_ms=latency_ms,
             pricing_version=pricing_version,
+        )
+        logger.info(
+            "LLM response tokens model=%s prompt_tokens=%s completion_tokens=%s "
+            "total_tokens=%s estimated_cost_usd=%.6f latency_ms=%.1f",
+            self._config.model_name,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+            estimated_cost,
+            latency_ms,
+            extra={
+                "tenant_id": tenant_id,
+                "model": self._config.model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "estimated_cost_usd": estimated_cost,
+                "latency_ms": round(latency_ms, 1),
+            },
         )
         return LLMGatewayResponse(content=content, parsed=parsed, metadata=metadata)

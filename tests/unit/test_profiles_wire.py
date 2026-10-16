@@ -77,6 +77,7 @@ def _expected_sanitized():
                 "connection_ref": None,
                 "description": None,
                 "dynamodb": None,
+                "file_log": None,
                 "id": "primary",
                 "kafka": None,
                 "kind": "postgres",
@@ -264,3 +265,24 @@ class TestProfilesErrorEnvelope:
         resp = client.post("/api/v1/profiles", json={"id": "x"}, headers=HEADERS)
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "PROFILE_SCHEMA_INVALID"
+
+
+class TestTemplateDropGuard:
+    def test_drop_without_confirm_409(self, _restore_context: None) -> None:
+        _, client = _client()
+        assert client.post("/api/v1/profiles", json=_body(), headers=HEADERS).status_code == 201
+        dropped = _body()
+        dropped["datasources"][0].pop("query_templates")
+        resp = client.put("/api/v1/profiles/svc-a", json=dropped, headers=HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "PROFILE_TEMPLATES_DROPPED"
+
+    def test_drop_with_confirm_200(self, _restore_context: None) -> None:
+        _, client = _client()
+        assert client.post("/api/v1/profiles", json=_body(), headers=HEADERS).status_code == 201
+        dropped = _body()
+        dropped["datasources"][0].pop("query_templates")
+        dropped["confirm_template_removal"] = True
+        resp = client.put("/api/v1/profiles/svc-a", json=dropped, headers=HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["version"] == 2

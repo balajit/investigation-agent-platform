@@ -1,0 +1,72 @@
+# docker/logging/filebeat.yml — dev log shipper for the IAP self profile.
+#
+# Tails the structlog JSON lines written by the API/worker (data/iap.log plus the
+# stdout redirects tmp/api.log and tmp/worker.log) into Elasticsearch index names
+# matching the self-profile contract `logs-n-a-*-development-*` (see
+# config/profiles/iap-self.yaml `telemetry.log_indices`, and the legacy
+# generic-ECS scope `logs-{tenant}-*-{environment}-*` built by
+# infrastructure/evidence/runtime/validation.py:build_index_pattern).
+#
+# Field mapping to the generic-ecs contract:
+#   @timestamp <- timestamp | service.name <- fields | log.level <- level
+#   message    <- event      | log.logger <- logger | labels.log_path <- source file
+# Extra structlog keys (trace/correlation IDs, tenant IDs) ride along under `json.*`.
+filebeat.inputs:
+  - type: filestream
+    id: iap-dev-logs
+    paths:
+      - /logs/data/iap.log
+      - /logs/tmp/api.log
+      - /logs/tmp/worker.log
+    # Only structlog JSON records are shipped. The stdout redirects also carry
+    # plain uvicorn ("INFO: ...") and faststream/ANSI startup lines — drop
+    # anything that is not a JSON object so failed parses never become evidence.
+    exclude_lines: ["^[^{]"]
+    parsers:
+      - ndjson:
+          target: json
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      service.name: investigation-agent-platform
+      environment: development
+    # Dotted field names expand to nested objects at the document root, so the
+    # generic-ecs contract sees top-level `service.name` (not `fields.*`).
+    fields_under_root: true
+
+processors:
+  - timestamp:
+      field: json.timestamp
+      layouts:
+        - "2006-01-02T15:04:05.999999999Z07:00"
+  - rename:
+      fields:
+        - from: json.event
+          to: message
+      ignore_missing: true
+  - rename:
+      fields:
+        - from: json.level
+          to: log.level
+      ignore_missing: true
+  - rename:
+      fields:
+        - from: json.logger
+          to: log.logger
+      ignore_missing: true
+  - copy_fields:
+      fields:
+        - from: log.file.path
+          to: labels.log_path
+      fail_on_error: false
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "logs-n-a-iap-development-%{+yyyy.MM.dd}"
+
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+logging.level: info
+logging.to_stderr: true

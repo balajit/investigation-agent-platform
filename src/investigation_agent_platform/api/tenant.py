@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import jwt
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, Header, Request, status
 from jwt import PyJWKClient
+
+from investigation_agent_platform.api.errors import ApiError
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +155,10 @@ async def _resolve_verified_identity(
                 "Production requires IAP_AUTH_JWKS_URL and IAP_AUTH_ISSUER to be configured"
             )
         if not bearer_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid Authorization bearer token",
+            raise ApiError(
+                code="AUTH_TOKEN_REQUIRED",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Missing or invalid Authorization bearer token",
             )
         try:
             claims = _verify_jwt(bearer_token, settings)
@@ -163,25 +166,31 @@ async def _resolve_verified_identity(
             raise
         except jwt.PyJWTError as exc:
             logger.warning("JWT verification failed", extra={"reason": type(exc).__name__})
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token"
+            raise ApiError(
+                code="AUTH_TOKEN_INVALID",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Invalid authentication token",
             ) from exc
 
         tenant = _tenant_claim(claims)
         if tenant is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token does not contain a tenant claim",
+            raise ApiError(
+                code="AUTH_TENANT_CLAIM_MISSING",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Token does not contain a tenant claim",
             )
         principal = claims.get("sub")
         if not isinstance(principal, str) or not principal.strip():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token does not contain a subject"
+            raise ApiError(
+                code="AUTH_SUBJECT_MISSING",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Token does not contain a subject",
             )
         if header_tenant is not None and header_tenant != tenant:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Tenant mismatch between X-Tenant-ID and verified token",
+            raise ApiError(
+                code="TENANT_MISMATCH",
+                http_status=status.HTTP_403_FORBIDDEN,
+                message="Tenant mismatch between X-Tenant-ID and verified token",
             )
         return VerifiedIdentity(tenant_id=tenant, principal_id=principal.strip())
 
@@ -191,17 +200,24 @@ async def _resolve_verified_identity(
         try:
             claims = _verify_jwt(bearer_token, settings)
         except jwt.PyJWTError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token"
+            raise ApiError(
+                code="AUTH_TOKEN_INVALID",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Invalid authentication token",
             ) from exc
         tenant = _tenant_claim(claims) or header_tenant
         principal = claims.get("sub")
         if tenant is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing tenant")
+            raise ApiError(
+                code="AUTH_TENANT_REQUIRED",
+                http_status=status.HTTP_401_UNAUTHORIZED,
+                message="Missing tenant",
+            )
         if header_tenant is not None and header_tenant != tenant:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Tenant mismatch between X-Tenant-ID and verified token",
+            raise ApiError(
+                code="TENANT_MISMATCH",
+                http_status=status.HTTP_403_FORBIDDEN,
+                message="Tenant mismatch between X-Tenant-ID and verified token",
             )
         return VerifiedIdentity(
             tenant_id=tenant,
@@ -209,7 +225,11 @@ async def _resolve_verified_identity(
         )
 
     if header_tenant is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-Tenant-ID")
+        raise ApiError(
+            code="AUTH_TENANT_REQUIRED",
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            message="Missing X-Tenant-ID",
+        )
     return VerifiedIdentity(tenant_id=header_tenant, principal_id="dev-principal")
 
 

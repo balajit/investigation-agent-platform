@@ -113,6 +113,10 @@ async def pause_investigation(
         raise ApiError(
             code="ALREADY_PAUSED", http_status=status.HTTP_409_CONFLICT, message="Investigation is already paused"
         )
+    if investigation.status == InvestigationStatus.CREATED:
+        raise ApiError(
+            code="INVESTIGATION_NOT_STARTED", http_status=status.HTTP_409_CONFLICT, message="Cannot pause an investigation that was never started (status CREATED); no workflow exists to signal"
+        )
 
     await _signal_workflow(ctx, investigation_id, "pause")
     try:
@@ -187,30 +191,29 @@ async def resume_investigation(
         raise ApiError(
             code="INVESTIGATION_TERMINAL", http_status=status.HTTP_409_CONFLICT, message=f"Cannot resume investigation in terminal status {investigation.status.value}"
         )
+    if investigation.status != InvestigationStatus.PAUSED:
+        raise ApiError(
+            code="INVESTIGATION_NOT_PAUSED", http_status=status.HTTP_409_CONFLICT, message=f"Only PAUSED investigations can be resumed (status is {investigation.status.value})"
+        )
 
     await _signal_workflow(ctx, investigation_id, "resume")
-    if investigation.status == InvestigationStatus.PAUSED:
-        try:
-            resumed, _ = investigation.transition_to(
-                InvestigationStatus.INVESTIGATING,
-                ActorType.USER,
-                f"resume requested by {principal_id}",
-            )
-        except InvalidLifecycleTransitionException as exc:
-            raise ApiError(
-                code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
-            ) from exc
-        try:
-            await ctx.investigation_repo.save(x_tenant_id, resumed, investigation.version)
-        except ConcurrencyError as exc:
-            raise ApiError(
-                code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
-            ) from exc
-        to_state = InvestigationStatus.INVESTIGATING.value
-    else:
-        # Resume on an already-active investigation is a signal-only no-op;
-        # the audit records the unchanged status, never a pseudo-status.
-        to_state = investigation.status.value
+    try:
+        resumed, _ = investigation.transition_to(
+            InvestigationStatus.INVESTIGATING,
+            ActorType.USER,
+            f"resume requested by {principal_id}",
+        )
+    except InvalidLifecycleTransitionException as exc:
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
+    try:
+        await ctx.investigation_repo.save(x_tenant_id, resumed, investigation.version)
+    except ConcurrencyError as exc:
+        raise ApiError(
+            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+        ) from exc
+    to_state = InvestigationStatus.INVESTIGATING.value
     await ctx.transition_repo.record_transition(
         tenant_id=x_tenant_id,
         investigation_id=investigation_uuid,
@@ -268,6 +271,10 @@ async def approve_action(
         raise ApiError(
             code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
         )
+    if investigation.status == InvestigationStatus.CREATED:
+        raise ApiError(
+            code="INVESTIGATION_NOT_STARTED", http_status=status.HTTP_409_CONFLICT, message="Cannot approve an action on an investigation that was never started (status CREATED); no workflow exists to signal"
+        )
 
     signal_name = "action_approval_response"
     payload = {"action_id": action_id, "approved": approved, "principal_id": principal_id}
@@ -301,4 +308,4 @@ async def approve_action(
             "tenant_id": x_tenant_id,
         },
     )
-    return ApproveActionAck(investigation_id=investigation_id, action_id=action_id, approved=approved)
+    return ApproveActionAck(investigation_id=investigation_id, action_id=action_id, approved=approved, status=investigation.status.value)

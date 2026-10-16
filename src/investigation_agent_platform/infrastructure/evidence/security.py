@@ -191,7 +191,18 @@ class QuerySafetyPolicy(QueryPolicyPort):
     async def validate_state_request(
         self, tenant_id: str, template_id: str, parameters: dict[str, Any]
     ) -> None:
-        if not template_id or not template_id.replace("_", "").isalnum():
+        # Template IDs are namespaced "{datasource_id}.{name}" by the
+        # datasource registry (e.g. "primary.evidence_recent") — the reasoner
+        # prompt teaches exactly that form, so dots must be accepted here.
+        # Rejecting them broke every QUERY_STATE with a documented ID
+        # (fail-closed the wrong way: the allow-list below, not the format
+        # check, is the injection boundary — IDs are looked up verbatim in
+        # the template registry, never interpolated into SQL).
+        if (
+            not template_id
+            or len(template_id) > 256
+            or not re.fullmatch(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*", template_id)
+        ):
             raise SecurityPolicyViolationException(
                 f"Invalid or unsafe template ID format: {template_id}"
             )

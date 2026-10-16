@@ -72,26 +72,18 @@ class SqlAlchemyEvidenceRepository:
     ) -> None:
         try:
             async with rls_session(self._session_factory, tenant_id) as session:
-                # F-035: durable (tenant_id, fingerprint) dedup — semantically
-                # identical evidence returns the canonical row instead of silently
-                # inserting a duplicate.
-                existing = await session.scalars(
-                    select(EvidenceORM).where(
-                        EvidenceORM.tenant_id == tenant_id,
-                        EvidenceORM.fingerprint == evidence.fingerprint,
-                    )
+                # Atomic upsert: a bare ON CONFLICT DO NOTHING covers every
+                # unique constraint (tenant+key AND tenant+fingerprint) in one
+                # statement. The pre-check-then-insert this replaces raced when
+                # parallel fetches recorded the same deterministic evidence_id
+                # (uuid5 over index+doc), killing runs with
+                # uq_evidence_tenant_key violations (WORKFLOW_ERROR, 2026-10-16).
+                stmt = insert(EvidenceORM).values(
+                    **self._values(evidence, tenant_id, investigation_id)
                 )
-                if existing.first() is not None:
-                    outcome = "deduplicated"
-                else:
-                    stmt = insert(EvidenceORM).values(
-                        **self._values(evidence, tenant_id, investigation_id)
-                    )
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_evidence_tenant_fingerprint"
-                    )
-                    await session.execute(stmt)
-                    outcome = "inserted"
+                stmt = stmt.on_conflict_do_nothing()
+                result = await session.execute(stmt)
+                outcome = "inserted" if result.rowcount else "deduplicated"
         except Exception as exc:
             logger.exception(
                 "evidence save failed",
@@ -125,9 +117,10 @@ class SqlAlchemyEvidenceRepository:
     async def save_batch(
         self, tenant_id: str, evidence_list: list[Evidence], investigation_id: UUID | None = None
     ) -> None:
-        # TO_DO-015: constant-query-count batch — one SELECT for existing
-        # fingerprints plus one multi-row INSERT ... ON CONFLICT DO NOTHING,
-        # regardless of batch size.
+        # TO_DO-015: constant-query-count batch — one multi-row INSERT ...
+        # ON CONFLICT DO NOTHING, regardless of batch size. The bare conflict
+        # target covers tenant+key as well as tenant+fingerprint, so parallel
+        # duplicate fetches converge instead of violating uq_evidence_tenant_key.
         unique: dict[str, Evidence] = {}
         for evidence in evidence_list:
             unique.setdefault(evidence.fingerprint, evidence)
@@ -150,23 +143,12 @@ class SqlAlchemyEvidenceRepository:
             return
         try:
             async with rls_session(self._session_factory, tenant_id) as session:
-                existing = await session.scalars(
-                    select(EvidenceORM.fingerprint).where(
-                        EvidenceORM.tenant_id == tenant_id,
-                        EvidenceORM.fingerprint.in_(list(unique)),
-                    )
+                stmt = insert(EvidenceORM).values(
+                    [self._values(e, tenant_id, investigation_id) for e in unique.values()]
                 )
-                already_stored = set(existing.all())
-                fresh = [e for fp, e in unique.items() if fp not in already_stored]
-                if fresh:
-                    stmt = insert(EvidenceORM).values(
-                        [self._values(e, tenant_id, investigation_id) for e in fresh]
-                    )
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_evidence_tenant_fingerprint"
-                    )
-                    await session.execute(stmt)
-                inserted_count = len(fresh)
+                stmt = stmt.on_conflict_do_nothing()
+                result = await session.execute(stmt)
+                inserted_count = max(result.rowcount, 0)
         except Exception as exc:
             logger.exception(
                 "evidence batch save failed",

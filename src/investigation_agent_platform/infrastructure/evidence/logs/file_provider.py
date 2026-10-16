@@ -175,27 +175,38 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
 
-def _matches(parsed: _ParsedLine, request: RuntimeEvidenceRequest) -> bool:
+def _match_score(parsed: _ParsedLine, request: RuntimeEvidenceRequest) -> int:
+    """Relevance score for one parsed line (0 = no match).
+
+    Keyword semantics are OR with scoring, matching the Elastic provider's
+    multi_match behavior: a line scores one point per distinct keyword found
+    in its message/exception text, and any score above zero matches.
+    Requiring EVERY keyword in a SINGLE line guaranteed empty results for
+    multi-facet incident queries (e.g. ["profile", "iap", "tenant"]) against
+    one-line-per-request access logs. Services, severities, and time range
+    remain hard filters.
+    """
     if request.services:
         haystack = f"{parsed.service} {parsed.logger_name}".lower()
         if not any(s.lower() in haystack for s in request.services):
-            return False
+            return 0
     if request.severities:
         wanted = {s.value if hasattr(s, "value") else str(s) for s in request.severities}
         if parsed.level not in wanted:
-            return False
-    if request.keywords:
-        haystack = f"{parsed.message} {parsed.exception_text or ''}".lower()
-        if not all(k.lower() in haystack for k in request.keywords):
-            return False
+            return 0
     if request.time_range is not None and parsed.timestamp is not None:
-        start = getattr(request.time_range, "start", None)
-        end = getattr(request.time_range, "end", None)
+        start = getattr(request.time_range, "start_time", None)
+        end = getattr(request.time_range, "end_time", None)
         if start is not None and parsed.timestamp < start:
-            return False
+            return 0
         if end is not None and parsed.timestamp > end:
-            return False
-    return bool(parsed.message or parsed.exception_text)
+            return 0
+    if not (parsed.message or parsed.exception_text):
+        return 0
+    if not request.keywords:
+        return 1
+    haystack = f"{parsed.message} {parsed.exception_text or ''}".lower()
+    return sum(1 for k in request.keywords if k.lower() in haystack)
 
 
 class FileLogAdapter:
@@ -360,21 +371,29 @@ class FileLogAdapter:
         files = self._resolve_files(profile or self.profile)
         if not files:
             return []
-        collected: list[Evidence] = []
+        scored: list[tuple[int, Evidence]] = []
         for path in files:
             for lineno, text in self._tail_lines(path, self._settings.max_bytes_per_file):
                 parsed = _parse_line(text)
-                if _matches(parsed, request):
-                    collected.append(
-                        self._to_evidence(
-                            tenant_id=tenant_id,
-                            investigation_id=investigation_id,
-                            path=path,
-                            lineno=lineno,
-                            parsed=parsed,
+                score = _match_score(parsed, request)
+                if score:
+                    scored.append(
+                        (
+                            score,
+                            self._to_evidence(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                path=path,
+                                lineno=lineno,
+                                parsed=parsed,
+                            ),
                         )
                     )
-        return collected
+        # Rank: most keyword hits first. The sort is stable, so ties keep
+        # collection order (newest files, then line order) and pagination
+        # stays deterministic.
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [evidence for _, evidence in scored]
 
     async def search_runtime_evidence(
         self,

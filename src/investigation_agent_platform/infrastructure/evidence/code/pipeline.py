@@ -12,6 +12,7 @@ from investigation_agent_platform.infrastructure.evidence.code.graphify_adapter 
     CodeSymbolGraphBuilder,
 )
 from investigation_agent_platform.infrastructure.evidence.code.intelligence import (
+    EXT_TO_LANGUAGE,
     ORM_PATTERNS,
     SQL_KEYWORDS,
 )
@@ -46,11 +47,19 @@ class CodebaseGraphPipeline:
         callers are unaffected.
         """
 
-        # Supported file extensions map
-        ext_map = {"python": "*.py", "javascript": "*.js", "typescript": "*.ts"}
-        glob_pattern = ext_map.get(language, "*.py")
-
-        file_paths = list(repo_root.rglob(glob_pattern))
+        # Supported file extensions map (single source: EXT_TO_LANGUAGE).
+        # Unknown languages resolve to nothing — previously the fallback
+        # globbed "*.py" and parsed Python files with the wrong grammar,
+        # silently producing garbage symbols.
+        extensions = sorted({ext for ext, lang in EXT_TO_LANGUAGE.items() if lang == language})
+        if not extensions:
+            logger.error(
+                "Unsupported language for repository graph mining: %s", language
+            )
+            return self.builder.graph
+        file_paths: list[Path] = []
+        for ext in extensions:
+            file_paths.extend(repo_root.rglob(f"*{ext}"))
         logger.info(
             "Starting AST parsing for %d files via TreeSitterParser...", len(file_paths)
         )

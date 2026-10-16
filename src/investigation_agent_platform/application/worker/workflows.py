@@ -98,6 +98,10 @@ class RunInvestigationInput:
     # and topology attribution must all refer to this ID. When absent (legacy
     # callers / tests), the workflow falls back to creating a new investigation.
     investigation_id: str | None = None
+    # Iteration budget resolved by the API at dispatch from the effective
+    # limits (global defaults plus the profile evidence_budget overlay).
+    # None (legacy callers) means the local guard default.
+    max_iterations: int | None = None
 
 
 @dataclass
@@ -105,6 +109,44 @@ class RunInvestigationResult:
     investigation_id: str = ""
     status: str = ""
     error: str | None = None
+
+
+def _reason_summary(reason_data: dict[str, Any]) -> str:
+    """One-line summary of a reason-activity decision for timeline descriptions.
+
+    Pure function (deterministic, no I/O) so the per-iteration trace recorded
+    on the timeline is unit-testable without a Temporal test environment.
+    Includes a compact digest of the attempted query (keywords/services/
+    template) so a later reader can see WHAT was tried, not just the action.
+    """
+    params = reason_data.get("action_parameters") or {}
+    query_bits: list[str] = []
+    if isinstance(params, dict):
+        for key in ("keywords", "services", "template_id", "file_path"):
+            value = params.get(key)
+            if value:
+                query_bits.append(f"{key}={str(value)[:80]}")
+    query = f" query=[{'; '.join(query_bits)}]" if query_bits else ""
+    return (
+        f"reason: action={reason_data.get('next_action', '?')} "
+        f"readiness={reason_data.get('conclusion_readiness', '?')} "
+        f"hypotheses={len(reason_data.get('hypotheses_evaluated') or [])} "
+        f"observations={len(reason_data.get('observations') or [])}"
+        f"{query}"
+    )
+
+
+def _resolve_max_iterations(requested: int | None) -> int:
+    """Effective iteration cap: profile-resolved input wins, clamped to sane bounds.
+
+    Pure function so budget resolution is unit-testable without Temporal.
+    The clamp bounds runaway profiles (cost control); the floor keeps the
+    loop meaningful. Deterministic — safe to call inside the workflow.
+    """
+    WORKFLOW_LOCAL_ITERATION_GUARD = 10
+    if requested is None:
+        return WORKFLOW_LOCAL_ITERATION_GUARD
+    return max(1, min(int(requested), 50))
 
 
 @workflow.defn
@@ -187,6 +229,11 @@ class RunInvestigationWorkflow:
                 "RunInvestigationWorkflow unhandled error; reconciling to FAILED: %s",
                 type(exc).__name__,
             )
+            # Surface the proximate activity cause (type + message only, no
+            # payloads) so the failure record is diagnosable via the API.
+            cause = getattr(exc, "cause", None)
+            cause_type = type(cause).__name__ if cause is not None else type(exc).__name__
+            cause_msg = str(getattr(cause, "message", "") or "")[:200]
             try:
                 await workflow.execute_activity(
                     transition_investigation_activity,
@@ -194,7 +241,9 @@ class RunInvestigationWorkflow:
                         tenant_id=input_data.tenant_id,
                         investigation_id=input_data.investigation_id,
                         target_status="FAILED",
-                        reason=f"Workflow error reconciled: {type(exc).__name__}",
+                        reason=f"Workflow error reconciled: {cause_type}",
+                        failure_code="WORKFLOW_ERROR",
+                        failure_reason=f"{cause_type}: {cause_msg}".strip(": "),
                     ),
                     start_to_close_timeout=timedelta(seconds=30),
                 )
@@ -368,17 +417,33 @@ class RunInvestigationWorkflow:
         # Budget guard: wall-clock + token/cost + max iterations.
         # Deterministic: use workflow.now() would be ideal but workflow.time is not available in all SDKs;
         # we rely on iteration cap + InvestigationBudget signal from reason/execute metadata.
-        # WORKFLOW_LOCAL_ITERATION_GUARD is a determinism-safe backstop only, not
-        # the budget: real limits live in infra BudgetConfig (operator knob) and
-        # are enforced via activity metadata signals (domain InvestigationBudget).
-        # Do not tune investigation budgets here; change BudgetConfig instead.
+        # The iteration cap resolves from RunInvestigationInput (API-resolved
+        # from effective limits: global defaults plus profile overlay), with
+        # the local guard as the backstop for legacy callers. Do not tune
+        # investigation budgets here; change the domain defaults or the
+        # profile instead.
         WORKFLOW_LOCAL_ITERATION_GUARD = 10
-        max_iterations = WORKFLOW_LOCAL_ITERATION_GUARD
+        # Legacy callers omit max_iterations: the guard above is the default,
+        # so resolve against it explicitly instead of a second literal.
+        requested = getattr(input_data, "max_iterations", None)
+        max_iterations = _resolve_max_iterations(
+            requested if requested is not None else WORKFLOW_LOCAL_ITERATION_GUARD
+        )
         # Lazy import for type safety without failing workflow determinism checks.
         # Budget is evaluated via activity results; workflow keeps local iteration guard.
         iteration = 0
         verified = False
         last_error: str | None = None
+        # Prior reason decisions (plain JSON scalars). Rebuilt deterministically
+        # from activity results on replay; fed back into ReasonInput so the
+        # model sees repetition and escalates capability instead of looping
+        # the same empty action to the iteration cap.
+        action_history: list[dict[str, Any]] = []
+        # Cumulative LLM spend across iterations (plain scalars, replay-safe).
+        # Fed into each checkpoint so token/cost totals survive worker
+        # restarts; the reason activity enforces the per-investigation cap.
+        llm_tokens_total = 0
+        llm_cost_total = 0.0
 
         # 2. Main Investigation Loop — state authority is the workflow + checkpoint repo.
         while iteration < max_iterations and not self._is_cancelled:
@@ -409,7 +474,12 @@ class RunInvestigationWorkflow:
             # Reason — produces next action and readiness score.
             reason_res = await workflow.execute_activity(
                 reason_activity,
-                ReasonInput(tenant_id=tenant_id, investigation_id=inv_id, iteration=iteration),
+                ReasonInput(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id,
+                    iteration=iteration,
+                    recent_actions=action_history[-10:],
+                ),
                 start_to_close_timeout=timedelta(seconds=120),
                 retry_policy=retry_policy,
             )
@@ -417,6 +487,23 @@ class RunInvestigationWorkflow:
             if reason_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
                 break
+            _reason_data = reason_res.data or {}
+            _hyps = _reason_data.get("hypotheses_evaluated") or []
+            _obss = _reason_data.get("observations") or []
+            action_history.append(
+                {
+                    "iteration": iteration,
+                    "action": str(_reason_data.get("next_action", "?")),
+                    "readiness": _reason_data.get("conclusion_readiness"),
+                    "hypotheses": len(_hyps) if isinstance(_hyps, list) else 0,
+                    "observations": len(_obss) if isinstance(_obss, list) else 0,
+                }
+            )
+            try:
+                llm_tokens_total += int(_reason_data.get("llm_tokens", 0) or 0)
+                llm_cost_total += float(_reason_data.get("llm_cost", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
 
             # Part 11.5: an activity may declare it needs caller-supplied
             # input before the run can proceed.
@@ -472,10 +559,16 @@ class RunInvestigationWorkflow:
                 last_error = "input_expired"
                 break
 
-            # Drive correlation/hypothesis/verification phases via state machine
-            await _transition("CORRELATING", f"Iteration {iteration} correlating")
-            await _transition("HYPOTHESIZING", f"Iteration {iteration} hypothesizing")
-            await _transition("VERIFYING", f"Iteration {iteration} verifying")
+            # Drive correlation/hypothesis/verification phases via state machine.
+            # The reason decision rides along in each description so the
+            # timeline read path shows what the reasoner attempted per
+            # iteration (action, readiness, hypothesis/observation counts) —
+            # previously only bare phase names were recorded and the
+            # hypothesize step was a black box to API consumers.
+            _decision_summary = _reason_summary(reason_res.data or {})
+            await _transition("CORRELATING", f"Iteration {iteration} correlating ({_decision_summary})")
+            await _transition("HYPOTHESIZING", f"Iteration {iteration} hypothesizing ({_decision_summary})")
+            await _transition("VERIFYING", f"Iteration {iteration} verifying ({_decision_summary})")
 
             # Verify root cause (VerificationEngine).
             verify_res = await workflow.execute_activity(
@@ -495,7 +588,15 @@ class RunInvestigationWorkflow:
             # Checkpoint — persist InvestigationState snapshot via CheckpointRepository.
             await workflow.execute_activity(
                 checkpoint_activity,
-                CheckpointInput(tenant_id=tenant_id, investigation_id=inv_id, step=iteration),
+                CheckpointInput(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id,
+                    step=iteration,
+                    usage_totals={
+                        "llm_tokens": llm_tokens_total,
+                        "llm_cost": llm_cost_total,
+                    },
+                ),
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=retry_policy,
             )
@@ -534,7 +635,10 @@ class RunInvestigationWorkflow:
         await workflow.execute_activity(
             conclude_investigation_activity,
             ConcludeInvestigationInput(
-                tenant_id=tenant_id, investigation_id=inv_id, status=final_status
+                tenant_id=tenant_id,
+                investigation_id=inv_id,
+                status=final_status,
+                reason=last_error or "",
             ),
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,

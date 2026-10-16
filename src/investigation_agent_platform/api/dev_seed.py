@@ -32,6 +32,28 @@ SEED_TENANTS_ENV = "IAP_DEV_SEED_TENANTS"
 SEED_APP_ID = "example-app"
 
 
+async def _seed_write(write_coro, counts: dict[str, int], what: str) -> bool:
+    """Run one seed write, tolerating already-exists conflicts.
+
+    Existence checks race across restarts/processes (check-then-act against
+    a store another boot is also seeding): a duplicate-key conflict means
+    the row is already there, so count it as resumed instead of crashing
+    the seed — or worse, journaling a doomed WAL entry that ends HELD.
+    Any other error still propagates (genuine failures must stay loud).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+    try:
+        await write_coro
+    except (ConcurrencyError, IntegrityError):
+        counts["resumed"] += 1
+        logger.info("Seed write already present, counted as resumed", extra={"what": what})
+        return False
+    return True
+
+
 def seed_tenants_from_env() -> list[str]:
     return [
         t.strip()
@@ -56,7 +78,11 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
     existing_profile = await ctx.profile_repo.get_by_application_id(tenant_id, SEED_APP_ID)  # type: ignore[attr-defined]
     if existing_profile is None:
         profile = _DEFAULT_PROFILE.model_copy(update={"tenant_id": tenant_id})
-        await ctx.profile_repo.save(tenant_id, profile)  # type: ignore[attr-defined]
+        await _seed_write(
+            ctx.profile_repo.save(tenant_id, profile),  # type: ignore[attr-defined]
+            counts,
+            "profile/example-app",
+        )
     else:
         counts["resumed"] += 1
 
@@ -140,8 +166,12 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         # Deterministic IDs: create only when missing so partial seeds
         # resume cleanly across restarts (SQLAlchemy create would clash).
         if await ctx.investigation_repo.get_by_id(tenant_id, inv.id) is None:  # type: ignore[attr-defined]
-            await ctx.investigation_repo.create(tenant_id, inv)  # type: ignore[attr-defined]
-            counts["investigations"] += 1
+            if await _seed_write(
+                ctx.investigation_repo.create(tenant_id, inv),  # type: ignore[attr-defined]
+                counts,
+                f"investigation/{inv.id}",
+            ):
+                counts["investigations"] += 1
         else:
             counts["resumed"] += 1
 
@@ -208,7 +238,11 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                     observed_at=now - timedelta(hours=4 - i), retrieved_at=now
                 ),
             )
-            await ctx.evidence_repo.save(tenant_id, ev, showcase.id)  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.evidence_repo.save(tenant_id, ev, showcase.id),  # type: ignore[attr-defined]
+                counts,
+                f"evidence/{ev.evidence_id}",
+            )
             evidence_ids.append(ev.evidence_id)
 
     _existing_timeline = await ctx.timeline_repo.find_by_investigation_id(tenant_id, showcase.id)  # type: ignore[attr-defined]
@@ -223,7 +257,8 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                 (TimelineEventType.STATE_CHANGE, "Status moved to INVESTIGATING"),
             ]
         ):
-            await ctx.timeline_repo.append(  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.timeline_repo.append(  # type: ignore[attr-defined]
                 tenant_id,
                 TimelineEvent(
                     tenant_id=tenant_id,
@@ -234,6 +269,9 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                     description=desc,
                 ),
                 showcase.id,
+                ),
+                counts,
+                f"timeline/{showcase.id}/{i}",
             )
 
     _existing_hypotheses = await ctx.hypothesis_repo.find_by_investigation_id(tenant_id, showcase.id)  # type: ignore[attr-defined]
@@ -244,7 +282,8 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             ("Retry storm on payment auth", "Client retries amplify a slow auth dependency"),
             ("Connection pool exhaustion", "Pool saturation under canary traffic causes 5xx"),
         ]:
-            await ctx.hypothesis_repo.save(  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.hypothesis_repo.save(  # type: ignore[attr-defined]
                 tenant_id,
                 Hypothesis(
                     tenant_id=tenant_id,
@@ -255,6 +294,9 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                     supporting_evidence_ids=[evidence_ids[0]],
                 ),
                 showcase.id,
+                ),
+                counts,
+                f"hypothesis/{title}",
             )
 
     from investigation_agent_platform.domain.finding.models import (
@@ -282,7 +324,11 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                 statement=statement,
                 evidence_ids=[str(e) for e in evidence_ids[:2]],
             )
-            await ctx.finding_repo.save_finding_record(tenant_id, finding)  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.finding_repo.save_finding_record(tenant_id, finding),  # type: ignore[attr-defined]
+                counts,
+                f"finding/{finding.id}",
+            )
             showcase_findings.append(finding)
 
     _existing_completed, _ = await ctx.finding_repo.list_findings(tenant_id, completed.id)  # type: ignore[attr-defined]
@@ -297,8 +343,13 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             statement="Refund job ran twice after a lock timeout",
             evidence_ids=[],
         )
-        await ctx.finding_repo.save_finding_record(tenant_id, completed_finding)  # type: ignore[attr-defined]
-    await ctx.finding_repo.save_conclusion(  # type: ignore[attr-defined]
+        await _seed_write(
+            ctx.finding_repo.save_finding_record(tenant_id, completed_finding),  # type: ignore[attr-defined]
+            counts,
+            f"finding/{completed_finding.id}",
+        )
+    await _seed_write(
+        ctx.finding_repo.save_conclusion(  # type: ignore[attr-defined]
         tenant_id,
         InvestigationConclusion(
             tenant_id=tenant_id,
@@ -310,6 +361,9 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             confidence=0.9,
             recommended_next_steps=["Make refund batch idempotent"],
         ),
+        ),
+        counts,
+        f"conclusion/{completed.id}",
     )
 
     # -- pending input requirement (AWAITING_INPUT) -------------------------
@@ -321,18 +375,22 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
     if _existing_pending:
         counts["resumed"] += 1
     else:
-        await ctx.input_repo.create_requirement(  # type: ignore[attr-defined]
-            tenant_id,
-            InputRequirement(
-                tenant_id=tenant_id,
-                investigation_id=awaiting.id,
-                reason="Need a failing transaction id to pull traces",
-                json_schema={
-                    "type": "object",
-                    "properties": {"txn_id": {"type": "string"}},
-                    "required": ["txn_id"],
-                },
+        await _seed_write(
+            ctx.input_repo.create_requirement(  # type: ignore[attr-defined]
+                tenant_id,
+                InputRequirement(
+                    tenant_id=tenant_id,
+                    investigation_id=awaiting.id,
+                    reason="Need a failing transaction id to pull traces",
+                    json_schema={
+                        "type": "object",
+                        "properties": {"txn_id": {"type": "string"}},
+                        "required": ["txn_id"],
+                    },
+                ),
             ),
+            counts,
+            f"input-requirement/{awaiting.id}",
         )
 
     # -- knowledge artifact + session (showcase) ------------------------------
@@ -346,7 +404,8 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
     if _existing_artifacts:
         counts["resumed"] += 1
     else:
-        await ctx.artifact_repo.save(  # type: ignore[attr-defined]
+        await _seed_write(
+            ctx.artifact_repo.save(  # type: ignore[attr-defined]
             tenant_id,
             KnowledgeArtifact(
                 tenant_id=tenant_id,
@@ -359,21 +418,28 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                 valid_from=now - timedelta(days=1),
                 source_evidence_ids=[evidence_ids[0]],
             ),
+            ),
+            counts,
+            f"artifact/{SEED_APP_ID}",
         )
     if await ctx.session_repo.count_own_sessions(tenant_id, showcase.id):  # type: ignore[attr-defined]
         counts["resumed"] += 1
     else:
-        await ctx.session_repo.append(  # type: ignore[attr-defined]
-            tenant_id,
-            InvestigationSession(
-                investigation_id=showcase.id,
-                session_number=1,
-                tenant_id=tenant_id,
-                occurred_at=now - timedelta(hours=4),
-                log_refs=["logs-app"],
-                trace_refs=["trace-abc"],
-                status="OPEN",
+        await _seed_write(
+            ctx.session_repo.append(  # type: ignore[attr-defined]
+                tenant_id,
+                InvestigationSession(
+                    investigation_id=showcase.id,
+                    session_number=1,
+                    tenant_id=tenant_id,
+                    occurred_at=now - timedelta(hours=4),
+                    log_refs=["logs-app"],
+                    trace_refs=["trace-abc"],
+                    status="OPEN",
+                ),
             ),
+            counts,
+            f"session/{showcase.id}",
         )
 
     # -- background jobs ------------------------------------------------------
@@ -421,8 +487,12 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         counts["resumed"] += 1
     else:
         for job in (running_job, done_job, failed_job):
-            await ctx.background_job_repo.create(job)  # type: ignore[attr-defined]
-            counts["jobs"] += 1
+            if await _seed_write(
+                ctx.background_job_repo.create(job),  # type: ignore[attr-defined]
+                counts,
+                f"job/{job.kind}",
+            ):
+                counts["jobs"] += 1
 
     # -- clusters ---------------------------------------------------------------
     from investigation_agent_platform.domain.finding.clustering import (
@@ -449,9 +519,14 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         counts["resumed"] += 1
     else:
         for cluster in (cluster_a, cluster_b):
-            await ctx.finding_cluster_repo.create_cluster(tenant_id, cluster)  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.finding_cluster_repo.create_cluster(tenant_id, cluster),  # type: ignore[attr-defined]
+                counts,
+                f"cluster/{cluster.cluster_key}",
+            )
         for finding, cluster in zip(showcase_findings, (cluster_a, cluster_b)):
-            await ctx.finding_cluster_repo.assign_finding(  # type: ignore[attr-defined]
+            await _seed_write(
+                ctx.finding_cluster_repo.assign_finding(  # type: ignore[attr-defined]
                 tenant_id,
                 FindingClusterAssignment(
                     tenant_id=tenant_id,
@@ -461,6 +536,9 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                     confidence=0.9,
                     taxonomy_revision=1,
                 ),
+                ),
+                counts,
+                f"assign/{finding.id}/{cluster.id}",
             )
 
     logger.info(

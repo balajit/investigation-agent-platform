@@ -472,6 +472,11 @@ class ReasonInput:
     tenant_id: str
     investigation_id: str
     iteration: int = 0
+    # Prior iterations' reason decisions (plain JSON scalars, most recent
+    # last), accumulated by the workflow. Lets the model see repetition
+    # (e.g. SEARCH_LOGS ×N with empty evidence) and escalate capability
+    # instead of looping the same empty action to the iteration cap.
+    recent_actions: list = field(default_factory=list)
 
 
 @dataclass
@@ -505,6 +510,10 @@ class CheckpointInput:
     investigation_id: str
     step: int = 0
     state_snapshot: dict[str, Any] | None = None
+    # Cumulative LLM spend resolved by the workflow (same from-start basis
+    # as the checkpoint counters, but fresher). Overrides carried-forward
+    # values when present; never sums with them (that would double-count).
+    usage_totals: dict[str, Any] | None = None
 
 
 @dataclass
@@ -512,6 +521,46 @@ class ConcludeInvestigationInput:
     tenant_id: str
     investigation_id: str
     status: str
+    # Workflow terminal reason (last_error: budget_exceeded, input_expired,
+    # verification_failed_or_limit_reached, ...). Recorded as a stable
+    # failure code on FAILED aggregates so the API can report it.
+    reason: str = ""
+
+
+def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> str:
+    """Normalize a workflow conclude reason to a stable terminal failure code.
+
+    Called only when the resolved target status is FAILED. A COMPLETED
+    request that lands FAILED was denied by the conclusion gate
+    (ConclusionGate blockers), which takes precedence as the proximate cause.
+    """
+    if concluded_from_completed_request:
+        return "CONCLUSION_DENIED"
+    normalized = (reason or "").strip().lower()
+    if normalized == "budget_exceeded":
+        return "BUDGET_EXCEEDED"
+    if normalized == "input_expired":
+        return "INPUT_EXPIRED"
+    if normalized == "verification_failed_or_limit_reached":
+        return "UNVERIFIED"
+    return "UNKNOWN"
+
+
+def _stamp_failure(inv: Any, code: str, reason: str) -> Any:
+    """Attach a terminal failure record to investigation metadata (no I/O).
+
+    The stamp must happen BEFORE the status transition so it rides the
+    normal save path (model_copy preserves metadata; SQLAlchemy persists it
+    via metadata_json). Shared by the conclude path and the workflow-error
+    reconcile path so every FAILED aggregate reports its cause via the API.
+    """
+    stamped_metadata = dict(getattr(inv, "metadata", None) or {})
+    stamped_metadata["failure"] = {
+        "code": code,
+        "reason": (reason or "")[:500],
+        "failed_at": datetime.now(UTC).isoformat(),
+    }
+    return inv.model_copy(update={"metadata": stamped_metadata})
 
 
 @dataclass
@@ -524,6 +573,11 @@ class TransitionInvestigationInput:
     # _transition_via_path into transition_to/record_transition. Defaults to
     # SYSTEM for workflow-driven edges; callers acting for a user pass USER.
     actor: str = "SYSTEM"
+    # Terminal failure record for workflow-error reconciliation: when the
+    # target is FAILED and a code is present, it is stamped onto metadata
+    # (see _stamp_failure) so the API reports the cause. Empty otherwise.
+    failure_code: str = ""
+    failure_reason: str = ""
 
 
 @dataclass
@@ -796,6 +850,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         iteration = int(data.get("iteration", 0))
+        recent_actions = [dict(a) for a in (data.get("recent_actions", []) or [])]
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -930,7 +985,9 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     ),
                 )
 
-            decision = await coordinator.reason(tenant_id, state)
+            decision = await coordinator.reason(
+                tenant_id, state, recent_actions=recent_actions
+            )
             # Choreography: the workflow dispatches on next_action /
             # action_parameters — they must be propagated here, not dropped.
             # (Previously only readiness/observations were returned, so the
@@ -972,6 +1029,51 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     iteration=iteration,
                 ),
             )
+            # Token budget ledger: accumulate this call into the hydrated
+            # counters and route to conclude when the investigation exceeds
+            # its LLM token budget — same routing philosophy as the tool and
+            # evidence budgets (overshoot is bounded by a single call).
+            # Usage also rides the result so the workflow can persist
+            # cumulative totals into checkpoints.
+            from investigation_agent_platform.domain.investigation.models import (
+                InvestigationLimits,
+            )
+
+            usage = _decision_llm_usage(decision)
+            call_tokens = int(usage["prompt_tokens"]) + int(usage["completion_tokens"])
+            call_cost = float(usage["cost_usd"])
+            cumulative_tokens = int(getattr(state, "llm_tokens_used", 0) or 0) + call_tokens
+            limits = InvestigationLimits()
+            try:
+                profile_repo = getattr(ctx, "profile_repo", None)
+                if profile_repo is not None:
+                    _budget_profile = await profile_repo.get_by_application_id(
+                        tenant_id, state.investigation.application_id
+                    )
+                    if _budget_profile is not None:
+                        limits = overlay_evidence_budget(limits, _budget_profile)
+            except Exception:
+                pass
+            if cumulative_tokens >= limits.max_llm_tokens:
+                logger.warning(
+                    "reason_activity token budget exhausted; routing to conclude",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="reason_activity token budget exhausted",
+                        cumulative_tokens=cumulative_tokens,
+                        limit=limits.max_llm_tokens,
+                    ),
+                )
+                return GenericActivityResult(
+                    success=True,
+                    data={
+                        "budget_exceeded": True,
+                        "llm_tokens": call_tokens,
+                        "llm_cost": call_cost,
+                        "limit": limits.max_llm_tokens,
+                    },
+                )
             return GenericActivityResult(
                 success=True,
                 data={
@@ -983,6 +1085,9 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         getattr(action, "parameters", None) or {}
                     ),
                     "hypotheses_evaluated": hypotheses_out,
+                    "llm_usage": usage,
+                    "llm_tokens": call_tokens,
+                    "llm_cost": call_cost,
                 },
             )
         except Exception as exc:
@@ -1017,6 +1122,8 @@ _BUDGET_FIELDS = (
     "max_tool_calls",
     "max_evidence_items",
     "max_hypotheses",
+    "max_iterations",
+    "max_llm_tokens",
     "max_correlation_depth",
     "max_source_files",
     "max_database_rows",
@@ -1025,19 +1132,48 @@ _BUDGET_FIELDS = (
 )
 
 
+def _decision_llm_usage(decision: Any) -> dict[str, Any]:
+    """LLM usage attached by the coordinator (zeros when unavailable)."""
+    usage = (getattr(decision, "metadata", None) or {}).get("llm_usage", {}) or {}
+
+    def _num(key: str) -> float:
+        try:
+            return float(usage.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "prompt_tokens": int(_num("prompt_tokens")),
+        "completion_tokens": int(_num("completion_tokens")),
+        "cost_usd": _num("cost_usd"),
+    }
+
+
 def overlay_evidence_budget(limits: Any, profile: Any) -> Any:
     """Overlay a profile's evidence_budget onto base limits (§7.6).
 
     Only known fields with positive-int values apply; anything else is
-    ignored (fail-closed to the global default). Never raises.
+    ignored (fail-closed to the global default). The profile's canonical
+    maximumHypotheses also applies when the evidence_budget dict does not
+    set max_hypotheses (previously it never reached the ledger at all).
+    Never raises.
     """
     try:
-        budget = profile.investigation.evidence_budget or {}
+        investigation = getattr(profile, "investigation", None)
+        budget = {}
+        if investigation is not None:
+            budget = getattr(investigation, "evidence_budget", None) or {}
         updates = {
             field: budget[field]
             for field in _BUDGET_FIELDS
             if isinstance(budget.get(field), int) and budget[field] >= 1
         }
+        if "max_hypotheses" not in updates and investigation is not None:
+            max_h = getattr(investigation, "max_hypotheses", None)
+            if max_h is None:
+                max_h = getattr(investigation, "maximumHypotheses", None)
+            if isinstance(max_h, int) and max_h >= 1:
+                updates["max_hypotheses"] = max_h
         if updates:
             return limits.model_copy(update=updates)
     except Exception as exc:
@@ -1266,6 +1402,28 @@ async def execute_action_activity(
             )
             raise _application_failure_from_exc(exc) from exc
 
+        # Evidence room: persist at most the remaining budget per action.
+        # Provider pages rank best-first, so truncation keeps the most
+        # relevant hits while leaving room for later iterations — without
+        # this, one broad SEARCH_LOGS (limit 100) banks 40+ rows against a
+        # 25-item budget and the very next iteration trips BUDGET_EXCEEDED.
+        evidence_room = max(0, limits.max_evidence_items - evidence_count)
+
+        def _bank(items: list) -> list:
+            kept = list(items)[:evidence_room]
+            if len(kept) < len(items):
+                logger.info(
+                    "Evidence persist truncated to remaining budget",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="evidence persist truncated",
+                        kept=len(kept),
+                        dropped=len(items) - len(kept),
+                    ),
+                )
+            return kept
+
         try:
             await action_service.authorize(
                 tenant_id,
@@ -1308,17 +1466,23 @@ async def execute_action_activity(
                 ApplicationStateRequest,
             )
 
+            # Default page 10 (not the request-model default 50): same
+            # reasoning as SEARCH_LOGS — one action must not bank the whole
+            # 25-item budget. Callers may request up to 200; persistence
+            # truncates to the remaining budget regardless.
             req = ApplicationStateRequest(
                 environment=environment,
                 template_id=str(parameters.get("template_id", "default")),
                 parameters=parameters,
+                limit=min(int(parameters.get("limit", 10)), 200),
             )
             qres = await gateway.get_application_state(
                 tenant_id, investigation_id, application_id or "example-app", req
             )
-            if evidence_repo is not None and qres.items:
-                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
-            return len(qres.items)
+            banked = _bank(qres.items)
+            if evidence_repo is not None and banked:
+                await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            return len(banked)
 
         async def _handle_search_logs() -> int:
             from investigation_agent_platform.domain.evidence.requests import (
@@ -1328,29 +1492,85 @@ async def execute_action_activity(
             # Part 9: clamp caller-controlled dimensions to the domain bounds
             # (mirrors the provider-side clamp that applied before: min()
             # semantics preserved; per-item lengths still reject as invalid).
+            # Default page 10 (not 100): the investigation budget is 25 items
+            # over ~10 iterations, so one broad action must not bank the whole
+            # corpus — best-first ranking makes the top-10 the most relevant.
+            # Callers may still request up to 200; persistence truncates to
+            # the remaining budget regardless (see _bank above).
             req = RuntimeEvidenceRequest(
                 environment=environment,
                 keywords=list(parameters.get("keywords", []))[:20] or [],
                 services=list(parameters.get("services", []))[:10] or [],
-                limit=min(int(parameters.get("limit", 100)), 200),
+                limit=min(int(parameters.get("limit", 10)), 200),
             )
             qres = await gateway.search_runtime_evidence(
                 tenant_id, investigation_id, application_id or "example-app", req
             )
-            if evidence_repo is not None and qres.items:
-                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
-            return len(qres.items)
+            banked = _bank(qres.items)
+            if evidence_repo is not None and banked:
+                await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            return len(banked)
 
         async def _handle_get_code() -> int:
+            from investigation_agent_platform.domain.common.exceptions import (
+                CodePathNotFoundError,
+                ProviderNotConfiguredError,
+            )
             from investigation_agent_platform.domain.evidence.requests import SourceRequest
 
             req = SourceRequest(
                 repository=application_id or "example-app",
                 file_path=str(parameters.get("file_path", "")),
             )
-            evidence = await gateway.get_source(
-                tenant_id, investigation_id, application_id or "example-app", req
-            )
+            if not req.file_path.strip():
+                # Missing file path: agent omission, not a provider outage.
+                # Degrade to empty (trace shows the attempt) instead of
+                # failing the investigation — the escalation history steers
+                # the reasoner away from repeating it. Unsafe paths still
+                # fail closed in the validator/adapter below.
+                logger.warning(
+                    "GET_CODE without file_path degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="get_code missing file_path",
+                    ),
+                )
+                return 0
+            try:
+                evidence = await gateway.get_source(
+                    tenant_id, investigation_id, application_id or "example-app", req
+                )
+            except ProviderNotConfiguredError as exc:
+                # Unconfigured code provider: deterministic for this
+                # deployment, so degrade to empty and let the loop try other
+                # capabilities instead of failing the investigation. The
+                # decision trace (recent_actions) shows the attempt, steering
+                # the reasoner away from repeating it.
+                logger.warning(
+                    "Code provider not configured; GET_CODE degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="get_code provider absent",
+                        error=str(exc),
+                    ),
+                )
+                return 0
+            except CodePathNotFoundError as exc:
+                # Path miss (agent-guessed path not in the tree): exploration
+                # miss, not infrastructure failure. Degrade the same way;
+                # genuine repo outages still fail loud below.
+                logger.warning(
+                    "Code path not found; GET_CODE degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="get_code path miss",
+                        error=str(exc),
+                    ),
+                )
+                return 0
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
             return 1
@@ -1363,9 +1583,10 @@ async def execute_action_activity(
             qres = await gateway.correlate(
                 tenant_id, investigation_id, application_id or "example-app", root_ids, max_depth
             )
-            if evidence_repo is not None and qres.items:
-                await evidence_repo.save_batch(tenant_id, qres.items, investigation_id)
-            return len(qres.items)
+            banked = _bank(qres.items)
+            if evidence_repo is not None and banked:
+                await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            return len(banked)
 
         async def _handle_internal_reasoning_action() -> int:
             # VERIFY_HYPOTHESIS / CONCLUDE never touch an external evidence
@@ -1405,7 +1626,13 @@ async def execute_action_activity(
                 existing = []
             known = {str(getattr(h, "statement", "")).strip() for h in (existing or [])}
             saved = 0
+            # Hypothesis budget: the profile's maximumHypotheses (via limits
+            # overlay) caps the TOTAL, not just this batch — previously the
+            # validator's cap was a literal `pass` and nothing enforced it.
+            allowed = max(0, limits.max_hypotheses - len(existing or []))
             for text in proposed_hypotheses[:20]:
+                if saved >= allowed:
+                    break
                 statement = str(text or "").strip()[:2048]
                 if not statement or statement in known:
                     continue
@@ -1713,6 +1940,7 @@ async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
         inv_id_str = str(data.get("investigation_id", ""))
         step = int(data.get("step", 0))
         state_snapshot: dict[str, Any] | None = data.get("state_snapshot")
+        usage_totals = data.get("usage_totals") or {}
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -1784,6 +2012,42 @@ async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
                         )
 
                         st = InvestigationState(investigation=inv)
+                        # Carry token counters forward: fresh states reset
+                        # them, which would unbound cumulative LLM spend.
+                        # Best-effort — a missing/stale checkpoint degrades to
+                        # zero, never breaks checkpointing itself.
+                        carried_tokens = 0
+                        carried_cost = 0.0
+                        try:
+                            prior = await checkpoint_repo.get_latest_checkpoint(
+                                tenant_id, investigation_id
+                            )
+                            if isinstance(prior, dict):
+                                carried_tokens = max(
+                                    0, int(prior.get("llm_tokens_used", 0) or 0)
+                                )
+                                carried_cost = max(
+                                    0.0,
+                                    float(prior.get("llm_cost_usd", 0.0) or 0.0),
+                                )
+                        except Exception:
+                            pass
+                        if isinstance(usage_totals, dict) and usage_totals:
+                            try:
+                                carried_tokens = max(
+                                    0, int(usage_totals.get("llm_tokens", 0) or 0)
+                                )
+                                carried_cost = max(
+                                    0.0, float(usage_totals.get("llm_cost", 0.0) or 0.0)
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                        st = st.model_copy(
+                            update={
+                                "llm_tokens_used": carried_tokens,
+                                "llm_cost_usd": carried_cost,
+                            }
+                        )
                         state_snapshot = st.model_dump(mode="json")
                     else:
                         state_snapshot = {"step": step}
@@ -2079,6 +2343,8 @@ async def transition_investigation_activity(
         target_status = str(data.get("target_status", ""))
         reason = str(data.get("reason", "")) or f"Transition to {target_status}"
         actor = str(data.get("actor", "SYSTEM")) or "SYSTEM"
+        failure_code = str(data.get("failure_code", "") or "")
+        failure_reason = str(data.get("failure_reason", "") or "")
         if not tenant_id or not inv_id_str or not target_status:
             return GenericActivityResult(
                 success=False, error="tenant_id, investigation_id and target_status required"
@@ -2140,11 +2406,16 @@ async def transition_investigation_activity(
                 error=_replayed.get("error"),
             )
 
+        transition_inv = inv
+        transition_reason = reason
+        if target == InvestigationStatus.FAILED and failure_code:
+            transition_inv = _stamp_failure(inv, failure_code, failure_reason or reason)
+            transition_reason = f"{reason} ({failure_code})"
         _, audit_degraded = await _transition_via_path(
             tenant_id,
-            inv,
+            transition_inv,
             target,
-            reason,
+            transition_reason,
             inv_repo,
             getattr(ctx, "transition_repo", None),
             getattr(ctx, "timeline_repo", None),
@@ -2315,6 +2586,62 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 confidence=verification.confidence.overall_confidence,
             )
             await finding_repo.save_conclusion(tenant_id, conclusion)
+            # First producer for the evidence_relationships table: verified
+            # hypothesis -> supporting evidence CORROBORATES edges, so future
+            # CORRELATE actions traverse real rows instead of an empty graph.
+            # Best-effort like the rows above — never reverts the approval.
+            try:
+                _inv_repo = getattr(ctx, "investigation_repo", None)
+                _engine = getattr(ctx, "engine", None)
+                if _inv_repo is not None and _engine is not None:
+                    _inv = await _inv_repo.get_by_id(tenant_id, investigation_id)
+                    if _inv is not None:
+                        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+                        from investigation_agent_platform.infrastructure.correlation.repository import (
+                            PostgresRelationshipRepository,
+                        )
+                        from investigation_agent_platform.ports.persistence.repositories import (
+                            EvidenceRelationshipRecord,
+                        )
+
+                        _rel_repo = PostgresRelationshipRepository(
+                            async_sessionmaker(_engine, expire_on_commit=False)
+                        )
+                        _rel_edges = [
+                            EvidenceRelationshipRecord(
+                                tenant_id=tenant_id,
+                                application_id=_inv.application_id,
+                                source_id=str(hyp.id),
+                                target_id=str(eid),
+                                type="CORROBORATES",
+                                confidence=verification.confidence.overall_confidence,
+                                metadata={"reason": hyp.statement[:500]},
+                            )
+                            for eid in evidence_ids
+                        ]
+                        _recorded = await _rel_repo.record_edges(
+                            tenant_id, investigation_id, _inv.application_id, _rel_edges
+                        )
+                        logger.info(
+                            "Correlation edges recorded for concluded investigation",
+                            extra=_log_extra(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                event="correlation edges recorded",
+                                edges=_recorded,
+                            ),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Correlation edge persist skipped; conclusion stands",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        event="correlation edges skipped",
+                        error=str(exc),
+                    ),
+                )
         except Exception as exc:
             logger.exception(
                 "Failed to persist finding/conclusion after gate approval",
@@ -2351,6 +2678,7 @@ async def conclude_investigation_activity(
         tenant_id = str(data.get("tenant_id", ""))
         inv_id_str = str(data.get("investigation_id", ""))
         status = str(data.get("status", "COMPLETED"))
+        reason = str(data.get("reason", "") or "")
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -2376,6 +2704,17 @@ async def conclude_investigation_activity(
                         # authority. Denied conclusions become FAILED with the
                         # blockers recorded, never silent COMPLETED.
                         target = await _gate_conclusion_or_fail(tenant_id, investigation_id, ctx)
+                    failure_code: str | None = None
+                    conclude_reason = f"Workflow concluded with {target.value}"
+                    if target == InvestigationStatus.FAILED:
+                        # Terminal failure record: stamped onto metadata BEFORE
+                        # the transition (see _stamp_failure) so it surfaces
+                        # via GET detail and GET conclusion — no worker-log
+                        # access needed.
+                        requested_completed = status.upper() == "COMPLETED"
+                        failure_code = _failure_code_for(reason, requested_completed)
+                        conclude_reason = f"{conclude_reason} ({failure_code})"
+                        inv = _stamp_failure(inv, failure_code, reason)
                     if inv.status != target:
                         # TO_DO-011: idempotency-wired — (investigation_id,
                         # target, version) is deterministic; see transition
@@ -2407,7 +2746,7 @@ async def conclude_investigation_activity(
                             tenant_id,
                             inv,
                             target,
-                            f"Workflow concluded with {target.value}",
+                            conclude_reason,
                             inv_repo,
                             getattr(ctx, "transition_repo", None),
                             getattr(ctx, "timeline_repo", None),

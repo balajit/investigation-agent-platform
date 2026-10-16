@@ -6,8 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from opentelemetry import trace
-from sqlalchemy import ARRAY, bindparam, text
-from sqlalchemy import UUID as PostgresUUID
+from sqlalchemy import ARRAY, Text, bindparam, text
 
 from investigation_agent_platform.domain.common.exceptions import ExecutionError
 from investigation_agent_platform.ports.persistence.repositories import (
@@ -58,44 +57,51 @@ class PostgresRelationshipRepository:
                 )
                 raise ExecutionError(f"Invalid evidence UUID in root list: {exc}") from exc
 
+            # Application scoping joins investigations: evidence_relationships
+            # carries (tenant_id, investigation_id) but no application_id
+            # column, so the app boundary resolves through the parent
+            # investigation row. Node IDs are stored as text; bind roots as
+            # text[] (uuid[] would fail the varchar comparison).
             sql = text(
                 """
                 WITH RECURSIVE relationship_tree AS (
-                    SELECT 
-                        source_node_id, 
-                        target_node_id, 
-                        relationship_type, 
-                        confidence, 
+                    SELECT
+                        r.source_node_id,
+                        r.target_node_id,
+                        r.relationship_type,
+                        r.confidence,
                         1 AS depth,
-                        ARRAY[source_node_id, target_node_id] AS visited_path
-                    FROM evidence_relationships
-                    WHERE tenant_id = :tenant_id 
-                      AND application_id = :application_id
-                      AND (source_node_id = ANY(:root_ids) OR target_node_id = ANY(:root_ids))
+                        ARRAY[r.source_node_id, r.target_node_id]::text[] AS visited_path
+                    FROM evidence_relationships r
+                    JOIN investigations i ON i.id = r.investigation_id
+                    WHERE r.tenant_id = :tenant_id
+                      AND i.application_id = :application_id
+                      AND (r.source_node_id = ANY(:root_ids) OR r.target_node_id = ANY(:root_ids))
 
                     UNION ALL
 
-                    SELECT 
-                        r.source_node_id, 
-                        r.target_node_id, 
-                        r.relationship_type, 
-                        r.confidence, 
+                    SELECT
+                        r.source_node_id,
+                        r.target_node_id,
+                        r.relationship_type,
+                        r.confidence,
                         rt.depth + 1,
-                        rt.visited_path || r.target_node_id
+                        rt.visited_path || r.target_node_id::text
                     FROM evidence_relationships r
-                    INNER JOIN relationship_tree rt 
+                    JOIN investigations i ON i.id = r.investigation_id
+                    INNER JOIN relationship_tree rt
                         ON (r.source_node_id = rt.target_node_id OR r.target_node_id = rt.source_node_id)
-                    WHERE r.tenant_id = :tenant_id 
-                      AND r.application_id = :application_id
+                    WHERE r.tenant_id = :tenant_id
+                      AND i.application_id = :application_id
                       AND rt.depth < :max_depth
                       AND NOT (r.target_node_id = ANY(rt.visited_path))
                 )
-                SELECT DISTINCT source_node_id, target_node_id, relationship_type, confidence 
+                SELECT DISTINCT source_node_id, target_node_id, relationship_type, confidence
                 FROM relationship_tree
                 LIMIT :node_limit;
                 """
             ).bindparams(
-                bindparam("root_ids", type_=ARRAY(PostgresUUID)),
+                bindparam("root_ids", type_=ARRAY(Text)),
             )
 
             try:
@@ -105,7 +111,7 @@ class PostgresRelationshipRepository:
                         {
                             "tenant_id": tenant_id,
                             "application_id": application_id,
-                            "root_ids": validated_root_uuids,
+                            "root_ids": [str(u) for u in validated_root_uuids],
                             "max_depth": bounded_depth,
                             "node_limit": MAX_RESULT_NODES_LIMIT,
                         },
@@ -137,3 +143,60 @@ class PostgresRelationshipRepository:
                 raise ExecutionError(
                     f"Relationship query failed for tenant {tenant_id}: {exc}"
                 ) from exc
+
+    async def record_edges(
+        self,
+        tenant_id: str,
+        investigation_id: Any,
+        application_id: str,
+        edges: list[EvidenceRelationshipRecord],
+    ) -> int:
+        """Persist correlation edges idempotently (first producer for this table).
+
+        Skips edges already present for (tenant, investigation, source,
+        target, type) so replays and re-concludes never duplicate rows.
+        Returns the inserted count.
+        """
+        from sqlalchemy import select
+
+        from investigation_agent_platform.infrastructure.persistence.models import (
+            EvidenceRelationshipORM,
+        )
+
+        pending = [
+            e
+            for e in edges
+            if e.tenant_id == tenant_id and e.application_id == application_id
+        ]
+        if not pending:
+            return 0
+        async with self._session_factory() as session:
+            existing = await session.scalars(
+                select(
+                    EvidenceRelationshipORM.source_node_id,
+                    EvidenceRelationshipORM.target_node_id,
+                    EvidenceRelationshipORM.relationship_type,
+                ).where(
+                    EvidenceRelationshipORM.tenant_id == tenant_id,
+                    EvidenceRelationshipORM.investigation_id == investigation_id,
+                )
+            )
+            seen = {(r[0], r[1], r[2]) for r in existing.all()}
+            fresh = [e for e in pending if (e.source_id, e.target_id, e.type) not in seen]
+            for edge in fresh:
+                session.add(
+                    EvidenceRelationshipORM(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        source_node_id=edge.source_id,
+                        target_node_id=edge.target_id,
+                        relationship_type=edge.type,
+                        confidence=edge.confidence,
+                        reason=str((edge.metadata or {}).get("reason", "")),
+                        provenance_evidence_id=str(
+                            (edge.metadata or {}).get("provenance_evidence_id", "")
+                        ),
+                    )
+                )
+            await session.commit()
+            return len(fresh)

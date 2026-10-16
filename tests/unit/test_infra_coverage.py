@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -22,7 +23,6 @@ from investigation_agent_platform.domain.profile.models import (
     QueryTemplate,
     Service,
     ServiceCode,
-    ServiceTelemetry,
 )
 from investigation_agent_platform.infrastructure.configuration.config import (
     LLMConfig,
@@ -426,6 +426,81 @@ class TestOpenAIAdapter:
             req = LLMGatewayRequest(prompt="hi")
             with pytest.raises(asyncio.TimeoutError):
                 await gw.complete("t1", req)
+
+    @pytest.mark.asyncio
+    async def test_complete_logs_token_counts(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            OpenAIGateway,
+        )
+
+        config = LLMConfig(
+            api_key=SecretStr("sk-test"), model_name="gpt-4o-mini", provider="openai"
+        )
+        gw = OpenAIGateway(config)
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content='{"k": 1}'))]
+        mock_resp.usage = MagicMock(prompt_tokens=12, completion_tokens=7)
+        gw._client = MagicMock()
+        gw._call_with_retry = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
+        req = LLMGatewayRequest(
+            prompt="hello world",
+            system_prompt="be brief",
+            response_schema={"type": "object"},
+        )
+        with caplog.at_level(
+            logging.INFO,
+            logger="investigation_agent_platform.infrastructure.reasoning.openai_adapter",
+        ):
+            await gw.complete("t1", req)
+        by_msg = {r.getMessage(): r for r in caplog.records}
+        request_rec = next(r for m, r in by_msg.items() if "LLM request tokens" in m)
+        response_rec = next(r for m, r in by_msg.items() if "LLM response tokens" in m)
+        assert request_rec.estimated_input_tokens > 0
+        assert request_rec.max_tokens == config.max_tokens
+        assert response_rec.prompt_tokens == 12
+        assert response_rec.completion_tokens == 7
+        assert response_rec.total_tokens == 19
+        # Counts only — prompt text must never leak into logs.
+        assert "hello world" not in request_rec.getMessage()
+        assert "be brief" not in request_rec.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_anthropic_complete_logs_token_counts(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            AnthropicGateway,
+        )
+
+        config = LLMConfig(
+            api_key=SecretStr("sk-ant"), model_name="claude-3-haiku", provider="anthropic"
+        )
+        gw = AnthropicGateway(config)
+        mock_block = MagicMock(text='{"a": 1}')
+        mock_resp = MagicMock(
+            content=[mock_block], usage=MagicMock(input_tokens=5, output_tokens=10)
+        )
+        gw._client = MagicMock()
+        gw._call_with_retry = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
+        req = LLMGatewayRequest(prompt="hello world", system_prompt="be brief")
+        with caplog.at_level(
+            logging.INFO,
+            logger="investigation_agent_platform.infrastructure.reasoning.anthropic_adapter",
+        ):
+            await gw.complete("t1", req)
+        by_msg = {r.getMessage(): r for r in caplog.records}
+        request_rec = next(r for m, r in by_msg.items() if "LLM request tokens" in m)
+        response_rec = next(r for m, r in by_msg.items() if "LLM response tokens" in m)
+        assert request_rec.estimated_input_tokens > 0
+        assert response_rec.prompt_tokens == 5
+        assert response_rec.completion_tokens == 10
+
+    def test_count_text_tokens_fallbacks(self) -> None:
+        from investigation_agent_platform.infrastructure.reasoning.streaming_adapters import (
+            count_text_tokens,
+        )
+
+        assert count_text_tokens("gpt-4o", "hello world") > 0
+        assert count_text_tokens("no-such-model-xyz", "hello world") > 0
+        assert count_text_tokens("gpt-4o", "") == 0
 
 
 class TestFactory:
@@ -864,6 +939,29 @@ class TestCodeSchemaGraphIntegration:
             {"id": "src/a.py::PaymentService.create", "node_type": "code_symbol"}
         )
         assert builder.link_code_to_tables("src/a.py", "create", "orders") is False
+
+    @pytest.mark.asyncio
+    async def test_repository_graph_scans_language_files(self, tmp_path) -> None:
+        from investigation_agent_platform.infrastructure.evidence.code.parser import (
+            TreeSitterParser,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.pipeline import (
+            CodebaseGraphPipeline,
+        )
+
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n", encoding="utf-8")
+        (tmp_path / "B.java").write_text("class B { void m() {} }", encoding="utf-8")
+        # Java mines .java files (previously fell back to *.py and parsed
+        # Python sources with the Java grammar).
+        java_graph = await CodebaseGraphPipeline(TreeSitterParser()).build_repository_graph(
+            tmp_path, language="java"
+        )
+        assert java_graph.num_nodes() == 3
+        # Unknown languages yield an empty graph, never mis-parsed files.
+        empty = await CodebaseGraphPipeline(TreeSitterParser()).build_repository_graph(
+            tmp_path, language="cobol"
+        )
+        assert empty.num_nodes() == 0
 
     def test_link_unknown_table_or_symbol_refuses(self) -> None:
         builder = self._builder()

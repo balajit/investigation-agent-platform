@@ -42,7 +42,6 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 
-
 # --------------------------------------------------------------------------
 # Check model
 # --------------------------------------------------------------------------
@@ -237,7 +236,7 @@ def s0_1_telemetry_primed(ctx: Ctx) -> str:
     ]
     import datetime
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     index = f"logs-{ctx.tenant}-app-production-journey"
     for i, (svc, lvl, msg) in enumerate(docs):
         doc = {
@@ -275,7 +274,7 @@ def s1_1_health_gates(ctx: Ctx) -> str:
     require(status == 200 and data.get("status") == "UP", f"live: {status} {data}")
     status, data = ctx.api("GET", "/api/v1/health/ready")
     require(status == 200 and data.get("status") == "READY", f"ready: {status} {data}")
-    return f"live UP, ready READY ({list((data.get('dependencies') or {}))})"
+    return f"live UP, ready READY ({list(data.get('dependencies') or {})})"
 
 
 def s1_2_profile_present(ctx: Ctx) -> str:

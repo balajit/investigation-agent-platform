@@ -797,10 +797,10 @@ class TestMigration015:
         assert mod.revision == "015_batch_intake"
         assert mod.down_revision == "014_reference_documents"
 
-    def test_single_head_is_016(self) -> None:
+    def test_single_head_is_current(self) -> None:
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["016_profile_v2_columns"]
+        assert script.get_heads() == ["3354e515779a"]

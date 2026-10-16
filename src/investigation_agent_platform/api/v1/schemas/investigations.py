@@ -15,7 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from investigation_agent_platform.domain.finding.models import InvestigationConclusion
 from investigation_agent_platform.domain.investigation.input_requirements import InputRequirement
 from investigation_agent_platform.domain.investigation.models import (
+    IncidentSeverity,
     Investigation,
+    InvestigationPriority,
     InvestigationRequest,
 )
 
@@ -40,9 +42,8 @@ class CreateInvestigationBody(BaseModel):
     session_id: str | None = Field(
         default=None, max_length=128, description="Optional telemetry session correlation ID"
     )
-    priority: str = Field(
-        default="NORMAL",
-        max_length=16,
+    priority: InvestigationPriority = Field(
+        default=InvestigationPriority.NORMAL,
         description="Investigation priority level (LOW, NORMAL, HIGH, CRITICAL)",
     )
     requested_by: str = Field(
@@ -77,12 +78,13 @@ class FulfillInputBody(BaseModel):
 
 
 class InvestigationListItemView(BaseModel):
-    """List row: the five keys the handler projects (datetimes as ISO strings)."""
+    """List row: the six keys the handler projects (datetimes as ISO strings)."""
 
     model_config = ConfigDict(extra="forbid")
 
     investigation_id: str
     status: str
+    phase: str
     application_id: str
     created_at: str | None
     updated_at: str | None
@@ -117,13 +119,19 @@ class InvestigationDetailResponse(BaseModel):
 
 
 class ConclusionResponse(BaseModel):
-    """`conclusion` is explicitly null while unconcluded — preserved as null."""
+    """`conclusion` is explicitly null while unconcluded — preserved as null.
+
+    `failure` carries the terminal failure record for FAILED investigations
+    (code, workflow reason, timestamp) so a bare FAILED is diagnosable
+    without worker-log access; null otherwise.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     investigation_id: str
     status: str
     conclusion: InvestigationConclusion | None
+    failure: dict[str, Any] | None = None
 
 
 class FulfillAck(BaseModel):
@@ -148,7 +156,7 @@ class ErrorIntakeBody(BaseModel):
     top_frame_file: str | None = Field(default=None, max_length=1024, description="Top stack-frame file when known")
     problem_description: str = Field(default="", max_length=8000, description="Human description of the observed failure")
     session_id: str | None = Field(default=None, max_length=256, description="Optional telemetry session correlation ID")
-    severity: str = Field(default="ERROR", max_length=16, description="Error severity label")
+    severity: IncidentSeverity = Field(default=IncidentSeverity.ERROR, description="Error severity label")
     log_refs: list[str] = Field(default_factory=list, max_length=50, description="Log references attached to the error")
     trace_refs: list[str] = Field(default_factory=list, max_length=50, description="Trace references attached to the error")
 

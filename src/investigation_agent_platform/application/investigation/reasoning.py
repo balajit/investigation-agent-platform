@@ -106,11 +106,26 @@ class ReasoningCoordinator(InvestigationReasoner):
         for ds in getattr(profile, "datasources", []) or []:
             kind = getattr(getattr(ds, "kind", ""), "value", ds.kind) if getattr(ds, "kind", None) else ""
             for name, tpl in (getattr(ds, "query_templates", {}) or {}).items():
+                # Bind variables the template needs beyond tenant_id (which
+                # the platform supplies): without these the agent cannot
+                # satisfy the query and every parameterized template fails.
+                # Extracted from :name tokens in the template SQL.
+                import re as _re
+
+                sql_text = str(getattr(tpl, "sql", "") or "")
+                bind_vars = sorted(
+                    {
+                        var
+                        for var in _re.findall(r":([A-Za-z_][A-Za-z0-9_]*)", sql_text)
+                        if var != "tenant_id"
+                    }
+                )
                 state_templates.append(
                     {
                         "template_id": f"{ds.id}.{name}",
                         "datasource_kind": str(kind),
                         "description": str(getattr(tpl, "description", "") or "")[:300],
+                        "bind_parameters": bind_vars,
                     }
                 )
         return {
@@ -148,7 +163,7 @@ class ReasoningCoordinator(InvestigationReasoner):
           retries idempotent.
         """
         if not isinstance(parsed, dict):
-            raise ValueError(f"LLM decision is not an object: {type(parsed).__name__}")
+            raise TypeError(f"LLM decision is not an object: {type(parsed).__name__}")
         known = set(InvestigationDecision.model_fields)
         unknown = sorted(k for k in parsed if k not in known)
         if unknown:
@@ -210,7 +225,12 @@ class ReasoningCoordinator(InvestigationReasoner):
             metadata={"status": "REASONING_UNAVAILABLE", "reason": reason},
         )
 
-    async def reason(self, tenant_id: str, state: InvestigationState) -> InvestigationDecision:
+    async def reason(
+        self,
+        tenant_id: str,
+        state: InvestigationState,
+        recent_actions: list[dict[str, Any]] | None = None,
+    ) -> InvestigationDecision:
         with tracer.start_as_current_span("ReasoningCoordinator.reason"):
             # F-048: structured instruction/data separation — evidence travels as
             # typed records in a dedicated envelope field, never concatenated
@@ -254,6 +274,23 @@ class ReasoningCoordinator(InvestigationReasoner):
                 },
             }
             import json as _json
+
+            # Action history (workflow-accumulated, most recent last): sanitized
+            # to known scalar fields so prompt content stays bounded and safe.
+            history: list[dict[str, Any]] = []
+            for entry in (recent_actions or [])[-10:]:
+                if not isinstance(entry, dict):
+                    continue
+                history.append(
+                    {
+                        "iteration": entry.get("iteration"),
+                        "action": entry.get("action"),
+                        "readiness": entry.get("readiness"),
+                        "hypotheses": entry.get("hypotheses"),
+                        "observations": entry.get("observations"),
+                    }
+                )
+            facts_block["recent_actions"] = history
 
             prompt_summary = (
                 f"Investigation state for tenant {tenant_id}: {state.investigation.status.value}\n"
@@ -320,7 +357,31 @@ class ReasoningCoordinator(InvestigationReasoner):
                         '"parameters": {"template_id": "<one of the '
                         "state_templates template_id values in STRUCTURED_CONTEXT_JSON "
                         'application.state_templates>"} — never invent a template '
-                        "id and never use raw SQL. After evidence exists, use FORMULATE_HYPOTHESIS. "
+                        "id and never use raw SQL. You MUST also supply every "
+                        "bind_parameters entry listed for that template_id (e.g. "
+                        "status, application_id) inside parameters — tenant_id is "
+                        "supplied by the platform; a template queried without its "
+                        "bind parameters fails. After evidence exists, use FORMULATE_HYPOTHESIS. "
+                        "For GET_CODE you MUST set "
+                        "'parameters': {\"file_path\": \"<repo-relative source path taken "
+                        "from the problem_description, e.g. 'src/svc/handler.py'>\"} — "
+                        "never empty, never absolute, no '..' segments; it reads the "
+                        "file the incident names. For CORRELATE you MUST set "
+                        "'parameters': {\"root_evidence_ids\": [<evidence_id strings "
+                        "from evidence_records>], \"max_depth\": 2}. "
+                        "If recent_actions shows the SAME action_type chosen 3+ times "
+                        "in a row while evidence_records is still empty, you MUST "
+                        "choose a DIFFERENT capability next (QUERY_STATE with a "
+                        "state_templates template_id, GET_CODE, or CORRELATE) — "
+                        "repeating the same empty search is never progress. "
+                        "Before CONCLUDE: every distinct surface named in the "
+                        "problem_description (endpoints, screens, tables, files) "
+                        "must have supporting evidence from an INDEPENDENT "
+                        "capability — log lines alone never verify API behavior "
+                        "(check row counts via QUERY_STATE), code behavior "
+                        "(read the route via GET_CODE), or cross-entity links "
+                        "(CORRELATE). A conclusion about paths you never queried "
+                        "from a second capability is forbidden. "
                         "Use VERIFY_HYPOTHESIS/CONCLUDE only when confident. "
                         "Do NOT include execution_hash (derived server-side). "
                         '"observations": ["..."], '
@@ -363,10 +424,25 @@ class ReasoningCoordinator(InvestigationReasoner):
                 return self._unavailable_decision("empty_llm_response")
 
             try:
-                return self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
+                decision = self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
             except Exception as exc:
                 logger.warning(
                     "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
                     extra={"tenant_id": tenant_id, "error": str(exc)},
                 )
                 return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
+            # Token accounting: surface this call's usage on the decision so
+            # the worker can accumulate per-investigation spend (budget
+            # ledger) without a second telemetry channel.
+            try:
+                usage_meta = getattr(resp, "metadata", None)
+                llm_usage = {
+                    "prompt_tokens": int(getattr(usage_meta, "prompt_tokens", 0) or 0),
+                    "completion_tokens": int(getattr(usage_meta, "completion_tokens", 0) or 0),
+                    "cost_usd": float(getattr(usage_meta, "estimated_cost_usd", 0.0) or 0.0),
+                }
+            except Exception:
+                llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+            merged_metadata = dict(getattr(decision, "metadata", None) or {})
+            merged_metadata["llm_usage"] = llm_usage
+            return decision.model_copy(update={"metadata": merged_metadata})

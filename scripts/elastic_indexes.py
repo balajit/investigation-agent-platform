@@ -1,5 +1,6 @@
-from elasticsearch import Elasticsearch
 import json
+
+from elasticsearch import Elasticsearch
 
 es = Elasticsearch(
     ["https://xcos-elk.eaas.comcast.net/es/"],

@@ -96,7 +96,7 @@ if [[ "$RESTART_ONLY" == true ]]; then
 fi
 
 echo "Starting infrastructure: $COMPOSE_FILE"
-docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka 
+docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka filebeat
 
 echo "Waiting for services (timeout ${TIMEOUT}s)..."
 deadline=$((SECONDS + TIMEOUT))

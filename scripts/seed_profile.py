@@ -122,6 +122,17 @@ async def run(args: argparse.Namespace) -> int:
     try:
         for path, profile in zip(files, profiles, strict=True):
             await repo.save(profile.tenant_id, profile)
+            # Read-after-write: prove the revision landed where the seeder
+            # (and any Postgres-backed reader) looks. A silent write/read
+            # split here once hid every seeded profile from the API.
+            revisions = await repo.list_revisions(profile.tenant_id, profile.id)
+            if not any(r.version == profile.version for r in revisions):
+                print(
+                    f"error: seeded revision not readable back: tenant={profile.tenant_id} "
+                    f"id={profile.id} version={profile.version}",
+                    file=sys.stderr,
+                )
+                return 1
             written += 1
             print(
                 f"SEEDED {path.name}: tenant={profile.tenant_id} id={profile.id} "
@@ -130,7 +141,45 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         await engine.dispose()
     print(f"done: {written} profile revision(s) saved")
+    _warn_on_api_divergence(profiles)
     return 0
+
+
+def _warn_on_api_divergence(profiles: list) -> None:
+    """Best-effort split-brain check against a locally running API.
+
+    The seeder writes straight to Postgres, but an API running with
+    process-local stores (IAP_BUFFER_ENABLED=false) serves memory and will
+    404 these revisions. When a local API answers, compare; on mismatch warn
+    loudly (advisory only — exit status stays 0 so boot ordering never
+    breaks when the API simply is not up yet).
+    """
+    import json
+    import urllib.request
+
+    port = os.environ.get("PORT", "8000")
+    for profile in profiles:
+        url = f"http://localhost:{port}/api/v1/profiles/{profile.id}"
+        req = urllib.request.Request(url, headers={"X-Tenant-ID": profile.tenant_id})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.load(resp)
+        except Exception:
+            continue  # API not running yet — nothing to compare against.
+        try:
+            seen_version = (body.get("profile") or {}).get("version")
+        except Exception:
+            seen_version = None
+        if seen_version != profile.version:
+            print(
+                f"warn: local API does not serve the seeded revision "
+                f"(tenant={profile.tenant_id} id={profile.id} "
+                f"seeded_version={profile.version} api_version={seen_version}): "
+                f"the API is likely on process-local stores "
+                f"(IAP_BUFFER_ENABLED=false) while Postgres holds the data. "
+                f"Unset IAP_BUFFER_ENABLED on the API/worker and restart them.",
+                file=sys.stderr,
+            )
 
 
 def main() -> None:

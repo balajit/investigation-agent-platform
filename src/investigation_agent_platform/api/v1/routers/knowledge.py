@@ -110,6 +110,11 @@ async def search_knowledge(
     application_id: str = Query(default="", max_length=128, pattern=NO_NUL_PATTERN),
     kind: str | None = Query(default=None, max_length=64, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
+    q: str | None = Query(
+        default=None, max_length=512, pattern=NO_NUL_PATTERN,
+        description="Lexical free-text filter over artifact statements (slice 0; "
+        "vector recall upgrades this behind the same contract).",
+    ),
 ) -> ListEnvelope[KnowledgeArtifact]:
     """Tenant-scoped semantic-list search across own ACTIVE artifacts.
 
@@ -119,6 +124,10 @@ async def search_knowledge(
     ctx = get_app_context()
     kinds = [kind] if kind else None
     items = await ctx.artifact_repo.list_active_for_reuse(x_tenant_id, application_id, kinds)
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            items = [a for a in items if needle in (a.statement or "").lower()]
     ranked = sorted(items, key=lambda a: (a.confidence, a.valid_from), reverse=True)[:limit]
     return ListEnvelope[KnowledgeArtifact].model_validate(
         {"items": [a.model_dump(mode="json") for a in ranked], "total": len(items)}

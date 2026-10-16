@@ -631,6 +631,7 @@ async def flusher_loop(
     stop: asyncio.Event,
 ) -> None:
     """Background task: replay buffered writes whenever the primary is up."""
+    last_reported_held = 0
     while not stop.is_set():
         try:
             stats = await flush_once(proxies, wal)
@@ -643,16 +644,34 @@ async def flusher_loop(
                         "remaining": stats.remaining,
                     },
                 )
-            held = wal.held_count()
-            if held:
-                logger.error(
-                    "HELD buffer entries need operator review "
-                    "(fail-closed replay conflicts are never auto-retried)",
-                    extra={"held": held, "wal": wal.path},
-                )
+            last_reported_held = _report_held_entries(wal, last_reported_held)
         except Exception as exc:
             logger.warning("Buffer flush cycle failed", extra={"error": str(exc)})
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
         except TimeoutError:
             continue
+
+
+def _report_held_entries(wal: SqliteWal, last_reported: int) -> int:
+    """Report the HELD backlog loudly on change, quietly at steady state.
+
+    A static backlog (e.g. stale seed conflicts awaiting operator review)
+    previously logged ERROR every flush interval forever, burying real
+    signals. Returns the updated marker for the next cycle.
+    """
+    held = wal.held_count()
+    if not held:
+        return 0
+    if held != last_reported:
+        logger.error(
+            "HELD buffer entries need operator review "
+            "(fail-closed replay conflicts are never auto-retried)",
+            extra={"held": held, "wal": wal.path},
+        )
+    else:
+        logger.debug(
+            "HELD buffer entries unchanged; still awaiting operator review",
+            extra={"held": held, "wal": wal.path},
+        )
+    return held

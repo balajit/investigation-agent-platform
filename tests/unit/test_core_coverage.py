@@ -485,7 +485,8 @@ class TestVerifiedIdentity:
         monkeypatch.setenv("IAP_ENVIRONMENT", "development")
         with pytest.raises(Exception) as ei:
             await _resolve_verified_identity(x_tenant_id="", authorization=None)
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TENANT_REQUIRED"
 
     @pytest.mark.asyncio
     async def test_valid_signed_token_derives_identity(
@@ -505,7 +506,8 @@ class TestVerifiedIdentity:
         _configure_auth_env(monkeypatch, environment="production")
         with pytest.raises(Exception) as ei:
             await _resolve_verified_identity(x_tenant_id="tenant-a", authorization=None)
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TOKEN_REQUIRED"
 
     @pytest.mark.asyncio
     async def test_production_without_jwks_configured_raises_configuration_error(
@@ -553,7 +555,8 @@ class TestVerifiedIdentity:
             await _resolve_verified_identity(
                 x_tenant_id="tenant-a", authorization=f"Bearer {expired}"
             )
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TOKEN_INVALID"
 
     @pytest.mark.asyncio
     async def test_wrong_issuer_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -564,7 +567,8 @@ class TestVerifiedIdentity:
             await _resolve_verified_identity(
                 x_tenant_id="tenant-a", authorization=f"Bearer {token}"
             )
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TOKEN_INVALID"
 
     @pytest.mark.asyncio
     async def test_forged_unsigned_token_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -576,7 +580,8 @@ class TestVerifiedIdentity:
             await _resolve_verified_identity(
                 x_tenant_id="tenant-a", authorization=f"Bearer {forged}"
             )
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TOKEN_INVALID"
 
     @pytest.mark.asyncio
     async def test_alg_none_never_permitted(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -598,7 +603,8 @@ class TestVerifiedIdentity:
             await _resolve_verified_identity(
                 x_tenant_id="tenant-a", authorization=f"Bearer {token}"
             )
-        assert ei.value.status_code == 401  # type: ignore[attr-defined]
+        assert ei.value.http_status == 401
+        assert ei.value.code == "AUTH_TENANT_CLAIM_MISSING"
 
     @pytest.mark.asyncio
     async def test_tenant_mismatch_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -609,7 +615,8 @@ class TestVerifiedIdentity:
             await _resolve_verified_identity(
                 x_tenant_id="tenant-a", authorization=f"Bearer {token}"
             )
-        assert ei.value.status_code == 403  # type: ignore[attr-defined]
+        assert ei.value.http_status == 403
+        assert ei.value.code == "TENANT_MISMATCH"
 
 
 class TestRequireTenant:
@@ -1543,6 +1550,117 @@ class TestReasoningCoordinator:
         assert "&lt;script&gt;" in xml
         assert "&amp;" in xml
         assert "<untrusted_evidence_payload" in xml
+
+    @pytest.mark.asyncio
+    async def test_recent_actions_surface_in_prompt(self) -> None:
+        safety = MagicMock()
+        safety.validate_prompt_safety = AsyncMock(return_value=True)
+        gateway = MagicMock()
+        metadata = _llm_meta()
+        gateway.complete = AsyncMock(
+            return_value=LLMGatewayResponse(
+                content="{}",
+                parsed={
+                    "observations": ["from llm"],
+                    "conclusion_readiness": 0.1,
+                    "reasoning_chain": "chain",
+                },
+                metadata=metadata,
+            )
+        )
+        coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
+        history = [
+            {
+                "iteration": i,
+                "action": "SEARCH_LOGS",
+                "readiness": 0.0,
+                "hypotheses": 0,
+                "observations": 0,
+            }
+            for i in range(4)
+        ]
+        await coord.reason("tenant-a", self._make_state(), recent_actions=history)
+        req = gateway.complete.call_args[0][1]
+        assert "recent_actions" in req.prompt
+        assert "SEARCH_LOGS" in req.prompt
+        assert "DIFFERENT capability" in req.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_recent_actions_trimmed_and_sanitized(self) -> None:
+        safety = MagicMock()
+        safety.validate_prompt_safety = AsyncMock(return_value=True)
+        gateway = MagicMock()
+        metadata = _llm_meta()
+        gateway.complete = AsyncMock(
+            return_value=LLMGatewayResponse(
+                content="{}",
+                parsed={
+                    "observations": [],
+                    "conclusion_readiness": 0.0,
+                    "reasoning_chain": "c",
+                },
+                metadata=metadata,
+            )
+        )
+        coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
+        history = [
+            {"iteration": i, "action": "SEARCH_LOGS", "prompt": "must-not-leak"}
+            for i in range(12)
+        ]
+        await coord.reason("tenant-a", self._make_state(), recent_actions=history)
+        req = gateway.complete.call_args[0][1]
+        # Capped at the last 10; unknown keys (prompt) never forwarded.
+        assert '"iteration": 0' not in req.prompt
+        assert '"iteration": 11' in req.prompt
+        assert "must-not-leak" not in req.prompt
+
+    @pytest.mark.asyncio
+    async def test_no_history_still_reasons(self) -> None:
+        safety = MagicMock()
+        safety.validate_prompt_safety = AsyncMock(return_value=True)
+        gateway = MagicMock()
+        metadata = _llm_meta()
+        gateway.complete = AsyncMock(
+            return_value=LLMGatewayResponse(
+                content="{}",
+                parsed={
+                    "observations": ["o"],
+                    "conclusion_readiness": 0.2,
+                    "reasoning_chain": "c",
+                },
+                metadata=metadata,
+            )
+        )
+        coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
+        decision = await coord.reason("tenant-a", self._make_state())
+        assert decision.conclusion_readiness == 0.2
+        req = gateway.complete.call_args[0][1]
+        assert "recent_actions" in req.prompt
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_documents_code_params(self) -> None:
+        safety = MagicMock()
+        safety.validate_prompt_safety = AsyncMock(return_value=True)
+        gateway = MagicMock()
+        metadata = _llm_meta()
+        gateway.complete = AsyncMock(
+            return_value=LLMGatewayResponse(
+                content="{}",
+                parsed={
+                    "observations": ["o"],
+                    "conclusion_readiness": 0.0,
+                    "reasoning_chain": "c",
+                },
+                metadata=metadata,
+            )
+        )
+        coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
+        await coord.reason("tenant-a", self._make_state())
+        system_prompt = gateway.complete.call_args[0][1].system_prompt
+        assert "GET_CODE" in system_prompt
+        assert "file_path" in system_prompt
+        assert "root_evidence_ids" in system_prompt
+        assert "bind_parameters" in system_prompt
 
 
 # ===========================================================================

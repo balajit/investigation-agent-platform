@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import DBAPIError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Ensure structlog is configured with contextvars merging if not already configured.
 try:
@@ -364,6 +365,38 @@ def create_app(
                     "correlation_id": correlation_id,
                 }
             },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_starlette_http_exception(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        # Fuzz-found gap: FastAPI's router wraps non-JSON body-parse failures
+        # in a bare HTTPException(400, "There was an error parsing the body")
+        # (routing.py generic branch), bypassing the RequestValidationError
+        # envelope and breaking the unified {"error": {...}} contract. Only
+        # that exact bypass is enveloped; every other HTTPException keeps its
+        # default shape and status byte-for-byte.
+        if exc.status_code == status.HTTP_400_BAD_REQUEST and exc.detail == (
+            "There was an error parsing the body"
+        ):
+            correlation_id = getattr(request.state, "correlation_id", "unknown")
+            details = sanitize_extra({"fields": [{"type": "body_decode_error"}]})
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "error": {
+                        "code": "ValidationError",
+                        "message": "Request body is not valid UTF-8 JSON",
+                        "details": details,
+                        "correlation_id": correlation_id,
+                    }
+                },
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=dict(exc.headers or {}),
         )
 
     @app.exception_handler(RequestValidationError)

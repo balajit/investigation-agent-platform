@@ -128,7 +128,9 @@ class TestEvidenceBudgetOverlay:
         out = overlay_evidence_budget(InvestigationLimits(), profile)
         assert out.max_tool_calls == 7
         assert out.max_evidence_items == 3
-        assert out.max_hypotheses == InvestigationLimits().max_hypotheses
+        # The profile's canonical maximumHypotheses applies when the
+        # evidence_budget dict does not set max_hypotheses.
+        assert out.max_hypotheses == _DEFAULT_PROFILE.investigation.max_hypotheses
 
     def test_ignores_unknown_and_invalid_keys(self) -> None:
         from investigation_agent_platform.application.worker.activities import (
@@ -150,7 +152,9 @@ class TestEvidenceBudgetOverlay:
             }
         )
         out = overlay_evidence_budget(InvestigationLimits(), profile)
-        assert out == InvestigationLimits()
+        assert out.max_tool_calls == InvestigationLimits().max_tool_calls
+        assert out.max_evidence_items == InvestigationLimits().max_evidence_items
+        assert out.max_hypotheses == _DEFAULT_PROFILE.investigation.max_hypotheses
 
     def test_absent_budget_keeps_defaults(self) -> None:
         from investigation_agent_platform.application.worker.activities import (
@@ -158,9 +162,10 @@ class TestEvidenceBudgetOverlay:
         )
         from investigation_agent_platform.domain.investigation.models import InvestigationLimits
 
-        assert overlay_evidence_budget(InvestigationLimits(), _DEFAULT_PROFILE) == (
-            InvestigationLimits()
-        )
+        out = overlay_evidence_budget(InvestigationLimits(), _DEFAULT_PROFILE)
+        assert out.max_tool_calls == InvestigationLimits().max_tool_calls
+        assert out.max_evidence_items == InvestigationLimits().max_evidence_items
+        assert out.max_hypotheses == _DEFAULT_PROFILE.investigation.max_hypotheses
 
 
 class TestChatClassificationCeiling:
@@ -233,6 +238,46 @@ class TestReasonApplicationContext:
             prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
         )
         assert await coord._application_context_block("tenant-a", "x") == {}
+
+    @pytest.mark.asyncio
+    async def test_state_templates_carry_bind_parameters(self) -> None:
+        from types import SimpleNamespace
+
+        from investigation_agent_platform.application.investigation.reasoning import (
+            ReasoningCoordinator,
+        )
+
+        profile = SimpleNamespace(
+            domain=None,
+            planes=[],
+            data_classification=None,
+            services=[],
+            datasources=[
+                SimpleNamespace(
+                    id="primary",
+                    kind="postgres",
+                    query_templates={
+                        "by_status": SimpleNamespace(
+                            description="rows by status",
+                            sql="SELECT id FROM t WHERE tenant_id = :tenant_id AND status = :status",
+                        ),
+                    },
+                )
+            ],
+        )
+        coord = ReasoningCoordinator(
+            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
+            profile_repo=_ProfileRepo(profile),
+        )
+        block = await coord._application_context_block("tenant-a", "example-app")
+        assert block["state_templates"] == [
+            {
+                "template_id": "primary.by_status",
+                "datasource_kind": "postgres",
+                "description": "rows by status",
+                "bind_parameters": ["status"],
+            }
+        ]
 
 
 class TestKnowledgeConfigExplicitOnly:

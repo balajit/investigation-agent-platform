@@ -253,6 +253,11 @@ class Container:
 
 
 class _InMemoryCheckpointRepository(CheckpointRepository):
+    def __init__(self) -> None:
+        # (tenant_id, investigation_id) -> list of (step_number, snapshot),
+        # mirroring the SQL repo's versioned rows + monotonic step guard.
+        self._snapshots: dict[tuple[str, Any], list[tuple[int, dict[str, Any]]]] = {}
+
     async def save_checkpoint(
         self,
         tenant_id: str,
@@ -260,12 +265,19 @@ class _InMemoryCheckpointRepository(CheckpointRepository):
         step_number: int,
         state_snapshot: dict[str, Any],
     ) -> None:
-        return None
+        key = (tenant_id, investigation_id)
+        rows = self._snapshots.setdefault(key, [])
+        if rows and step_number < rows[-1][0]:
+            return
+        rows.append((step_number, dict(state_snapshot)))
 
     async def get_latest_checkpoint(
         self, tenant_id: str, investigation_id: UUID
     ) -> dict[str, Any] | None:
-        return None
+        rows = self._snapshots.get((tenant_id, investigation_id))
+        if not rows:
+            return None
+        return dict(rows[-1][1])
 
 
 class _InMemoryTransitionRepository(TransitionEventRepository):
@@ -581,6 +593,24 @@ class InMemoryInvestigationRepository(InvestigationRepository):
             for (t, inv_id), inv in self._store.items()
             if t == tenant_id and inv.status not in terminal
         ]
+
+    async def list_filtered(
+        self,
+        tenant_id: str,
+        statuses: list[str] | None,
+        application_id: str | None,
+        limit: int,
+    ) -> list[UUID]:
+        wanted = set(statuses or [])
+        rows = [
+            inv
+            for (t, _), inv in self._store.items()
+            if t == tenant_id
+            and (not wanted or inv.status.value in wanted)
+            and (application_id is None or inv.application_id == application_id)
+        ]
+        rows.sort(key=lambda inv: inv.created_at, reverse=True)
+        return [inv.id for inv in rows[: max(0, limit)]]
 
 
 class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
@@ -2158,6 +2188,29 @@ def get_app_context() -> AppContext:
     if _context is None:
         _context = AppContext()
     return _context
+
+
+def is_worker_visible_store(repo: Any) -> bool:
+    """True when a worker process can load rows written through this repo.
+
+    The API and the Temporal worker are separate processes: only Postgres
+    is shared. Direct SQLAlchemy repos are shared by construction; a
+    BufferedProxy shares state only when its primary is a live Postgres
+    (not a DownPrimary). Anything else (in-memory repos) is process-local.
+    Duck-typed by class name to avoid importing infrastructure here.
+
+    Shared by the investigations router (dispatch gate) and the readiness
+    probe (store-sharedness signal) so both agree on what "shared" means.
+    """
+    if repo is None:
+        return False
+    repo_name = type(repo).__name__
+    if "InMemory" in repo_name:
+        return False
+    if repo_name == "BufferedProxy":
+        primary_name = type(getattr(repo, "primary", None)).__name__
+        return primary_name != "DownPrimary"
+    return True
 
 
 def set_app_context(context: AppContext) -> None:

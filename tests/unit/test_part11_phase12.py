@@ -546,21 +546,22 @@ class TestMigrationChainFinal:
             chain.append(cursor)
         return chain, modules
 
-    def test_chain_is_linear_ending_at_016(self) -> None:
+    def test_chain_is_linear_ending_at_head(self) -> None:
         chain, _ = self._versions()
-        assert chain[-1] == "016_profile_v2_columns"
+        assert chain[-1] == "3354e515779a"
         assert len(chain) == len(set(chain))
+        assert "016_profile_v2_columns" in chain
         assert "015_batch_intake" in chain
         assert "014_reference_documents" in chain
         assert "013_chat_sessions" in chain
 
-    def test_single_head_is_016(self) -> None:
+    def test_single_head_is_current(self) -> None:
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         cfg = Config(Path(__file__).resolve().parents[2] / "alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["016_profile_v2_columns"]
+        assert script.get_heads() == ["3354e515779a"]
 
     def test_every_revision_has_upgrade_and_downgrade(self) -> None:
         _, modules = self._versions()

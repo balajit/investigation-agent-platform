@@ -107,6 +107,9 @@ def _scenarios() -> list[RouteScenario]:
         "/api/v1/clusters/{cluster_id}",
         "/api/v1/batch-intake/{job_id}",
         "/api/v1/chat/sessions/{session_id}/messages",
+        "/api/v1/profiles/{app_id}",
+        "/api/v1/profiles/{app_id}/revisions",
+        "/api/v1/profiles/{app_id}:spring-drift",
     ]
     for path in fabricated_item_reads:
         scenarios.append(
@@ -235,6 +238,53 @@ def _scenarios() -> list[RouteScenario]:
             "/api/v1/reference-docs/rollback",
             Safety.WRITE_BOUNDED,
             probe=_probe(body={"source_id": FABRICATED_UUID_PLACEHOLDER, "generation": 1}),
+            expected_statuses=frozenset({404}),
+        )
+    )
+    # ---- Profiles lifecycle (verified live: fabricated ids 404, empty
+    # bodies 400; PUT looks the profile up before validating the body).
+    scenarios.append(
+        RouteScenario(
+            "POST",
+            "/api/v1/profiles",
+            Safety.WRITE_BOUNDED,
+            probe=_probe(body={}),
+            expected_statuses=frozenset({400}),
+        )
+    )
+    scenarios.append(
+        RouteScenario(
+            "PUT",
+            "/api/v1/profiles/{app_id}",
+            Safety.WRITE_BOUNDED,
+            probe=_probe(use_fabricated_id=True, body={}),
+            expected_statuses=frozenset({404}),
+        )
+    )
+    scenarios.append(
+        RouteScenario(
+            "DELETE",
+            "/api/v1/profiles/{app_id}",
+            Safety.WRITE_BOUNDED,
+            probe=_probe(use_fabricated_id=True),
+            expected_statuses=frozenset({404}),
+        )
+    )
+    scenarios.append(
+        RouteScenario(
+            "POST",
+            "/api/v1/profiles:derive-from-spring",
+            Safety.WRITE_BOUNDED,
+            probe=_probe(body={}),
+            expected_statuses=frozenset({400}),
+        )
+    )
+    scenarios.append(
+        RouteScenario(
+            "POST",
+            "/api/v1/profiles/{app_id}:refresh-from-spring",
+            Safety.WRITE_BOUNDED,
+            probe=_probe(use_fabricated_id=True),
             expected_statuses=frozenset({404}),
         )
     )

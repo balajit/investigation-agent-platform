@@ -43,7 +43,7 @@ class SqlAlchemyInvestigationRepository:
             title=(investigation.request.problem_description or "")[:256],
             problem_description=investigation.request.problem_description,
             status=investigation.status.value,
-            phase=investigation.status.value,
+            phase=investigation.phase,
             created_at=investigation.created_at,
             updated_at=investigation.updated_at,
             started_at=investigation.started_at,
@@ -93,6 +93,7 @@ class SqlAlchemyInvestigationRepository:
             request=request,
             context=context,
             status=status,
+            phase=row.phase or status.value,
             created_at=row.created_at,
             updated_at=row.updated_at,
             started_at=row.started_at,
@@ -159,7 +160,7 @@ class SqlAlchemyInvestigationRepository:
                     )
                     .values(
                         status=investigation.status.value,
-                        phase=investigation.status.value,
+                        phase=investigation.phase,
                         updated_at=investigation.updated_at,
                         started_at=investigation.started_at,
                         completed_at=investigation.completed_at,
@@ -293,7 +294,7 @@ class SqlAlchemyInvestigationRepository:
                             )
                             .values(
                                 status=updated.status.value,
-                                phase=updated.status.value,
+                                phase=updated.phase,
                                 updated_at=updated.updated_at,
                                 started_at=updated.started_at,
                                 completed_at=updated.completed_at,
@@ -382,6 +383,25 @@ class SqlAlchemyInvestigationRepository:
                     InvestigationORM.status.notin_(terminal),
                 )
             )
+            return list(result.all())
+
+    async def list_filtered(
+        self,
+        tenant_id: str,
+        statuses: list[str] | None,
+        application_id: str | None,
+        limit: int,
+    ) -> list[UUID]:
+        async with rls_session(self._session_factory, tenant_id) as session:
+            stmt = select(InvestigationORM.id).where(
+                InvestigationORM.tenant_id == tenant_id
+            )
+            if statuses:
+                stmt = stmt.where(InvestigationORM.status.in_(statuses))
+            if application_id is not None:
+                stmt = stmt.where(InvestigationORM.application_id == application_id)
+            stmt = stmt.order_by(InvestigationORM.created_at.desc()).limit(max(0, limit))
+            result = await session.scalars(stmt)
             return list(result.all())
 
     async def purge_expired(self, tenant_id: str, cutoff: datetime, limit: int = 500) -> int:

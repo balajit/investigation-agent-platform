@@ -4,7 +4,9 @@ from typing import TypeVar
 
 from opentelemetry import trace
 
-from investigation_agent_platform.domain.common.exceptions import ExecutionError
+from investigation_agent_platform.domain.common.exceptions import (
+    ProviderNotConfiguredError,
+)
 from investigation_agent_platform.ports.evidence.code import (
     CodeEvidenceProviderProtocol,
     CodeIntelligenceProviderProtocol,
@@ -128,7 +130,7 @@ class EvidenceProviderSelector:
                         "environment": environment,
                     },
                 )
-                raise ExecutionError(f"No runtime provider configured for tenant context '{key}'")
+                raise ProviderNotConfiguredError(f"No runtime provider configured for tenant context '{key}'")
             return provider
 
     def find_runtime_provider(self, key: str) -> RuntimeEvidenceProviderProtocol | None:
@@ -167,7 +169,7 @@ class EvidenceProviderSelector:
                         )
                     else:
                         return resolved
-            raise ExecutionError(f"No state provider configured for tenant context '{key}'")
+            raise ProviderNotConfiguredError(f"No state provider configured for tenant context '{key}'")
 
     async def get_code_provider(
         self, tenant_id: str, application_id: str
@@ -175,9 +177,23 @@ class EvidenceProviderSelector:
         with tracer.start_as_current_span("EvidenceProviderSelector.get_code_provider"):
             key = f"{tenant_id}:{application_id}"
             provider = self._code_providers.get(key)
-            if not provider:
-                raise ExecutionError(f"No code provider configured for tenant context '{key}'")
-            return provider
+            if provider is not None:
+                return provider
+            # Bootstrap registers the local git adapter under a global key
+            # ("pygit2-local"), never per-tenant — without a fallback every
+            # tenant lookup misses and GET_CODE is dead. Fall back only when
+            # exactly one code provider exists (single-provider deployments);
+            # with several, serving another tenant's repo would breach
+            # isolation, so keep failing closed. Per-request tenant scoping
+            # (adapter allow-list + profile locators) still applies.
+            if len(self._code_providers) == 1:
+                sole = next(iter(self._code_providers.values()))
+                logger.info(
+                    "Code provider fallback to sole registered provider",
+                    extra={"tenant_id": tenant_id, "application_id": application_id},
+                )
+                return sole
+            raise ProviderNotConfiguredError(f"No code provider configured for tenant context '{key}'")
 
     async def get_code_intelligence_provider(
         self, tenant_id: str, application_id: str
@@ -187,8 +203,17 @@ class EvidenceProviderSelector:
         ):
             key = f"{tenant_id}:{application_id}"
             provider = self._code_intelligence_providers.get(key)
-            if not provider:
-                raise ExecutionError(
-                    f"No code intelligence provider configured for tenant context '{key}'"
+            if provider is not None:
+                return provider
+            # Same single-provider fallback as get_code_provider (see above
+            # for the isolation rationale).
+            if len(self._code_intelligence_providers) == 1:
+                sole = next(iter(self._code_intelligence_providers.values()))
+                logger.info(
+                    "Code intelligence provider fallback to sole registered provider",
+                    extra={"tenant_id": tenant_id, "application_id": application_id},
                 )
-            return provider
+                return sole
+            raise ProviderNotConfiguredError(
+                f"No code intelligence provider configured for tenant context '{key}'"
+            )

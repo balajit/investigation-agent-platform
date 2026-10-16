@@ -598,6 +598,19 @@ async def update_profile(
     _check_semantics(profile)
     if profile.status == ProfileStatus.ACTIVE and latest.status != ProfileStatus.ACTIVE:
         _check_promotable(profile)
+    # Template-drop guard: GET returns the sanitized view (query templates
+    # stripped), so PUTing a GET response back would silently delete every
+    # template. Refuse ambiguous drops; explicit confirmation opts out.
+    dropped_templates = sorted(
+        set(latest.query_template_index()) - set(profile.query_template_index())
+    )
+    if dropped_templates and body.get("confirm_template_removal") is not True:
+        raise _err(
+            "PROFILE_TEMPLATES_DROPPED",
+            f"Update drops query templates {dropped_templates[:5]}; resubmit with "
+            '"confirm_template_removal": true to confirm.',
+            409,
+        )
 
     async def _produce() -> dict[str, Any]:
         # Idempotent replay: same content already written at expected version.

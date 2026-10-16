@@ -720,19 +720,40 @@ class TestHealthAndRouters:
         )
 
     def test_events_pause_resume(self) -> None:
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationStatus as _Status,
+        )
+
         client, ctx = self._ctx_client()
         inv = _make_investigation()
         import asyncio as _asyncio
 
         _asyncio.run(ctx.investigation_repo.create("tenant-a", inv))
-        # F-009/F-010: pause/resume now require a real Temporal client to signal
-        # the running workflow. With no Temporal client wired (test AppContext),
-        # the endpoints must fail explicitly rather than fabricate success.
+        # State guards fire before any signal attempt: a never-started
+        # (CREATED) investigation has no workflow, so pause/resume are 409,
+        # never a 502 signal failure.
         for path in ["pause", "resume"]:
             resp = client.post(
                 f"/api/v1/investigations/{inv.id}/{path}", headers={"X-Tenant-ID": "tenant-a"}
             )
-            assert resp.status_code == 503
+            assert resp.status_code == 409
+        # F-009/F-010: pause/resume now require a real Temporal client to signal
+        # the running workflow. With no Temporal client wired (test AppContext),
+        # the endpoints must fail explicitly rather than fabricate success.
+        running = _make_investigation(_Status.INVESTIGATING)
+        _asyncio.run(ctx.investigation_repo.create("tenant-a", running))
+        resp = client.post(
+            f"/api/v1/investigations/{running.id}/pause",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 503
+        # Resume on a running (non-paused) investigation is a 409 state
+        # conflict, raised before any signal attempt.
+        resp = client.post(
+            f"/api/v1/investigations/{running.id}/resume",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 409
 
         # With a Temporal client wired, the signal is delivered and recorded.
         fake_handle = MagicMock()
@@ -740,12 +761,23 @@ class TestHealthAndRouters:
         fake_client = MagicMock()
         fake_client.get_workflow_handle = MagicMock(return_value=fake_handle)
         ctx.temporal_client = fake_client
-        for path, expected_status in [("pause", "PAUSED"), ("resume", "INVESTIGATING")]:
-            resp = client.post(
-                f"/api/v1/investigations/{inv.id}/{path}", headers={"X-Tenant-ID": "tenant-a"}
-            )
-            assert resp.status_code == 202
-            assert resp.json()["status"] == expected_status
+        paused_inv = _make_investigation(_Status.INVESTIGATING)
+        _asyncio.run(ctx.investigation_repo.create("tenant-a", paused_inv))
+        resp = client.post(
+            f"/api/v1/investigations/{paused_inv.id}/pause", headers={"X-Tenant-ID": "tenant-a"}
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "PAUSED"
+        resp = client.post(
+            f"/api/v1/investigations/{paused_inv.id}/resume", headers={"X-Tenant-ID": "tenant-a"}
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "INVESTIGATING"
+        # Resume on a non-paused (active) investigation is a 409, not a no-op.
+        resp = client.post(
+            f"/api/v1/investigations/{paused_inv.id}/resume", headers={"X-Tenant-ID": "tenant-a"}
+        )
+        assert resp.status_code == 409
         del ctx.temporal_client
 
     def test_hypotheses_invalid_uuid(self) -> None:

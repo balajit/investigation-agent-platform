@@ -537,6 +537,10 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     provider_id="pygit2-local",
                 ),
             )
+            logger.info(
+                "Code provider registered",
+                extra={"key": "pygit2-local", "base": config.topology.code_repo_base_path},
+            )
         # MCP registers only with explicit server entries (no config shape
         # means unregistered, per the addendum). One adapter per database.
         for entry in _oracle_mcp_servers(config):
@@ -606,6 +610,46 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             ProfileBasedCapabilityRegistry,
         )
 
+        # Correlation engine (EphemeralCorrelationEngine): existed but was
+        # never plugged into the gateway, so every CORRELATE action died
+        # with "Correlation engine is not configured". Built over the
+        # evidence Postgres DSN (relationship vectors table) with the
+        # current evidence repo (proxies after buffering — see callers).
+        correlation_engine = None
+        if config.evidence.postgres_dsn.get_secret_value():
+            try:
+                from sqlalchemy.ext.asyncio import (
+                    async_sessionmaker as _make_session_factory,
+                )
+                from sqlalchemy.ext.asyncio import (
+                    create_async_engine as _create_rel_engine,
+                )
+
+                from investigation_agent_platform.application.correlation.engine import (
+                    EphemeralCorrelationEngine,
+                )
+                from investigation_agent_platform.infrastructure.correlation.repository import (
+                    PostgresRelationshipRepository,
+                )
+
+                _rel_engine = _create_rel_engine(
+                    _async_db_uri(config.evidence.postgres_dsn.get_secret_value())
+                )
+                correlation_engine = EphemeralCorrelationEngine(
+                    PostgresRelationshipRepository(
+                        _make_session_factory(_rel_engine, expire_on_commit=False)
+                    ),
+                    ctx.evidence_repo,
+                )
+                logger.info("Correlation engine wired")
+            except Exception as exc:
+                logger.warning(
+                    "Correlation engine unavailable; CORRELATE actions will fail",
+                    extra={"error": str(exc)},
+                )
+        else:
+            logger.info("Postgres DSN unconfigured; correlation engine stays unwired")
+
         sanitizer = SensitiveDataRedactor()
         ctx.evidence_gateway = AsyncEvidenceGateway(  # type: ignore[attr-defined]
             provider_selector=selector,
@@ -618,6 +662,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             evidence_repository=ctx.evidence_repo,
             repository_registry=ProfileBackedRepositoryRegistry(ctx.profile_repo),
             profile_repo=ctx.profile_repo,
+            correlation_engine=correlation_engine,
         )
         logger.info("Evidence gateway composed")
 

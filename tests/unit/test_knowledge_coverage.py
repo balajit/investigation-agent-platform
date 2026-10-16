@@ -15,8 +15,27 @@ from pydantic import ValidationError
 from investigation_agent_platform.api.app import create_app
 from investigation_agent_platform.api.dependencies import (
     AppContext,
+    InMemoryInvestigationRepository,
     set_app_context,
 )
+from investigation_agent_platform.infrastructure.persistence.buffered import (
+    BufferedProxy,
+    SqliteWal,
+)
+
+
+def _share_investigation_store(ctx, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Give the test context a worker-visible investigation store.
+
+    The dispatch gate (STORE_NOT_SHARED) requires Postgres-shared state;
+    these tests fake only the Temporal client, so wrap the in-memory repo in
+    a BufferedProxy with a live primary — the same contract production
+    Postgres primaries satisfy — keeping intake→dispatch cover without a DB.
+    """
+    wal = SqliteWal(str(tmp_path / "test-share-wal.sqlite3"))
+    ctx.investigation_repo = BufferedProxy(
+        InMemoryInvestigationRepository(), ctx.investigation_repo, wal, "investigation_repo"
+    )
 
 
 def _intake_kwargs(**overrides):  # type: ignore[no-untyped-def]
@@ -512,8 +531,9 @@ class TestKnowledgeEndpoints:
         monkeypatch.setenv("IAP_ENVIRONMENT", "development")
         return {"X-Tenant-ID": tenant}
 
-    def test_intake_forks_and_starts(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def test_intake_forks_and_starts(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
         client, ctx = self._client(monkeypatch)
+        _share_investigation_store(ctx, tmp_path)
         ctx.temporal_client = MagicMock()
         ctx.temporal_client.start_workflow = AsyncMock()
         resp = client.post(
@@ -542,8 +562,9 @@ class TestKnowledgeEndpoints:
         )
         assert resp.status_code == 403
 
-    def test_intake_merges_second_tenant(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def test_intake_merges_second_tenant(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
         client, ctx = self._client(monkeypatch)
+        _share_investigation_store(ctx, tmp_path)
         ctx.temporal_client = MagicMock()
         ctx.temporal_client.start_workflow = AsyncMock()
         payload = {
@@ -567,8 +588,9 @@ class TestKnowledgeEndpoints:
         assert second.json()["investigation_id"] != first.json()["investigation_id"]
         assert second.json()["code_issue_fingerprint"] == first.json()["code_issue_fingerprint"]
 
-    def test_knowledge_view_redacts_other_sessions(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def test_knowledge_view_redacts_other_sessions(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
         client, ctx = self._client(monkeypatch)
+        _share_investigation_store(ctx, tmp_path)
         ctx.temporal_client = MagicMock()
         ctx.temporal_client.start_workflow = AsyncMock()
         payload = {
@@ -668,10 +690,69 @@ class TestKnowledgeMigrationChain:
         newest16 = script.get_revision("016_profile_v2_columns")
         assert newest16 is not None
         assert newest16.down_revision == "015_batch_intake"
-        assert script.get_heads() == ["016_profile_v2_columns"]
+        newest17 = script.get_revision("3354e515779a")
+        assert newest17 is not None
+        assert newest17.down_revision == "016_profile_v2_columns"
+        assert script.get_heads() == ["3354e515779a"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base
 
         for table in ("knowledge_artifacts", "investigation_sessions", "code_issue_index"):
             assert table in Base.metadata.tables
+
+
+class TestKnowledgeTextFilter:
+    def _client(self, monkeypatch):  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from investigation_agent_platform.api.app import create_app as _create_app
+        from investigation_agent_platform.api.dependencies import AppContext, set_app_context
+
+        monkeypatch.setenv("IAP_ENVIRONMENT", "development")
+        ctx = AppContext()
+        set_app_context(ctx)
+        return TestClient(_create_app()), ctx
+
+    def test_q_filters_statements(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import asyncio as _asyncio
+        from datetime import UTC, datetime
+
+        from investigation_agent_platform.domain.knowledge.models import (
+            KnowledgeArtifact,
+            RefreshPolicy,
+        )
+
+        client, ctx = self._client(monkeypatch)
+        now = datetime.now(UTC)
+        for stmt in ["checkout 5xx spike at gateway", "ledger drift at midnight"]:
+            _asyncio.run(
+                ctx.artifact_repo.save(
+                    "tenant-a",
+                    KnowledgeArtifact(
+                        tenant_id="tenant-a",
+                        application_id="app-1",
+                        investigation_id="00000000-0000-0000-0000-000000000000",
+                        kind="runbook",
+                        statement=stmt,
+                        confidence=0.8,
+                        refresh_policy=RefreshPolicy.IMMUTABLE,
+                        valid_from=now,
+                    ),
+                )
+            )
+        headers = {"X-Tenant-ID": "tenant-a"}
+        all_items = client.get(
+            "/api/v1/knowledge/search?application_id=app-1", headers=headers
+        ).json()
+        assert all_items["total"] == 2
+        filtered = client.get(
+            "/api/v1/knowledge/search?application_id=app-1&q=checkout", headers=headers
+        ).json()
+        assert filtered["total"] == 1
+        assert "checkout" in filtered["items"][0]["statement"]
+        none_match = client.get(
+            "/api/v1/knowledge/search?application_id=app-1&q=zzz-no-hit",
+            headers=headers,
+        ).json()
+        assert none_match["total"] == 0

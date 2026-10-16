@@ -430,10 +430,58 @@ class TestFulfillUpdate:
 
     def test_wait_state_is_json_serializable(self) -> None:
         """Continue-As-New safety: wait-gate state must be plain JSON data."""
-        pending = {"requirement_id": "req-1", "requirement_version": 1}
+        pending = {"requirement_id": "req-1", "requirement_version": 3}
         fulfilled = {"requirement_id": "req-1", "version": 1, "data": {"a": 1}}
         assert json.loads(json.dumps(pending)) == pending
         assert json.loads(json.dumps(fulfilled)) == fulfilled
+
+
+# ===========================================================================
+# Per-iteration reason trace (timeline descriptions)
+# ===========================================================================
+
+
+class TestReasonSummary:
+    def test_full_decision(self) -> None:
+        from investigation_agent_platform.application.worker.workflows import (
+            _reason_summary,
+        )
+
+        summary = _reason_summary(
+            {
+                "next_action": "SEARCH_LOGS",
+                "conclusion_readiness": 0.0,
+                "hypotheses_evaluated": [],
+                "observations": ["o1", "o2"],
+            }
+        )
+        assert summary == (
+            "reason: action=SEARCH_LOGS readiness=0.0 hypotheses=0 observations=2"
+        )
+
+    def test_missing_keys_degrade_to_placeholders(self) -> None:
+        from investigation_agent_platform.application.worker.workflows import (
+            _reason_summary,
+        )
+
+        summary = _reason_summary({})
+        assert summary == "reason: action=? readiness=? hypotheses=0 observations=0"
+
+    def test_query_digest_included(self) -> None:
+        from investigation_agent_platform.application.worker.workflows import (
+            _reason_summary,
+        )
+
+        summary = _reason_summary(
+            {
+                "next_action": "SEARCH_LOGS",
+                "conclusion_readiness": 0.0,
+                "hypotheses_evaluated": [],
+                "observations": [],
+                "action_parameters": {"keywords": ["profile", "iap"], "limit": 10},
+            }
+        )
+        assert "query=[keywords=['profile', 'iap']]" in summary
 
 
 # ===========================================================================
@@ -952,3 +1000,47 @@ class TestMigration011:
             rev = script.get_revision(down) if down else None
         assert "011_input_requirements" in seen
         assert seen.index("012_finding_clusters") < seen.index("011_input_requirements")
+
+
+class TestPhaseTracksTransitions:
+    def _inv(self):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime, timedelta
+
+        from investigation_agent_platform.domain.investigation.models import (
+            Investigation,
+            InvestigationContext,
+            InvestigationRequest,
+            InvestigationStatus,
+        )
+
+        now = datetime.now(UTC)
+        return Investigation(
+            session_id="s",
+            application_id="a",
+            tenant_id="t",
+            request=InvestigationRequest(
+                application_id="a", problem_description="p", session_id="s",
+                requested_by="t",
+            ),
+            context=InvestigationContext(
+                environment="dev", time_window=(now - timedelta(hours=1), now)
+            ),
+            status=InvestigationStatus.CREATED,
+            created_at=now,
+            updated_at=now,
+            version=1,
+        )
+
+    def test_phase_defaults_and_tracks_status(self) -> None:
+        from investigation_agent_platform.domain.investigation.models import (
+            ActorType,
+            InvestigationStatus,
+        )
+
+        inv = self._inv()
+        assert inv.phase == "CREATED"
+        moved, _ = inv.transition_to(
+            InvestigationStatus.INVESTIGATING, ActorType.SYSTEM, "go"
+        )
+        assert moved.phase == "INVESTIGATING"
+        assert moved.status.value == moved.phase

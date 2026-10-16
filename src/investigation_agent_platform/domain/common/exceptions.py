@@ -219,6 +219,46 @@ class ExecutionError(DomainException):
         )
 
 
+class ProviderNotConfiguredError(ExecutionError):
+    """An evidence provider is not registered for this tenant/application.
+
+    Distinct from a provider outage: absence is deterministic for the
+    deployment, so callers can degrade (empty result, try another
+    capability) instead of failing the investigation. Never retryable —
+    retrying an unregistered provider can never succeed.
+    """
+
+    def __init__(
+        self, message: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(
+            message=message,
+            details=details,
+            retryable=False,
+        )
+        self.error_code = "PROVIDER_NOT_CONFIGURED"
+
+
+class CodePathNotFoundError(ExecutionError):
+    """A requested repo path does not exist (or is not a file) at the revision.
+
+    Agent path guesses miss routinely; this is an exploration miss, not an
+    infrastructure failure. Callers degrade to empty (the attempt stays
+    visible in the decision trace) instead of failing the investigation.
+    Never retryable — the tree does not change mid-run.
+    """
+
+    def __init__(
+        self, message: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(
+            message=message,
+            details=details,
+            retryable=False,
+        )
+        self.error_code = "CODE_PATH_NOT_FOUND"
+
+
 class ConcurrencyError(DomainException):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(

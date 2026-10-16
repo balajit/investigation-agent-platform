@@ -15,6 +15,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 
 from investigation_agent_platform.api.dependencies import get_app_context
+from investigation_agent_platform.api.dependencies import (
+    is_worker_visible_store as isWorkerVisibleStore,
+)
 from investigation_agent_platform.api.errors import ApiError, sanitize_extra
 from investigation_agent_platform.api.tenant import require_principal, require_tenant
 from investigation_agent_platform.api.v1.schemas.envelopes import ListEnvelope
@@ -44,7 +47,7 @@ from investigation_agent_platform.domain.investigation.input_requirements import
     InputFulfillment,
     RequirementState,
 )
-from investigation_agent_platform.domain.investigation.models import InvestigationStatus
+from investigation_agent_platform.domain.investigation.models import ActorType, InvestigationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -176,26 +179,6 @@ async def start_investigation_workflow(
     )
 
 
-def isWorkerVisibleStore(repo: Any) -> bool:
-    """True when a worker process can load rows written through this repo.
-
-    The API and the Temporal worker are separate processes: only Postgres
-    is shared. Direct SQLAlchemy repos are shared by construction; a
-    BufferedProxy shares state only when its primary is a live Postgres
-    (not a DownPrimary). Anything else (in-memory repos) is process-local.
-    Duck-typed by class name to avoid importing infrastructure here.
-    """
-    if repo is None:
-        return False
-    repo_name = type(repo).__name__
-    if "InMemory" in repo_name:
-        return False
-    if repo_name == "BufferedProxy":
-        primary_name = type(getattr(repo, "primary", None)).__name__
-        return primary_name != "DownPrimary"
-    return True
-
-
 async def _dispatch_workflow(
     ctx: Any,
     investigation: Any,
@@ -209,6 +192,7 @@ async def _dispatch_workflow(
     # Lifecycle gate (§4): retired profiles block new starts (in-flight
     # workflow runs already underway are unaffected).
     profile_repo = getattr(ctx, "profile_repo", None)
+    revisions: list = []
     if profile_repo is not None:
         try:
             revisions = await profile_repo.list_revisions(
@@ -220,6 +204,38 @@ async def _dispatch_workflow(
             raise ApiError(
                 code="PROFILE_RETIRED", http_status=status.HTTP_409_CONFLICT, message=f"Application profile is {revisions[0].status.value}; new starts are blocked"
             )
+
+    # Persist RUNNING before dispatch so the status is real (D14), not a
+    # DTO literal: UI clients get a typed member and the aggregate can never
+    # sit in CREATED with a live workflow behind it. CREATED/FAILED enter
+    # RUNNING; an already-RUNNING aggregate proceeds (prior attempt may have
+    # dispatched already — Temporal dedupes by workflow id). Any other status
+    # is not startable. Persistence precedes the Temporal call and any
+    # failure here aborts before dispatch (F-008).
+    if investigation.status in (InvestigationStatus.CREATED, InvestigationStatus.FAILED):
+        from investigation_agent_platform.domain.common.exceptions import (
+            InvalidLifecycleTransitionException,
+        )
+
+        try:
+            running, _ = investigation.transition_to(
+                InvestigationStatus.RUNNING, ActorType.SYSTEM, "workflow dispatch requested"
+            )
+        except InvalidLifecycleTransitionException as exc:
+            raise ApiError(
+                code="INVESTIGATION_NOT_STARTABLE", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+            ) from exc
+        try:
+            await ctx.investigation_repo.save(tenant_id, running, investigation.version)
+        except ConcurrencyError as exc:
+            raise ApiError(
+                code="CONCURRENCY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+            ) from exc
+        investigation = running
+    elif investigation.status != InvestigationStatus.RUNNING:
+        raise ApiError(
+            code="INVESTIGATION_NOT_STARTABLE", http_status=status.HTTP_409_CONFLICT, message=f"Only CREATED, FAILED, or RUNNING investigations can be started (status is {investigation.status.value})"
+        )
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         logger.error(
@@ -261,7 +277,28 @@ async def _dispatch_workflow(
 
     # Propagate correlation_id to Temporal via workflow memo/headers.
     try:
+        from investigation_agent_platform.application.worker.activities import (
+            overlay_evidence_budget,
+        )
         from investigation_agent_platform.application.worker.workflows import RunInvestigationInput
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationLimits,
+        )
+
+        # Iteration budget resolved at dispatch from the effective limits
+        # (global defaults plus the profile evidence_budget overlay), so a
+        # per-app budget increase takes effect without code changes or
+        # restarts. Falls back to the workflow guard default when the
+        # profile is unavailable.
+        max_iterations: int | None = None
+        try:
+            if revisions:
+                effective_limits = overlay_evidence_budget(
+                    InvestigationLimits(), revisions[0]
+                )
+                max_iterations = int(effective_limits.max_iterations)
+        except Exception:
+            max_iterations = None
 
         wf_input = RunInvestigationInput(
             application_id=str(investigation.application_id),
@@ -270,6 +307,7 @@ async def _dispatch_workflow(
             description=getattr(investigation, "problem_description", None),
             correlation_id=correlation_id,
             investigation_id=investigation_id,
+            max_iterations=max_iterations,
         )
         memo = (
             {"correlation_id": correlation_id, "tenant_id": tenant_id} if correlation_id else None
@@ -647,14 +685,47 @@ async def fulfill_input_requirement(
 async def list_investigations(
     x_tenant_id: str = Depends(require_tenant),
     limit: int = Query(default=50, ge=1, le=200),
+    status_filter: str | None = Query(
+        default=None,
+        alias="status",
+        max_length=256,
+        description="Comma-separated status filter (e.g. COMPLETED,FAILED). "
+        "Omit for open investigations only.",
+    ),
+    application_id: str | None = Query(
+        default=None, min_length=1, max_length=128,
+        description="Restrict to one application profile id.",
+    ),
 ) -> ListEnvelope[InvestigationListItemView]:
-    """Lists open investigations for the tenant (most recent first, best-effort order).
+    """Lists investigations for the tenant (most recent first, best-effort order).
 
-    Backed by `list_open_ids`; full query/filter support needs repository
-    listing (downgraded in the Part 4 §4.1 matrix note until then).
+    Without filters this returns open investigations only (backed by
+    `list_open_ids`); pass `status` and/or `application_id` to include
+    terminal investigations and scope by application.
     """
     ctx = get_app_context()
-    ids = await ctx.investigation_repo.list_open_ids(x_tenant_id)
+    statuses: list[str] | None = None
+    if status_filter is not None:
+        try:
+            statuses = [
+                InvestigationStatus(part.strip().upper()).value
+                for part in status_filter.split(",")
+                if part.strip()
+            ]
+        except ValueError as exc:
+            raise ApiError(
+                code="INVALID_STATUS_FILTER", http_status=status.HTTP_400_BAD_REQUEST, message=f"Unknown status in filter: {status_filter!r}"
+            ) from exc
+        if not statuses:
+            raise ApiError(
+                code="INVALID_STATUS_FILTER", http_status=status.HTTP_400_BAD_REQUEST, message=f"Unknown status in filter: {status_filter!r}"
+            )
+    if statuses is None and application_id is None:
+        ids = await ctx.investigation_repo.list_open_ids(x_tenant_id)
+    else:
+        ids = await ctx.investigation_repo.list_filtered(
+            x_tenant_id, statuses, application_id, limit
+        )
     items = []
     for inv_id in ids[:limit]:
         inv = await ctx.get_investigation_service().execute(x_tenant_id, inv_id)
@@ -664,6 +735,7 @@ async def list_investigations(
             InvestigationListItemView(
                 investigation_id=str(inv.id),
                 status=inv.status.value,
+                phase=inv.phase,
                 application_id=inv.application_id,
                 created_at=inv.created_at.isoformat() if inv.created_at else None,
                 updated_at=inv.updated_at.isoformat() if inv.updated_at else None,
@@ -713,11 +785,13 @@ async def get_conclusion(
         finding_repo = getattr(ctx, "finding_repo", None)
         if finding_repo is not None:
             conclusion = await finding_repo.get_conclusion(x_tenant_id, investigation_uuid)
+    failure = (getattr(investigation, "metadata", None) or {}).get("failure")
     return ConclusionResponse.model_validate(
         {
             "investigation_id": investigation_id,
             "status": investigation.status.value,
             "conclusion": conclusion.model_dump(mode="json") if conclusion is not None else None,
+            "failure": failure,
         }
     )
 

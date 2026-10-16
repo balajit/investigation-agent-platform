@@ -139,12 +139,16 @@ class VerificationEngine:
         # F-050: cross-layer corroboration requires INDEPENDENT sources — distinct
         # providers/systems, not merely distinct evidence_type values. Two rows
         # from the same derived dataset must never count as corroboration.
+        # Proven in production (self-investigation d16f044f): ten lines from
+        # one log file previously counted as cross-layer via a source-count
+        # escape hatch, capping nothing — confidence hit exactly 0.80 and a
+        # single-capability conclusion was published as VERIFIED without the
+        # agent ever checking state or code. Distinct source URIs from one
+        # provider are volume, not corroboration.
         providers = {getattr(e, "provider", "unknown") for e in evidence_items}
-        sources = {getattr(e, "source", "unknown") for e in evidence_items}
         types = {e.evidence_type for e in evidence_items}
-        independent_layers = len(providers) >= 2 and len(types) >= 2
         cross_layer = (
-            (independent_layers or len(sources) >= 3)
+            (len(providers) >= 2 and len(types) >= 2)
             if policy.require_cross_layer_evidence
             else True
         )

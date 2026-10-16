@@ -1,6 +1,7 @@
-from elasticsearch import Elasticsearch
-import os
 import json
+import os
+
+from elasticsearch import Elasticsearch
 
 url = os.environ.get("ES_URL", "")
 user = os.environ.get("ES_USER", "")

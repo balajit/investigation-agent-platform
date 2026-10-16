@@ -376,10 +376,15 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 raise ExecutionError(
                     f"No state provider available for environment '{request.environment}'"
                 )
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope state access"
+                )
 
             result = await asyncio.wait_for(
                 provider.get_application_state(
-                    tenant_id, investigation_id, request, provider.profile
+                    tenant_id, investigation_id, request, profile
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -419,11 +424,16 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             )
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope code access"
+                )
             raw_items = await asyncio.wait_for(
                 provider.search_code(
                     tenant_id,
                     request.query,
-                    provider.profile,
+                    profile,
                     investigation_id=investigation_id,
                 ),
                 timeout=self._timeout_seconds,
@@ -454,11 +464,16 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             )
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope code access"
+                )
             symbols = await asyncio.wait_for(
                 provider.find_symbol(
                     tenant_id,
                     request.symbol_name,
-                    provider.profile,
+                    profile,
                     investigation_id=investigation_id,
                 ),
                 timeout=self._timeout_seconds,
@@ -488,9 +503,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope code access"
+                )
             raw_evidence = await asyncio.wait_for(
                 provider.get_source(
-                    tenant_id, investigation_id, request.file_path, provider.profile
+                    tenant_id, investigation_id, request.file_path, profile
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -517,11 +537,16 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             )
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope code access"
+                )
             callers = await asyncio.wait_for(
                 provider.find_callers(
                     tenant_id,
                     request.symbol,
-                    provider.profile,
+                    profile,
                     investigation_id=investigation_id,
                 ),
                 timeout=self._timeout_seconds,
@@ -554,9 +579,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
                 raise ExecutionError(f"No code provider available for app '{application_id}'")
+            profile = await self._effective_profile(provider, tenant_id, application_id)
+            if profile is None:
+                raise ExecutionError(
+                    f"No application profile for '{application_id}'; cannot scope code access"
+                )
             items = await asyncio.wait_for(
                 provider.get_code_history(
-                    tenant_id, investigation_id, request.file_path, provider.profile
+                    tenant_id, investigation_id, request.file_path, profile
                 ),
                 timeout=self._timeout_seconds,
             )

@@ -75,6 +75,21 @@ class InvestigationRepository(Protocol):
         feeds the snapshot-retention janitor's pinned-revision lookup)."""
         ...
 
+    async def list_filtered(
+        self,
+        tenant_id: str,
+        statuses: list[str] | None,
+        application_id: str | None,
+        limit: int,
+    ) -> list[UUID]:
+        """IDs matching status/application filters, most-recent first.
+
+        Empty filters match everything (unlike list_open_ids, terminal
+        statuses are included when asked for). statuses holds status
+        VALUES (e.g. "COMPLETED"), already validated by the caller.
+        """
+        ...
+
 
 @runtime_checkable
 class EvidenceRepository(Protocol):

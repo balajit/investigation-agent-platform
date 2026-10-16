@@ -707,6 +707,71 @@ class TestCodeAccessScope:
             with pytest.raises(SecurityPolicyViolationException):
                 PyGit2Adapter._validate_tree_path(bad)
 
+    @pytest.mark.asyncio
+    async def test_long_file_truncated_to_snippet_limit(self, tmp_path) -> None:
+        from types import SimpleNamespace
+
+        import pygit2
+
+        from investigation_agent_platform.infrastructure.evidence.code.git import (
+            PyGit2Adapter,
+        )
+
+        repo_dir = tmp_path / "o" / "r"
+        repo_dir.mkdir(parents=True)
+        repo = pygit2.init_repository(str(repo_dir))
+        big = repo_dir / "big.py"
+        big.write_text("x = 1\n" * 3000, encoding="utf-8")
+        repo.index.add_all()
+        repo.index.write()
+        author = pygit2.Signature("t", "t@t")
+        commit = repo.create_commit("HEAD", author, author, "init", repo.index.write_tree(), [])
+        repo.create_branch("main", repo.get(commit))
+
+        code = SimpleNamespace(org="o", repos=["r"], default_branch="main")
+        svc = SimpleNamespace(code=code, name="r")
+        profile = SimpleNamespace(services=[svc], primary_service=svc)
+        adapter = PyGit2Adapter(repo_base_path=str(tmp_path))
+        evidence = await adapter.get_source(
+            "tenant-a", uuid.uuid4(), "big.py", profile
+        )
+        assert len(evidence.content_snippet or "") <= 4096
+        assert evidence.evidence_type.value == "SOURCE_CODE"
+
+    @pytest.mark.asyncio
+    async def test_missing_path_raises_typed_not_found(self, tmp_path) -> None:
+        from types import SimpleNamespace
+
+        import pygit2
+
+        from investigation_agent_platform.domain.common.exceptions import (
+            CodePathNotFoundError,
+            ExecutionError,
+        )
+        from investigation_agent_platform.infrastructure.evidence.code.git import (
+            PyGit2Adapter,
+        )
+
+        repo_dir = tmp_path / "o" / "r"
+        repo_dir.mkdir(parents=True)
+        repo = pygit2.init_repository(str(repo_dir))
+        (repo_dir / "a.py").write_text("x = 1\n", encoding="utf-8")
+        repo.index.add_all()
+        repo.index.write()
+        author = pygit2.Signature("t", "t@t")
+        commit = repo.create_commit("HEAD", author, author, "init", repo.index.write_tree(), [])
+        repo.create_branch("main", repo.get(commit))
+
+        code = SimpleNamespace(org="o", repos=["r"], default_branch="main")
+        svc = SimpleNamespace(code=code, name="r")
+        profile = SimpleNamespace(services=[svc], primary_service=svc)
+        adapter = PyGit2Adapter(repo_base_path=str(tmp_path))
+        with pytest.raises(CodePathNotFoundError):
+            await adapter.get_source("tenant-a", uuid.uuid4(), "missing.py", profile)
+        # Still an ExecutionError for existing handlers.
+        with pytest.raises(ExecutionError):
+            await adapter.get_source("tenant-a", uuid.uuid4(), "missing.py", profile)
+
 
 # ===========================================================================
 # F-069: migration chain integrity (offline, no database required)
@@ -741,6 +806,7 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "3354e515779a",
             "016_profile_v2_columns",
             "015_batch_intake",
             "014_reference_documents",
@@ -819,7 +885,10 @@ class TestApproveActionEndpoint:
     def test_missing_temporal_client_returns_503(self) -> None:
         import asyncio as _asyncio
 
-        from investigation_agent_platform.domain.investigation.models import InvestigationRequest
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationRequest,
+            InvestigationStatus,
+        )
 
         client, ctx = self._client()
         req = InvestigationRequest(
@@ -830,6 +899,18 @@ class TestApproveActionEndpoint:
         )
         inv = _asyncio.run(ctx.create_investigation_service().execute(req, tenant_id="tenant-a"))
         assert getattr(ctx, "temporal_client", None) is None
+        # Never-started investigations have no workflow: 409 state conflict,
+        # raised before any signal attempt (never a 502).
+        resp = client.post(
+            f"/api/v1/investigations/{inv.id}/approve-action?action_id=a&approved=true",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "INVESTIGATION_NOT_STARTED"
+        # A started investigation without a Temporal client: explicit 503,
+        # never fabricated success.
+        started = inv.model_copy(update={"status": InvestigationStatus.INVESTIGATING})
+        _asyncio.run(ctx.investigation_repo.save("tenant-a", started, inv.version))
         resp = client.post(
             f"/api/v1/investigations/{inv.id}/approve-action?action_id=a&approved=true",
             headers={"X-Tenant-ID": "tenant-a"},
@@ -900,3 +981,39 @@ class TestNewInvestigationRoutes:
             f"/api/v1/investigations/{failed.id}/retry", headers={"X-Tenant-ID": "tenant-a"}
         )
         assert resp.status_code == 503
+
+    def test_approve_action_ack_carries_status(self) -> None:
+        import asyncio as _asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationRequest,
+            InvestigationStatus,
+        )
+
+        client, ctx = self._client()
+        req = InvestigationRequest(
+            application_id="example-app",
+            problem_description="approval shape",
+            session_id="sess-approval-shape",
+            requested_by="tester",
+        )
+        inv = _asyncio.run(ctx.create_investigation_service().execute(req, tenant_id="tenant-a"))
+        started = inv.model_copy(update={"status": InvestigationStatus.INVESTIGATING})
+        _asyncio.run(ctx.investigation_repo.save("tenant-a", started, inv.version))
+        fake_handle = MagicMock()
+        fake_handle.signal = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.get_workflow_handle = MagicMock(return_value=fake_handle)
+        ctx.temporal_client = fake_client
+        try:
+            resp = client.post(
+                f"/api/v1/investigations/{inv.id}/approve-action?action_id=a&approved=true",
+                headers={"X-Tenant-ID": "tenant-a"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["approved"] is True
+            assert body["status"] == "INVESTIGATING"
+        finally:
+            del ctx.temporal_client

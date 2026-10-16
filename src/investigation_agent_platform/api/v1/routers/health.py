@@ -49,6 +49,7 @@ async def readiness(response: Response) -> HealthView:
         "database": "UNKNOWN",
         "temporal": "UNKNOWN",
         "broker": "UNKNOWN",
+        "store": "UNKNOWN",
     }
     all_healthy = True
 
@@ -56,6 +57,9 @@ async def readiness(response: Response) -> HealthView:
     # in depth alongside the F-001 hard-fail startup check), otherwise probe
     # the actual repository the request path uses.
     from investigation_agent_platform.api.dependencies import InMemoryInvestigationRepository
+    from investigation_agent_platform.api.dependencies import (
+        is_worker_visible_store as _is_worker_visible_store,
+    )
 
     if environment == "production" and isinstance(
         ctx.investigation_repo, InMemoryInvestigationRepository
@@ -136,6 +140,38 @@ async def readiness(response: Response) -> HealthView:
         all_healthy = False
     else:
         checks["broker"] = "NOT_REQUIRED"
+
+    # Store-sharedness (split-brain guard): connectivity is not
+    # dispatchability. A process-local investigation store can never hand
+    # work to the Temporal worker (routers 503 STORE_NOT_SHARED) and cannot
+    # see Postgres-seeded profiles — yet every check above stays green.
+    # SHARED = worker-visible (SQLAlchemy or live-primary proxy).
+    # PROCESS_LOCAL = divergent when the bootstrap flagged a reachable
+    # Postgres alongside disabled buffering (_store_divergence_risk); plain
+    # offline dev (no shared database) stays healthy but reported.
+    if _is_worker_visible_store(getattr(ctx, "investigation_repo", None)):
+        checks["store"] = "SHARED"
+    elif getattr(ctx, "_store_divergence_risk", None):
+        checks["store"] = "PROCESS_LOCAL"
+        all_healthy = False
+    elif getattr(ctx, "_store_divergence_risk", None) is False:
+        checks["store"] = "PROCESS_LOCAL"
+    else:
+        checks["store"] = "UNKNOWN"
+
+    # Buffered-write backlog (dev persistence): pending/held WAL counts so
+    # operators can see stuck replays without log access. Informational only —
+    # a HELD backlog never breaks the request path.
+    wal = getattr(ctx, "_buffer_wal", None)
+    if wal is not None:
+        try:
+            checks["buffer"] = (
+                f"pending={int(wal.pending_count())} held={int(wal.held_count())}"
+            )
+        except Exception:
+            checks["buffer"] = "UNKNOWN"
+    else:
+        checks["buffer"] = "DISABLED"
 
     if not all_healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

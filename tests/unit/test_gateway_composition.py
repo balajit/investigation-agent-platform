@@ -103,6 +103,42 @@ class TestGatewayComposition:
         ctx = build_app_context(cfg)
         assert isinstance(ctx.evidence_gateway, AsyncEvidenceGateway)
 
+    def test_correlation_engine_wired_with_postgres_dsn(self) -> None:
+        from investigation_agent_platform.api.dependencies import AppContext
+        from investigation_agent_platform.application.correlation.engine import (
+            EphemeralCorrelationEngine,
+        )
+        from investigation_agent_platform.bootstrap import _wire_evidence_gateway
+        from investigation_agent_platform.infrastructure.configuration.config import (
+            EvidenceConfig,
+        )
+
+        ctx = AppContext()
+        cfg = _production_config(
+            evidence=EvidenceConfig(
+                postgres_dsn="postgresql://iap:iap@localhost:5452/iap",
+                cursor_signing_key="test-signing-key",
+            )
+        )
+        _wire_evidence_gateway(ctx, cfg)
+        assert isinstance(
+            ctx.evidence_gateway._correlation_engine, EphemeralCorrelationEngine
+        )
+
+    def test_correlation_engine_unwired_without_postgres_dsn(self) -> None:
+        from investigation_agent_platform.api.dependencies import AppContext
+        from investigation_agent_platform.bootstrap import _wire_evidence_gateway
+        from investigation_agent_platform.infrastructure.configuration.config import (
+            EvidenceConfig,
+        )
+
+        ctx = AppContext()
+        cfg = _production_config(
+            evidence=EvidenceConfig(cursor_signing_key="test-signing-key")
+        )
+        _wire_evidence_gateway(ctx, cfg)
+        assert ctx.evidence_gateway._correlation_engine is None
+
 
 class _StaticMappingLookup:
     """In-memory EvidenceMappingLookup for adapter contract tests."""

@@ -303,7 +303,8 @@ class TestSaveBatch:
         with patch(f"{APP}.evidence_repository.rls_session", return_value=cm):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
-        assert session.scalars.await_count == 1
+        # Atomic upsert: single INSERT ... ON CONFLICT DO NOTHING, no pre-SELECT.
+        assert session.scalars.await_count == 0
         assert session.execute.await_count == 1
 
     @pytest.mark.asyncio
@@ -320,7 +321,7 @@ class TestSaveBatch:
         with patch(f"{APP}.evidence_repository.rls_session", return_value=cm):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
-        assert session.scalars.await_count == 1
+        assert session.scalars.await_count == 0
         assert session.execute.await_count == 1
         stmt = session.execute.await_args.args[0]
         param_values = list(stmt.compile().params.values())
@@ -332,6 +333,9 @@ class TestSaveBatch:
             SqlAlchemyEvidenceRepository,
         )
 
+        # Already-stored rows are skipped by the database itself (ON CONFLICT
+        # DO NOTHING): the batch still issues its single INSERT, and the
+        # conflicting row is ignored atomically instead of raising.
         items = [_make_evidence(fingerprint="fp-known")]
         session = _session_with(scalars_result=_scalars(all_=["fp-known"]))
         cm = AsyncMock()
@@ -340,8 +344,8 @@ class TestSaveBatch:
         with patch(f"{APP}.evidence_repository.rls_session", return_value=cm):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
-        assert session.scalars.await_count == 1
-        assert session.execute.await_count == 0
+        assert session.scalars.await_count == 0
+        assert session.execute.await_count == 1
 
     @pytest.mark.asyncio
     async def test_batch_logs_size_and_outcome(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -503,7 +507,7 @@ class TestMutationLogs:
         )
 
         session = AsyncMock()
-        session.scalars = AsyncMock(side_effect=RuntimeError("db down"))
+        session.execute = AsyncMock(side_effect=RuntimeError("db down"))
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)

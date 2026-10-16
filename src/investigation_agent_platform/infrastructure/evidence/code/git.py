@@ -11,7 +11,10 @@ from uuid import UUID
 import pygit2
 from opentelemetry import trace
 
-from investigation_agent_platform.domain.common.exceptions import ExecutionError
+from investigation_agent_platform.domain.common.exceptions import (
+    CodePathNotFoundError,
+    ExecutionError,
+)
 from investigation_agent_platform.domain.evidence.models import (
     ClassificationLevel,
     Evidence,
@@ -134,15 +137,22 @@ class PyGit2Adapter:
         try:
             repo = pygit2.Repository(str(repo_path))
             commit = repo.revparse_single(branch)
-            entry = commit.tree[file_path]
+            try:
+                entry = commit.tree[file_path]
+            except KeyError as exc:
+                raise CodePathNotFoundError(
+                    f"Path not found in {repository}@{branch}: {file_path}"
+                ) from exc
             if not isinstance(entry, pygit2.Blob):
-                raise ExecutionError(f"Path is not a blob: {file_path}")
+                raise CodePathNotFoundError(f"Path is not a file: {file_path}")
             blob: pygit2.Blob = entry
             if blob.size > MAX_SOURCE_BYTE_SIZE:
                 raise ExecutionError(
                     f"File size {blob.size} bytes exceeds maximum limit of {MAX_SOURCE_BYTE_SIZE}"
                 )
             raw_text = blob.data.decode("utf-8", errors="replace")
+        except CodePathNotFoundError:
+            raise
         except Exception as exc:
             logger.error(
                 "Git source fetch failure",
@@ -156,7 +166,10 @@ class PyGit2Adapter:
         lines = raw_text.splitlines()
         start = 0
         end = min(len(lines), MAX_SOURCE_LINE_COUNT)
-        selected_content = "\n".join(lines[start:end])
+        # Evidence.content_snippet caps at 4096 chars: truncate long files to
+        # the head (previously any file over ~4KB failed Evidence validation
+        # and GET_CODE errored instead of returning a snippet).
+        selected_content = "\n".join(lines[start:end])[:4000]
         now = datetime.now(UTC)
 
         commit_sha = str(commit.id)

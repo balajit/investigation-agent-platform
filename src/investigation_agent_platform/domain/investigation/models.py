@@ -43,6 +43,11 @@ class InvestigationStatus(StrEnum):
     # Part 11.5: workflow is suspended waiting for caller-supplied input
     # (see domain/investigation/input_requirements.py). Terminal-until-resumed.
     AWAITING_INPUT = "AWAITING_INPUT"
+    # Dispatched but no workflow activity observed yet: set by POST .../start
+    # (and .../retry) when the Temporal execution is accepted. Transient by
+    # design — the worker's first transition moves out of it. First-class
+    # member (not a DTO literal) so UI clients get a typed status (D14).
+    RUNNING = "RUNNING"
 
 
 class FactType(StrEnum):
@@ -71,6 +76,28 @@ class ActorType(StrEnum):
     AGENT = "AGENT"
     USER = "USER"
     ADMIN = "ADMIN"
+
+
+class InvestigationPriority(StrEnum):
+    """Closed priority vocabulary for investigation requests (D12).
+
+    Free strings previously flowed straight into persistence with no
+    consumer ever branching on them; the UI had to guess with chips.
+    """
+
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class IncidentSeverity(StrEnum):
+    """Closed severity vocabulary for error-intake reports (D12)."""
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
 
 
 class CorrelationVector(BaseModel):
@@ -202,7 +229,7 @@ class InvestigationRequest(BaseModel):
     session_id: str = Field(..., max_length=128)
     requested_by: str = Field(..., max_length=128)
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    priority: str = Field(default="NORMAL", max_length=32)
+    priority: InvestigationPriority = Field(default=InvestigationPriority.NORMAL)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -235,12 +262,21 @@ class InvestigationTransition(BaseModel):
 
 
 class InvestigationLimits(BaseModel):
-    """Hard upper bounds enforcing platform execution budget."""
+    """Hard upper bounds enforcing platform execution budget.
+
+    This is the single enforced per-investigation budget: every issue is
+    assigned these defaults at creation and the profile's evidence_budget
+    (plus maximumHypotheses) overlays them at execution. Aligned with
+    BudgetConfig/IAP_MAX_TOOL_CALLS defaults (50 tool calls) so the
+    operator knob and the enforced value agree.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     max_duration_seconds: int = Field(default=1800, ge=10)
-    max_tool_calls: int = Field(default=100, ge=1)
+    max_tool_calls: int = Field(default=50, ge=1)
+    max_iterations: int = Field(default=10, ge=1, le=100)
+    max_llm_tokens: int = Field(default=1000000, ge=1000)
     max_evidence_items: int = Field(default=25, ge=1)
     max_hypotheses: int = Field(default=10, ge=1)
     max_correlation_depth: int = Field(default=3, ge=1)
@@ -284,6 +320,10 @@ class Investigation(BaseModel):
     request: InvestigationRequest
     context: InvestigationContext
     status: InvestigationStatus = InvestigationStatus.CREATED
+    # UI-facing workflow phase (GAP-05). Mirrors status today; kept as a
+    # separate field so future workflow phases can diverge from lifecycle
+    # status without a contract break. Maintained by transition_to.
+    phase: str = Field(default="CREATED", max_length=64)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
@@ -318,6 +358,7 @@ class Investigation(BaseModel):
                 InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
+                InvestigationStatus.RUNNING,
             },
             InvestigationStatus.CONTEXTUALIZING: {
                 InvestigationStatus.INVESTIGATING,
@@ -378,9 +419,18 @@ class Investigation(BaseModel):
             },
             InvestigationStatus.FAILED: {
                 InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.RUNNING,
             },
             InvestigationStatus.PAUSED: {
                 InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.CANCELLED,
+                InvestigationStatus.FAILED,
+                InvestigationStatus.AWAITING_INPUT,
+            },
+            InvestigationStatus.RUNNING: {
+                InvestigationStatus.CONTEXTUALIZING,
+                InvestigationStatus.INVESTIGATING,
+                InvestigationStatus.PAUSED,
                 InvestigationStatus.CANCELLED,
                 InvestigationStatus.FAILED,
                 InvestigationStatus.AWAITING_INPUT,
@@ -421,6 +471,7 @@ class Investigation(BaseModel):
 
         updates: dict[str, Any] = {
             "status": new_status,
+            "phase": new_status.value,
             "updated_at": now,
             "version": self.version + 1,
         }
@@ -453,3 +504,5 @@ class InvestigationState(BaseModel):
     investigation_plan: list[str] = Field(default_factory=list, max_length=50)
     tool_history: list[InvestigationActionRecord] = Field(default_factory=list, max_length=100)
     findings: list[Finding] = Field(default_factory=list, max_length=50)
+    llm_tokens_used: int = Field(default=0, ge=0)
+    llm_cost_usd: float = Field(default=0.0, ge=0.0)
