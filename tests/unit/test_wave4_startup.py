@@ -64,23 +64,27 @@ class TestFileLogging:
         monkeypatch.delenv("IAP_LOG_FILE", raising=False)
         monkeypatch.delenv("IAP_LOG_LEVEL", raising=False)
         target = logpipe.configure_logging(yaml_path=yaml_path)
+        # Date-seq naming: active file is {app}_{DDMMYY_HHMMSS}.log in the dir.
         assert target is not None and target.is_file()
+        assert target.stem.startswith("iap_")
 
     def test_exception_record_is_json_with_exc(self, tmp_path) -> None:
         from investigation_agent_platform.infrastructure.telemetry import logging as logpipe
 
         target = tmp_path / "exc.log"
-        logpipe.configure_logging(yaml_path=tmp_path / "missing.yaml", log_file=str(target))
+        active = logpipe.configure_logging(yaml_path=tmp_path / "missing.yaml", log_file=str(target))
         probe = logging.getLogger("iap.wave4.probe")
         try:
             raise ValueError("boom")
         except ValueError:
             probe.exception("probe failed", extra={"event": "wave4_probe"})
-        lines = target.read_text(encoding="utf-8").strip().splitlines()
+        assert active is not None
+        lines = active.read_text(encoding="utf-8").strip().splitlines()
         assert lines, "expected log lines in file"
-        # Note: ProcessorFormatter renders the stdlib message as "event", so
-        # the machine key travels in the message slot for foreign records.
+        # Meta-telemetry envelope: message slot + exception.details + extras.
         record = json.loads(lines[-1])
-        assert "probe failed" in str(record.get("event", record))
+        assert "probe failed" in str(record.get("message", record))
         assert "ValueError" in str(record.get("exception", record))
+        assert "boom" in str(record.get("exception", record))
         assert record.get("logger") == "iap.wave4.probe"
+        assert record.get("extra", {}).get("event") == "wave4_probe"

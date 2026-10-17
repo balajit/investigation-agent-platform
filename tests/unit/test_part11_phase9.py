@@ -803,4 +803,4 @@ class TestMigration015:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["3354e515779a"]
+        assert script.get_heads() == ["019_shared_code_evidence"]

@@ -53,6 +53,7 @@ class EvidenceType(StrEnum):
     METRIC = "METRIC"
     DOCUMENTATION = "DOCUMENTATION"
     SYSTEM_EVENT = "SYSTEM_EVENT"
+    API_PROBE = "API_PROBE"
 
 
 class EvidenceRelationshipType(StrEnum):
@@ -68,6 +69,13 @@ class EvidenceRelationshipType(StrEnum):
     CHANGED_BY = "CHANGED_BY"
     PRECEDES = "PRECEDES"
     FOLLOWS = "FOLLOWS"
+    # §2 similar-past-investigation protocol (TO_DO_LLM_List): investigation-
+    # level links written by the deterministic disposition step, never by the
+    # LLM. Node IDs use the `investigation:<uuid>` shape.
+    DUPLICATE_OF = "DUPLICATE_OF"
+    FOLLOW_UP_OF = "FOLLOW_UP_OF"
+    RETRY_OF = "RETRY_OF"
+    POSSIBLY_RELATED = "POSSIBLY_RELATED"
 
 
 class RedactionEntry(BaseModel):
@@ -184,3 +192,31 @@ class EvidenceRelationship(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     created_by: str = Field(default="SYSTEM", max_length=128)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class LogExemplar(BaseModel):
+    """Persisted log group: presentation twin of banked raw rows.
+
+    `member_evidence_ids` are EXACTLY the raw rows' evidence IDs (verbatim
+    UUIDs) so humans match groups to rows by direct equality. Exemplars are
+    never citations: verification binds claims to raw member IDs only.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    tenant_id: str = Field(..., max_length=128)
+    investigation_id: UUID
+    signature: str = Field(..., max_length=4096)
+    member_evidence_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    count: int = Field(default=1, ge=1)
+    span_first: datetime | None = None
+    span_last: datetime | None = None
+    representative_snippet: str = Field(default="", max_length=4096)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# G6: evidence types that are repository-scoped reference data (shared across
+# investigations by content identity) rather than investigation-scoped
+# observations. Everything else is observational (owned + cascade-purged).
+REFERENCE_LIFECYCLE_TYPES = frozenset({"SOURCE_CODE", "COMMIT_HISTORY"})

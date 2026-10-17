@@ -11,7 +11,9 @@ QUARANTINE + exclude + count. Nothing stale is ever included silently.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -24,11 +26,70 @@ from investigation_agent_platform.domain.knowledge.models import (
     KnowledgeContext,
     RefreshPolicy,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger("iap.application")
 
+def _knowledge_extra(context: Any) -> dict[str, Any]:
+    """Context composition counts (never fact text)."""
+    try:
+        extra: dict[str, Any] = {}
+        for key in ("verified_facts", "preferences", "temporal_summary"):
+            value = getattr(context, key, None)
+            if isinstance(value, list):
+                extra[f"iap.{key}_count"] = len(value)
+        excluded = getattr(context, "excluded_stale_count", None)
+        if isinstance(excluded, int):
+            extra["iap.excluded_stale_count"] = excluded
+        return extra
+    except Exception:
+        return {}
+
 # Checker: (tenant_id, reverify_spec) -> True if the live source still agrees.
 ReverifyChecker = Callable[[str, Any], Awaitable[bool]]
+
+# R3 context-cache envelope version. Bump when the cached shape changes;
+# older envelopes fail soft to a miss, never to a crash.
+CACHE_FORMAT_VERSION = 1
+CACHE_KEY_PREFIX = "iap:knctx"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def cache_enabled() -> bool:
+    """R3 kill-switch (env `IAP_KNOWLEDGE_CACHE_ENABLED`, default false)."""
+    return os.environ.get("IAP_KNOWLEDGE_CACHE_ENABLED", "false").lower() == "true"
+
+
+def cache_ttl_seconds() -> int:
+    """R3 TTL (env `IAP_KNOWLEDGE_CACHE_TTL_SECONDS`, default 120; 0 disables store)."""
+    return _env_int("IAP_KNOWLEDGE_CACHE_TTL_SECONDS", 120)
+
+
+def cache_key(
+    tenant_id: str,
+    application_id: str,
+    investigation_id: UUID,
+    kinds: list[str] | None,
+    code_issue_fingerprints: list[str] | None,
+) -> str:
+    """Tenant-first cache key. Fingerprints cover kinds + membership proof —
+    different proofs MUST NOT alias (cross-tenant SHARED reads differ)."""
+    digest = hashlib.sha256(
+        "\x1f".join(
+            [
+                application_id,
+                *sorted(kinds or []),
+                *sorted(code_issue_fingerprints or []),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:32]
+    return f"{CACHE_KEY_PREFIX}:{tenant_id}:{investigation_id}:{digest}"
 
 
 class KnowledgeRetrievalService:
@@ -59,6 +120,10 @@ class KnowledgeRetrievalService:
         # legacy behavior (refs stay opaque strings, no ownership attached).
         self.attribution_port = attribution_port
         self.profile_repo = profile_repo
+        # R3: optional context cache (port backend, policy in this layer).
+        # None = every call runs the full pipeline (legacy behavior).
+        self.context_cache: Any | None = None
+        self.context_cache_ttl_seconds: int = 0
 
     def _now(self) -> datetime:
         return self._clock_now() if self._clock_now else datetime.now(UTC)
@@ -80,6 +145,70 @@ class KnowledgeRetrievalService:
     def register_checker(self, source_kind: str, checker: ReverifyChecker) -> None:
         self.checkers[source_kind] = checker
 
+    def attach_context_cache(self, cache: Any | None, ttl_seconds: int = 0) -> None:
+        """R3: attach a `KnowledgeContextCachePort` backend. None detaches."""
+        self.context_cache = cache
+        self.context_cache_ttl_seconds = ttl_seconds
+
+    async def _cache_lookup(
+        self,
+        tenant_id: str,
+        application_id: str,
+        investigation_id: UUID,
+        kinds: list[str] | None,
+        code_issue_fingerprints: list[str] | None,
+    ) -> KnowledgeContext | None:
+        """Return the cached context on hit, else None. Fail-open: any cache
+        error (or envelope mismatch) is a miss, never a failure."""
+        if self.context_cache is None:
+            return None
+        try:
+            raw = await self.context_cache.get(
+                cache_key(tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints)
+            )
+        except Exception as exc:
+            logger.warning("Context cache lookup failed open: %s", exc)
+            return None
+        if not raw:
+            return None
+        try:
+            import json as _json
+
+            envelope = _json.loads(raw)
+            if not isinstance(envelope, dict) or envelope.get("format_version") != CACHE_FORMAT_VERSION:
+                return None
+            return KnowledgeContext.model_validate(envelope["context"])
+        except Exception as exc:
+            logger.warning("Context cache envelope rejected (miss): %s", exc)
+            return None
+
+    async def _cache_store(
+        self,
+        tenant_id: str,
+        application_id: str,
+        investigation_id: UUID,
+        kinds: list[str] | None,
+        code_issue_fingerprints: list[str] | None,
+        context: KnowledgeContext,
+    ) -> None:
+        """Store the built context. Fail-open; never stores when TTL disables."""
+        if self.context_cache is None or self.context_cache_ttl_seconds <= 0:
+            return
+        try:
+            import json as _json
+
+            envelope = _json.dumps(
+                {"format_version": CACHE_FORMAT_VERSION, "context": context.model_dump(mode="json")}
+            )
+            await self.context_cache.set(
+                cache_key(tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints),
+                envelope,
+                self.context_cache_ttl_seconds,
+            )
+        except Exception as exc:
+            logger.warning("Context cache store failed open: %s", exc)
+
+    @traced("knowledge", component="retrieval", extra_from=_knowledge_extra)
     async def retrieve_for_reasoning(
         self,
         tenant_id: str,
@@ -95,6 +224,34 @@ class KnowledgeRetrievalService:
         on (resolved by the caller from its own tenant-scoped session rows).
         Empty/absent means no sharing — fail closed.
         """
+        logger.info(
+            "retrieve_for_reasoning started",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "application_id": application_id,
+                "kinds_count": len(kinds or []),
+                "fingerprint_proofs": len(code_issue_fingerprints or []),
+                "event": "retrieve_for_reasoning started",
+            },
+        )
+        # R3: cached contexts skip the envelope-gate transitions for the TTL
+        # window (janitor + TTL bound this; conclusions always re-validate
+        # citations from live rows, never from cached context).
+        cached = await self._cache_lookup(
+            tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints
+        )
+        if cached is not None:
+            logger.info(
+                "retrieve_for_reasoning cache hit",
+                extra={
+                    "tenant_id": tenant_id,
+                    "investigation_id": str(investigation_id),
+                    "verified_facts": len(cached.verified_facts),
+                    "event": "retrieve_for_reasoning cache hit",
+                },
+            )
+            return cached
         now = self._now()
         own = await self.artifact_repo.list_active_for_reuse(tenant_id, application_id, kinds)
         shared = await self._shared_for_caller(tenant_id, code_issue_fingerprints or [], kinds)
@@ -121,13 +278,30 @@ class KnowledgeRetrievalService:
                 verified.append(view)
         preferences = await self._recall_preferences(tenant_id, application_id)
         temporal_summary = await self._recall_temporal(tenant_id, application_id, investigation_id)
-        return KnowledgeContext(
+        context = KnowledgeContext(
             verified_facts=verified,
             preferences=preferences,
             temporal_summary=temporal_summary,
             excluded_stale_count=excluded_stale,
         )
+        logger.info(
+            "retrieve_for_reasoning completed",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "verified_facts": len(verified),
+                "preferences": len(preferences),
+                "temporal_summary": len(temporal_summary),
+                "excluded_stale_count": excluded_stale,
+                "event": "retrieve_for_reasoning completed",
+            },
+        )
+        await self._cache_store(
+            tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints, context
+        )
+        return context
 
+    @traced("knowledge", component="retrieval")
     async def _recall_preferences(self, tenant_id: str, application_id: str) -> list[ArtifactView]:
         """Best-effort preference recall. Never fails retrieval."""
         if self.knowledge_store is None:
@@ -136,7 +310,16 @@ class KnowledgeRetrievalService:
             views = await self.knowledge_store.recall_preferences(
                 tenant_id, f"analyst preferences for {application_id}", limit=10
             )
-            return list(views)
+            views = list(views)
+            logger.info(
+                "preference recall completed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "preferences": len(views),
+                    "event": "preference recall completed",
+                },
+            )
+            return views
         except Exception as exc:
             logger.warning(
                 "Preference recall failed; continuing without preferences",
@@ -144,6 +327,7 @@ class KnowledgeRetrievalService:
             )
             return []
 
+    @traced("knowledge", component="retrieval")
     async def _recall_temporal(
         self, tenant_id: str, application_id: str, investigation_id: UUID
     ) -> list[ArtifactView]:
@@ -175,7 +359,16 @@ class KnowledgeRetrievalService:
                         continue
                     seen.add(view.artifact_id)
                     merged.append(view)
-            return merged[:20]
+            merged = merged[:20]
+            logger.info(
+                "temporal recall completed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "temporal_views": len(merged),
+                    "event": "temporal recall completed",
+                },
+            )
+            return merged
         except Exception as exc:
             logger.warning(
                 "Temporal recall failed; continuing without temporal summary",
@@ -193,6 +386,15 @@ class KnowledgeRetrievalService:
         for fingerprint in fingerprints:
             rows = await self.artifact_repo.list_shared_for_fingerprint(tenant_id, fingerprint)
             out.extend(r for r in rows if kinds is None or r.kind in kinds)
+        logger.info(
+            "shared envelopes resolved",
+            extra={
+                "tenant_id": tenant_id,
+                "proofs": len(fingerprints),
+                "shared_artifacts": len(out),
+                "event": "shared envelopes resolved",
+            },
+        )
         return out
 
     async def _gate_one(

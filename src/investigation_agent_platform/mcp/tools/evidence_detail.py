@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/mcp/tools/evidence_detail.py
 """MCP ``get_evidence`` tool (Part 9 Phase 6).
 
@@ -37,6 +39,8 @@ TOOL_ANNOTATIONS = ToolAnnotations(
 )
 
 
+@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
 async def get_evidence_core(
     *,
     services: InvestigationServices,

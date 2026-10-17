@@ -46,6 +46,8 @@ dependencies = [
     "azure-identity>=1.26.0",
     "httpx>=0.28.1",
     "python-dotenv>=1.0",
+    "redis>=5.0.0",
+    "opentelemetry-exporter-otlp>=1.44.0,<2",
 ]
 
 [dependency-groups]
@@ -59,6 +61,7 @@ dev = [
     "pylint>=3.2.0",
     "types-pyyaml>=6.0.12.20260906",
     "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.0",
     "bandit>=1.8.0",
     "pip-audit>=2.9.0",
     "dot>=0.3.0",

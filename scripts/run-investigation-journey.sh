@@ -47,7 +47,7 @@ if [[ -f "$HOME/bin/.iap.env.local" && "$ENV_FILE" != "$HOME/bin/.iap.env.local"
   set -a; source "$HOME/bin/.iap.env.local"; set +a
 fi
 
-API_BASE="${IAP_API_BASE:-http://127.0.0.1:8000}"
+API_BASE="${IAP_API_BASE:-http://127.0.0.1:8080}"
 if ! curl -sf --max-time 10 "${API_BASE}/api/v1/health/live" >/dev/null 2>&1; then
   echo "error: API not reachable at ${API_BASE} (start it first: ./scripts/start-platform.sh)" >&2
   exit 1

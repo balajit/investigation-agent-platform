@@ -64,10 +64,53 @@ class ActionType(StrEnum):
     SEARCH_LOGS = "SEARCH_LOGS"
     QUERY_STATE = "QUERY_STATE"
     GET_CODE = "GET_CODE"
+    SEARCH_CODE = "SEARCH_CODE"
+    FIND_SYMBOL = "FIND_SYMBOL"
+    FIND_CALL_GRAPH = "FIND_CALL_GRAPH"
+    GET_CODE_HISTORY = "GET_CODE_HISTORY"
+    PROBE_API = "PROBE_API"
     CORRELATE = "CORRELATE"
     FORMULATE_HYPOTHESIS = "FORMULATE_HYPOTHESIS"
     VERIFY_HYPOTHESIS = "VERIFY_HYPOTHESIS"
     CONCLUDE = "CONCLUDE"
+
+
+class ActionOutcomeStatus(StrEnum):
+    """Execution result of one dispatched action (P0-2).
+
+    SUCCEEDED/EMPTY distinguish "evidence banked" from "ran clean, nothing
+    found". DEGRADED covers provider-absent/path-miss degrade-to-zero paths
+    that intentionally do not fail the investigation. FAILED/BLOCKED are set
+    by the dispatcher on exception/authorization denial.
+    """
+
+    SUCCEEDED = "SUCCEEDED"
+    EMPTY = "EMPTY"
+    DEGRADED = "DEGRADED"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+
+
+class ActionOutcome(BaseModel):
+    """Typed post-execution result for one action (P0-2).
+
+    Plain JSON scalars only — workflow history entries embed this verbatim
+    and Temporal replay requires determinism-safe values.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action_id: UUID = Field(default_factory=uuid4)
+    action_type: ActionType
+    status: ActionOutcomeStatus = ActionOutcomeStatus.SUCCEEDED
+    evidence_ids: list[str] = Field(default_factory=list)
+    item_count: int = Field(default=0, ge=0)
+    error_code: str | None = Field(default=None, max_length=128)
+    miss_reason: str | None = Field(default=None, max_length=256)
+    duration_ms: int = Field(default=0, ge=0)
+    # P3-2: per-source breakdown for fanned-out actions (QUERY_STATE across
+    # datasources). Each entry: {source, status, items}. Empty for single.
+    sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ActorType(StrEnum):

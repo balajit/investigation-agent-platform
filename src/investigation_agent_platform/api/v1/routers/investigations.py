@@ -34,6 +34,7 @@ from investigation_agent_platform.api.v1.schemas.investigations import (
     FulfillInputBody,
     InvestigationDetailResponse,
     InvestigationListItemView,
+    ReprocessBody,
 )
 from investigation_agent_platform.api.validation import NO_NUL_PATTERN
 from investigation_agent_platform.domain.common.exceptions import (
@@ -60,6 +61,7 @@ __all__ = [
     "CreateInvestigationBody",
     "ErrorIntakeBody",
     "FulfillInputBody",
+    "ReprocessBody",
     "router",
 ]
 
@@ -97,6 +99,8 @@ async def create_investigation(
                 "status": investigation.status.value,
                 "tenant_id": x_tenant_id,
                 "investigation": investigation.model_dump(mode="json"),
+                # §2: disposition stashed in metadata by the create service.
+                "disposition": (investigation.metadata or {}).get("disposition"),
             }
         )
 
@@ -185,10 +189,12 @@ async def _dispatch_workflow(
     tenant_id: str,
     investigation_id: str,
     correlation_id: str | None,
+    max_iterations_override: int | None = None,
 ) -> DispatchAck:
     """Start the Temporal workflow for an existing investigation (shared by
     manual start and error intake). A failed start is never reported as
-    success (F-008)."""
+    success (F-008). `max_iterations_override` (reprocess budgets) wins over
+    the profile-resolved value when positive."""
     # Lifecycle gate (§4): retired profiles block new starts (in-flight
     # workflow runs already underway are unaffected).
     profile_repo = getattr(ctx, "profile_repo", None)
@@ -299,6 +305,8 @@ async def _dispatch_workflow(
                 max_iterations = int(effective_limits.max_iterations)
         except Exception:
             max_iterations = None
+        if max_iterations_override is not None and max_iterations_override >= 1:
+            max_iterations = min(int(max_iterations_override), 100)
 
         wf_input = RunInvestigationInput(
             application_id=str(investigation.application_id),
@@ -485,10 +493,27 @@ async def get_investigation(
             pending = await input_repo.get_pending(x_tenant_id, investigation_uuid)
             pending_requirements = [req.model_dump(mode="json") for req in pending]
 
+    # §2.4: surface inbound/outbound investigation-family links so operators
+    # see families, not just pairs. Fail-open: link reads never break detail.
+    links: list[dict[str, Any]] = []
+    relationship_repo = getattr(ctx, "relationship_repo", None)
+    if relationship_repo is not None and hasattr(relationship_repo, "fetch_links_for_node"):
+        try:
+            from investigation_agent_platform.application.investigation.disposition import (
+                investigation_node,
+            )
+
+            links = await relationship_repo.fetch_links_for_node(
+                x_tenant_id, investigation_node(investigation_uuid)
+            )
+        except Exception as exc:
+            logger.warning("Investigation link read skipped: %s", exc)
+
     return InvestigationDetailResponse.model_validate(
         {
             "investigation": investigation.model_dump(mode="json"),
             "pending_requirements": pending_requirements,
+            "links": links,
         }
     )
 
@@ -890,8 +915,90 @@ async def retry_investigation(
 
 
 @router.post(
-    "/investigations/{investigation_id}/cancel",
-    response_model=CancelAck,
+    "/investigations/{investigation_id}/reprocess",
+    response_model=DispatchAck,
+    response_model_by_alias=True,
+    response_model_exclude_unset=True,
+    responses=COMMON_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reprocess_investigation(
+    investigation_id: str,
+    body: ReprocessBody,
+    request: Request,
+    x_tenant_id: str = Depends(require_tenant),
+    principal_id: str = Depends(require_principal),
+) -> DispatchAck:
+    """Version-per-reprocess for terminal investigations (FRESH or CONTINUE).
+
+    Always creates a NEW investigation version — terminal rows are never
+    mutated. Disposition matching/linking is bypassed by construction: a
+    restart is an explicit operator action, not a triaged request, so no
+    duplicate/related links are written (lineage travels in metadata only).
+    RESTART_CONTINUE on an active investigation is rejected (redispatch the
+    live run instead). Budget multiplier applies here only, with tokens
+    hard-capped at 1M per run and the run ledger reset.
+    """
+    from investigation_agent_platform.application.investigation.services import (
+        BudgetApprovalDeniedException,
+        ReprocessInvestigationService,
+    )
+    from investigation_agent_platform.domain.common.exceptions import DomainException
+
+    ctx = get_app_context()
+    try:
+        investigation_uuid = UUID(investigation_id)
+    except ValueError as exc:
+        raise ApiError(
+            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+        ) from exc
+
+    service = ReprocessInvestigationService(
+        investigation_repo=ctx.investigation_repo,
+        profile_repo=ctx.profile_repo,
+        evidence_repo=getattr(ctx, "evidence_repo", None),
+        hypothesis_repo=getattr(ctx, "hypothesis_repo", None),
+        finding_repo=getattr(ctx, "finding_repo", None),
+        checkpoint_repo=getattr(ctx, "checkpoint_repo", None),
+        create_service=ctx.create_investigation_service(),
+    )
+    correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
+        "X-Correlation-ID"
+    )
+    try:
+        new_investigation = await service.execute(
+            tenant_id=x_tenant_id,
+            investigation_id=investigation_uuid,
+            mode=body.mode,
+            budget_multiplier=body.budget_multiplier,
+            principal_id=principal_id,
+            reason=body.reason,
+        )
+    except BudgetApprovalDeniedException as exc:
+        raise ApiError(
+            code="BUDGET_APPROVAL_DENIED", http_status=status.HTTP_403_FORBIDDEN, message=str(exc)
+        ) from exc
+    except DomainException as exc:
+        raise ApiError(
+            code=getattr(exc, "error_code", "DOMAIN_ERROR"), http_status=exc.http_status_code, message=exc.message
+        ) from exc
+
+    effective = (new_investigation.metadata or {}).get("effective_limits") or {}
+    max_iterations_override = effective.get("max_iterations")
+    if not isinstance(max_iterations_override, int):
+        max_iterations_override = None
+    return await _dispatch_workflow(
+        ctx,
+        new_investigation,
+        x_tenant_id,
+        str(new_investigation.id),
+        correlation_id,
+        max_iterations_override=max_iterations_override,
+    )
+
+
+@router.post(
+    "/investigations/{investigation_id}/cancel",    response_model=CancelAck,
     response_model_by_alias=True,
     response_model_exclude_unset=True,
     responses=COMMON_ERROR_RESPONSES,

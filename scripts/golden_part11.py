@@ -573,7 +573,7 @@ def main() -> int:
     global FAIL
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--api-base", default=os.environ.get("IAP_API_BASE", "http://localhost:8000")
+        "--api-base", default=os.environ.get("IAP_API_BASE", "http://localhost:8080")
     )
     parser.add_argument("--tenant", default=os.environ.get("IAP_GOLDEN_TENANT", TENANT))
     parser.add_argument("--only", default="")

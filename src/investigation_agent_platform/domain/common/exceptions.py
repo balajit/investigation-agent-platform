@@ -239,6 +239,26 @@ class ProviderNotConfiguredError(ExecutionError):
         self.error_code = "PROVIDER_NOT_CONFIGURED"
 
 
+class ProbeEndpointNotFoundError(ExecutionError):
+    """A requested probe endpoint_id is not declared in the profile.
+
+    Model endpoint guesses miss routinely; this is an exploration miss, not
+    an infrastructure failure. Callers degrade to empty instead of failing
+    the investigation. Never retryable — and never widened into raw-URL
+    calling as a fallback (that would be an SSRF vector).
+    """
+
+    def __init__(
+        self, message: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(
+            message=message,
+            details=details,
+            retryable=False,
+        )
+        self.error_code = "PROBE_ENDPOINT_NOT_FOUND"
+
+
 class CodePathNotFoundError(ExecutionError):
     """A requested repo path does not exist (or is not a file) at the revision.
 

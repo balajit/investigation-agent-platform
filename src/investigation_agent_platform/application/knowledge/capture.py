@@ -22,8 +22,18 @@ from investigation_agent_platform.domain.knowledge.models import (
     RefreshPolicy,
     sanitize_statement,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger("iap.application")
+
+def _capture_extra(artifacts: Any) -> dict[str, Any]:
+    """Stored-artifact count only."""
+    try:
+        if isinstance(artifacts, list):
+            return {"iap.artifacts_stored": len(artifacts)}
+        return {}
+    except Exception:
+        return {}
 
 # Kinds captured from conclusion-linked evidence. Static attribution is
 # shareable across tenants on a merged code issue; everything else stays
@@ -62,9 +72,18 @@ class KnowledgeCaptureService:
     def _now(self) -> datetime:
         return self._clock_now() if self._clock_now else datetime.now(UTC)
 
+    @traced("knowledge", component="capture", extra_from=_capture_extra)
     async def capture_for_investigation(
         self, tenant_id: str, investigation_id: UUID
     ) -> list[KnowledgeArtifact]:
+        logger.info(
+            "capture_for_investigation started",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "event": "capture_for_investigation started",
+            },
+        )
         now = self._now()
         try:
             artifacts = await self._distill(tenant_id, investigation_id, now)
@@ -113,6 +132,17 @@ class KnowledgeCaptureService:
                     }
                 },
             )
+        logger.info(
+            "capture_for_investigation completed",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "artifacts_stored": len(stored),
+                "projected": projected,
+                "skipped": skipped,
+                "event": "capture_for_investigation completed",
+            },
+        )
         return stored
 
     async def _prior_spend(self, tenant_id: str, investigation_id: UUID, batch_size: int) -> int:

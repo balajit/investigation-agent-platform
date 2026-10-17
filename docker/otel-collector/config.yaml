@@ -1,0 +1,40 @@
+# docker/otel-collector/config.yaml — IAP trace collector (OTEL P4).
+#
+# Receives OTLP from API/worker (host processes → loopback-published :4317),
+# batches, and logs spans to collector stdout (`docker logs otel-collector`).
+# Swap/extend `debug` with a real backend (Jaeger/Tempo/Elastic APM —
+# contrib image carries them) without touching application code or env.
+# Sampling: parent-based 100% in dev. Tighten (e.g. 10% + tail sampling on
+# errors) before pointing production traffic here.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+
+exporters:
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

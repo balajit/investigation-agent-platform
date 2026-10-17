@@ -57,6 +57,34 @@ except Exception as exc:  # pragma: no cover - defensive
     )
     _cfg = None
 
+# OTel: configure the GLOBAL tracer provider in every environment where
+# telemetry is enabled. The observability adapter is only constructed on the
+# production context path, but spans must export from dev processes too
+# (collector on loopback :4317). Never breaks boot; no-op without the
+# exporter package or with telemetry disabled.
+try:
+    import os as _os
+
+    if (
+        _os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true"
+        and "PYTEST_CURRENT_TEST" not in _os.environ
+        and "pytest" not in sys.modules
+    ):
+        from investigation_agent_platform.infrastructure.observability.tracing import (
+            configure_tracing,
+        )
+
+        _telemetry_cfg = getattr(_cfg, "telemetry", None)
+        configure_tracing(
+            service_name=getattr(_telemetry_cfg, "service_name", "investigation-agent-platform"),
+            otlp_endpoint=(
+                _os.environ.get("IAP_OTLP_ENDPOINT")
+                or getattr(_telemetry_cfg, "otlp_endpoint", "http://localhost:4317")
+            ),
+        )
+except Exception as exc:  # pragma: no cover - tracing must never break boot
+    logger.warning("OTLP tracing setup skipped", extra={"error": str(exc)})
+
 if _cfg is not None:
     from investigation_agent_platform.bootstrap import build_app_context
 
@@ -276,9 +304,12 @@ app = _create_lifespan_app()
 
 def main() -> None:
     """Launches the FastAPI web gateway (``uvicorn investigation_agent_platform.main:app``)."""
+    import os
+
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")  # nosec B104 - containerized deployment binds all interfaces by design; network policy enforced outside the process
+    port = int(os.environ.get("PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")  # nosec B104 - containerized deployment binds all interfaces by design; network policy enforced outside the process
 
 
 if __name__ == "__main__":

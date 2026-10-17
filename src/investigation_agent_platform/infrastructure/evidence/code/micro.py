@@ -211,7 +211,11 @@ class MicroSymbolResolver:
         if name_node is None:
             return ""
         try:
-            return code[name_node.start_byte : name_node.end_byte].strip()
+            # P1-2: tree-sitter offsets are UTF-8 bytes, not str indices.
+            raw = code.encode("utf-8", errors="replace")
+            return raw[name_node.start_byte : name_node.end_byte].decode(
+                "utf-8", errors="replace"
+            ).strip()
         except Exception:
             return ""
 

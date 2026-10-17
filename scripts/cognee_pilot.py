@@ -65,20 +65,16 @@ def _ownership_for(checkout: Path, tenant_id: str, clone_url: str) -> list[str]:
 
 def _cognee_env_from_topology() -> None:
     """Map IAP_TOPOLOGY_NEO4J_* to the GRAPH_DATABASE_* vars Cognee reads."""
-    mapping = {
-        "GRAPH_DATABASE_PROVIDER": ("COGNEE_GRAPH_PROVIDER", "neo4j"),
-        "GRAPH_DATABASE_URL": ("IAP_TOPOLOGY_NEO4J_URI", "bolt://localhost:7687"),
-        "GRAPH_DATABASE_USERNAME": ("IAP_TOPOLOGY_NEO4J_USERNAME", "neo4j"),
-        "GRAPH_DATABASE_PASSWORD": ("IAP_TOPOLOGY_NEO4J_PASSWORD", ""),
-        "GRAPH_DATABASE_NAME": ("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
-    }
-    for cognee_var, (iap_var, default) in mapping.items():
-        os.environ.setdefault(cognee_var, os.environ.get(iap_var, default))
+    from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+        ensure_cognee_env_from_topology,
+    )
+
+    ensure_cognee_env_from_topology()
 
 
 async def run(args: argparse.Namespace) -> int:
     from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
-        CogneeTopologyAdapter,
+        SharedNeo4jDriver,
     )
 
     loader = _load_loader()
@@ -87,6 +83,24 @@ async def run(args: argparse.Namespace) -> int:
         print("error: --tenant-id (or IAP_TENANT_ID) is required", file=sys.stderr)
         return 2
 
+    _cognee_env_from_topology()
+    # R1: one shared driver per CLI invocation (pooling); the adapter never
+    # closes it — closed here. Legacy per-call behavior preserved when the
+    # holder is omitted (not the case in this script).
+    holder = await SharedNeo4jDriver.from_env().connect()
+    try:
+        return await _run_with_driver(args, loader, tenant_id, holder)
+    finally:
+        await holder.close()
+
+
+async def _run_with_driver(
+    args: argparse.Namespace, loader: object, tenant_id: str, holder: object
+) -> int:
+    from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+        CogneeTopologyAdapter,
+    )
+
     if args.drop:
         if not args.repository_id or not args.revision:
             print("error: --drop requires --repository-id and --revision", file=sys.stderr)
@@ -94,6 +108,7 @@ async def run(args: argparse.Namespace) -> int:
         adapter = CogneeTopologyAdapter(
             enabled=os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true",
             dataset_salt=os.environ.get("IAP_COGNEE_DATASET_SALT", ""),
+            neo4j_driver=holder,
         )
         await adapter.drop_projection(tenant_id, args.repository_id, args.revision)
         print(f"dropped projection {tenant_id}/{args.repository_id}@{args.revision[:12]}")
@@ -140,6 +155,7 @@ async def run(args: argparse.Namespace) -> int:
     adapter = CogneeTopologyAdapter(
         enabled=os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true",
         dataset_salt=os.environ.get("IAP_COGNEE_DATASET_SALT", ""),
+        neo4j_driver=holder,
     )
     ownership_path = _ownership_for(checkout, tenant_id, clone_url)
     result = await adapter.project_snapshot(payload, ownership_path=ownership_path)

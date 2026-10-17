@@ -59,7 +59,10 @@ class CodeEvidenceProviderProtocol(Protocol):
     """Port for querying raw source code repositories and historical versions."""
 
     async def get_source(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile,
+        revision: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> Evidence: ...
 
     async def get_code_history(

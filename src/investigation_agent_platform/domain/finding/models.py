@@ -28,6 +28,9 @@ class ConclusionStatus(StrEnum):
     ROOT_CAUSE_LIKELY = "ROOT_CAUSE_LIKELY"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     NO_ROOT_CAUSE_FOUND = "NO_ROOT_CAUSE_FOUND"
+    # G1: location answers (where-defined, caller listings, histories) backed
+    # by validated code citations — not causal claims, not abstentions.
+    ANSWERED = "ANSWERED"
 
 
 class Finding(BaseModel):
@@ -83,4 +86,9 @@ class InvestigationConclusion(BaseModel):
                 raise ValueError("ROOT_CAUSE_ESTABLISHED requires a detailed root cause statement.")
             if not self.supporting_evidence_ids:
                 raise ValueError("ROOT_CAUSE_ESTABLISHED requires supporting evidence IDs.")
+        if self.status == ConclusionStatus.ANSWERED:
+            if not self.root_cause:
+                raise ValueError("ANSWERED requires the answer statement.")
+            if not self.supporting_evidence_ids:
+                raise ValueError("ANSWERED requires supporting evidence IDs.")
         return self

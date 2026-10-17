@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/mcp/tools/runtime_evidence.py
 """MCP ``search_runtime_evidence`` tool (Part 9 Phase 6).
 
@@ -69,6 +71,8 @@ LimitParam = Annotated[int, Field(ge=1, le=100)]
 CursorParam = Annotated[str | None, Field(min_length=1, max_length=4096)]
 
 
+@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
 async def search_runtime_evidence_core(
     *,
     services: InvestigationServices,

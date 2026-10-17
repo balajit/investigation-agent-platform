@@ -41,6 +41,7 @@ BUFFERED_ATTRS: tuple[str, ...] = (
     "batch_repo",
     "background_job_repo",
     "finding_repo",
+    "contradiction_repo",
     "checkpoint_repo",
     "transition_repo",
     "action_repo",
@@ -105,6 +106,9 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     from investigation_agent_platform.infrastructure.persistence.checkpoint_repository import (
         SqlAlchemyCheckpointRepository,
     )
+    from investigation_agent_platform.infrastructure.persistence.contradiction_repository import (
+        SqlAlchemyContradictionRepository,
+    )
     from investigation_agent_platform.infrastructure.persistence.evidence_repository import (
         SqlAlchemyEvidenceRepository,
     )
@@ -157,6 +161,7 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
         "batch_repo": SqlAlchemyBatchIntakeRepository(session_factory),
         "background_job_repo": SqlAlchemyBackgroundJobRepository(session_factory),
         "finding_repo": SqlAlchemyFindingConclusionRepository(session_factory),
+        "contradiction_repo": SqlAlchemyContradictionRepository(session_factory),
         "checkpoint_repo": SqlAlchemyCheckpointRepository(session_factory),
         "transition_repo": SqlAlchemyTransitionRepository(session_factory),
         "action_repo": SqlAlchemyActionExecutionRepository(session_factory),

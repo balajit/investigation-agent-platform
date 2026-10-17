@@ -70,6 +70,9 @@ from investigation_agent_platform.api.v1.routers.events import router as events_
 from investigation_agent_platform.api.v1.routers.evidence import router as evidence_router
 from investigation_agent_platform.api.v1.routers.health import router as health_router
 from investigation_agent_platform.api.v1.routers.hypotheses import router as hypotheses_router
+from investigation_agent_platform.api.v1.routers.integrations import (
+    router as integrations_router,
+)
 from investigation_agent_platform.api.v1.routers.investigations import (
     router as investigations_router,
 )
@@ -123,6 +126,77 @@ def _sanitize_correlation_id(raw: str | None) -> str:
     if raw and _CORRELATION_ID_RE.match(raw):
         return raw
     return str(uuid.uuid4())
+
+
+def _access_log_body_chars() -> int:
+    """Cap for logged response bodies (env `IAP_ACCESS_LOG_BODY_CHARS`, default 4096)."""
+    try:
+        return max(0, int(os.environ.get("IAP_ACCESS_LOG_BODY_CHARS", "4096")))
+    except ValueError:
+        return 4096
+
+
+def _sanitized_query_params(request: Request) -> dict[str, str]:
+    """Boundary request params (keys + scalar values, truncated).
+
+    Values pass through the redaction policy at log time via sanitize_extra
+    on the enclosing extra dict; secret-named keys are redacted there.
+    """
+    try:
+        return {k: v[:256] for k, v in request.query_params.multi_items()}
+    except Exception:
+        return {}
+
+
+def _log_boundary(
+    request: Request,
+    response: Response,
+    correlation_id: str,
+    duration_ms: float,
+    body: bytes,
+    *,
+    streamed: bool = False,
+) -> None:
+    """Emit the boundary access line: request + response, every external call.
+
+    ProcessorFormatter drops stdlib `extra` — fields are bound as contextvars
+    so they render in the JSON line (cleared by the middleware `finally`).
+    `extra` is kept for stdlib handlers.
+    """
+    content_type = (response.headers.get("content-type") or "").lower()
+    bodies_enabled = os.environ.get("IAP_ACCESS_LOG_BODY", "true").lower() == "true"
+    if body and "json" in content_type and bodies_enabled:
+        text = body.decode("utf-8", errors="replace")
+        cap = _access_log_body_chars()
+        response_body: str | None = (
+            text if len(text) <= cap else text[:cap] + f"...[truncated {len(text) - cap} chars]"
+        )
+    elif body and bodies_enabled:
+        response_body = f"[non-json body: {len(body)} bytes, {content_type or 'unknown type'}]"
+    elif body:
+        response_body = f"[body omitted by policy: {len(body)} bytes]"
+    else:
+        response_body = "[empty body]" if not streamed else "[empty stream]"
+    boundary_fields = sanitize_extra(
+        {
+            "authenticated_tenant_id": getattr(request.state, "authenticated_tenant_id", None),
+            "method": request.method,
+            "path": request.url.path,
+            "query_params": _sanitized_query_params(request),
+            "status_code": response.status_code,
+            "duration_ms": round(duration_ms, 2),
+            "response_class": type(response).__name__,
+            "response_bytes": len(body),
+            "response_streamed": streamed,
+            "response_body": response_body,
+        }
+    )
+    # Boundary fields render via StructuredJsonFormatter (stdlib `extra`
+    # merged natively) — no contextvars workaround.
+    logger.info(
+        f"{request.method} {request.url.path} HTTP/{request.scope.get('http_version', '1.1')} {response.status_code}",
+        extra=boundary_fields,
+    )
 
 
 def create_app(
@@ -306,21 +380,50 @@ def create_app(
             duration_ms = (time.perf_counter() - start_time) * 1000.0
 
             response.headers["X-Correlation-ID"] = correlation_id
-            logger.info(
-                f"{request.method} {request.url.path} HTTP/{request.scope.get('http_version', '1.1')} {response.status_code}",
-                extra=sanitize_extra(
-                    {
-                        "correlation_id": correlation_id,
-                        "authenticated_tenant_id": getattr(
-                            request.state, "authenticated_tenant_id", None
-                        ),
-                        "method": request.method,
-                        "path": request.url.path,
-                        "status_code": response.status_code,
-                        "duration_ms": round(duration_ms, 2),
-                    }
-                ),
-            )
+            body = getattr(response, "body", None)
+            if isinstance(body, (bytes, bytearray)) and body:
+                _log_boundary(
+                    request,
+                    response,
+                    correlation_id,
+                    duration_ms,
+                    bytes(body),
+                )
+                return response
+            # Streaming/file bodies render after the middleware returns:
+            # wrap the iterator, capture up to the cap, and log on
+            # exhaustion (access line lands after completion — duration
+            # then covers the full transfer). Internal worker processing
+            # is untouched; this is boundary-only.
+            cap = _access_log_body_chars()
+            captured: list[bytes] = []
+            captured_len = 0
+            original_iterator = response.body_iterator
+
+            async def _capturing_iterator():  # type: ignore[no-untyped-def]
+                nonlocal captured_len
+                try:
+                    async for chunk in original_iterator:
+                        if (
+                            isinstance(chunk, (bytes, bytearray))
+                            and captured_len < cap
+                        ):
+                            take = bytes(chunk[: cap - captured_len])
+                            captured.append(take)
+                            captured_len += len(take)
+                        yield chunk
+                finally:
+                    full = b"".join(captured)
+                    _log_boundary(
+                        request,
+                        response,
+                        correlation_id,
+                        (time.perf_counter() - start_time) * 1000.0,
+                        full,
+                        streamed=True,
+                    )
+
+            response.body_iterator = _capturing_iterator()
             return response
         finally:
             structlog.contextvars.clear_contextvars()
@@ -497,5 +600,6 @@ def create_app(
     app.include_router(batch_intake_router, prefix=api_v1)
     app.include_router(chat_router, prefix=api_v1)
     app.include_router(reference_docs_router, prefix=api_v1)
+    app.include_router(integrations_router, prefix=api_v1)
 
     return app

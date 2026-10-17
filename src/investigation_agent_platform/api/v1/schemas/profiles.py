@@ -108,6 +108,20 @@ class FileLogDatasourceSpecView(BaseModel):
     max_bytes_per_file: int | None = None
 
 
+class ProbeableEndpointView(BaseModel):
+    """Wire shape for profile-declared PROBE_API endpoints (P2-2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    description: str | None = None
+    method: str = "GET"
+    base_url: str
+    path_template: str
+    path_placeholders: list[str] = Field(default_factory=list)
+    allowed_query_params: list[str] = Field(default_factory=list)
+
+
 class ServiceView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +133,7 @@ class ServiceView(BaseModel):
     dependencies: list[ServiceDependencyView]
     endpoints: list[str]
     repository_id: str | None
+    probeable_endpoints: list[ProbeableEndpointView] = Field(default_factory=list)
 
 
 class DatasourceView(BaseModel):

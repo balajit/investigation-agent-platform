@@ -10,11 +10,11 @@
 #
 # Required env: IAP_DATABASE_URI, IAP_<PROVIDER>_API_KEY (per IAP_LLM_PROVIDER)
 # Optional env: IAP_TOPOLOGY_* (see docs/IAP-implementation-part7-knowledge-v1.md D7),
-#   PORT (default 8000), COMPOSE_FILE (default docker/docker-compose.yml).
+#   PORT (default 8080), COMPOSE_FILE (default docker/docker-compose.yml).
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker/docker-compose.yml}"
-PORT="${PORT:-8000}"
+PORT="${PORT:-8080}"
 TIMEOUT="${TIMEOUT:-120}"
 RUN_API=true
 RUN_WORKER=true
@@ -47,9 +47,10 @@ for arg in "$@"; do
       exit 0
       ;;
     --timeout=*) TIMEOUT="${arg#--timeout=}" ;;
+    --port=*) PORT="${arg#--port=}" ;;
     --compose-file=*) COMPOSE_FILE="${arg#--compose-file=}" ;;
     --help|-h)
-      echo "Usage: $0 [--no-api] [--no-worker] [--restart] [--stop] [--timeout=SECS] [--compose-file=PATH]"
+      echo "Usage: $0 [--no-api] [--no-worker] [--restart] [--stop] [--timeout=SECS] [--compose-file=PATH] [--port=PORT]"
       exit 0
       ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
@@ -96,7 +97,7 @@ if [[ "$RESTART_ONLY" == true ]]; then
 fi
 
 echo "Starting infrastructure: $COMPOSE_FILE"
-docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka filebeat
+docker compose -f "$COMPOSE_FILE" up -d postgres neo4j temporal temporal-ui elasticsearch kafka filebeat postgres-mcp-iap redis otel-collector
 
 echo "Waiting for services (timeout ${TIMEOUT}s)..."
 deadline=$((SECONDS + TIMEOUT))
@@ -110,6 +111,10 @@ until curl -sf http://localhost:7474 >/dev/null 2>&1; do
 done
 until curl -sf http://localhost:8233 >/dev/null 2>&1; do
   [[ $SECONDS -ge $deadline ]] && { echo "warn: temporal UI not reachable (worker needs :7233 at run time)"; break; }
+  sleep 2
+done
+until curl -sf http://localhost:13133/ >/dev/null 2>&1; do
+  [[ $SECONDS -ge $deadline ]] && { echo "warn: otel-collector not reachable (spans will not export)"; break; }
   sleep 2
 done
 if [[ "${IAP_TOPOLOGY_REQUIRED:-false}" == "true" ]]; then

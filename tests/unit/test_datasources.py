@@ -179,7 +179,9 @@ class TestDatasourceRegistry:
         )
 
         monkeypatch.setenv("IAP_DS_TENANT_A_PRIMARY", "postgresql+asyncpg://u:p@h/db")
-        registry, engines = self._registry(_profile([_ds()]))
+        registry, engines = self._registry(
+            _profile([_ds()]), allow_direct_engines=True
+        )
         adapter = await registry.resolve("tenant-a", "example-app", "primary")
         assert isinstance(adapter, AsyncPostgresStateAdapter)
         assert engines == ["postgresql+asyncpg://u:p@h/db"]
@@ -188,11 +190,23 @@ class TestDatasourceRegistry:
     @pytest.mark.asyncio
     async def test_cached_per_revision(self, monkeypatch) -> None:
         monkeypatch.setenv("IAP_DS_TENANT_A_PRIMARY", "postgresql+asyncpg://u:p@h/db")
-        registry, engines = self._registry(_profile([_ds()]))
+        registry, engines = self._registry(
+            _profile([_ds()]), allow_direct_engines=True
+        )
         first = await registry.resolve("tenant-a", "example-app", "primary")
         second = await registry.resolve("tenant-a", "example-app", "primary")
         assert first is second
         assert len(engines) == 1
+
+    @pytest.mark.asyncio
+    async def test_direct_engines_disabled_by_default(self) -> None:
+        from investigation_agent_platform.infrastructure.evidence.datasources.registry import (
+            DatasourceResolutionError,
+        )
+
+        registry, _ = self._registry(_profile([_ds()]))
+        with pytest.raises(DatasourceResolutionError):
+            await registry.resolve("tenant-a", "example-app", "primary")
 
     @pytest.mark.asyncio
     async def test_unknown_datasource_rejected(self) -> None:
@@ -252,7 +266,7 @@ class TestDatasourceRegistry:
                 _ds(),
             ]
         )
-        registry, _ = self._registry(profile)
+        registry, _ = self._registry(profile, allow_direct_engines=True)
         adapter = await registry.resolve_default("tenant-a", "example-app")
         assert isinstance(adapter, AsyncPostgresStateAdapter)
         assert adapter._provider_id == "postgres-primary"

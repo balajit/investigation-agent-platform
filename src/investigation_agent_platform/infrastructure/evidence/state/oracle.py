@@ -32,6 +32,7 @@ from investigation_agent_platform.domain.provenance.models import (
     QueryFingerprint,
     SourceLocation,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryResult
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ class AsyncOracleStateAdapter:
         self._provider_id = provider_id
         self._query_timeout = query_timeout
 
+    @traced("provider", component="state_oracle")
     async def get_application_state(
         self,
         tenant_id: str,
@@ -178,6 +180,7 @@ class AsyncOracleStateAdapter:
             ]
             return EvidenceQueryResult(items=items, total_count=len(items))
 
+    @traced("provider", component="state_oracle")
     async def search_application_state(
         self,
         tenant_id: str,

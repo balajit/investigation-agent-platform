@@ -1,0 +1,20 @@
+# Postgres MCP servers via crystaldba (P3-1/P3-3) — one entry per database.
+# crystaldba serves exactly one DATABASE_URI per instance: add one entry (and one
+# compose service) per database. No secrets in this file: DATABASE_URI values resolve
+# from environment (secret-injected at container start, see docker/postgres-mcp/).
+# tenants: explicit allowlist per server (default-deny); empty list registers nothing.
+# transport: "sse" (long-lived compose service, preferred) or "stdio".
+servers:
+  # IAP's own application database (restricted read-only) — self-triage flows
+  # through MCP like every other datasource. Host processes (API/worker) run
+  # outside the compose network, so this uses the loopback-published SSE port
+  # (mirroring the :9200/:5452 precedents), never the internal service name.
+  - name: iap-app-db
+    kind: postgres
+    transport: sse
+    url: http://localhost:8100/sse
+    query_tool: execute_sql
+    allowed_tools: ["execute_sql"]
+    timeout_seconds: 30.0
+    max_rows: 1000
+    tenants: ["n-a"]

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +25,115 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 from investigation_agent_platform.domain.investigation.models import ActionType
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
+# Log evidence types bypass the persistence room (uncapped raw banking for
+# ALL log providers; budgets still bound calls/iterations/tokens/prompts).
+_LOG_BYPASS_TYPES = frozenset({"RUNTIME_LOG", "RUNTIME_TRACE", "LOG", "TRACE"})
+
+
+def _evidence_type_name(item: Any) -> str:
+    etype = getattr(item, "evidence_type", "")
+    return str(getattr(etype, "value", etype) or "").upper()
+
+
+def _split_log_bypass(items: list) -> tuple[list, list]:
+    """Partition items into (uncapped log rows, budget-bound rows). Pure."""
+    logs = [item for item in items if _evidence_type_name(item) in _LOG_BYPASS_TYPES]
+    rest = [item for item in items if _evidence_type_name(item) not in _LOG_BYPASS_TYPES]
+    return logs, rest
+
+
+async def _persist_log_exemplars(
+    ctx: Any, tenant_id: str, investigation_id: Any, banked: list
+) -> int:
+    """Group banked log rows and persist one exemplar row per group.
+
+    Member IDs are the raw rows' evidence IDs verbatim (human matchable).
+    Fail-open by contract — callers swallow all errors.
+    """
+    from uuid import UUID as _UUID
+
+    from investigation_agent_platform.application.compression.logparse import (
+        mask_volatiles,
+    )
+    from investigation_agent_platform.domain.evidence.models import LogExemplar
+
+    repo = getattr(ctx, "log_exemplar_repo", None)
+    if repo is None or not banked:
+        return 0
+    groups: dict[str, list] = {}
+    for item in banked:
+        etype = getattr(item, "evidence_type", "")
+        if str(getattr(etype, "value", etype) or "").upper() not in _LOG_BYPASS_TYPES:
+            continue
+        key = (
+            str(getattr(item, "provider", "")),
+            str(getattr(item, "source", "")),
+            mask_volatiles(
+                str(getattr(item, "summary", "") or "")
+                + "\n"
+                + str(getattr(item, "content_snippet", "") or "")
+            ),
+        )
+        groups.setdefault("\x1f".join(key), []).append(item)
+    exemplars: list = []
+    for signature_text, members in groups.items():
+        first = members[0]
+        member_ids = []
+        for member in members:
+            eid = getattr(member, "evidence_id", None)
+            if isinstance(eid, _UUID):
+                member_ids.append(eid)
+            elif eid:
+                try:
+                    member_ids.append(_UUID(str(eid)))
+                except (ValueError, TypeError):
+                    continue
+        if not member_ids:
+            continue
+        exemplars.append(
+            LogExemplar(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id
+                if isinstance(investigation_id, _UUID)
+                else _UUID(str(investigation_id)),
+                signature=signature_text[:4096],
+                member_evidence_ids=member_ids[:500],
+                count=len(member_ids),
+                representative_snippet=str(
+                    getattr(first, "content_snippet", "")
+                    or getattr(first, "summary", "")
+                    or ""
+                )[:4096],
+            )
+        )
+    if not exemplars:
+        return 0
+    try:
+        inserted = await repo.save_batch(tenant_id, exemplars)
+    except Exception as exc:
+        logger.warning(
+            "Log exemplar save failed open; raw banking stands",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=str(investigation_id),
+                event="log exemplar save failed",
+                error=str(exc),
+            ),
+        )
+        return 0
+    logger.info(
+        "Log exemplars persisted",
+        extra=_log_extra(
+            tenant_id=tenant_id,
+            investigation_id=str(investigation_id),
+            event="log exemplars persisted",
+            groups=len(exemplars),
+            rows=len(banked),
+        ),
+    )
+    return int(inserted or 0)
 
 # Action types that must reach the evidence gateway to execute; used to
 # fail closed (EVIDENCE_PROVIDER_UNAVAILABLE) rather than silently no-op when
@@ -32,8 +142,127 @@ _ACTION_REQUIRED_EVIDENCE_TYPE_LOCAL = {
     ActionType.QUERY_STATE,
     ActionType.SEARCH_LOGS,
     ActionType.GET_CODE,
+    ActionType.SEARCH_CODE,
+    ActionType.FIND_SYMBOL,
+    ActionType.FIND_CALL_GRAPH,
+    ActionType.GET_CODE_HISTORY,
+    ActionType.PROBE_API,
     ActionType.CORRELATE,
 }
+
+
+_EFFECTIVE_LIMIT_FIELDS = frozenset(
+    {
+        "max_iterations",
+        "max_tool_calls",
+        "max_evidence_items",
+        "max_hypotheses",
+        "max_llm_tokens",
+    }
+)
+
+
+def apply_effective_limits(limits: Any, investigation: Any) -> Any:
+    """Prefer a reprocess-stored effective budget over profile-overlaid limits.
+
+    Reads `investigation.metadata.effective_limits` (written by reprocess
+    with a validated multiplier); known positive-int fields only, anything
+    else ignored fail-closed to the passed limits. Never raises.
+    """
+    try:
+        metadata = getattr(investigation, "metadata", None) or {}
+        effective = metadata.get("effective_limits") if isinstance(metadata, dict) else None
+        if not isinstance(effective, dict) or not effective:
+            return limits
+        updates = {
+            field: effective[field]
+            for field in _EFFECTIVE_LIMIT_FIELDS
+            if isinstance(effective.get(field), int)
+            and not isinstance(effective.get(field), bool)
+            and effective[field] >= 1
+        }
+        if updates and hasattr(limits, "model_copy"):
+            return limits.model_copy(update=updates)
+        return limits
+    except Exception:
+        return limits
+
+
+def _coerce_root_ids(parameters: Any) -> tuple[list, int]:
+    """Coerce CORRELATE root IDs, dropping unparseable entries (G7).
+
+    LLM-supplied IDs are untrusted exploration input: returns (valid UUIDs,
+    dropped count). Pure — unit-tested directly.
+    """
+    from uuid import UUID as _UUID
+
+    valid: list = []
+    dropped = 0
+    try:
+        raw_ids = parameters.get("root_evidence_ids", []) if isinstance(parameters, dict) else []
+    except Exception:
+        return [], 0
+    for raw in raw_ids or []:
+        try:
+            valid.append(_UUID(str(raw)))
+        except (ValueError, TypeError, AttributeError):
+            dropped += 1
+    return valid, dropped
+
+
+def _activity_outcome(result: Any) -> str:
+    """Map GenericActivityResult → span outcome (OTEL_PLAN §1.2).
+
+    success=False (returned, not raised) is an activity-level error;
+    BLOCKED/degraded/budget signals are first-class non-error outcomes.
+    """
+    try:
+        if not getattr(result, "success", False):
+            return "error"
+        data = getattr(result, "data", None) or {}
+        if not isinstance(data, dict):
+            return "ok"
+        status = str(data.get("status", "")).upper()
+        if status in ("FAILED", "WORKFLOW_ERROR"):
+            return "error"
+        if status == "BLOCKED":
+            return "blocked"
+        if status in ("DEGRADED", "EMPTY") or data.get("budget_exceeded"):
+            return "degraded"
+        return "ok"
+    except Exception:
+        return "ok"
+
+
+def _activity_extra(result: Any) -> dict[str, Any]:
+    """Counts only (never IDs/payloads) from activity result data."""
+    try:
+        data = getattr(result, "data", None) or {}
+        if not isinstance(data, dict):
+            return {}
+        extra: dict[str, Any] = {}
+        for key in (
+            "items_count",
+            "evidence_added",
+            "artifacts_stored",
+            "hypotheses_evaluated",
+        ):
+            value = data.get(key)
+            if isinstance(value, (int, float)):
+                extra[f"iap.{key}"] = value
+        usage = data.get("llm_usage") or {}
+        if isinstance(usage, dict):
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                if isinstance(usage.get(key), (int, float)):
+                    extra[f"iap.tokens.{key}"] = usage[key]
+            if isinstance(usage.get("cost_usd"), (int, float)):
+                extra["iap.cost_usd"] = usage["cost_usd"]
+        readiness = data.get("conclusion_readiness")
+        if isinstance(readiness, (int, float)):
+            extra["iap.readiness"] = readiness
+        return extra
+    except Exception:
+        return {}
 
 
 def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
@@ -609,6 +838,7 @@ def _get_ctx() -> Any:
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def create_investigation_activity(
     params: CreateInvestigationInput,
 ) -> CreateInvestigationOutput:
@@ -705,6 +935,7 @@ async def create_investigation_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def retrieve_evidence_activity(
     params: RetrieveEvidenceInput,
 ) -> GenericActivityResult:
@@ -831,6 +1062,7 @@ async def retrieve_evidence_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def reason_activity(params: ReasonInput) -> GenericActivityResult:
     # TO_DO-011: not idempotency-wired — pure compute over persisted state,
     # no durable writes of its own; re-execution is safe by construction.
@@ -1000,6 +1232,52 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             hypotheses_out = list(
                 getattr(decision, "hypotheses_evaluated", None) or []
             )
+            # P0-3: persist model-reported contradictions instead of dropping
+            # them — verification and the conclusion gate read them back from
+            # the repo. Best-effort: persistence trouble must never fail
+            # reasoning itself. Statements dedupe against existing rows.
+            try:
+                contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
+                reported = [
+                    str(s or "").strip()[:2048]
+                    for s in (getattr(decision, "contradictions_found", None) or [])
+                ]
+                reported = [s for s in reported if s]
+                if contradiction_repo is not None and reported:
+                    from investigation_agent_platform.application.investigation.verification import (
+                        Contradiction,
+                        ContradictionSeverity,
+                    )
+
+                    existing = await contradiction_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    known_statements = {
+                        str(getattr(c, "statement", "")).strip() for c in (existing or [])
+                    }
+                    for statement in reported:
+                        if statement in known_statements:
+                            continue
+                        known_statements.add(statement)
+                        await contradiction_repo.save(
+                            tenant_id,
+                            Contradiction(
+                                statement=statement,
+                                severity=ContradictionSeverity.MEDIUM,
+                            ),
+                            investigation_id,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "contradiction persistence failed; continuing unassisted",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="contradiction persistence failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
+                )
             # Operational telemetry: type names and counts only, never prompt
             # or payload values (prompt content stays out of logs). Values ride
             # as extra keys (TO_DO-007/019); the message keeps lazy %-style.
@@ -1054,6 +1332,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         limits = overlay_evidence_budget(limits, _budget_profile)
             except Exception:
                 pass
+            limits = apply_effective_limits(limits, state.investigation)
             if cumulative_tokens >= limits.max_llm_tokens:
                 logger.warning(
                     "reason_activity token budget exhausted; routing to conclude",
@@ -1078,13 +1357,25 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                 success=True,
                 data={
                     "conclusion_readiness": decision.conclusion_readiness,
-                    "observations": decision.observations,
+                    "observations": list(decision.observations or []),
                     "iteration": iteration,
                     "next_action": action_type_value or "QUERY_STATE",
                     "action_parameters": dict(
                         getattr(action, "parameters", None) or {}
                     ),
                     "hypotheses_evaluated": hypotheses_out,
+                    # P0-2: propagate the full decision surface — previously
+                    # contradictions/gaps/rationale were dropped here, so
+                    # verification always received empty lists downstream.
+                    "contradictions_found": list(
+                        getattr(decision, "contradictions_found", None) or []
+                    ),
+                    "information_gaps": list(
+                        getattr(decision, "information_gaps", None) or []
+                    ),
+                    "reasoning_chain": str(
+                        getattr(decision, "reasoning_chain", "") or ""
+                    )[:2000],
                     "llm_usage": usage,
                     "llm_tokens": call_tokens,
                     "llm_cost": call_cost,
@@ -1189,6 +1480,7 @@ def overlay_evidence_budget(limits: Any, profile: Any) -> Any:
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def execute_action_activity(
     params: ExecuteActionInput,
 ) -> GenericActivityResult:
@@ -1319,6 +1611,7 @@ async def execute_action_activity(
                 _budget_profile = None
         if _budget_profile is not None:
             limits = overlay_evidence_budget(limits, _budget_profile)
+        limits = apply_effective_limits(limits, investigation_obj)
         app_correlation_depth = (
             _budget_profile.investigation.correlation_depth
             if _budget_profile is not None
@@ -1405,12 +1698,24 @@ async def execute_action_activity(
         # Evidence room: persist at most the remaining budget per action.
         # Provider pages rank best-first, so truncation keeps the most
         # relevant hits while leaving room for later iterations — without
-        # this, one broad SEARCH_LOGS (limit 100) banks 40+ rows against a
+        # this, one broad query (limit 100) banks 40+ rows against a
         # 25-item budget and the very next iteration trips BUDGET_EXCEEDED.
+        # Log rows bypass the room: persistence is uncapped for ALL log
+        # types/providers (raw + exemplar twin); budgets still bound
+        # tool calls, iterations, LLM tokens, and prompt projection.
         evidence_room = max(0, limits.max_evidence_items - evidence_count)
 
+        def _evidence_type_name(item: Any) -> str:
+            etype = getattr(item, "evidence_type", "")
+            return str(getattr(etype, "value", etype) or "").upper()
+
         def _bank(items: list) -> list:
-            kept = list(items)[:evidence_room]
+            logs, rest = _split_log_bypass(items)
+            kept_rest = rest[:evidence_room]
+            kept = logs + kept_rest
+            # Preserve provider best-first order across the partition.
+            order = {id(item): index for index, item in enumerate(items)}
+            kept.sort(key=lambda item: order.get(id(item), len(items)))
             if len(kept) < len(items):
                 logger.info(
                     "Evidence persist truncated to remaining budget",
@@ -1433,8 +1738,19 @@ async def execute_action_activity(
                 application_id=application_id or None,
             )
         except Exception as exc:
-            logger.exception(
-                "execute_action_activity denied by authorization gate",
+            # P0-2 BLOCKED: the action stays denied (fail-closed), but the
+            # denial degrades to an EMPTY/BLOCKED outcome instead of killing
+            # the investigation — the miss_reason steers the reasoner to
+            # other capabilities rather than ending the run.
+            from investigation_agent_platform.domain.investigation.models import (
+                ActionOutcome as _BlockedOutcome,
+            )
+            from investigation_agent_platform.domain.investigation.models import (
+                ActionOutcomeStatus as _BlockedStatus,
+            )
+
+            logger.warning(
+                "execute_action_activity denied by authorization gate; degrading",
                 extra=_log_extra(
                     tenant_id=tenant_id,
                     investigation_id=inv_id_str,
@@ -1444,7 +1760,25 @@ async def execute_action_activity(
                     action_type=action_type,
                 ),
             )
-            raise _application_failure_from_exc(exc) from exc
+            try:
+                resolved = ActionType(action_type)
+            except ValueError:
+                resolved = ActionType.QUERY_STATE
+            blocked = _BlockedOutcome(
+                action_id=inv_action.action_id,
+                action_type=resolved,
+                status=_BlockedStatus.BLOCKED,
+                miss_reason="authorization_denied",
+                error_code=type(exc).__name__,
+            )
+            return GenericActivityResult(
+                success=True,
+                data={
+                    "status": "BLOCKED",
+                    "items_count": 0,
+                    "action_outcome": blocked.model_dump(mode="json"),
+                },
+            )
 
         # Dispatch via EvidenceGateway using an exhaustive enum-to-handler
         # registry (F-023) — unknown/unsupported actions are a hard failure,
@@ -1460,6 +1794,22 @@ async def execute_action_activity(
 
         result_status = "EXECUTED"
         items_count = 0
+        # P0-2: typed outcome side-channel. Handlers keep their int return
+        # (items banked); this dict carries status/miss reason/evidence ids
+        # into the ActionOutcome built at dispatch below.
+        outcome_detail: dict[str, Any] = {
+            "status": "SUCCEEDED",
+            "miss_reason": None,
+            "evidence_ids": [],
+        }
+
+        def _record_outcome(banked: list[Any]) -> int:
+            outcome_detail["evidence_ids"] = [
+                str(getattr(e, "evidence_id", "")) for e in banked[:25]
+            ]
+            if not banked and outcome_detail["status"] == "SUCCEEDED":
+                outcome_detail["status"] = "EMPTY"
+            return len(banked)
 
         async def _handle_query_state() -> int:
             from investigation_agent_platform.domain.evidence.requests import (
@@ -1479,10 +1829,14 @@ async def execute_action_activity(
             qres = await gateway.get_application_state(
                 tenant_id, investigation_id, application_id or "example-app", req
             )
+            # P3-2: per-source fan-out breakdown rides into the outcome.
+            outcome_detail["sources"] = list(
+                (getattr(qres, "provider_metadata", None) or {}).get("per_source", []) or []
+            )
             banked = _bank(qres.items)
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            return len(banked)
+            return _record_outcome(banked)
 
         async def _handle_search_logs() -> int:
             from investigation_agent_platform.domain.evidence.requests import (
@@ -1509,7 +1863,24 @@ async def execute_action_activity(
             banked = _bank(qres.items)
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            return len(banked)
+            # Log-group persistence: group banked log rows and persist one
+            # exemplar row per group (same member IDs verbatim, separate
+            # table). Fail-open: exemplar failures never break raw banking.
+            try:
+                await _persist_log_exemplars(
+                    ctx, tenant_id, investigation_id, banked
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Log exemplar persist skipped; raw banking stands",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="log exemplars skipped",
+                        error=str(exc),
+                    ),
+                )
+            return _record_outcome(banked)
 
         async def _handle_get_code() -> int:
             from investigation_agent_platform.domain.common.exceptions import (
@@ -1518,9 +1889,22 @@ async def execute_action_activity(
             )
             from investigation_agent_platform.domain.evidence.requests import SourceRequest
 
+            def _opt_line(value: Any) -> int | None:
+                try:
+                    number = int(str(value))
+                except (TypeError, ValueError):
+                    return None
+                return number if number >= 1 else None
+
             req = SourceRequest(
                 repository=application_id or "example-app",
                 file_path=str(parameters.get("file_path", "")),
+                # P1-2: revision/range are honored end to end ("HEAD" =
+                # adapter resolves the profile default branch, previous
+                # behavior — never silently substitutes another ref).
+                revision=str(parameters.get("revision") or "").strip() or "HEAD",
+                start_line=_opt_line(parameters.get("start_line")),
+                end_line=_opt_line(parameters.get("end_line")),
             )
             if not req.file_path.strip():
                 # Missing file path: agent omission, not a provider outage.
@@ -1536,6 +1920,8 @@ async def execute_action_activity(
                         event="get_code missing file_path",
                     ),
                 )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "missing_file_path"
                 return 0
             try:
                 evidence = await gateway.get_source(
@@ -1556,6 +1942,8 @@ async def execute_action_activity(
                         error=str(exc),
                     ),
                 )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "code_provider_not_configured"
                 return 0
             except CodePathNotFoundError as exc:
                 # Path miss (agent-guessed path not in the tree): exploration
@@ -1570,23 +1958,394 @@ async def execute_action_activity(
                         error=str(exc),
                     ),
                 )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "code_path_not_found"
                 return 0
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
+            outcome_detail["evidence_ids"] = [str(evidence.evidence_id)]
             return 1
 
         async def _handle_correlate() -> int:
-            root_ids = [UUID(str(i)) for i in parameters.get("root_evidence_ids", [])]
-            # Agent depth is clamped to the profile's correlation depth: the
-            # planner may ask for less, never more.
-            max_depth = min(int(parameters.get("max_depth", 2)), app_correlation_depth)
+            # G7: LLM-supplied IDs are untrusted exploration input, not a
+            # contract — unparseable entries degrade (EMPTY + miss_reason),
+            # never WORKFLOW_ERROR. A malformed parameter must steer the
+            # reasoner, not kill the run.
+            root_ids, dropped = _coerce_root_ids(parameters)
+            try:
+                max_depth = min(int(parameters.get("max_depth", 2)), app_correlation_depth)
+            except (TypeError, ValueError):
+                max_depth = min(2, app_correlation_depth)
+            if not root_ids:
+                logger.warning(
+                    "CORRELATE with no parseable root IDs degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="correlate roots unparseable",
+                        dropped=dropped,
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "unparseable_root_ids"
+                return 0
             qres = await gateway.correlate(
                 tenant_id, investigation_id, application_id or "example-app", root_ids, max_depth
             )
             banked = _bank(qres.items)
+            # P1-2: the gateway returns the graph in provider_metadata with
+            # items=[] — bank one CALL_GRAPH summary so the traversal result
+            # reaches reasoning instead of vanishing (items_count=0 before).
+            graph = (qres.provider_metadata or {}).get("graph") or {}
+            nodes = graph.get("nodes", []) or []
+            edges = graph.get("edges", []) or []
+            if nodes or edges:
+                from investigation_agent_platform.domain.evidence.models import (
+                    Evidence,
+                    EvidenceType,
+                )
+
+                edge_lines = [
+                    f"{e.get('source_id')} -[{e.get('relationship_type')}]-> {e.get('target_id')}"
+                    for e in edges[:40]
+                    if isinstance(e, dict)
+                ]
+                import hashlib as _hashlib
+
+                from investigation_agent_platform.domain.provenance.models import (
+                    EvidenceFreshness,
+                    EvidenceProvenance,
+                    QueryFingerprint,
+                    SourceLocation,
+                )
+
+                now = datetime.now(UTC)
+                fp = _hashlib.sha256(
+                    f"correlate:{tenant_id}:{sorted(str(r) for r in root_ids)}:{max_depth}".encode()
+                ).hexdigest()
+                banked = list(banked) + [
+                    Evidence(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        evidence_type=EvidenceType.CALL_GRAPH,
+                        provider="correlation-engine",
+                        source=f"correlation://{investigation_id}",
+                        title=f"Correlation: {len(nodes)} nodes, {len(edges)} edges",
+                        summary=(
+                            f"Correlation from {len(root_ids)} root(s) at depth "
+                            f"{max_depth}: {len(nodes)} nodes, {len(edges)} edges."
+                        ),
+                        content_snippet="\n".join(edge_lines)[:4000],
+                        observed_at=now,
+                        retrieved_at=now,
+                        provenance=EvidenceProvenance(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            provider_type="correlation",
+                            requested_provider_id="correlation-engine",
+                            actual_provider_id="correlation-engine",
+                            source_system="evidence-relationships",
+                            retrieval_timestamp=now,
+                            query_fingerprint=QueryFingerprint(
+                                provider_type="correlation",
+                                operation="correlate",
+                                normalized_query_hash=fp[:32],
+                            ),
+                            source_location=SourceLocation(
+                                system="evidence-relationships",
+                                identifier=str(investigation_id),
+                            ),
+                        ),
+                        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                        fingerprint=f"correlate-{fp[:32]}",
+                    )
+                ]
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            return len(banked)
+            return _record_outcome(banked)
+
+        async def _handle_code_navigation(
+            action_label: str,
+            miss_label: str,
+            build_request: Any,
+            gateway_method: str,
+            summarize: Any = None,
+        ) -> int:
+            """Shared dispatch for SEARCH_CODE / FIND_SYMBOL /
+            FIND_CALL_GRAPH / GET_CODE_HISTORY (P1-1).
+
+            All four resolve through existing gateway methods with full
+            sanitization/dedup; provider-absent degrades to EMPTY with a
+            miss reason instead of failing the investigation. `summarize`
+            optionally converts provider_metadata into bankable evidence
+            (used where the gateway returns metadata-only results).
+            """
+            from investigation_agent_platform.domain.common.exceptions import (
+                ExecutionError,
+                ProviderNotConfiguredError,
+            )
+
+            try:
+                req = build_request()
+            except Exception as exc:
+                logger.warning(
+                    "%s invalid parameters degrades to empty",
+                    action_label,
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event=f"{action_label} invalid parameters",
+                        error=str(exc),
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "invalid_parameters"
+                return 0
+            try:
+                method = getattr(gateway, gateway_method)
+                qres = await method(
+                    tenant_id, investigation_id, application_id or "example-app", req
+                )
+            except (ProviderNotConfiguredError, ExecutionError) as exc:
+                logger.warning(
+                    "%s degrades to empty",
+                    action_label,
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event=f"{action_label} provider absent",
+                        error=str(exc),
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = miss_label
+                return 0
+            banked = _bank(qres.items)
+            if summarize is not None:
+                try:
+                    banked = list(banked) + list(summarize(qres) or [])
+                except Exception as exc:
+                    logger.warning(
+                        "%s summary failed; keeping items",
+                        action_label,
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event=f"{action_label} summarize failed",
+                            error=str(exc),
+                        ),
+                    )
+            if evidence_repo is not None and banked:
+                await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            return _record_outcome(banked)
+
+        async def _handle_search_code() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                CodeSearchRequest,
+            )
+
+            def _build() -> CodeSearchRequest:
+                return CodeSearchRequest(
+                    repository=application_id or "example-app",
+                    revision=str(parameters.get("revision", "HEAD")),
+                    query=str(parameters.get("query", "")),
+                    language=parameters.get("language"),
+                    path_prefix=parameters.get("path_prefix"),
+                    limit=min(int(parameters.get("limit", 20)), 100),
+                )
+
+            return await _handle_code_navigation(
+                "SEARCH_CODE", "code_provider_not_configured", _build, "search_code"
+            )
+
+        async def _handle_find_symbol() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                SymbolRequest,
+            )
+
+            def _build() -> SymbolRequest:
+                return SymbolRequest(
+                    repository=application_id or "example-app",
+                    revision=str(parameters.get("revision", "HEAD")),
+                    symbol_name=str(parameters.get("symbol_name", "")),
+                )
+
+            return await _handle_code_navigation(
+                "FIND_SYMBOL", "code_provider_not_configured", _build, "find_symbol"
+            )
+
+        async def _handle_find_call_graph() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                CallGraphRequest,
+            )
+
+            def _build() -> CallGraphRequest:
+                return CallGraphRequest(
+                    repository=application_id or "example-app",
+                    revision=str(parameters.get("revision", "HEAD")),
+                    symbol=str(parameters.get("symbol", "")),
+                    direction=str(parameters.get("direction", "BOTH")),
+                    depth=min(int(parameters.get("depth", 2)), 5),
+                )
+
+            def _summarize(qres: Any) -> list[Any]:
+                # P1-2: gateway returns call nodes in metadata with items=[]
+                # — bank one CALL_GRAPH summary so the result reaches
+                # reasoning instead of vanishing like CORRELATE used to.
+                meta = (getattr(qres, "provider_metadata", None) or {})
+                callers = meta.get("callers", []) or []
+                callees = meta.get("callees", []) or []
+                if not callers and not callees:
+                    return []
+                import hashlib as _hashlib
+
+                from investigation_agent_platform.domain.evidence.models import (
+                    Evidence,
+                    EvidenceType,
+                )
+                from investigation_agent_platform.domain.provenance.models import (
+                    EvidenceFreshness,
+                    EvidenceProvenance,
+                    QueryFingerprint,
+                    SourceLocation,
+                )
+
+                now = datetime.now(UTC)
+                symbol = str(parameters.get("symbol", ""))
+                lines = [
+                    f"{(c.get('caller_symbol') or '?')} -> {(c.get('callee_symbol') or '?')} "
+                    f"({(c.get('location') or {}).get('file_path', '?')})"
+                    for c in (callers + callees)[:40]
+                    if isinstance(c, dict)
+                ]
+                fp = _hashlib.sha256(
+                    f"callgraph:{tenant_id}:{symbol}:{len(callers)}:{len(callees)}".encode()
+                ).hexdigest()
+                return [
+                    Evidence(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        evidence_type=EvidenceType.CALL_GRAPH,
+                        provider="code-intelligence",
+                        source=f"callgraph://{symbol}",
+                        title=f"Call graph: {symbol} ({len(callers)} callers, {len(callees)} callees)",
+                        summary=(
+                            f"Call graph for '{symbol}': {len(callers)} caller(s), "
+                            f"{len(callees)} callee(s)."
+                        ),
+                        content_snippet="\n".join(lines)[:4000],
+                        observed_at=now,
+                        retrieved_at=now,
+                        provenance=EvidenceProvenance(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            provider_type="code-intelligence",
+                            requested_provider_id="treesitter-local",
+                            actual_provider_id="treesitter-local",
+                            source_system="call-graph",
+                            retrieval_timestamp=now,
+                            query_fingerprint=QueryFingerprint(
+                                provider_type="code-intelligence",
+                                operation="find_call_graph",
+                                normalized_query_hash=fp[:32],
+                            ),
+                            source_location=SourceLocation(
+                                system="call-graph",
+                                identifier=symbol,
+                            ),
+                        ),
+                        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                        fingerprint=f"callgraph-{fp[:32]}",
+                    )
+                ]
+
+            return await _handle_code_navigation(
+                "FIND_CALL_GRAPH",
+                "code_provider_not_configured",
+                _build,
+                "find_call_graph",
+                summarize=_summarize,
+            )
+
+        async def _handle_get_code_history() -> int:
+            from investigation_agent_platform.domain.evidence.requests import (
+                CodeHistoryRequest,
+            )
+
+            def _build() -> CodeHistoryRequest:
+                return CodeHistoryRequest(
+                    repository=application_id or "example-app",
+                    file_path=str(parameters.get("file_path", "")),
+                    symbol=parameters.get("symbol"),
+                    limit=min(int(parameters.get("limit", 10)), 50),
+                )
+
+            return await _handle_code_navigation(
+                "GET_CODE_HISTORY",
+                "code_provider_not_configured",
+                _build,
+                "get_code_history",
+            )
+
+        async def _handle_probe_api() -> int:
+            from investigation_agent_platform.domain.common.exceptions import (
+                ExecutionError,
+                ProbeEndpointNotFoundError,
+            )
+            from investigation_agent_platform.ports.evidence.api_probe import (
+                ApiProbeRequest,
+            )
+
+            try:
+                req = ApiProbeRequest(
+                    endpoint_id=str(parameters.get("endpoint_id", "")),
+                    path_params={
+                        str(k): str(v)
+                        for k, v in (parameters.get("path_params", {}) or {}).items()
+                    },
+                    query_params={
+                        str(k): str(v)
+                        for k, v in (parameters.get("query_params", {}) or {}).items()
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PROBE_API invalid parameters degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="PROBE_API invalid parameters",
+                        error=str(exc),
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "invalid_parameters"
+                return 0
+            if not req.endpoint_id.strip():
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "missing_endpoint_id"
+                return 0
+            try:
+                qres = await gateway.probe_api(
+                    tenant_id, investigation_id, application_id or "example-app", req
+                )
+            except (ProbeEndpointNotFoundError, ExecutionError) as exc:
+                logger.warning(
+                    "PROBE_API degrades to empty",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="PROBE_API endpoint miss",
+                        error=str(exc),
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "probe_endpoint_not_found"
+                return 0
+            banked = _bank(qres.items)
+            if evidence_repo is not None and banked:
+                await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            return _record_outcome(banked)
 
         async def _handle_internal_reasoning_action() -> int:
             # VERIFY_HYPOTHESIS / CONCLUDE never touch an external evidence
@@ -1630,6 +2389,28 @@ async def execute_action_activity(
             # overlay) caps the TOTAL, not just this batch — previously the
             # validator's cap was a literal `pass` and nothing enforced it.
             allowed = max(0, limits.max_hypotheses - len(existing or []))
+            # P0-3: model-cited supporting evidence. FORMULATE_HYPOTHESIS may
+            # carry supporting_evidence_ids — validated here against this
+            # investigation's evidence rows (unknown IDs are dropped, never
+            # trusted) and persisted on the hypothesis so verification can
+            # bind claims to evidence instead of the whole corpus.
+            cited: list[UUID] = []
+            try:
+                raw_ids = parameters.get("supporting_evidence_ids", []) or []
+                if isinstance(raw_ids, list) and evidence_repo is not None:
+                    rows = await evidence_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    known_ids = {getattr(e, "evidence_id", None) for e in (rows or [])}
+                    for raw in raw_ids[:20]:
+                        try:
+                            cid = UUID(str(raw))
+                        except (ValueError, TypeError, AttributeError):
+                            continue
+                        if cid in known_ids:
+                            cited.append(cid)
+            except Exception:
+                cited = []
             for text in proposed_hypotheses[:20]:
                 if saved >= allowed:
                     break
@@ -1646,6 +2427,7 @@ async def execute_action_activity(
                             title=statement[:256],
                             description=statement[:4096],
                             statement=statement,
+                            supporting_evidence_ids=list(cited),
                         ),
                         investigation_id,
                     )
@@ -1661,12 +2443,95 @@ async def execute_action_activity(
                             error_type=type(exc).__name__,
                         ),
                     )
+            # P0-3: VERIFY_HYPOTHESIS may carry validated causal steps for one
+            # hypothesis. Steps whose evidence does not resolve to this
+            # investigation are dropped; the rest attach to the hypothesis so
+            # verification can require a real causal chain.
+            if (
+                resolved_action_type == ActionType.VERIFY_HYPOTHESIS
+                and hypothesis_repo is not None
+            ):
+                try:
+                    from investigation_agent_platform.domain.hypothesis.models import (
+                        HypothesisCausalStep,
+                        HypothesisStatus,
+                    )
+
+                    target_raw = parameters.get("hypothesis_id")
+                    raw_steps = parameters.get("causal_steps", []) or []
+                    if target_raw and isinstance(raw_steps, list) and raw_steps:
+                        target_id = UUID(str(target_raw))
+                        rows = (
+                            await evidence_repo.find_by_investigation_id(
+                                tenant_id, investigation_id
+                            )
+                            if evidence_repo is not None
+                            else []
+                        )
+                        known_ids = {
+                            getattr(e, "evidence_id", None) for e in (rows or [])
+                        }
+                        steps: list[HypothesisCausalStep] = []
+                        for raw in raw_steps[:10]:
+                            if not isinstance(raw, dict):
+                                continue
+                            eids: list[UUID] = []
+                            for r in (raw.get("evidence_ids", []) or [])[:20]:
+                                try:
+                                    cid = UUID(str(r))
+                                except (ValueError, TypeError, AttributeError):
+                                    continue
+                                if cid in known_ids:
+                                    eids.append(cid)
+                            if not eids:
+                                continue
+                            steps.append(
+                                HypothesisCausalStep(
+                                    cause=str(raw.get("cause", ""))[:1024],
+                                    mechanism=str(raw.get("mechanism", ""))[:2048],
+                                    effect=str(raw.get("effect", ""))[:1024],
+                                    evidence_ids=eids,
+                                )
+                            )
+                        if steps:
+                            target = await hypothesis_repo.get_by_id(
+                                tenant_id, target_id
+                            )
+                            if target is not None and str(
+                                getattr(target, "investigation_id", "")
+                            ) == str(investigation_id):
+                                updated = target.model_copy(
+                                    update={"causal_steps": steps}
+                                )
+                                if updated.status == HypothesisStatus.PROPOSED:
+                                    updated = updated.transition_status(
+                                        HypothesisStatus.UNDER_INVESTIGATION
+                                    )
+                                await hypothesis_repo.save(
+                                    tenant_id, updated, investigation_id
+                                )
+                except Exception as exc:
+                    logger.warning(
+                        "causal step attachment failed; continuing",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="causal step attachment failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        ),
+                    )
             return saved
 
         _HANDLERS: dict[Any, Any] = {
             ActionType.QUERY_STATE: _handle_query_state,
             ActionType.SEARCH_LOGS: _handle_search_logs,
             ActionType.GET_CODE: _handle_get_code,
+            ActionType.SEARCH_CODE: _handle_search_code,
+            ActionType.FIND_SYMBOL: _handle_find_symbol,
+            ActionType.FIND_CALL_GRAPH: _handle_find_call_graph,
+            ActionType.GET_CODE_HISTORY: _handle_get_code_history,
+            ActionType.PROBE_API: _handle_probe_api,
             ActionType.CORRELATE: _handle_correlate,
             ActionType.FORMULATE_HYPOTHESIS: _handle_internal_reasoning_action,
             ActionType.VERIFY_HYPOTHESIS: _handle_internal_reasoning_action,
@@ -1692,7 +2557,35 @@ async def execute_action_activity(
             )
 
         try:
+            import time as _time
+
+            from investigation_agent_platform.domain.investigation.models import (
+                ActionOutcome,
+                ActionOutcomeStatus,
+            )
+
+            _dispatch_start = _time.monotonic()
             items_count = await handler()
+            _dispatch_ms = int((_time.monotonic() - _dispatch_start) * 1000)
+            # P0-2: typed outcome from the handler side-channel. DEGRADED
+            # survives even with zero items; otherwise zero items => EMPTY.
+            _outcome_status = outcome_detail.get("status") or (
+                "SUCCEEDED" if items_count > 0 else "EMPTY"
+            )
+            action_outcome = ActionOutcome(
+                action_id=inv_action.action_id,
+                action_type=resolved_action_type,
+                status=ActionOutcomeStatus(_outcome_status),
+                evidence_ids=list(outcome_detail.get("evidence_ids") or [])[:25],
+                item_count=items_count,
+                miss_reason=outcome_detail.get("miss_reason"),
+                duration_ms=_dispatch_ms,
+                sources=[
+                    {k: str(v) for k, v in s.items()}
+                    for s in (outcome_detail.get("sources") or [])
+                    if isinstance(s, dict)
+                ][:10],
+            )
             # Operational telemetry: action type + result counts only (values
             # ride as extra keys per TO_DO-007/019; lazy %-style message).
             logger.warning(
@@ -1769,7 +2662,12 @@ async def execute_action_activity(
             ),
         )
         return GenericActivityResult(
-            success=True, data={"status": result_status, "items_count": items_count}
+            success=True,
+            data={
+                "status": result_status,
+                "items_count": items_count,
+                "action_outcome": action_outcome.model_dump(mode="json"),
+            },
         )
     except ApplicationFailure:
         await _abandon_reservation(
@@ -1804,6 +2702,7 @@ async def execute_action_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def verify_root_cause_activity(
     params: VerifyRootCauseInput,
 ) -> GenericActivityResult:
@@ -1874,18 +2773,173 @@ async def verify_root_cause_activity(
                 success=True, data={"verified": False, "reason": "no_hypotheses"}
             )
 
+        if not hypotheses:
+            return GenericActivityResult(
+                success=True, data={"verified": False, "reason": "no_hypotheses"}
+            )
+
+        import os as _os
+
         from investigation_agent_platform.application.investigation.verification import (
+            CausalRelationship,
             RootCauseVerificationPolicy,
             VerificationEngine,
+            rank_hypotheses,
+            select_verifiable_candidate,
         )
 
-        engine = VerificationEngine()
-        # Evaluate first hypothesis; pass empty contradictions/causal_chain as minimal wiring.
-        hypothesis = hypotheses[0]
-        policy = RootCauseVerificationPolicy()
-        result = engine.evaluate_hypothesis(hypothesis, evidence_items, [], [], policy)
+        verifier_mode = str(_os.environ.get("IAP_VERIFIER_V2", "new")).lower()
+        contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
+        contradictions: list[Any] = []
+        if contradiction_repo is not None:
+            try:
+                contradictions = await contradiction_repo.find_by_investigation_id(
+                    tenant_id, investigation_id
+                )
+            except Exception:
+                contradictions = []
+        evidence_by_id = {getattr(e, "evidence_id", None): e for e in evidence_items}
 
-        verified = result.status.value == "VERIFIED"
+        # P0-3: ranked candidates, bound evidence, real contradictions and
+        # causal chain. Legacy mode preserves the old first-hypothesis /
+        # whole-corpus / empty-lists behavior for rollback.
+        ranked = rank_hypotheses(list(hypotheses))
+        # G9: prefer the candidate whose citations resolve — a reprocess-
+        # carried copy with purged supporting rows must not shadow a live
+        # twin. Falls back to head-eligible; abstention path unchanged.
+        candidate = select_verifiable_candidate(
+            ranked, evidence_by_id, ("REJECTED", "CONTRADICTED", "VERIFIED")
+        )
+        if candidate is None:
+            return GenericActivityResult(
+                success=True,
+                data={"verified": False, "reason": "no_eligible_hypothesis"},
+            )
+
+        def _resolve(ids: list[Any]) -> list[Any]:
+            out = []
+            for raw in ids or []:
+                try:
+                    key = raw if not isinstance(raw, str) else UUID(raw)
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                item = evidence_by_id.get(key)
+                if item is not None:
+                    out.append(item)
+            return out
+
+        engine = VerificationEngine()
+        policy = RootCauseVerificationPolicy()
+        if verifier_mode == "legacy":
+            hypothesis = hypotheses[0]
+            result = engine.evaluate_hypothesis(hypothesis, evidence_items, [], [], policy)
+            verified = result.status.value == "VERIFIED"
+        else:
+            bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
+            refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
+            # G1: location-answer fast path — validated code citations answer
+            # location questions without causal machinery. Skipped under
+            # legacy verifier mode (pre-P0-3 semantics preserved).
+            location_result = engine.validate_location_claim(
+                candidate, bound, contradictions
+            )
+            location_answered = location_result is not None and not refuting
+            if location_answered:
+                result = location_result
+                causal_chain = []
+            else:
+                if location_result is not None and refuting:
+                    logger.info(
+                        "location answer withheld: refuting evidence bound",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="location answer withheld",
+                            hypothesis_id=str(candidate.id),
+                        ),
+                    )
+                causal_chain = [
+                CausalRelationship(
+                    cause=s.cause,
+                    effect=s.effect,
+                    mechanism=s.mechanism,
+                    confidence=0.7,
+                    evidence_ids=[
+                        e for e in (s.evidence_ids or []) if e in evidence_by_id
+                    ],
+                )
+                for s in (getattr(candidate, "causal_steps", []) or [])
+            ]
+            causal_chain = [c for c in causal_chain if c.evidence_ids]
+            blockers: list[str] = []
+            if not bound:
+                blockers.append("no bound supporting evidence")
+            if refuting:
+                blockers.append(f"{len(refuting)} refuting evidence item(s) bound")
+            if not causal_chain and not location_answered:
+                blockers.append("no validated causal chain")
+            if blockers:
+                from investigation_agent_platform.application.investigation.verification import (
+                    InvestigationConfidence,
+                    VerificationResult,
+                    VerificationStatus,
+                )
+
+                result = VerificationResult(
+                    hypothesis_id=candidate.id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[e.evidence_id for e in bound],
+                    explanation="; ".join(blockers),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                )
+            elif not location_answered:
+                result = engine.evaluate_hypothesis(
+                    candidate, bound, contradictions, causal_chain, policy
+                )
+            # Shadow telemetry: always compute the legacy answer alongside
+            # and log divergence while the new path is authoritative.
+            try:
+                legacy = engine.evaluate_hypothesis(
+                    hypotheses[0], evidence_items, [], [], policy
+                )
+                if legacy.status.value != result.status.value:
+                    logger.warning(
+                        "verifier divergence legacy=%s new=%s",
+                        legacy.status.value,
+                        result.status.value,
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="verifier divergence",
+                            hypothesis_id=str(candidate.id),
+                        ),
+                    )
+            except Exception:
+                pass
+            verified = result.status.value == "VERIFIED"
+            # Advance the candidate lifecycle to reflect the evaluation.
+            try:
+                from investigation_agent_platform.domain.hypothesis.models import (
+                    HypothesisStatus as _HStatus,
+                )
+
+                updated = candidate
+                if not verified and updated.status == _HStatus.PROPOSED:
+                    updated = updated.transition_status(_HStatus.UNDER_INVESTIGATION)
+                if verified and updated.status in (
+                    _HStatus.PROPOSED,
+                    _HStatus.UNDER_INVESTIGATION,
+                ):
+                    updated = updated.transition_status(_HStatus.SUPPORTED)
+                if updated is not candidate and hypothesis_repo is not None:
+                    await hypothesis_repo.save(tenant_id, updated, investigation_id)
+            except Exception:
+                pass
         logger.info(
             "verify_root_cause_activity completed",
             extra=_log_extra(
@@ -1903,6 +2957,7 @@ async def verify_root_cause_activity(
                 "status": result.status.value,
                 "confidence": result.confidence.overall_confidence,
                 "hypothesis_id": str(result.hypothesis_id),
+                "answer_mode": bool(getattr(result, "location_validated", False)),
             },
         )
     except ApplicationFailure:
@@ -1922,6 +2977,7 @@ async def verify_root_cause_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
     data = _coerced_data(CheckpointInput, params, activity="checkpoint_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
@@ -2320,6 +3376,7 @@ async def _transition_via_path(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def transition_investigation_activity(
     params: TransitionInvestigationInput,
 ) -> GenericActivityResult:
@@ -2526,20 +3583,184 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         )
         return InvestigationStatus.FAILED
 
+    from investigation_agent_platform.application.investigation.verification import (
+        CausalRelationship,
+        rank_hypotheses,
+        select_verifiable_candidate,
+    )
+
+    contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
+    contradictions: list[Any] = []
+    if contradiction_repo is not None:
+        try:
+            contradictions = await contradiction_repo.find_by_investigation_id(
+                tenant_id, investigation_id
+            )
+        except Exception:
+            contradictions = []
+    evidence_by_id = {getattr(e, "evidence_id", None): e for e in evidence_items}
+
+    def _resolve(ids: list[Any]) -> list[Any]:
+        out = []
+        for raw in ids or []:
+            try:
+                key = raw if not isinstance(raw, str) else UUID(raw)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            item = evidence_by_id.get(key)
+            if item is not None:
+                out.append(item)
+        return out
+
+    async def _persist_abstention(
+        kind: str, limitations: list[str], hypothesis_id: Any = None
+    ) -> None:
+        """Honest abstention is a successful terminal outcome (P0-3): persist
+        an INSUFFICIENT_EVIDENCE / NO_ROOT_CAUSE_FOUND conclusion with its
+        limitations instead of a generic FAILED."""
+        if finding_repo is None:
+            return
+        status = (
+            ConclusionStatus.NO_ROOT_CAUSE_FOUND
+            if kind == "refuted"
+            else ConclusionStatus.INSUFFICIENT_EVIDENCE
+        )
+        await finding_repo.save_conclusion(
+            tenant_id,
+            InvestigationConclusion(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                status=status,
+                root_cause=None,
+                supporting_evidence_ids=[],
+                supporting_hypothesis_ids=(
+                    [hypothesis_id] if hypothesis_id is not None else []
+                ),
+                contradicting_evidence_ids=[],
+                confidence=0.0,
+                limitations=[str(l)[:500] for l in limitations][:20],
+            ),
+        )
+
     engine = VerificationEngine()
     policy = RootCauseVerificationPolicy()
-    verification = engine.evaluate_hypothesis(hypotheses[0], evidence_items, [], [], policy)
+    import os as _os
+
+    if str(_os.environ.get("IAP_VERIFIER_V2", "new")).lower() == "legacy":
+        # P0-4 rollback: pre-P0-3 semantics (first hypothesis, whole corpus,
+        # no causal requirement, best-effort persistence).
+        verification = engine.evaluate_hypothesis(
+            hypotheses[0], evidence_items, [], [], policy
+        )
+        gate = ConclusionGate()
+        gate_policy = policy.model_copy(update={"require_causal_relationship": False})
+        decision = await gate.evaluate(
+            tenant_id,
+            investigation_id,
+            verification,
+            [],
+            [],
+            evidence_items,
+            gate_policy,
+        )
+        if not decision.approved:
+            return InvestigationStatus.FAILED
+        if finding_repo is not None:
+            try:
+                _legacy_ids = [e.evidence_id for e in evidence_items][:100]
+                _legacy_hyp = hypotheses[0]
+                await finding_repo.save_finding_record(
+                    tenant_id,
+                    Finding(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        finding_type=FindingType.ROOT_CAUSE,
+                        title=_legacy_hyp.title,
+                        statement=_legacy_hyp.statement,
+                        evidence_ids=_legacy_ids,
+                        related_hypothesis_ids=[_legacy_hyp.id],
+                        causal_chain=_legacy_ids[:1],
+                        confidence=verification.confidence.overall_confidence,
+                    ),
+                )
+                await finding_repo.save_conclusion(
+                    tenant_id,
+                    InvestigationConclusion(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED
+                        if verification.status == VerificationStatus.VERIFIED
+                        else ConclusionStatus.ROOT_CAUSE_LIKELY,
+                        root_cause=_legacy_hyp.statement,
+                        supporting_evidence_ids=_legacy_ids,
+                        supporting_hypothesis_ids=[_legacy_hyp.id],
+                        confidence=verification.confidence.overall_confidence,
+                    ),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Legacy finding/conclusion persist failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        event="legacy finding persist failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    ),
+                )
+        return InvestigationStatus.COMPLETED
+    ranked = rank_hypotheses(list(hypotheses))
+    # G9: same resolvable-citation preference as the verify activity.
+    candidate = select_verifiable_candidate(ranked, evidence_by_id)
+    if candidate is None:
+        await _persist_abstention("refuted", ["all hypotheses rejected or contradicted"])
+        return InvestigationStatus.COMPLETED
+    bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
+    refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
+    causal_chain = [
+        CausalRelationship(
+            cause=s.cause,
+            effect=s.effect,
+            mechanism=s.mechanism,
+            confidence=0.7,
+            evidence_ids=[e for e in (s.evidence_ids or []) if e in evidence_by_id],
+        )
+        for s in (getattr(candidate, "causal_steps", []) or [])
+    ]
+    causal_chain = [c for c in causal_chain if c.evidence_ids]
+    # G1: location-answer fast path (mirrors verify_root_cause_activity).
+    location_verification = VerificationEngine().validate_location_claim(
+        candidate, bound, contradictions
+    )
+    location_answered = location_verification is not None and not refuting
+    if not bound or refuting or (not causal_chain and not location_answered):
+        reasons = []
+        if not bound:
+            reasons.append("no bound supporting evidence")
+        if refuting:
+            reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
+        if not causal_chain and not location_answered:
+            reasons.append("no validated causal chain")
+        await _persist_abstention(
+            "refuted" if refuting else "insufficient", reasons, candidate.id
+        )
+        return InvestigationStatus.COMPLETED
+    if location_answered:
+        verification = location_verification
+    else:
+        verification = engine.evaluate_hypothesis(
+            candidate, bound, contradictions, causal_chain, policy
+        )
     gate = ConclusionGate()
-    # NOTE (F-024 follow-up): the workflow does not yet emit causal chains or
-    # persist contradictions, so the gate is evaluated with empty lists and a
-    # policy copy that does not require a causal chain. Everything else —
-    # verification status, confidence threshold, unresolved contradictions,
-    # evidence presence/provenance/freshness — is enforced hard. Flip
-    # require_causal_relationship back to True once the agentic loop produces
-    # causal chains end-to-end.
-    gate_policy = policy.model_copy(update={"require_causal_relationship": False})
     decision = await gate.evaluate(
-        tenant_id, investigation_id, verification, [], [], evidence_items, gate_policy
+        tenant_id,
+        investigation_id,
+        verification,
+        contradictions,
+        causal_chain,
+        bound,
+        policy,
+        location_validated=location_answered,
     )
     if not decision.approved:
         logger.warning(
@@ -2552,111 +3773,123 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 blockers=list(decision.blockers),
             ),
         )
-        return InvestigationStatus.FAILED
+        await _persist_abstention("insufficient", list(decision.blockers), candidate.id)
+        return InvestigationStatus.COMPLETED
 
-    # Part 11.2: persist the Finding + InvestigationConclusion that back this
-    # approval. Best-effort — a persistence failure here must never revert an
-    # already-approved conclusion to FAILED (the gate decision stands), but it
-    # is logged loudly since downstream reads/clustering depend on this row.
-    if finding_repo is not None:
-        try:
-            evidence_ids = [e.evidence_id for e in evidence_items][:100]
-            hyp = hypotheses[0]
-            finding = Finding(
-                tenant_id=tenant_id,
-                investigation_id=investigation_id,
-                finding_type=FindingType.ROOT_CAUSE,
-                title=hyp.title,
-                statement=hyp.statement,
-                evidence_ids=evidence_ids,
-                related_hypothesis_ids=[hyp.id],
-                causal_chain=evidence_ids[:1],
-                confidence=verification.confidence.overall_confidence,
-            )
-            await finding_repo.save_finding_record(tenant_id, finding)
-            conclusion = InvestigationConclusion(
-                tenant_id=tenant_id,
-                investigation_id=investigation_id,
-                status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED
-                if verification.status == VerificationStatus.VERIFIED
-                else ConclusionStatus.ROOT_CAUSE_LIKELY,
-                root_cause=hyp.statement,
-                supporting_evidence_ids=evidence_ids,
-                supporting_hypothesis_ids=[hyp.id],
-                confidence=verification.confidence.overall_confidence,
-            )
-            await finding_repo.save_conclusion(tenant_id, conclusion)
-            # First producer for the evidence_relationships table: verified
-            # hypothesis -> supporting evidence CORROBORATES edges, so future
-            # CORRELATE actions traverse real rows instead of an empty graph.
-            # Best-effort like the rows above — never reverts the approval.
-            try:
-                _inv_repo = getattr(ctx, "investigation_repo", None)
-                _engine = getattr(ctx, "engine", None)
-                if _inv_repo is not None and _engine is not None:
-                    _inv = await _inv_repo.get_by_id(tenant_id, investigation_id)
-                    if _inv is not None:
-                        from sqlalchemy.ext.asyncio import async_sessionmaker
+    # P0-3: persist the Finding + InvestigationConclusion that back this
+    # approval. Atomic correctness boundary with COMPLETED: a persistence
+    # failure raises (the investigation retries/fails loudly) instead of
+    # publishing COMPLETED with conclusion=null. Citations are scoped to
+    # the verified hypothesis's bound evidence — never the whole corpus —
+    # and the causal chain is the validated relationship evidence, never
+    # an arbitrary first ID.
+    if finding_repo is None:
+        raise ApplicationFailure(
+            "Finding repository is not configured; cannot publish conclusion",
+            type="CONCLUSION_STORE_UNAVAILABLE",
+            non_retryable=True,
+        )
+    from investigation_agent_platform.domain.hypothesis.models import (
+        HypothesisStatus as _HStatus,
+    )
 
-                        from investigation_agent_platform.infrastructure.correlation.repository import (
-                            PostgresRelationshipRepository,
-                        )
-                        from investigation_agent_platform.ports.persistence.repositories import (
-                            EvidenceRelationshipRecord,
-                        )
+    hyp = candidate
+    supporting_ids = [e.evidence_id for e in bound]
+    causal_ids = [eid for c in causal_chain for eid in c.evidence_ids]
+    if hyp.status == _HStatus.SUPPORTED and hypothesis_repo is not None:
+        hyp = hyp.transition_status(_HStatus.VERIFIED)
+        await hypothesis_repo.save(tenant_id, hyp, investigation_id)
+    finding = Finding(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        finding_type=FindingType.OBSERVATION if location_answered else FindingType.ROOT_CAUSE,
+        title=hyp.title,
+        statement=hyp.statement,
+        evidence_ids=supporting_ids,
+        related_hypothesis_ids=[hyp.id],
+        causal_chain=causal_ids,
+        confidence=verification.confidence.overall_confidence,
+    )
+    await finding_repo.save_finding_record(tenant_id, finding)
+    conclusion = InvestigationConclusion(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        status=ConclusionStatus.ANSWERED
+        if location_answered
+        else (
+            ConclusionStatus.ROOT_CAUSE_ESTABLISHED
+            if verification.status == VerificationStatus.VERIFIED
+            else ConclusionStatus.ROOT_CAUSE_LIKELY
+        ),
+        root_cause=hyp.statement,
+        supporting_evidence_ids=supporting_ids,
+        supporting_hypothesis_ids=[hyp.id],
+        contradicting_evidence_ids=[e.evidence_id for e in refuting],
+        confidence=verification.confidence.overall_confidence,
+    )
+    await finding_repo.save_conclusion(tenant_id, conclusion)
+    evidence_ids = supporting_ids
+    # First producer for the evidence_relationships table: verified
+    # hypothesis -> supporting evidence CORROBORATES edges, so future
+    # CORRELATE actions traverse real rows instead of an empty graph.
+    # Best-effort like the rows above — never reverts the approval.
+    try:
+        _inv_repo = getattr(ctx, "investigation_repo", None)
+        _engine = getattr(ctx, "engine", None)
+        if _inv_repo is not None and _engine is not None:
+            _inv = await _inv_repo.get_by_id(tenant_id, investigation_id)
+            if _inv is not None:
+                from sqlalchemy.ext.asyncio import async_sessionmaker
 
-                        _rel_repo = PostgresRelationshipRepository(
-                            async_sessionmaker(_engine, expire_on_commit=False)
-                        )
-                        _rel_edges = [
-                            EvidenceRelationshipRecord(
-                                tenant_id=tenant_id,
-                                application_id=_inv.application_id,
-                                source_id=str(hyp.id),
-                                target_id=str(eid),
-                                type="CORROBORATES",
-                                confidence=verification.confidence.overall_confidence,
-                                metadata={"reason": hyp.statement[:500]},
-                            )
-                            for eid in evidence_ids
-                        ]
-                        _recorded = await _rel_repo.record_edges(
-                            tenant_id, investigation_id, _inv.application_id, _rel_edges
-                        )
-                        logger.info(
-                            "Correlation edges recorded for concluded investigation",
-                            extra=_log_extra(
-                                tenant_id=tenant_id,
-                                investigation_id=investigation_id,
-                                event="correlation edges recorded",
-                                edges=_recorded,
-                            ),
-                        )
-            except Exception as exc:
-                logger.warning(
-                    "Correlation edge persist skipped; conclusion stands",
+                from investigation_agent_platform.infrastructure.correlation.repository import (
+                    PostgresRelationshipRepository,
+                )
+                from investigation_agent_platform.ports.persistence.repositories import (
+                    EvidenceRelationshipRecord,
+                )
+
+                _rel_repo = PostgresRelationshipRepository(
+                    async_sessionmaker(_engine, expire_on_commit=False)
+                )
+                _rel_edges = [
+                    EvidenceRelationshipRecord(
+                        tenant_id=tenant_id,
+                        application_id=_inv.application_id,
+                        source_id=str(hyp.id),
+                        target_id=str(eid),
+                        type="CORROBORATES",
+                        confidence=verification.confidence.overall_confidence,
+                        metadata={"reason": hyp.statement[:500]},
+                    )
+                    for eid in evidence_ids
+                ]
+                _recorded = await _rel_repo.record_edges(
+                    tenant_id, investigation_id, _inv.application_id, _rel_edges
+                )
+                logger.info(
+                    "Correlation edges recorded for concluded investigation",
                     extra=_log_extra(
                         tenant_id=tenant_id,
                         investigation_id=investigation_id,
-                        event="correlation edges skipped",
-                        error=str(exc),
+                        event="correlation edges recorded",
+                        edges=_recorded,
                     ),
                 )
-        except Exception as exc:
-            logger.exception(
-                "Failed to persist finding/conclusion after gate approval",
-                extra=_log_extra(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    event="finding/conclusion persist failed",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                ),
-            )
+    except Exception as exc:
+        logger.warning(
+            "Correlation edge persist skipped; conclusion stands",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event="correlation edges skipped",
+                error=str(exc),
+            ),
+        )
     return InvestigationStatus.COMPLETED
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def conclude_investigation_activity(
     params: ConcludeInvestigationInput,
 ) -> GenericActivityResult:
@@ -2706,6 +3939,59 @@ async def conclude_investigation_activity(
                         target = await _gate_conclusion_or_fail(tenant_id, investigation_id, ctx)
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"
+                    if target == InvestigationStatus.FAILED:
+                        # P0-3 honest abstention: epistemic endings (unverified
+                        # within budget, budget exhausted) persist an
+                        # INSUFFICIENT_EVIDENCE conclusion and complete —
+                        # FAILED is reserved for platform/workflow errors.
+                        epistemic = (reason or "").strip().lower() in (
+                            "verification_failed_or_limit_reached",
+                            "budget_exceeded",
+                        )
+                        if epistemic:
+                            from investigation_agent_platform.domain.finding.models import (
+                                ConclusionStatus,
+                                InvestigationConclusion,
+                            )
+
+                            finding_repo: Any = getattr(ctx, "finding_repo", None)
+                            if finding_repo is not None:
+                                try:
+                                    await finding_repo.save_conclusion(
+                                        tenant_id,
+                                        InvestigationConclusion(
+                                            tenant_id=tenant_id,
+                                            investigation_id=investigation_id,
+                                            status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
+                                            root_cause=None,
+                                            supporting_evidence_ids=[],
+                                            supporting_hypothesis_ids=[],
+                                            contradicting_evidence_ids=[],
+                                            confidence=0.0,
+                                            limitations=[
+                                                (
+                                                    f"Investigation ended: {reason}. "
+                                                    "No hypothesis met the evidence-bound "
+                                                    "verification bar within budget."
+                                                )
+                                            ],
+                                        ),
+                                    )
+                                    target = InvestigationStatus.COMPLETED
+                                    conclude_reason = (
+                                        "Workflow concluded with COMPLETED "
+                                        "(INSUFFICIENT_EVIDENCE)"
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Abstention conclusion persist failed; staying FAILED",
+                                        extra=_log_extra(
+                                            tenant_id=tenant_id,
+                                            investigation_id=inv_id_str,
+                                            event="abstention persist failed",
+                                            error=str(exc),
+                                        ),
+                                    )
                     if target == InvestigationStatus.FAILED:
                         # Terminal failure record: stamped onto metadata BEFORE
                         # the transition (see _stamp_failure) so it surfaces
@@ -2827,6 +4113,7 @@ async def conclude_investigation_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def publish_event_activity(
     params: PublishEventInput,
 ) -> GenericActivityResult:
@@ -3007,6 +4294,7 @@ async def publish_event_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def retrieve_knowledge_activity(
     params: RetrieveKnowledgeInput,
 ) -> GenericActivityResult:
@@ -3050,6 +4338,18 @@ async def retrieve_knowledge_activity(
                 investigation_id,
                 kinds=list(kinds) if kinds else None,
                 code_issue_fingerprints=fingerprints,
+            )
+            logger.info(
+                "retrieve_knowledge_activity completed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="retrieve_knowledge_activity completed",
+                    verified_facts=len(context.verified_facts),
+                    preferences=len(context.preferences),
+                    temporal_summary=len(context.temporal_summary),
+                    excluded_stale_count=context.excluded_stale_count,
+                ),
             )
             return GenericActivityResult(
                 success=True,
@@ -3117,6 +4417,7 @@ async def _application_id_for(ctx: Any, tenant_id: str, investigation_id: UUID) 
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def capture_knowledge_activity(
     params: CaptureKnowledgeInput,
 ) -> GenericActivityResult:
@@ -3152,6 +4453,23 @@ async def capture_knowledge_activity(
         try:
             service = ctx.knowledge_capture_service()
             stored = await service.capture_for_investigation(tenant_id, investigation_id)
+            # R3: capture mutates envelopes → drop this investigation's cached
+            # contexts everywhere (global with Redis). Fail-open: invalidation
+            # errors never break the never-fail capture contract.
+            try:
+                cache = ctx.knowledge_context_cache()
+                if cache is not None:
+                    await cache.invalidate_investigation(tenant_id, inv_id_str)
+            except Exception as exc:
+                logger.warning(
+                    "Context cache invalidation failed open",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="capture cache invalidate skipped",
+                        error=str(exc),
+                    ),
+                )
             logger.info(
                 "capture_knowledge_activity completed",
                 extra=_log_extra(
@@ -3200,6 +4518,7 @@ class SweepKnowledgeInput:
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def sweep_knowledge_activity(
     params: SweepKnowledgeInput,
 ) -> GenericActivityResult:
@@ -3231,6 +4550,21 @@ async def sweep_knowledge_activity(
                 result = await janitor.sweep_tenant(tenant_id, reverify_conditional=reverify)
                 per_tenant[tenant_id] = result.expired_count
                 total_expired += result.expired_count
+                # R3: sweep transitions envelopes (EXPIRED/SUPERSEDED/QUARANTINED)
+                # → drop the tenant's cached contexts. Fail-open per tenant.
+                try:
+                    cache = ctx.knowledge_context_cache()
+                    if cache is not None:
+                        await cache.invalidate_tenant(tenant_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Context cache invalidation failed open",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            event="sweep cache invalidate skipped",
+                            error=str(exc),
+                        ),
+                    )
             except Exception as exc:
                 logger.exception(
                     "Knowledge sweep failed for tenant; continuing",
@@ -3431,6 +4765,7 @@ class PromoteFulfillmentEvidenceInput:
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def record_input_requirement_activity(
     params: RecordInputRequirementInput,
 ) -> GenericActivityResult:
@@ -3534,6 +4869,7 @@ async def record_input_requirement_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def set_input_requirement_state_activity(
     params: SetInputRequirementStateInput,
 ) -> GenericActivityResult:
@@ -3604,6 +4940,7 @@ async def set_input_requirement_state_activity(
 
 
 @activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def promote_fulfillment_evidence_activity(
     params: PromoteFulfillmentEvidenceInput,
 ) -> GenericActivityResult:
@@ -5158,6 +6495,194 @@ async def summarize_batch_activity(
                 error=str(exc),
                 error_type=type(exc).__name__,
                 job_id=str(data.get("job_id", "")),
+            ),
+        )
+        raise _application_failure_from_exc(exc) from exc
+
+
+@dataclass
+class ProjectTopologyInput:
+    """One topology projection pass over a local checkout (cognee pilot).
+
+    `checkout` is resolved under `IAP_CODE_REPO_BASE` with containment
+    enforcement; absolute/traversal paths are rejected. `revision` defaults
+    to the checkout's HEAD when empty. `changed_files` (from webhook pushes)
+    is recorded for future incremental work; the payload rebuild stays full
+    (edge resolution spans files — partial projection would corrupt CALLS).
+    """
+
+    tenant_id: str = ""
+    repository_id: str = ""
+    revision: str = ""
+    checkout: str = ""
+    application_id: str = ""
+    changed_files: list[str] = field(default_factory=list)
+
+
+@activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
+async def project_topology_activity(
+    params: ProjectTopologyInput,
+) -> GenericActivityResult:
+    """Project one repo revision into the topology store (scheduled janitor shape).
+
+    Skips (success, status=skipped) when the pilot is disabled, the checkout
+    is absent/unresolvable, or config is missing — a janitor never fails a
+    schedule on a missing repo. Genuine projection failures raise for
+    Temporal retry.
+    """
+    import os
+
+    data = _coerced_data(
+        ProjectTopologyInput, params, activity="project_topology_activity"
+    )
+    tenant_id = str(data.get("tenant_id", ""))
+    repository_id = str(data.get("repository_id", ""))
+    if not tenant_id or not repository_id:
+        return GenericActivityResult(
+            success=False, error="tenant_id and repository_id required"
+        )
+
+    def _skip(reason: str) -> GenericActivityResult:
+        logger.info(
+            "project_topology_activity skipped",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="project_topology skipped",
+                reason=reason,
+                repository_id=repository_id,
+            ),
+        )
+        return GenericActivityResult(success=True, data={"status": "skipped", "reason": reason})
+
+    if os.environ.get("IAP_COGNEE_ENABLED", "false").lower() != "true":
+        return _skip("cognee pilot disabled")
+    salt = os.environ.get("IAP_COGNEE_DATASET_SALT", "")
+    if not salt:
+        return _skip("dataset salt unconfigured")
+
+    from pathlib import Path
+
+    base = Path(
+        os.environ.get("IAP_CODE_REPO_BASE", "") or "data/code-repos"
+    ).resolve()
+    requested = str(data.get("checkout", "") or "")
+    candidates: list[Path] = []
+    if requested:
+        candidates.append((base / requested).resolve())
+    else:
+        # Layout candidates: flat slug first, then nested org/repo
+        # (self-triage worktrees live nested).
+        candidates.append((base / repository_id).resolve())
+        if "--" in repository_id:
+            org, _, name = repository_id.partition("--")
+            if org and name:
+                candidates.append((base / org / name).resolve())
+    candidate: Path | None = None
+    for path in candidates:
+        try:
+            inside = str(path).startswith(str(base) + os.sep) or path == base
+        except Exception:
+            continue
+        if not inside:
+            continue
+        if path.is_dir():
+            candidate = path
+            break
+    if candidate is None:
+        # Distinguish escape (reject loudly in logs) from absence (skip).
+        for path in candidates:
+            try:
+                if not (str(path).startswith(str(base) + os.sep) or path == base):
+                    return _skip("checkout escapes repo base")
+            except Exception:
+                continue
+        return _skip("checkout absent")
+
+    revision = str(data.get("revision", "") or "")
+    if not revision:
+        try:
+            import pygit2  # type: ignore[import-not-found]
+
+            revision = str(pygit2.Repository(str(candidate)).head.target)
+        except Exception:
+            revision = ""
+    if not revision:
+        return _skip("revision unresolvable")
+
+    try:
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            CogneeTopologyAdapter,
+            SharedNeo4jDriver,
+        )
+        from investigation_agent_platform.infrastructure.topology.ownership import (
+            derive_repository_domain,
+        )
+        from investigation_agent_platform.infrastructure.topology.payload import (
+            build_payload_for_repo,
+        )
+
+        application_id = str(
+            data.get("application_id", "") or f"{tenant_id}-{repository_id}"
+        )
+        payload, truncated = await build_payload_for_repo(
+            candidate, tenant_id, application_id, repository_id, revision
+        )
+        if truncated:
+            return GenericActivityResult(
+                success=False, error="payload truncated; refusing partial projection"
+            )
+        ownership_path = []
+        try:
+            domain = await asyncio.to_thread(derive_repository_domain, candidate)
+            if domain:
+                ownership_path.append(domain)
+        except Exception:
+            pass
+        holder = await SharedNeo4jDriver.from_env().connect()
+        try:
+            adapter = CogneeTopologyAdapter(
+                enabled=True, dataset_salt=salt, neo4j_driver=holder
+            )
+            result = await adapter.project_snapshot(payload, ownership_path=ownership_path)
+        finally:
+            await holder.close()
+        changed = list(data.get("changed_files", []) or [])
+        logger.info(
+            "project_topology_activity completed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="project_topology completed",
+                repository_id=repository_id,
+                revision=revision[:12],
+                dataset=result.dataset,
+                points=result.point_count,
+                edges=result.edge_count,
+                changed_files=len(changed),
+            ),
+        )
+        return GenericActivityResult(
+            success=True,
+            data={
+                "status": "projected",
+                "dataset": result.dataset,
+                "points": result.point_count,
+                "edges": result.edge_count,
+                "revision": revision,
+                "changed_files": changed,
+            },
+        )
+    except ApplicationFailure:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "project_topology_activity failed",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                event="project_topology failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                repository_id=repository_id,
             ),
         )
         raise _application_failure_from_exc(exc) from exc

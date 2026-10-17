@@ -9,6 +9,7 @@ from opentelemetry import trace
 from investigation_agent_platform.application.investigation.validator import _has_traversal
 from investigation_agent_platform.domain.common.exceptions import SecurityPolicyViolationException
 from investigation_agent_platform.domain.evidence.models import Evidence, RedactionEntry
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.security.redactor import (
     EvidenceSanitizerPort,
     QueryPolicyPort,
@@ -102,6 +103,7 @@ class SensitiveDataRedactor(EvidenceSanitizerPort):
         redacted, _ = self._redact_with_manifest(text_content)
         return redacted
 
+    @traced("provider", component="sanitizer", require_scope=False)
     async def sanitize_evidence(self, tenant_id: str, evidence: Evidence) -> Evidence:
         return await self.redact_evidence(evidence)
 

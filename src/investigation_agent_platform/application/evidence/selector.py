@@ -1,12 +1,13 @@
 # src/investigation_agent_platform/application/evidence/selector.py
 import logging
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from opentelemetry import trace
 
 from investigation_agent_platform.domain.common.exceptions import (
     ProviderNotConfiguredError,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.evidence.code import (
     CodeEvidenceProviderProtocol,
     CodeIntelligenceProviderProtocol,
@@ -16,6 +17,14 @@ from investigation_agent_platform.ports.evidence.state import StateEvidenceProvi
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _selected_extra(provider: Any) -> dict[str, Any]:
+    """Selected provider type only (keys are config, safe; no payloads)."""
+    try:
+        return {"iap.provider_type": type(provider).__name__[:128]}
+    except Exception:
+        return {}
 
 T = TypeVar("T")
 
@@ -100,6 +109,7 @@ class EvidenceProviderSelector:
         )
 
     # Async Getter Methods
+    @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_runtime_provider(
         self, tenant_id: str, application_id: str, environment: str
     ) -> RuntimeEvidenceProviderProtocol:
@@ -142,6 +152,15 @@ class EvidenceProviderSelector:
         """
         return self._runtime_providers.get(key)
 
+    def list_state_providers(self) -> list[tuple[str, Any]]:
+        """All registered state providers as (key, provider) pairs (P3-2).
+
+        Used by fan-out: the gateway queries every tenant-authorized MCP
+        state provider instead of resolving exactly one.
+        """
+        return list(self._state_providers.items())
+
+    @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_state_provider(
         self, tenant_id: str, application_id: str, environment: str
     ) -> StateEvidenceProviderProtocol:
@@ -171,6 +190,7 @@ class EvidenceProviderSelector:
                         return resolved
             raise ProviderNotConfiguredError(f"No state provider configured for tenant context '{key}'")
 
+    @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_code_provider(
         self, tenant_id: str, application_id: str
     ) -> CodeEvidenceProviderProtocol:
@@ -195,6 +215,7 @@ class EvidenceProviderSelector:
                 return sole
             raise ProviderNotConfiguredError(f"No code provider configured for tenant context '{key}'")
 
+    @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_code_intelligence_provider(
         self, tenant_id: str, application_id: str
     ) -> CodeIntelligenceProviderProtocol:

@@ -303,9 +303,10 @@ class TestSaveBatch:
         with patch(f"{APP}.evidence_repository.rls_session", return_value=cm):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
-        # Atomic upsert: single INSERT ... ON CONFLICT DO NOTHING, no pre-SELECT.
+        # One bulk INSERT + one holder-map SELECT (constant queries);
+        # shared-reference interest insert only fires on actual sharing.
         assert session.scalars.await_count == 0
-        assert session.execute.await_count == 1
+        assert session.execute.await_count == 2
 
     @pytest.mark.asyncio
     async def test_batch_dedupes_within_batch(self) -> None:
@@ -322,8 +323,8 @@ class TestSaveBatch:
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
         assert session.scalars.await_count == 0
-        assert session.execute.await_count == 1
-        stmt = session.execute.await_args.args[0]
+        assert session.execute.await_count == 2
+        stmt = session.execute.await_args_list[0].args[0]
         param_values = list(stmt.compile().params.values())
         assert param_values.count("fp-same") == 1
 
@@ -334,8 +335,9 @@ class TestSaveBatch:
         )
 
         # Already-stored rows are skipped by the database itself (ON CONFLICT
-        # DO NOTHING): the batch still issues its single INSERT, and the
-        # conflicting row is ignored atomically instead of raising.
+        # DO NOTHING): the batch still issues its INSERT plus the holder-map
+        # SELECT, and the conflicting row is ignored atomically instead of
+        # raising.
         items = [_make_evidence(fingerprint="fp-known")]
         session = _session_with(scalars_result=_scalars(all_=["fp-known"]))
         cm = AsyncMock()
@@ -345,7 +347,7 @@ class TestSaveBatch:
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
         assert session.scalars.await_count == 0
-        assert session.execute.await_count == 1
+        assert session.execute.await_count == 2
 
     @pytest.mark.asyncio
     async def test_batch_logs_size_and_outcome(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -717,7 +719,9 @@ class TestCoreRetention:
             repo = SqlAlchemyInvestigationRepository(db_session_factory=MagicMock())
             purged = await repo.purge_expired("tenant-a", cutoff)
         assert purged == 1
-        select_stmt = session.scalars.await_args.args[0]
+        # First scalars call is the purge select (later calls belong to the
+        # reference-evidence rehome pass).
+        select_stmt = session.scalars.await_args_list[0].args[0]
         text = str(select_stmt)
         assert "tenant_id" in text
         params = list(select_stmt.compile().params.values())

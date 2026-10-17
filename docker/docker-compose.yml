@@ -12,6 +12,31 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # R3 knowledge-context cache (GEMINI_RECOS). Dockerized Redis for dev;
+  # cloud binds IAP_REDIS_URL to the managed endpoint with zero code change
+  # (adapter pattern). Loopback-published like :9200/:5452; never public.
+  # Ephemeral by design (cache only) — no volume: a restart cold-starts.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", '""']
+    ports:
+      - "6379:6379"
+
+  # OTel trace collector (OTEL P4). API/worker run on the host and export
+  # OTLP gRPC to loopback :4317 (IAP_OTLP_ENDPOINT default). Spans land in
+  # collector stdout (`docker logs docker-otel-collector-1`); swap the
+  # `logging` exporter for a real backend in docker/otel-collector/config.yaml
+  # with no application change. Ephemeral by design — no volume.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.163.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
     environment:
@@ -53,6 +78,21 @@ services:
   # Dev log shipper for the IAP self profile (tmp/TO_DO_OPS_001.md): tails the
   # structlog JSON logs into `logs-n-a-iap-development-*`, matching the
   # `logs-n-a-*-development-*` contract. Config: docker/logging/filebeat.yml.
+  # P3-1: crystaldba Postgres MCP (restricted read-only, SSE). One instance
+  # per database — this one fronts IAP's own application database so
+  # self-triage flows through MCP like every other datasource. DATABASE_URI
+  # resolves from shell env (secret-injected, never baked); the SSE port
+  # stays on the internal compose network (no published port).
+  postgres-mcp-iap:
+    image: crystaldba/postgres-mcp:0.3.0
+    command: ["--access-mode=restricted", "--transport=sse"]
+    environment:
+      DATABASE_URI: ${IAP_MCP_IAP_DB_URI:-${IAP_DATABASE_URI}}
+    ports:
+      - "127.0.0.1:8100:8000"
+    depends_on:
+      - postgres
+
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.12.0
     user: "0:0"

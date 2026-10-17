@@ -8,7 +8,7 @@ hand-built dict shapes get dedicated views here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +66,30 @@ class CreateInvestigationBody(BaseModel):
         )
 
 
+class ReprocessBody(BaseModel):
+    """POST /investigations/{id}/reprocess request body.
+
+    `mode` selects versioning semantics (RESTART_FRESH always versions;
+    RESTART_CONTINUE versions terminal originals and copies artifacts).
+    `budget_multiplier` scales the run budget (int 1-10; tokens hard-capped
+    at 1M per run). Only validated values reach the service — anything else
+    422s at this boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["RESTART_FRESH", "RESTART_CONTINUE"] = Field(
+        ...,
+        description="RESTART_FRESH (new version, no artifacts) or RESTART_CONTINUE (new version + copied artifacts)",
+    )
+    budget_multiplier: int = Field(
+        default=1, ge=1, le=10, description="Budget scale factor N in [1, 10]"
+    )
+    reason: str = Field(
+        default="", max_length=1000, description="Operator reason recorded in the audit trail"
+    )
+
+
 class FulfillInputBody(BaseModel):
     """POST .../input-requirements/{requirement_id}/fulfill request body."""
 
@@ -99,6 +123,10 @@ class CreateInvestigationResponse(BaseModel):
     status: str
     tenant_id: str
     investigation: Investigation
+    # §2 disposition of this request against similar past runs (action,
+    # target, link, seed, re-verify verdict). Always present; FRESH means
+    # no similar past run was found.
+    disposition: dict[str, Any] | None = None
 
 
 class DispatchAck(BaseModel):
@@ -116,6 +144,10 @@ class InvestigationDetailResponse(BaseModel):
 
     investigation: Investigation
     pending_requirements: list[InputRequirement]
+    # §2.4: inbound + outbound investigation-family links (DUPLICATE_OF,
+    # FOLLOW_UP_OF, RETRY_OF, POSSIBLY_RELATED, RELATES_TO). Empty when the
+    # link writer is unwired or the investigation stands alone.
+    links: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ConclusionResponse(BaseModel):

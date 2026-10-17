@@ -343,7 +343,10 @@ class TestBuildPayload:
     async def test_truncated_on_cap_breach(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(loader, "MAX_NODE_SYMBOLS", 2)
+        monkeypatch.setattr(
+            "investigation_agent_platform.infrastructure.topology.payload.MAX_NODE_SYMBOLS",
+            2,
+        )
         _, truncated = await self._build(tmp_path)
         assert truncated is True
 

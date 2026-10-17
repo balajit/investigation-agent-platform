@@ -145,6 +145,10 @@ class EvidenceORM(Base):
     evidence_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # G6: lifecycle scope — observational rows belong to their investigation
+    # (cascade purge); reference rows (code/history) belong to the repo and
+    # outlive readers (bank-interest hydration, scope-aware purge).
+    lifecycle_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="observational")
     # TO_DO-023: retention class for the core-table purge.
     retention_class: Mapped[str] = mapped_column(
         String(64), nullable=False, default="evidence", server_default="evidence"
@@ -351,6 +355,9 @@ class HypothesisORM(Base):
     refuting_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     required_verification: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     assessments_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    causal_steps_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -1212,4 +1219,90 @@ class BatchIntakeRecordORM(Base):
         ),
         Index("idx_batch_record_job_status", "tenant_id", "job_id", "status"),
         Index("idx_batch_record_job_index", "tenant_id", "job_id", "record_index"),
+    )
+
+
+class ContradictionORM(Base):
+    """Persisted contradiction (P0-3) — model-reported conflicts that gate conclusions."""
+
+    __tablename__ = "investigation_contradictions"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, default="MEDIUM")
+    evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    hypothesis_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    resolution_status: Mapped[str] = mapped_column(String(32), nullable=False, default="UNRESOLVED")
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolution_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_contradiction_tenant", "tenant_id"),
+        Index("idx_contradiction_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class LogExemplarORM(Base):
+    """Persisted log exemplar group (log-group persistence) — presentation twin of raw rows."""
+
+    __tablename__ = "log_exemplars"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    signature: Mapped[str] = mapped_column(Text, nullable=False)
+    member_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    span_first: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    span_last: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    representative_snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_logexemplar_tenant", "tenant_id"),
+        Index("idx_logexemplar_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class EvidenceBankInterestORM(Base):
+    """Bank-interest: investigations referencing a canonical evidence row (G6).
+
+    Tenant-matched always. Cascades with the referencing investigation; the
+    canonical row itself follows lifecycle_scope retention, never cascade.
+    """
+
+    __tablename__ = "evidence_bank_interest"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        Index("idx_bank_interest_evidence_key", "tenant_id", "evidence_key"),
     )

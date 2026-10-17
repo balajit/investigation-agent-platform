@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/mcp/tools/trace_investigation.py
 """MCP ``investigate_trace`` tool (Part 9 Phase 6).
 
@@ -58,6 +60,8 @@ EnvironmentParam = Annotated[str, Field(min_length=1, max_length=100, pattern=EN
 MaxEvidenceParam = Annotated[int, Field(ge=1, le=100)]
 
 
+@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
 async def investigate_trace_core(
     *,
     services: InvestigationServices,

@@ -200,3 +200,44 @@ class PostgresRelationshipRepository:
                 )
             await session.commit()
             return len(fresh)
+
+    async def fetch_links_for_node(
+        self, tenant_id: str, node_id: str
+    ) -> list[dict[str, Any]]:
+        """§2.4: inbound + outbound investigation-level links for one node.
+
+        Returns plain dicts (source, target, type, confidence, reason,
+        investigation_id) for rows where the node appears on either side.
+        Tenant-scoped; no application filter (families may span profiles).
+        """
+        from sqlalchemy import or_, select
+
+        from investigation_agent_platform.infrastructure.persistence.models import (
+            EvidenceRelationshipORM,
+        )
+
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(EvidenceRelationshipORM)
+                    .where(
+                        EvidenceRelationshipORM.tenant_id == tenant_id,
+                        or_(
+                            EvidenceRelationshipORM.source_node_id == node_id,
+                            EvidenceRelationshipORM.target_node_id == node_id,
+                        ),
+                    )
+                    .order_by(EvidenceRelationshipORM.created_at)
+                )
+            ).all()
+            return [
+                {
+                    "source": r.source_node_id,
+                    "target": r.target_node_id,
+                    "type": r.relationship_type,
+                    "confidence": float(r.confidence),
+                    "reason": r.reason,
+                    "investigation_id": str(r.investigation_id),
+                }
+                for r in rows
+            ]

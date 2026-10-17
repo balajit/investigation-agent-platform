@@ -73,7 +73,11 @@ class TestGatewayComposition:
                 "elastic-primary",
                 "file-log",
             }
-            assert gateway._provider_selector._state_providers == {}
+            # P3-1: shipped postgres MCP yaml registers the IAP-DB instance
+            # by default (MCP-only datasource posture).
+            assert set(gateway._provider_selector._state_providers) == {
+                "postgres-mcp-iap-app-db"
+            }
             assert gateway._query_safety_policy is not None
             assert gateway._sanitizer is not None
 

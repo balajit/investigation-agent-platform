@@ -33,6 +33,7 @@ with workflow.unsafe.imports_passed_through():
         LoadBatchRecordsInput,
         MarkBatchRecordResultInput,
         MarkBatchRecordsInput,
+        ProjectTopologyInput,
         PromoteFulfillmentEvidenceInput,
         PublishEventInput,
         ReasonInput,
@@ -62,6 +63,7 @@ with workflow.unsafe.imports_passed_through():
         load_batch_records_activity,
         mark_batch_record_result_activity,
         mark_batch_records_activity,
+        project_topology_activity,
         promote_fulfillment_evidence_activity,
         publish_event_activity,
         reason_activity,
@@ -147,6 +149,32 @@ def _resolve_max_iterations(requested: int | None) -> int:
     if requested is None:
         return WORKFLOW_LOCAL_ITERATION_GUARD
     return max(1, min(int(requested), 50))
+
+
+def _should_force_formulate(
+    iteration: int,
+    formulated_count: int,
+    hypotheses_evaluated: list | None,
+    evidence_banked_total: int,
+    forced_count: int,
+) -> bool:
+    """G8 synthesis-forcing rule: commit thinking before gathering more.
+
+    Fires when the model holds unevaluated hypotheses (non-empty
+    hypotheses_evaluated) yet never FORMULATEd, evidence already banked,
+    and at least two gathering turns elapsed — the loop then overrides the
+    proposed action with FORMULATE_HYPOTHESIS carrying the same content.
+    Bounded (max 2 forced attempts per run) so a model with genuinely
+    nothing to commit cannot be wedged; empty hypotheses never force
+    (nothing to commit). Pure and deterministic — workflow-safe.
+    """
+    try:
+        pending = list(hypotheses_evaluated or [])
+    except Exception:
+        return False
+    if not pending or formulated_count > 0 or evidence_banked_total <= 0:
+        return False
+    return not (int(iteration or 0) < 2 or int(forced_count or 0) >= 2)
 
 
 @workflow.defn
@@ -444,6 +472,11 @@ class RunInvestigationWorkflow:
         # restarts; the reason activity enforces the per-investigation cap.
         llm_tokens_total = 0
         llm_cost_total = 0.0
+        # G8 synthesis tracking (plain scalars, replay-safe): committed
+        # formulations, banked evidence total, and forced-formulate count.
+        formulated_count = 0
+        evidence_banked_total = 0
+        forced_formulate_count = 0
 
         # 2. Main Investigation Loop — state authority is the workflow + checkpoint repo.
         while iteration < max_iterations and not self._is_cancelled:
@@ -487,7 +520,19 @@ class RunInvestigationWorkflow:
             if reason_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
                 break
+            # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
+            if _should_force_formulate(
+                iteration,
+                formulated_count,
+                _reason_data.get("hypotheses_evaluated"),
+                evidence_banked_total,
+                forced_formulate_count,
+            ):
+                forced_formulate_count += 1
+                _reason_data = dict(_reason_data)
+                _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
+                _reason_data["forced_formulate"] = True
             _hyps = _reason_data.get("hypotheses_evaluated") or []
             _obss = _reason_data.get("observations") or []
             action_history.append(
@@ -515,14 +560,16 @@ class RunInvestigationWorkflow:
                 break
 
             # Execute proposed action (EvidenceGateway dispatch + sanitization + persistence).
+            # G8: dispatch honors the synthesis-forced override in _reason_data.
+            _dispatched_action = str(_reason_data.get("next_action", "QUERY_STATE"))
             execute_res = await workflow.execute_activity(
                 execute_action_activity,
                 ExecuteActionInput(
                     tenant_id=tenant_id,
                     investigation_id=inv_id,
-                    action=str(reason_res.data.get("next_action", "QUERY_STATE")),
-                    parameters=dict(reason_res.data.get("action_parameters", {})),
-                    hypotheses=list(reason_res.data.get("hypotheses_evaluated", []) or []),
+                    action=_dispatched_action,
+                    parameters=dict(_reason_data.get("action_parameters", {})),
+                    hypotheses=list(_reason_data.get("hypotheses_evaluated", []) or []),
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=retry_policy,
@@ -539,6 +586,35 @@ class RunInvestigationWorkflow:
             if execute_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
                 break
+            # P0-2: close the loop on the pre-execution history entry — record
+            # what was actually attempted and what it produced, so the next
+            # reasoning turn can distinguish success/empty/degraded/failed.
+            if action_history:
+                _exec_data = execute_res.data or {}
+                _outcome = _exec_data.get("action_outcome") or {}
+                _params = dict(reason_res.data.get("action_parameters", {}) or {})
+                action_history[-1].update(
+                    {
+                        "parameters": {
+                            k: str(v)[:200] for k, v in _params.items()
+                        },
+                        "outcome_status": _outcome.get("status"),
+                        "items_count": _outcome.get(
+                            "item_count", _exec_data.get("items_count", 0)
+                        ),
+                        "evidence_added": len(_outcome.get("evidence_ids", []) or []),
+                        "miss_reason": _outcome.get("miss_reason"),
+                        "sources": _outcome.get("sources", []),
+                        "forced_formulate": bool(_reason_data.get("forced_formulate", False)),
+                    }
+                )
+                # G8: track synthesis state for the forcing rule.
+                if _dispatched_action == "FORMULATE_HYPOTHESIS":
+                    formulated_count += 1
+                try:
+                    evidence_banked_total += len(_outcome.get("evidence_ids", []) or [])
+                except TypeError:
+                    pass
 
             # Retrieve evidence (EvidenceGateway).
             retrieve_res = await workflow.execute_activity(
@@ -1386,3 +1462,67 @@ class BulkIntakeWorkflow:
             )
         )
         raise RuntimeError("unreachable: continue_as_new never returns")
+
+
+@dataclass
+class TopologyProjectionInput:
+    """One scheduled topology projection pass (cognee pilot).
+
+    Intended for a Temporal Schedule per (tenant, repository) or on webhook
+    push. `revision` empty resolves from the checkout HEAD in the activity;
+    `changed_files` is recorded for future incremental work.
+    """
+
+    tenant_id: str
+    repository_id: str
+    revision: str = ""
+    checkout: str = ""
+    application_id: str = ""
+    changed_files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TopologyProjectionResult:
+    status: str
+    dataset: str = ""
+    points: int = 0
+    edges: int = 0
+    revision: str = ""
+
+
+@workflow.defn
+class TopologyProjectionWorkflow:
+    """Scheduled projection: local checkout → deterministic topology points.
+
+    Idempotent per (tenant, repository, revision): re-projecting the same
+    revision rewrites identical point IDs (no duplicates). Skips (never
+    fails the schedule) when the pilot is disabled or the checkout is
+    absent — genuine projection failures retry per repository policy.
+    """
+
+    @workflow.run
+    async def run(
+        self, input_data: TopologyProjectionInput
+    ) -> TopologyProjectionResult:
+        retry_policy = RetryPolicy(maximum_attempts=3)
+        output = await workflow.execute_activity(
+            project_topology_activity,
+            ProjectTopologyInput(
+                tenant_id=input_data.tenant_id,
+                repository_id=input_data.repository_id,
+                revision=input_data.revision,
+                checkout=input_data.checkout,
+                application_id=input_data.application_id,
+                changed_files=list(input_data.changed_files),
+            ),
+            start_to_close_timeout=timedelta(seconds=600),
+            retry_policy=retry_policy,
+        )
+        data = output.data if hasattr(output, "data") else {}
+        return TopologyProjectionResult(
+            status=str(data.get("status", "unknown")),
+            dataset=str(data.get("dataset", "")),
+            points=int(data.get("points", 0) or 0),
+            edges=int(data.get("edges", 0) or 0),
+            revision=str(data.get("revision", "")),
+        )

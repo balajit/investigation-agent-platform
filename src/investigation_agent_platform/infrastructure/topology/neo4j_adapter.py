@@ -38,6 +38,7 @@ from investigation_agent_platform.domain.topology.models import (
     TopologySnapshotStatus,
 )
 from investigation_agent_platform.infrastructure.configuration.config import TopologyConfig
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,7 @@ class Neo4jTopologyAdapter:
             domain_id=domain_id,
         )
 
+    @traced("topology", component="neo4j", require_scope=False)
     async def ingest(self, payload: ASTTopologyPayload) -> TopologyIngestionResult:
         driver = self._require_driver()
         try:
@@ -621,6 +623,7 @@ class Neo4jTopologyAdapter:
         )
         return {"deleted_node_count": deleted_nodes, "deleted_edge_count": deleted_edges}
 
+    @traced("topology", component="neo4j")
     async def resolve_source_location(
         self,
         tenant_id: str,

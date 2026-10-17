@@ -137,6 +137,7 @@ def _expected_sanitized():
                 "description": None,
                 "endpoints": [],
                 "name": "svc-a",
+                "probeable_endpoints": [],
                 "repository_id": None,
                 "role": None,
                 "telemetry": {

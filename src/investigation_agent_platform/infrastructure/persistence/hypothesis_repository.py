@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.hypothesis.models import (
     Hypothesis,
+    HypothesisCausalStep,
     HypothesisEvidenceAssessment,
     HypothesisStatus,
 )
@@ -50,12 +51,23 @@ class SqlAlchemyHypothesisRepository:
             assessments_json=[
                 assessment.model_dump(mode="json") for assessment in hypothesis.assessments
             ],
+            causal_steps_json=[
+                step.model_dump(mode="json") for step in hypothesis.causal_steps
+            ],
             created_at=hypothesis.created_at,
             updated_at=hypothesis.updated_at,
         )
 
     @staticmethod
     def _from_orm(row: HypothesisORM) -> Hypothesis:
+        # P0-3: causal steps round-trip (absent on pre-migration rows).
+        try:
+            causal_steps = [
+                HypothesisCausalStep.model_validate(s)
+                for s in (getattr(row, "causal_steps_json", None) or [])
+            ]
+        except Exception:
+            causal_steps = []
         return Hypothesis(
             id=row.id,
             tenant_id=row.tenant_id,
@@ -79,6 +91,7 @@ class SqlAlchemyHypothesisRepository:
                 UUID(s) for s in (row.refuting_evidence_ids or []) if s
             ],
             required_verification=row.required_verification or [],
+            causal_steps=causal_steps,
         )
 
     async def save(
@@ -106,6 +119,7 @@ class SqlAlchemyHypothesisRepository:
                         row.supporting_evidence_ids = orm.supporting_evidence_ids
                         row.refuting_evidence_ids = orm.refuting_evidence_ids
                         row.assessments_json = orm.assessments_json
+                        row.causal_steps_json = orm.causal_steps_json
                         row.updated_at = orm.updated_at
                         outcome = "updated"
                     else:
@@ -159,10 +173,14 @@ class SqlAlchemyHypothesisRepository:
     ) -> list[Hypothesis]:
         async with rls_session(self._session_factory, tenant_id) as session:
             result = await session.scalars(
-                select(HypothesisORM).where(
+                select(HypothesisORM)
+                .where(
                     HypothesisORM.tenant_id == tenant_id,
                     HypothesisORM.investigation_id == investigation_id,
                 )
+                # P0-3: deterministic order — callers must not depend on
+                # unspecified row order when selecting a candidate.
+                .order_by(HypothesisORM.created_at, HypothesisORM.id)
             )
             return [self._from_orm(row) for row in result.all()]
 

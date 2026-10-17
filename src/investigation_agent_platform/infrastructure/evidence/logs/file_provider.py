@@ -5,9 +5,9 @@ Reads application log files declared by ``file_log`` datasources on the
 attached profile — no hardcoded paths, apps, or formats. Understands three
 line shapes, newest-first:
 
-- meta-telemetry JSON (``message`` + ``service.{name,environment}`` +
+- structured JSON (``message`` + ``service.{name,environment}`` +
   ``code.{file,line,function}`` + ``trace_id``/``span_id`` +
-  ``exception.details`` + ``extra``) — see ``meta_verse/meta-telemetry``;
+  ``exception.details`` + ``extra``);
 - structlog JSON (``event``/``message`` + ``level`` + ``logger`` +
   ``timestamp`` + ``exception``);
 - plain text (whole line is the message, severity INFO).
@@ -57,6 +57,7 @@ from investigation_agent_platform.domain.provenance.models import (
     QueryFingerprint,
     SourceLocation,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.evidence.gateway import EvidenceQueryResult
 from investigation_agent_platform.ports.evidence.mapping import EvidenceMappingLookup
 
@@ -395,6 +396,7 @@ class FileLogAdapter:
         scored.sort(key=lambda item: item[0], reverse=True)
         return [evidence for _, evidence in scored]
 
+    @traced("provider", component="log_files")
     async def search_runtime_evidence(
         self,
         tenant_id: str,
@@ -441,6 +443,7 @@ class FileLogAdapter:
                 provider_metadata={"provider_id": self._provider_id},
             )
 
+    @traced("provider", component="log_files")
     async def get_runtime_evidence(
         self,
         tenant_id: str,

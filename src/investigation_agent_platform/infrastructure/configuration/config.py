@@ -281,6 +281,15 @@ class EvidenceConfig(BaseModel):
     # Each entry: {name, command, args, connection, allowed_tools,
     # timeout_seconds, max_rows, tenants}. Missing file = no MCP servers.
     oracle_mcp_config: str = Field(default="config/oracle-mcp-servers.yaml", min_length=1)
+    # YAML listing Postgres (crystaldba) MCP servers (P3-1). One entry per
+    # database (crystaldba serves a single DATABASE_URI per instance). Each
+    # entry: {name, kind=postgres, transport=sse|stdio, url|command|args,
+    # query_tool=execute_sql, tenants}. Missing file = no MCP servers.
+    postgres_mcp_config: str = Field(default="config/postgres-mcp-servers.yaml", min_length=1)
+    # P3-1: direct-engine state providers (oracle-primary/postgres-primary)
+    # exist only as a non-default fallback. Default False = all datasource
+    # interrogation goes through MCP gateways, including self-triage.
+    direct_state_providers: bool = Field(default=False)
     # Directory of ObservabilitySourceMapping YAML documents (Part 10).
     # Missing directory = generic-ECS fallback only, never a stub mapping.
     mapping_profiles_path: str = Field(default="config/observability-mappings", min_length=1)
@@ -459,6 +468,13 @@ def _evidence_config_from_env() -> EvidenceConfig:
         mapping_profiles_path=os.environ.get(
             "IAP_MAPPING_PROFILES_PATH", "config/observability-mappings"
         ),
+        postgres_mcp_config=os.environ.get(
+            "IAP_POSTGRES_MCP_CONFIG", "config/postgres-mcp-servers.yaml"
+        ),
+        direct_state_providers=os.environ.get(
+            "IAP_DIRECT_STATE_PROVIDERS", "false"
+        ).lower()
+        == "true",
     )
 
 

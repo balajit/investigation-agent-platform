@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/infrastructure/evidence/state/postgres.py
 """PostgreSQL state evidence adapter (appl-profile 1.0 §7.3).
 
@@ -63,6 +65,7 @@ class AsyncPostgresStateAdapter:
         self._provider_id = provider_id
         self._query_timeout = query_timeout
 
+    @traced("provider", component="state_postgres")
     async def get_application_state(
         self,
         tenant_id: str,
@@ -150,6 +153,7 @@ class AsyncPostgresStateAdapter:
             ]
             return EvidenceQueryResult(items=items, total_count=len(items))
 
+    @traced("provider", component="state_postgres")
     async def search_application_state(
         self,
         tenant_id: str,

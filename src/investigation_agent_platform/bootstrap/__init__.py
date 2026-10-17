@@ -195,6 +195,18 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     # Part 11.2: durable finding/conclusion store (production must never
     # operate on the process-local in-memory store).
     ctx.finding_repo = finding_repo
+    from investigation_agent_platform.infrastructure.persistence.contradiction_repository import (
+        SqlAlchemyContradictionRepository,
+    )
+
+    # P0-3: durable contradiction store (same fail-closed rule).
+    ctx.contradiction_repo = SqlAlchemyContradictionRepository(session_factory)
+    from investigation_agent_platform.infrastructure.persistence.log_exemplar_repository import (
+        SqlAlchemyLogExemplarRepository,
+    )
+
+    # Log-group persistence: durable exemplar store (same fail-closed rule).
+    ctx.log_exemplar_repo = SqlAlchemyLogExemplarRepository(session_factory)
     from investigation_agent_platform.infrastructure.persistence.finding_cluster_repository import (
         SqlAlchemyFindingClusterRepository,
     )
@@ -375,6 +387,66 @@ def _oracle_mcp_servers(config: ApplicationConfig) -> list[dict[str, Any]]:
     return entries
 
 
+def _postgres_mcp_servers(config: ApplicationConfig) -> list[dict[str, Any]]:
+    """Load Postgres (crystaldba) MCP server entries from YAML (P3-1).
+
+    Same conventions as Oracle: no secrets in file, explicit tenants, absent
+    file means unregistered. Each entry: {name, kind=postgres,
+    transport=sse|stdio, url|command|args, query_tool=execute_sql,
+    allowed_tools, timeout_seconds, max_rows, tenants}. crystaldba serves one
+    DATABASE_URI per instance — one entry (and one compose service) per DB.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(config.evidence.postgres_mcp_config)
+    if not path.is_file():
+        logger.info(
+            "No Postgres MCP server file; skipping MCP registration", extra={"path": str(path)}
+        )
+        return []
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.warning("Postgres MCP server file unreadable; skipping", extra={"error": str(exc)})
+        return []
+    entries = []
+    for entry in raw.get("servers", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        transport = str(entry.get("transport", "sse") or "sse").lower()
+        if transport not in ("sse", "stdio"):
+            logger.warning(
+                "Postgres MCP server entry has unknown transport; skipping",
+                extra={"entry": str(entry.get("name"))},
+            )
+            continue
+        if transport == "sse" and not entry.get("url"):
+            logger.warning(
+                "Postgres MCP SSE entry missing url; skipping",
+                extra={"entry": str(entry.get("name"))},
+            )
+            continue
+        if transport == "stdio" and not all(entry.get(k) for k in ("command", "args")):
+            logger.warning(
+                "Postgres MCP stdio entry incomplete; skipping",
+                extra={"entry": str(entry.get("name"))},
+            )
+            continue
+        if not entry.get("name"):
+            logger.warning("Postgres MCP server entry missing name; skipping")
+            continue
+        if not entry.get("tenants"):
+            logger.warning(
+                "Postgres MCP server entry has no tenants; registering nothing",
+                extra={"entry": entry.get("name")},
+            )
+            continue
+        entries.append(entry)
+    return entries
+
+
 def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
     """Compose the evidence gateway onto the production context (Part 3 addendum).
 
@@ -473,6 +545,13 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
 
             if importlib.util.find_spec("oracledb") is None:
                 logger.warning("oracledb package absent; key oracle-primary stays unregistered")
+            elif not config.evidence.direct_state_providers:
+                # P3-1: MCP-only by default — direct-engine primaries stay
+                # unregistered so all datasource interrogation (including
+                # self-triage) flows through MCP gateways.
+                logger.info(
+                    "Direct state providers disabled; oracle-primary stays unregistered (MCP only)"
+                )
             else:
                 from sqlalchemy.ext.asyncio import create_async_engine as _create_engine
 
@@ -499,30 +578,36 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
         else:
             logger.info("Oracle DSN unconfigured; key oracle-primary stays unregistered")
         if config.evidence.postgres_dsn.get_secret_value():
-            from sqlalchemy.ext.asyncio import create_async_engine as _create_pg_engine
+            if not config.evidence.direct_state_providers:
+                # P3-1: MCP-only by default (see oracle-primary above).
+                logger.info(
+                    "Direct state providers disabled; postgres-primary stays unregistered (MCP only)"
+                )
+            else:
+                from sqlalchemy.ext.asyncio import create_async_engine as _create_pg_engine
 
-            from investigation_agent_platform.bootstrap.buffered_dev import (
-                _async_db_uri,
-            )
-            from investigation_agent_platform.infrastructure.evidence.state.oracle import (
-                SqlglotTemplateValidator as _SqlglotTemplateValidator,
-            )
-            from investigation_agent_platform.infrastructure.evidence.state.postgres import (
-                AsyncPostgresStateAdapter,
-            )
+                from investigation_agent_platform.bootstrap.buffered_dev import (
+                    _async_db_uri as _async_pg_uri,
+                )
+                from investigation_agent_platform.infrastructure.evidence.state.oracle import (
+                    SqlglotTemplateValidator as _SqlglotTemplateValidator,
+                )
+                from investigation_agent_platform.infrastructure.evidence.state.postgres import (
+                    AsyncPostgresStateAdapter,
+                )
 
-            selector.register_state_provider(
-                "postgres-primary",
-                AsyncPostgresStateAdapter(
-                    engine=_create_pg_engine(
-                        _async_db_uri(config.evidence.postgres_dsn.get_secret_value())
+                selector.register_state_provider(
+                    "postgres-primary",
+                    AsyncPostgresStateAdapter(
+                        engine=_create_pg_engine(
+                            _async_pg_uri(config.evidence.postgres_dsn.get_secret_value())
+                        ),
+                        template_repository={},
+                        validator=_SqlglotTemplateValidator(set(), dialect="postgres"),
+                        provider_id="postgres-primary",
+                        query_timeout=config.evidence.postgres_query_timeout,
                     ),
-                    template_repository={},
-                    validator=_SqlglotTemplateValidator(set(), dialect="postgres"),
-                    provider_id="postgres-primary",
-                    query_timeout=config.evidence.postgres_query_timeout,
-                ),
-            )
+                )
         else:
             logger.info("Postgres DSN unconfigured; key postgres-primary stays unregistered")
         if config.topology.code_repo_base_path:
@@ -537,10 +622,48 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     provider_id="pygit2-local",
                 ),
             )
+            # P1-1: code-intelligence provider (search/symbol/call-graph)
+            # shares the same checkout base and tenant posture as GET_CODE.
+            from investigation_agent_platform.infrastructure.evidence.code.intelligence import (
+                TreeSitterCodeIntelligenceProvider,
+            )
+
+            selector.register_code_intelligence_provider(
+                "treesitter-local",
+                TreeSitterCodeIntelligenceProvider(
+                    repo_base_path=config.topology.code_repo_base_path,
+                    provider_id="treesitter-local",
+                ),
+            )
             logger.info(
                 "Code provider registered",
                 extra={"key": "pygit2-local", "base": config.topology.code_repo_base_path},
             )
+        # P3-4: generic OAuth2 (env-configured single provider). Registered
+        # once; MCP entries reference it by provider_id and the adapter
+        # resolves per-call tokens through the TenantScopedOAuthProvider
+        # bridge. Absent env = no OAuth, never an error.
+        def _oauth_bridge(provider_id: str) -> Any:
+            from investigation_agent_platform.infrastructure.security.oauth2_client_credentials import (
+                oauth2_manifest,
+            )
+            from investigation_agent_platform.infrastructure.security.oauth_bridge import (
+                TenantScopedOAuthProvider,
+                build_oauth_provider_from_env,
+            )
+
+            try:
+                registered = ctx.credential_registry.get(provider_id)
+                provider = registered.implementation
+            except Exception:
+                built = build_oauth_provider_from_env()
+                if built is None or built[0] != provider_id:
+                    return None
+                _, provider = built
+                ctx.credential_registry.register(oauth2_manifest(provider_id), provider)
+                logger.info("OAuth2 credential provider registered", extra={"provider_id": provider_id})
+            return TenantScopedOAuthProvider(provider, provider_id)
+
         # MCP registers only with explicit server entries (no config shape
         # means unregistered, per the addendum). One adapter per database.
         for entry in _oracle_mcp_servers(config):
@@ -549,6 +672,12 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             )
 
             allowlist = {t: {entry["connection"]} for t in entry.get("tenants", [])}
+            oracle_kwargs: dict[str, Any] = {}
+            oauth_ref = entry.get("oauth")
+            if oauth_ref:
+                bridge = _oauth_bridge(str(oauth_ref.get("provider_id", "")))
+                if bridge is not None:
+                    oracle_kwargs["credential_provider"] = bridge
             selector.register_state_provider(
                 f"oracle-mcp-{entry['name']}",
                 McpEvidenceAdapter(
@@ -558,10 +687,59 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     max_items_per_call=int(entry.get("max_rows", 1000)),
                     connection_name=entry.get("connection", ""),
                     tenant_allowlist=allowlist or None,
+                    **oracle_kwargs,
                 ),
             )
             logger.info(
                 "MCP Oracle server registered", extra={"key": f"oracle-mcp-{entry['name']}"}
+            )
+        # P3-1: Postgres MCP servers (crystaldba, one instance per database).
+        # Same fail-closed conventions as Oracle; transport/query_tool come
+        # from the entry (sse + execute_sql for crystaldba).
+        for entry in _postgres_mcp_servers(config):
+            from investigation_agent_platform.infrastructure.evidence.mcp import (
+                McpEvidenceAdapter,
+            )
+
+            transport = str(entry.get("transport", "sse") or "sse").lower()
+            tenant_list = list(entry.get("tenants", []) or [])
+            allowlist = {t: {entry["name"]} for t in tenant_list} or None
+            adapter_kwargs: dict[str, Any] = {
+                "allowed_tools": entry.get("allowed_tools", ["execute_sql"]),
+                "tool_timeout_seconds": float(entry.get("timeout_seconds", 30.0)),
+                "max_items_per_call": int(entry.get("max_rows", 1000)),
+                "connection_name": entry.get("connection", ""),
+                "tenant_allowlist": allowlist,
+                "transport": transport,
+                "query_tool": str(entry.get("query_tool", "execute_sql")),
+                "include_connection": False,
+            }
+            if transport == "sse":
+                adapter_kwargs["server_params"] = None
+                adapter_kwargs["sse_url"] = str(entry.get("url", ""))
+                adapter_kwargs["sse_headers"] = dict(entry.get("headers", {}) or {})
+            else:
+                adapter_kwargs["server_params"] = {
+                    "command": entry["command"],
+                    "args": entry["args"],
+                }
+            oauth_ref = entry.get("oauth")
+            if oauth_ref:
+                bridge = _oauth_bridge(str(oauth_ref.get("provider_id", "")))
+                if bridge is not None:
+                    adapter_kwargs["credential_provider"] = bridge
+                else:
+                    logger.warning(
+                        "Postgres MCP OAuth provider unavailable; registering without OAuth",
+                        extra={"server": entry["name"]},
+                    )
+            selector.register_state_provider(
+                f"postgres-mcp-{entry['name']}",
+                McpEvidenceAdapter(**adapter_kwargs),
+            )
+            logger.info(
+                "MCP Postgres server registered",
+                extra={"key": f"postgres-mcp-{entry['name']}", "transport": transport},
             )
         # Profile-driven datasources (§7.4): static registrations keep
         # priority; contexts with no static provider resolve from the
@@ -579,6 +757,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
         )
 
         mcp_entries = _oracle_mcp_servers(config)
+        mcp_entries = list(mcp_entries) + _postgres_mcp_servers(config)
         secret_store = build_secret_store_from_env()
         if secret_store is not None:
             logger.info(
@@ -601,6 +780,8 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 secret_resolver=secret_chain,
                 mcp_catalog={entry["name"]: entry for entry in mcp_entries},
                 environment=config.environment,
+                # P3-1: MCP-only unless the explicit fallback flag is set.
+                allow_direct_engines=bool(config.evidence.direct_state_providers),
             )
         )
         selector.freeze()
@@ -633,14 +814,17 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 )
 
                 _rel_engine = _create_rel_engine(
-                    _async_db_uri(config.evidence.postgres_dsn.get_secret_value())
+                    _normalize_async_uri(config.evidence.postgres_dsn.get_secret_value())
+                )
+                _relationship_repo = PostgresRelationshipRepository(
+                    _make_session_factory(_rel_engine, expire_on_commit=False)
                 )
                 correlation_engine = EphemeralCorrelationEngine(
-                    PostgresRelationshipRepository(
-                        _make_session_factory(_rel_engine, expire_on_commit=False)
-                    ),
+                    _relationship_repo,
                     ctx.evidence_repo,
                 )
+                # §2 disposition link writes + detail link reads share the repo.
+                ctx.relationship_repo = _relationship_repo  # type: ignore[attr-defined]
                 logger.info("Correlation engine wired")
             except Exception as exc:
                 logger.warning(

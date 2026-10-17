@@ -56,12 +56,17 @@ class TestInvestigationsGolden:
             "status",
             "tenant_id",
             "investigation",
+            "disposition",
         }
         assert body["application_id"] == "example-app"
         assert body["tenant_id"] == "tenant-a"
         assert body["investigation"]["application_id"] == "example-app"
         assert body["investigation"]["id"] == body["id"]
         assert body["investigation"]["status"] == "CREATED"
+        # §2: fresh request carries a FRESH disposition with no target.
+        assert body["disposition"]["action"] == "fresh"
+        assert body["disposition"]["start_run"] is True
+        assert body["disposition"]["primary_target_id"] is None
 
     def test_create_replay_adds_only_flag(self, _restore_context: None) -> None:
         _, client = _client()
@@ -110,8 +115,9 @@ class TestInvestigationsGolden:
         _, client = _client()
         inv_id = _create(client).json()["id"]
         body = client.get(f"/api/v1/investigations/{inv_id}", headers=HEADERS).json()
-        assert set(body) == {"investigation", "pending_requirements"}
+        assert set(body) == {"investigation", "pending_requirements", "links"}
         assert body["pending_requirements"] == []
+        assert body["links"] == []
 
     def test_conclusion_null_pinned(self, _restore_context: None) -> None:
         _, client = _client()

@@ -41,10 +41,25 @@ from investigation_agent_platform.domain.topology.models import (
     StaticOwnershipResult,
     TopologyNodeType,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.persistence.repositories import EvidenceRepository
 from investigation_agent_platform.ports.topology.ports import DomainAttributionPort
 
 logger = logging.getLogger(__name__)
+
+def _attribution_extra(result: Any) -> dict[str, Any]:
+    """Attribution outcome class + confidence (never frame contents)."""
+    try:
+        extra: dict[str, Any] = {}
+        outcome = getattr(result, "outcome", getattr(result, "classification", None))
+        if outcome is not None:
+            extra["iap.attribution"] = str(getattr(outcome, "value", outcome))[:128]
+        confidence = getattr(result, "confidence", None)
+        if isinstance(confidence, (int, float)):
+            extra["iap.confidence"] = confidence
+        return extra
+    except Exception:
+        return {}
 
 ATTRIBUTION_RULE_VERSION = "v2"
 
@@ -115,6 +130,7 @@ class FailureAttributionService:
         # exactly as it did before ISSUE-5 (single-repository result).
         self._trace_hop_resolver = trace_hop_resolver
 
+    @traced("topology", component="attribution", extra_from=_attribution_extra)
     async def attribute_failure(
         self,
         tenant_id: str,

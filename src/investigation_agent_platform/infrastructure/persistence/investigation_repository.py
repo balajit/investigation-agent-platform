@@ -404,13 +404,76 @@ class SqlAlchemyInvestigationRepository:
             result = await session.scalars(stmt)
             return list(result.all())
 
+    async def _rehome_reference_evidence(
+        self, session: Any, tenant_id: str, purged_ids: list[Any]
+    ) -> None:
+        """Reassign-or-delete reference evidence owned by purged investigations.
+
+        For each reference-scoped row owned by a purged investigation: adopt
+        it into another interested investigation (bank-interest join, outside
+        the purged set), else delete it (unreferenced — nobody can hydrate
+        it anymore). Observational rows are untouched (cascade handles them).
+        Fail-open per row: purge must never fail because a reference row
+        could not be rehomed.
+        """
+        from investigation_agent_platform.infrastructure.persistence.models import (
+            EvidenceBankInterestORM,
+            EvidenceORM,
+        )
+
+        try:
+            owned = (
+                await session.scalars(
+                    select(EvidenceORM).where(
+                        EvidenceORM.tenant_id == tenant_id,
+                        EvidenceORM.investigation_id.in_(purged_ids),
+                        EvidenceORM.lifecycle_scope == "reference",
+                    )
+                )
+            ).all()
+            for row in owned:
+                try:
+                    adopter = await session.scalar(
+                        select(EvidenceBankInterestORM.investigation_id)
+                        .where(
+                            EvidenceBankInterestORM.tenant_id == tenant_id,
+                            EvidenceBankInterestORM.evidence_key == row.evidence_key,
+                            EvidenceBankInterestORM.investigation_id.notin_(purged_ids),
+                        )
+                        .order_by(EvidenceBankInterestORM.created_at)
+                        .limit(1)
+                    )
+                    if adopter is not None:
+                        row.investigation_id = adopter
+                    else:
+                        await session.delete(row)
+                except Exception:
+                    continue
+            await session.flush()
+        except Exception as exc:
+            logger.warning(
+                "reference evidence rehome failed open; cascade proceeds",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "investigation.rehome_reference",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ),
+            )
+
     async def purge_expired(self, tenant_id: str, cutoff: datetime, limit: int = 500) -> int:
         """Hard-delete terminal investigations completed at/before cutoff (TO_DO-023).
 
         Only COMPLETED/FAILED/CANCELLED rows are eligible — open, paused, or
         awaiting-input investigations are pinned regardless of age. Child
         rows (evidence, timeline, transitions, facts, findings, conclusions)
-        cascade via ``ondelete="CASCADE"`` FKs.
+        cascade via ``ondelete="CASCADE"`` FKs — EXCEPT reference-scoped
+        evidence (G6): repo-owned code rows outlive readers. Before deleting,
+        reference rows owned by purged investigations are reassigned to a
+        remaining interested investigation, or deleted when unreferenced.
+        Bank-interest rows cascade with their own investigation automatically.
         """
         terminal = (
             InvestigationStatus.COMPLETED.value,
@@ -435,6 +498,7 @@ class SqlAlchemyInvestigationRepository:
                 if not ids:
                     purged = 0
                 else:
+                    await self._rehome_reference_evidence(session, tenant_id, list(ids))
                     result = await session.execute(
                         delete(InvestigationORM).where(
                             InvestigationORM.tenant_id == tenant_id,

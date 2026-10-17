@@ -90,6 +90,32 @@ class ServiceDependency(BaseModel):
     critical: bool = False
 
 
+class ProbeableEndpoint(BaseModel):
+    """One API surface this profile authorizes PROBE_API to call (P2-2).
+
+    Declared once per profile; the model selects an endpoint_id, never a
+    URL. Initial methods are GET/HEAD only — no mutating probes.
+    """
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    id: str = Field(..., max_length=128)
+    description: str = Field(default="", max_length=300)
+    method: str = Field(default="GET", max_length=10)
+    base_url: str = Field(..., max_length=512)
+    path_template: str = Field(..., max_length=256)
+    path_placeholders: list[str] = Field(default_factory=list, max_length=10)
+    allowed_query_params: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        method = v.upper()
+        if method not in ("GET", "HEAD"):
+            raise ValueError(f"Probe method must be GET or HEAD, got {v!r}.")
+        return method
+
+
 class Service(BaseModel):
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
@@ -101,6 +127,7 @@ class Service(BaseModel):
     dependencies: list[ServiceDependency] = Field(default_factory=list, max_length=50)
     endpoints: list[str] = Field(default_factory=list, max_length=50)
     repository_id: str | None = Field(default=None, max_length=128)
+    probeable_endpoints: list[ProbeableEndpoint] = Field(default_factory=list, max_length=50)
 
 
 class DatasourceKind(StrEnum):
@@ -191,7 +218,7 @@ class FileLogDatasourceSpec(BaseModel):
 
     Paths are relative to the provider's allowlisted roots
     (``IAP_FILE_LOG_ROOTS``) and may be globs (``* ? [...]``) to cover
-    rotation schemes such as meta-telemetry's date-seq archives
+    rotation schemes such as date-seq archives
     (``{app}_{DDMMYY_HHMMSS}[_vN].log``). Absolute paths and ``..`` are
     rejected at read time, never here — this spec stays declarative.
     """

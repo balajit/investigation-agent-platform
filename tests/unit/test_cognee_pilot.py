@@ -264,3 +264,140 @@ class TestConfig:
         cfg = _topology_config_from_env()
         assert cfg.cognee_enabled is True
         assert cfg.cognee_dataset_salt.get_secret_value() == "s3cr3t"
+
+
+class _FakeResult:
+    def __init__(self, rows=None, single=None):
+        self._rows = rows or []
+        self._single = single
+        self.run_cypher = ""
+        self.run_params = {}
+
+    def __aiter__(self):
+        async def _gen():
+            for r in self._rows:
+                yield r
+
+        return _gen()
+
+    async def single(self):
+        return self._single
+
+
+class _FakeSession:
+    def __init__(self, result, calls):
+        self._result = result
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def run(self, cypher, **params):
+        self._calls.append((cypher, params))
+        self._result.run_cypher = cypher
+        self._result.run_params = params
+        return self._result
+
+
+class _FakeDriver:
+    """Stands in for SharedNeo4jDriver or neo4j driver (holder protocol: .session())."""
+
+    def __init__(self, result):
+        self._result = result
+        self.calls: list = []
+        self.closed = 0
+        self.databases: list = []
+
+    def session(self, database=None):
+        self.databases.append(database)
+        return _FakeSession(self._result, self.calls)
+
+    async def close(self):
+        self.closed += 1
+
+
+def _enabled_adapter(**kw):
+    return CogneeTopologyAdapter(enabled=True, dataset_salt="salt", **kw)
+
+
+class TestSharedDriverPooling:
+    def test_drop_uses_injected_driver_and_never_closes_it(self) -> None:
+        import asyncio as _asyncio
+
+        result = _FakeResult(single={"deleted": 2})
+        fake = _FakeDriver(result)
+        adapter = _enabled_adapter(neo4j_driver=fake)
+        _asyncio.run(adapter.drop_projection("tenant-a", "acme--pay", "f" * 40))
+        assert len(fake.calls) == 1
+        cypher, params = fake.calls[0]
+        assert "DETACH DELETE" in cypher
+        assert "tenant_id" in cypher and params["tenant_id"] == "tenant-a"
+        assert fake.closed == 0  # holder owns lifecycle, never the adapter
+
+    def test_resolve_uses_injected_driver_and_returns_match(self) -> None:
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            CogneeAttributionReader,
+        )
+
+        row = {
+            "node_id": "12345678-1234-5678-1234-567812345678",
+            "qualified_name": "PaymentService.charge",
+            "node_type": "METHOD",
+            "start_line": 17,
+            "end_line": 24,
+            "ownership_path": ["team-pay"],
+        }
+        result = _FakeResult(rows=[row])
+        fake = _FakeDriver(result)
+        reader = CogneeAttributionReader(enabled=True, dataset_salt="salt", neo4j_driver=fake)
+        out = _asyncio.run(
+            reader.resolve_source_location(
+                "tenant-a", "app", __import__("uuid").uuid4(), "acme--pay", "f" * 40,
+                "src/payments.py", 20,
+            )
+        )
+        assert len(fake.calls) == 1
+        assert "TopologySymbolPoint" in fake.calls[0][0]
+        assert out.ownership_path == ["team-pay"]
+        assert fake.closed == 0
+
+    def test_legacy_path_builds_and_closes_per_call_driver(self) -> None:
+        import asyncio as _asyncio
+        from unittest.mock import patch
+
+        result = _FakeResult(single={"deleted": 1})
+        fake = _FakeDriver(result)
+        with patch("neo4j.AsyncGraphDatabase.driver", return_value=fake) as factory:
+            adapter = _enabled_adapter()  # no injected driver → legacy
+            _asyncio.run(adapter.drop_projection("tenant-a", "acme--pay", "f" * 40))
+        assert factory.call_count == 1
+        assert fake.closed == 1  # legacy path owns the per-call driver
+        assert len(fake.calls) == 1
+
+    def test_shared_holder_lifecycle(self) -> None:
+        import asyncio as _asyncio
+        from unittest.mock import patch
+
+        from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+            SharedNeo4jDriver,
+        )
+
+        result = _FakeResult(rows=[])
+        fake = _FakeDriver(result)
+        with patch("neo4j.AsyncGraphDatabase.driver", return_value=fake):
+            holder = SharedNeo4jDriver("bolt://x:7687", ("neo4j", "pw"), "neo4j")
+
+            async def _flow():
+                await holder.connect()
+                async with holder.session() as session:
+                    assert session is not None
+                await holder.close()
+
+            _asyncio.run(_flow())
+        assert fake.databases == ["neo4j"]
+        assert fake.closed == 1

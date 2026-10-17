@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/infrastructure/evidence/code/git.py
 """PyGit2 adapter for retrieving git repository code evidence and history."""
 
@@ -6,6 +8,7 @@ import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pygit2
@@ -112,8 +115,12 @@ class PyGit2Adapter:
                 f"Tenant '{tenant_id}' is not authorized for repositories {locators}"
             )
 
+    @traced("provider", component="code_git")
     async def get_source(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
+        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile,
+        revision: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> Evidence:
         """Asynchronously fetch bounded source code snippet from git tree."""
         with tracer.start_as_current_span("PyGit2Adapter.get_source") as span:
@@ -121,11 +128,19 @@ class PyGit2Adapter:
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("file_path", file_path)
             return await asyncio.to_thread(
-                self._get_source_sync, tenant_id, investigation_id, file_path, profile
+                self._get_source_sync, tenant_id, investigation_id, file_path, profile,
+                revision, start_line, end_line,
             )
 
     def _get_source_sync(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        file_path: str,
+        profile: ApplicationProfile,
+        revision: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> Evidence:
         self._require_tenant_scope(tenant_id, profile)
         self._validate_tree_path(file_path)
@@ -136,12 +151,21 @@ class PyGit2Adapter:
 
         try:
             repo = pygit2.Repository(str(repo_path))
-            commit = repo.revparse_single(branch)
+            # P1-2: honor an explicitly requested immutable revision instead
+            # of silently substituting the default branch. Unknown revisions
+            # are exploration misses (DEGRADED downstream), not outages.
+            rev = (revision or "").strip() or branch
+            try:
+                commit = repo.revparse_single(rev)
+            except Exception as exc:
+                raise CodePathNotFoundError(
+                    f"Revision not found in {repository}: {rev}"
+                ) from exc
             try:
                 entry = commit.tree[file_path]
             except KeyError as exc:
                 raise CodePathNotFoundError(
-                    f"Path not found in {repository}@{branch}: {file_path}"
+                    f"Path not found in {repository}@{rev}: {file_path}"
                 ) from exc
             if not isinstance(entry, pygit2.Blob):
                 raise CodePathNotFoundError(f"Path is not a file: {file_path}")
@@ -164,12 +188,34 @@ class PyGit2Adapter:
             raise ExecutionError(f"Failed to fetch source for {file_path}: {exc}") from exc
 
         lines = raw_text.splitlines()
-        start = 0
-        end = min(len(lines), MAX_SOURCE_LINE_COUNT)
+        # P1-2: explicit 1-indexed inclusive ranges return exactly the
+        # requested window with numbered lines; otherwise the bounded head
+        # (previous behavior). Provenance always records the ACTUAL range.
+        numbered = False
+        if start_line is not None or end_line is not None:
+            lo = max(1, int(start_line or 1))
+            hi = int(end_line or (lo + MAX_SOURCE_LINE_COUNT - 1))
+            hi = min(hi, len(lines), lo + MAX_SOURCE_LINE_COUNT - 1)
+            lo = min(lo, max(hi, 1))
+            start, end = lo - 1, hi
+            numbered = True
+        else:
+            start = 0
+            end = min(len(lines), MAX_SOURCE_LINE_COUNT)
         # Evidence.content_snippet caps at 4096 chars: truncate long files to
         # the head (previously any file over ~4KB failed Evidence validation
         # and GET_CODE errored instead of returning a snippet).
-        selected_content = "\n".join(lines[start:end])[:4000]
+        window = lines[start:end]
+        if numbered:
+            selected_content = "\n".join(
+                f"{n}| {text}" for n, text in zip(range(start + 1, end + 1), window)
+            )[:4000]
+        else:
+            selected_content = "\n".join(window)[:4000]
+        try:
+            observed_at = datetime.fromtimestamp(commit.commit_time, UTC)
+        except Exception:
+            observed_at = datetime.now(UTC)
         now = datetime.now(UTC)
 
         commit_sha = str(commit.id)
@@ -213,14 +259,15 @@ class PyGit2Adapter:
             title=f"Source: {file_path} (lines {start + 1}-{end})",
             summary=f"Code snippet from {repository}/{file_path} at revision {commit_sha[:8]}",
             content_snippet=selected_content,
-            observed_at=now,
+            observed_at=observed_at,
             retrieved_at=now,
             provenance=prov,
-            freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+            freshness=EvidenceFreshness(observed_at=observed_at, retrieved_at=now),
             classification=ClassificationLevel.INTERNAL,
             fingerprint=fingerprint,
         )
 
+    @traced("provider", component="code_git")
     async def get_code_history(
         self, tenant_id: str, investigation_id: UUID, path: str, profile: ApplicationProfile
     ) -> list[Evidence]:
@@ -233,6 +280,7 @@ class PyGit2Adapter:
                 self._get_code_history_sync, tenant_id, investigation_id, path, profile
             )
 
+    @traced("provider", component="code_git")
     async def compare_versions(
         self,
         tenant_id: str,
@@ -303,22 +351,43 @@ class PyGit2Adapter:
     ) -> list[Evidence]:
         self._require_tenant_scope(tenant_id, profile)
         self._validate_tree_path(path)
-        repository = profile.repository
+        # P1-2: resolve through the primary-service locator like get_source
+        # (ApplicationProfile has no `repository` attribute — the old access
+        # raised AttributeError on every call).
+        repository, branch = self._primary_locator(profile)
         repo_path = (self._repo_base_path / repository).resolve()
         if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
             raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
 
+        def _tree_entry_id(commit: Any, path: str) -> str | None:
+            try:
+                entry = commit.tree[path]
+            except KeyError:
+                return None
+            return str(entry.id)
+
         evidences: list[Evidence] = []
         try:
             repo = pygit2.Repository(str(repo_path))
-            commit_target = repo.head.target
-            walker = repo.walk(commit_target, pygit2.GIT_SORT_TIME)  # type: ignore[arg-type]
+            tip = repo.revparse_single(branch)
+            walker = repo.walk(tip.id, pygit2.GIT_SORT_TIME)  # type: ignore[arg-type]
             count = 0
 
             limit = 50
             for commit in walker:
                 if count >= limit:
                     break
+                # P1-2: only commits that actually changed the requested path.
+                # Compare the tree entry against the first parent; root
+                # commits count when the path exists in them.
+                current_id = _tree_entry_id(commit, path)
+                parents = list(commit.parents)
+                if parents:
+                    parent_id = _tree_entry_id(parents[0], path)
+                    if current_id is None or current_id == parent_id:
+                        continue
+                elif current_id is None:
+                    continue
                 commit_sha = str(commit.id)
                 now = datetime.now(UTC)
                 commit_time = datetime.fromtimestamp(commit.commit_time, tz=UTC)

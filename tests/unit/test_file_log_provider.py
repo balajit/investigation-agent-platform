@@ -60,7 +60,7 @@ def _request(**overrides):  # type: ignore[no-untyped-def]
 
 
 class TestParseLine:
-    def test_meta_telemetry_shape(self) -> None:
+    def test_structured_envelope_shape(self) -> None:
         line = json.dumps(
             {
                 "timestamp": "2026-10-15T18:00:00Z",

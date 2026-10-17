@@ -21,8 +21,21 @@ from investigation_agent_platform.domain.knowledge.models import (
     KnowledgeArtifact,
     RefreshPolicy,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger("iap.application")
+
+def _sweep_extra(result: Any) -> dict[str, Any]:
+    """Sweep transition counts (never artifact IDs)."""
+    try:
+        extra: dict[str, Any] = {}
+        for key in ("expired_count", "reverified_count", "superseded_count", "quarantined_count"):
+            value = getattr(result, key, None)
+            if isinstance(value, int):
+                extra[f"iap.{key}"] = value
+        return extra
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -49,6 +62,7 @@ class KnowledgeArtifactJanitor:
             return datetime.now(UTC)
         return now if isinstance(now, datetime) else datetime.now(UTC)
 
+    @traced("knowledge", component="janitor", extra_from=_sweep_extra)
     async def sweep_tenant(
         self,
         tenant_id: str,

@@ -26,8 +26,22 @@ from investigation_agent_platform.domain.investigation.models import (
 )
 from investigation_agent_platform.domain.knowledge.fingerprint import build_code_issue_fingerprint
 from investigation_agent_platform.domain.knowledge.models import InvestigationSession
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger("iap.application")
+
+def _intake_extra(result: Any) -> dict[str, Any]:
+    """Merge flag + session number (never the fingerprint value)."""
+    try:
+        extra: dict[str, Any] = {}
+        if getattr(result, "merged", None) is not None:
+            extra["iap.merged"] = bool(result.merged)
+        session = getattr(result, "session_number", None)
+        if isinstance(session, int):
+            extra["iap.session_number"] = session
+        return extra
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -53,6 +67,7 @@ class ErrorIntakeService:
         self.code_issue_index = code_issue_index
         self.clock = clock or SystemClock()
 
+    @traced("knowledge", component="intake", extra_from=_intake_extra)
     async def intake(
         self,
         *,

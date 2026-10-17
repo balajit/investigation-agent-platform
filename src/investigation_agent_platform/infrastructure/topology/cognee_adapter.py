@@ -18,7 +18,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,10 +27,107 @@ from investigation_agent_platform.domain.common.exceptions import (
     TopologyNotConfiguredError,
 )
 from investigation_agent_platform.domain.topology.models import ASTTopologyPayload
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger(__name__)
 
 COGNEE_AVAILABLE = importlib.util.find_spec("cognee") is not None
+
+
+def _driver_params_from_env() -> tuple[str, tuple[str, str], str]:
+    """GRAPH_DATABASE_* connection params (pilot script maps IAP_TOPOLOGY_NEO4J_* onto these)."""
+    import os
+
+    return (
+        os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
+        (
+            os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
+            os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
+        ),
+        os.environ.get("GRAPH_DATABASE_NAME", "neo4j"),
+    )
+
+
+def ensure_cognee_env_from_topology() -> None:
+    """Map IAP_TOPOLOGY_NEO4J_* onto the GRAPH_DATABASE_* vars Cognee reads.
+
+    Without this, Cognee's storage tasks write to its embedded default
+    store instead of the platform Neo4j — projections silently land where
+    no reader looks. Idempotent (setdefault); explicit GRAPH_* wins.
+    Moved here from scripts/cognee_pilot.py so every caller benefits.
+    """
+    import os
+
+    mapping = {
+        "GRAPH_DATABASE_PROVIDER": ("COGNEE_GRAPH_PROVIDER", "neo4j"),
+        "GRAPH_DATABASE_URL": ("IAP_TOPOLOGY_NEO4J_URI", "bolt://localhost:7687"),
+        "GRAPH_DATABASE_USERNAME": ("IAP_TOPOLOGY_NEO4J_USERNAME", "neo4j"),
+        "GRAPH_DATABASE_PASSWORD": ("IAP_TOPOLOGY_NEO4J_PASSWORD", ""),
+        "GRAPH_DATABASE_NAME": ("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
+    }
+    for cognee_var, (iap_var, default) in mapping.items():
+        os.environ.setdefault(cognee_var, os.environ.get(iap_var, default))
+
+
+class SharedNeo4jDriver:
+    """Process-scoped shared Neo4j driver (R1 connection pooling).
+
+    Owns exactly one driver: `connect()` builds it, `session()` hands out
+    sessions (callers close sessions, never the driver), `close()` retires
+    it. Adapters accept this via `neo4j_driver=` and never close an injected
+    driver — lifecycle ownership stays with the holder's creator (pilot CLI
+    today, agent-loop wiring if the pilot verdict lands).
+    """
+
+    def __init__(self, url: str, auth: tuple[str, str], database: str) -> None:
+        self._url = url
+        self._auth = auth
+        self._database = database
+        self._driver: Any | None = None
+
+    @classmethod
+    def from_env(cls) -> SharedNeo4jDriver:
+        url, auth, database = _driver_params_from_env()
+        return cls(url, auth, database)
+
+    async def connect(self) -> SharedNeo4jDriver:
+        from neo4j import AsyncGraphDatabase  # type: ignore[import-not-found, import-untyped]
+
+        if self._driver is None:
+            self._driver = AsyncGraphDatabase.driver(self._url, auth=self._auth)
+        return self
+
+    def session(self) -> Any:
+        if self._driver is None:
+            raise TopologyNotConfiguredError("SharedNeo4jDriver.connect() was not called")
+        return self._driver.session(database=self._database)
+
+    async def close(self) -> None:
+        driver, self._driver = self._driver, None
+        if driver is not None:
+            await driver.close()
+
+
+@asynccontextmanager
+async def _driver_session(external: Any | None) -> AsyncIterator[Any]:
+    """Yield a session from the shared driver, else a legacy per-call driver.
+
+    Shared-driver path never closes the driver (holder owns lifecycle);
+    legacy path builds + closes one driver per call (pilot-CLI behavior).
+    """
+    if external is not None:
+        async with external.session() as session:
+            yield session
+        return
+    from neo4j import AsyncGraphDatabase  # type: ignore[import-not-found, import-untyped]
+
+    url, auth, database = _driver_params_from_env()
+    driver = AsyncGraphDatabase.driver(url, auth=auth)
+    try:
+        async with driver.session(database=database) as session:
+            yield session
+    finally:
+        await driver.close()
 
 # Retrieval-only search types permitted for enrichment reads. Any
 # ``*_COMPLETION`` variant is unreachable by construction (see
@@ -200,7 +298,7 @@ class CogneeTopologyAdapter:
     from ``TopologyConfig`` when the live pipeline lands.
     """
 
-    def __init__(self, *, enabled: bool, dataset_salt: str) -> None:
+    def __init__(self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None) -> None:
         if not enabled:
             raise TopologyNotConfiguredError("Cognee pilot is disabled (IAP_COGNEE_ENABLED=false)")
         if not dataset_salt:
@@ -208,6 +306,9 @@ class CogneeTopologyAdapter:
                 "Cognee pilot requires IAP_COGNEE_DATASET_SALT (production must set it)"
             )
         self._salt = dataset_salt
+        # R1: shared driver (pooling). None = legacy per-call driver.
+        # The adapter never closes an injected driver.
+        self._neo4j_driver = neo4j_driver
 
     def _require_cognee(self) -> None:
         if not COGNEE_AVAILABLE:
@@ -230,6 +331,7 @@ class CogneeTopologyAdapter:
         self._require_cognee()
         from cognee.tasks.storage import add_data_points  # type: ignore[import-untyped]
 
+        ensure_cognee_env_from_topology()
         dataset = derive_dataset_id(
             payload.tenant_id, payload.repository_id, payload.revision, self._salt
         )
@@ -249,6 +351,7 @@ class CogneeTopologyAdapter:
             projection_hash=projection_hash,
         )
 
+    @traced("topology", component="cognee")
     async def drop_projection(self, tenant_id: str, repository_id: str, revision: str) -> None:
         """Delete one projection's points (retention janitor hook).
 
@@ -258,38 +361,24 @@ class CogneeTopologyAdapter:
         from ``IAP_TOPOLOGY_NEO4J_*``.
         """
         self._require_cognee()
-        import os
-
-        from neo4j import AsyncGraphDatabase  # type: ignore[import-not-found, import-untyped]
-
         dataset = derive_dataset_id(tenant_id, repository_id, revision, self._salt)
-        driver = AsyncGraphDatabase.driver(
-            os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
-            auth=(
-                os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
-                os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
-            ),
-        )
-        try:
-            async with driver.session(
-                database=os.environ.get("GRAPH_DATABASE_NAME", "neo4j")
-            ) as session:
-                result = await session.run(
-                    "MATCH (n:TopologySymbolPoint {tenant_id: $tenant_id, "
-                    "repository_id: $repository_id, revision: $revision}) "
-                    "DETACH DELETE n RETURN count(n) AS deleted",
-                    tenant_id=tenant_id,
-                    repository_id=repository_id,
-                    revision=revision,
-                )
-                record = await result.single()
-                deleted = record["deleted"] if record else 0
-        finally:
-            await driver.close()
+        # R1: shared driver when injected, else legacy per-call driver.
+        async with _driver_session(self._neo4j_driver) as session:
+            result = await session.run(
+                "MATCH (n:TopologySymbolPoint {tenant_id: $tenant_id, "
+                "repository_id: $repository_id, revision: $revision}) "
+                "DETACH DELETE n RETURN count(n) AS deleted",
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                revision=revision,
+            )
+            record = await result.single()
+            deleted = record["deleted"] if record else 0
         logger.info(
             "Cognee pilot projection dropped", extra={"dataset": dataset, "deleted": deleted}
         )
 
+    @traced("topology", component="cognee")
     async def search_symbols(
         self, tenant_id: str, query_text: str, search_type: str, dataset: str, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -340,7 +429,7 @@ class CogneeAttributionReader:
 
     _PROJECTION_NS = __import__("uuid").NAMESPACE_URL
 
-    def __init__(self, *, enabled: bool, dataset_salt: str) -> None:
+    def __init__(self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None) -> None:
         if not enabled:
             raise TopologyNotConfiguredError("Cognee pilot is disabled (IAP_COGNEE_ENABLED=false)")
         if not dataset_salt:
@@ -348,6 +437,9 @@ class CogneeAttributionReader:
                 "Cognee pilot requires IAP_COGNEE_DATASET_SALT (production must set it)"
             )
         self._salt = dataset_salt
+        # R1: shared driver (pooling). None = legacy per-call driver.
+        # The reader never closes an injected driver.
+        self._neo4j_driver = neo4j_driver
 
     def _require_cognee(self) -> None:
         if not COGNEE_AVAILABLE:
@@ -355,6 +447,7 @@ class CogneeAttributionReader:
                 "cognee package is not installed; pilot reads unavailable"
             )
 
+    @traced("topology", component="cognee", require_scope=False)
     async def resolve_source_location(
         self,
         tenant_id: str,
@@ -366,10 +459,7 @@ class CogneeAttributionReader:
         line_number: int,
     ) -> object:
         """Resolve one location to its stored ownership path."""
-        import os
         import uuid
-
-        from neo4j import AsyncGraphDatabase  # type: ignore[import-not-found, import-untyped]
 
         from investigation_agent_platform.domain.common.exceptions import (
             TopologyAmbiguousMatchError,
@@ -382,34 +472,23 @@ class CogneeAttributionReader:
 
         self._require_cognee()
         _ = application_id, investigation_id  # port signature parity; unused by reads
-        driver = AsyncGraphDatabase.driver(
-            os.environ.get("GRAPH_DATABASE_URL", "bolt://localhost:7687"),
-            auth=(
-                os.environ.get("GRAPH_DATABASE_USERNAME", "neo4j"),
-                os.environ.get("GRAPH_DATABASE_PASSWORD", ""),
-            ),
-        )
-        try:
-            async with driver.session(
-                database=os.environ.get("GRAPH_DATABASE_NAME", "neo4j")
-            ) as session:
-                result = await session.run(
-                    "MATCH (n:TopologySymbolPoint {tenant_id: $tenant_id, "
-                    "repository_id: $repository_id, revision: $revision, "
-                    "file_path: $file_path}) "
-                    "WHERE n.start_line <= $line AND n.end_line >= $line "
-                    "RETURN n.node_id AS node_id, n.qualified_name AS qualified_name, "
-                    "n.node_type AS node_type, n.start_line AS start_line, "
-                    "n.end_line AS end_line, n.ownership_path AS ownership_path",
-                    tenant_id=tenant_id,
-                    repository_id=repository_id,
-                    revision=revision,
-                    file_path=file_path,
-                    line=line_number,
-                )
-                rows = [dict(r) async for r in result]
-        finally:
-            await driver.close()
+        # R1: shared driver when injected, else legacy per-call driver.
+        async with _driver_session(self._neo4j_driver) as session:
+            result = await session.run(
+                "MATCH (n:TopologySymbolPoint {tenant_id: $tenant_id, "
+                "repository_id: $repository_id, revision: $revision, "
+                "file_path: $file_path}) "
+                "WHERE n.start_line <= $line AND n.end_line >= $line "
+                "RETURN n.node_id AS node_id, n.qualified_name AS qualified_name, "
+                "n.node_type AS node_type, n.start_line AS start_line, "
+                "n.end_line AS end_line, n.ownership_path AS ownership_path",
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                revision=revision,
+                file_path=file_path,
+                line=line_number,
+            )
+            rows = [dict(r) async for r in result]
 
         snapshot_id = uuid.uuid5(
             self._PROJECTION_NS, f"cognee:{tenant_id}:{repository_id}:{revision}"

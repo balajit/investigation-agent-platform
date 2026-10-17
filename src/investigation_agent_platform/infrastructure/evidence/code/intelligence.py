@@ -30,6 +30,7 @@ from investigation_agent_platform.domain.provenance.models import (
     QueryFingerprint,
     SourceLocation,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.evidence.code import (
     CallGraphNode,
     CodeLocation,
@@ -287,6 +288,7 @@ class TreeSitterCodeIntelligenceProvider:
             for p in root.rglob("*"):
                 if (
                     p.is_file()
+                    and not p.is_symlink()
                     and p.suffix in EXT_TO_LANGUAGE
                     and p.stat().st_size <= MAX_FILE_BYTES
                 ):
@@ -300,10 +302,24 @@ class TreeSitterCodeIntelligenceProvider:
                     files.append(p)
                 if len(files) >= 5000:
                     break
+        # P1-2: deterministic traversal order — result ranking must not
+        # depend on filesystem order.
+        files.sort(key=lambda p: str(p))
         return files
 
     def _language_for_file(self, path: Path) -> str | None:
         return EXT_TO_LANGUAGE.get(path.suffix)
+
+    @staticmethod
+    def _byte_slice(code: str, start: int, end: int) -> str:
+        """Slice tree-sitter byte offsets safely (P1-2).
+
+        Tree-sitter reports UTF-8 byte offsets; slicing the decoded str
+        directly corrupts names when multibyte characters precede the node.
+        Re-encoding valid UTF-8 reproduces the original bytes exactly.
+        """
+        raw = code.encode("utf-8", errors="replace")
+        return raw[max(0, start) : max(0, end)].decode("utf-8", errors="replace")
 
     def _read_text(self, path: Path) -> str | None:
         try:
@@ -341,12 +357,16 @@ class TreeSitterCodeIntelligenceProvider:
                     symbol_name = ""
                     if name_node is not None:
                         try:
-                            symbol_name = code[name_node.start_byte : name_node.end_byte].strip()
+                            symbol_name = self._byte_slice(
+                                code, name_node.start_byte, name_node.end_byte
+                            ).strip()
                         except Exception:
                             symbol_name = ""
                     if symbol_name:
                         sig = (
-                            code[node.start_byte : min(node.end_byte, node.start_byte + 200)]
+                            self._byte_slice(
+                                code, node.start_byte, min(node.end_byte, node.start_byte + 200)
+                            )
                             .split("\n")[0]
                             .strip()
                         )
@@ -378,18 +398,38 @@ class TreeSitterCodeIntelligenceProvider:
     # -- protocol methods (sync cores) ---------------------------------
 
     def _search_code_sync(
-        self, tenant_id: str, investigation_id: UUID, query: str, profile: ApplicationProfile
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        query: str,
+        profile: ApplicationProfile,
+        language: str | None = None,
+        path_prefix: str | None = None,
+        limit: int = 20,
     ) -> list[Evidence]:
         roots = self._resolve_roots(profile)
         if not roots:
             return []
         files = self._iter_source_files(roots)
+        # P1-2: honor language + path_prefix request filters.
+        if language:
+            wanted = language.strip().lower()
+            files = [
+                f
+                for f in files
+                if (self._language_for_file(f) or "").lower() == wanted
+            ]
+        if path_prefix:
+            prefix = path_prefix.strip().strip("/")
+            files = [
+                f
+                for f in files
+                if prefix in str(f).replace("\\", "/")
+            ]
         query_lower = query.lower()
-        evidences: list[Evidence] = []
+        scored: list[tuple[int, Evidence]] = []
         now = datetime.now(UTC)
         for f in files:
-            if len(evidences) >= MAX_SEARCH_RESULTS:
-                break
             code = self._read_text(f)
             if code is None:
                 continue
@@ -410,7 +450,25 @@ class TreeSitterCodeIntelligenceProvider:
                 rel = str(f.resolve().relative_to(self._repo_base_path))
             except Exception:
                 rel = str(f)
-            commit_hash = hashlib.sha256(f"{tenant_id}:{rel}:{query}".encode()).hexdigest()[:16]
+            # P1-2: deterministic relevance — exact filename > path hit >
+            # definition line > body mention. Lower score sorts first.
+            rel_lower = rel.lower()
+            match_line = ""
+            try:
+                match_line = code.split("\n")[line_no - 1].strip().lower()
+            except IndexError:
+                pass
+            if query_lower == Path(rel).stem.lower() or query_lower == Path(rel).name.lower():
+                score = 0
+            elif query_lower in rel_lower:
+                score = 1
+            elif match_line.startswith(("def ", "class ", "async def ")) and query_lower in match_line:
+                score = 2
+            else:
+                score = 3
+            commit_hash = self._repo_head_sha(f) or hashlib.sha256(
+                f"{tenant_id}:{rel}:{query}".encode()
+            ).hexdigest()[:16]
             now_item = datetime.now(UTC)
             prov = EvidenceProvenance(
                 tenant_id=tenant_id,
@@ -435,26 +493,55 @@ class TreeSitterCodeIntelligenceProvider:
                 ),
             )
             fingerprint = hashlib.sha256(f"{tenant_id}:{rel}:{idx}:{query}".encode()).hexdigest()
-            evidences.append(
-                Evidence(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    evidence_type=EvidenceType.SOURCE_CODE,
-                    provider=self._provider_id,
-                    source=f"code://{rel}#L{line_no}:{col_no}",
-                    title=f"Code match: {query!r} in {rel}:{line_no}",
-                    summary=f"Found '{query}' in {rel} at line {line_no}",
-                    content_snippet=snippet[:4096],
-                    observed_at=now,
-                    retrieved_at=now_item,
-                    provenance=prov,
-                    freshness=EvidenceFreshness(observed_at=now, retrieved_at=now_item),
-                    classification=ClassificationLevel.INTERNAL,
-                    fingerprint=fingerprint,
-                    attributes={"file_path": rel, "line_number": line_no, "column_number": col_no},
+            scored.append(
+                (
+                    score,
+                    Evidence(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        evidence_type=EvidenceType.SOURCE_CODE,
+                        provider=self._provider_id,
+                        source=f"code://{rel}#L{line_no}:{col_no}",
+                        title=f"Code match: {query!r} in {rel}:{line_no}",
+                        summary=f"Found '{query}' in {rel} at line {line_no}",
+                        content_snippet=snippet[:4096],
+                        observed_at=now,
+                        retrieved_at=now_item,
+                        provenance=prov,
+                        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now_item),
+                        classification=ClassificationLevel.INTERNAL,
+                        fingerprint=fingerprint,
+                        attributes={"file_path": rel, "line_number": line_no, "column_number": col_no},
+                    ),
                 )
             )
-        return evidences
+        # P1-2: deterministic best-first order honoring the caller limit
+        # (previously filesystem order, hardcoded 50-result ceiling).
+        scored.sort(key=lambda item: (item[0], item[1].source))
+        return [e for _, e in scored[: max(1, min(limit, MAX_SEARCH_RESULTS))]]
+
+    @staticmethod
+    def _repo_head_sha(path: Path) -> str | None:
+        """Best-effort real revision for search provenance (P1-2).
+
+        Walks up to the containing git checkout and reads HEAD. Returns None
+        when unavailable — callers fall back to the query-derived hash rather
+        than failing the search.
+        """
+        try:
+            import pygit2
+
+            current = path.resolve()
+            root = current if current.is_dir() else current.parent
+            for candidate in (root, *root.parents):
+                try:
+                    repo = pygit2.Repository(str(candidate))
+                    return str(repo.head.target)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
 
     def _find_symbol_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CodeSymbol]:
         roots = self._resolve_roots(profile)
@@ -560,7 +647,7 @@ class TreeSitterCodeIntelligenceProvider:
                         # try field 'function' or first identifier
                         func_node = node.child_by_field_name("function")
                         if func_node is not None:
-                            callee_text = code[func_node.start_byte : func_node.end_byte].strip()
+                            callee_text = self._byte_slice(code, func_node.start_byte, func_node.end_byte).strip()
                             # handle dotted: take last part
                             if "." in callee_text:
                                 callee_text = callee_text.split(".")[-1]
@@ -568,7 +655,11 @@ class TreeSitterCodeIntelligenceProvider:
                             # fallback: first child text
                             if node.children:
                                 callee_text = (
-                                    code[node.children[0].start_byte : node.children[0].end_byte]
+                                    self._byte_slice(
+                                        code,
+                                        node.children[0].start_byte,
+                                        node.children[0].end_byte,
+                                    )
                                     .strip()
                                     .split(".")[-1]
                                     .split("(")[0]
@@ -582,7 +673,7 @@ class TreeSitterCodeIntelligenceProvider:
                                 if parent.type in SYMBOL_NODE_TYPES:
                                     n = parent.child_by_field_name("name")
                                     if n is not None:
-                                        caller = code[n.start_byte : n.end_byte].strip()
+                                        caller = self._byte_slice(code, n.start_byte, n.end_byte).strip()
                                         break
                                 parent = parent.parent
                             nodes.append(
@@ -667,7 +758,7 @@ class TreeSitterCodeIntelligenceProvider:
                     if node.type in SYMBOL_NODE_TYPES:
                         n = node.child_by_field_name("name")
                         if n is not None:
-                            nm = code[n.start_byte : n.end_byte].strip()
+                            nm = self._byte_slice(code, n.start_byte, n.end_byte).strip()
                             if nm == symbol_name:
                                 def_loc = (f, code, tree, node.start_byte, node.end_byte)
                                 break
@@ -721,7 +812,7 @@ class TreeSitterCodeIntelligenceProvider:
                     callee = ""
                     if func_node is not None:
                         callee = (
-                            def_code[func_node.start_byte : func_node.end_byte]
+                            self._byte_slice(def_code, func_node.start_byte, func_node.end_byte)
                             .strip()
                             .split(".")[-1]
                             .split("(")[0]
@@ -729,7 +820,11 @@ class TreeSitterCodeIntelligenceProvider:
                         )
                     elif node.children:
                         callee = (
-                            def_code[node.children[0].start_byte : node.children[0].end_byte]
+                            self._byte_slice(
+                                        def_code,
+                                        node.children[0].start_byte,
+                                        node.children[0].end_byte,
+                                    )
                             .strip()
                             .split(".")[-1]
                             .split("(")[0]
@@ -744,9 +839,11 @@ class TreeSitterCodeIntelligenceProvider:
                                     file_path=rel_def,
                                     line_number=node.start_point[0] + 1,
                                     column_number=node.start_point[1],
-                                    snippet=def_code[
-                                        node.start_byte : min(node.end_byte, node.start_byte + 200)
-                                    ].split("\n")[0][:500],
+                                    snippet=self._byte_slice(
+                                        def_code,
+                                        node.start_byte,
+                                        min(node.end_byte, node.start_byte + 200),
+                                    ).split("\n")[0][:500],
                                 ),
                             )
                         )
@@ -908,12 +1005,16 @@ class TreeSitterCodeIntelligenceProvider:
 
     # -- async protocol surface ----------------------------------------
 
+    @traced("provider", component="code_intel")
     async def search_code(
         self,
         tenant_id: str,
         query: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        language: str | None = None,
+        path_prefix: str | None = None,
+        limit: int = 20,
     ) -> list[Evidence]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.search_code"):
             self._require_tenant_scope(tenant_id, profile)
@@ -925,9 +1026,17 @@ class TreeSitterCodeIntelligenceProvider:
 
             run_id = investigation_id or _uuid4()
             return await asyncio.to_thread(
-                self._search_code_sync, tenant_id, run_id, query, profile
+                self._search_code_sync,
+                tenant_id,
+                run_id,
+                query,
+                profile,
+                language,
+                path_prefix,
+                limit,
             )
 
+    @traced("provider", component="code_intel")
     async def find_symbol(
         self,
         tenant_id: str,
@@ -939,6 +1048,7 @@ class TreeSitterCodeIntelligenceProvider:
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_symbol_sync, symbol_name, profile)
 
+    @traced("provider", component="code_intel")
     async def find_callers(
         self,
         tenant_id: str,
@@ -950,6 +1060,7 @@ class TreeSitterCodeIntelligenceProvider:
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callers_sync, symbol_name, profile)
 
+    @traced("provider", component="code_intel")
     async def find_callees(
         self,
         tenant_id: str,
@@ -961,6 +1072,7 @@ class TreeSitterCodeIntelligenceProvider:
             self._require_tenant_scope(tenant_id, profile)
             return await asyncio.to_thread(self._find_callees_sync, symbol_name, profile)
 
+    @traced("provider", component="code_intel")
     async def find_exception_handlers(
         self,
         tenant_id: str,
@@ -976,6 +1088,7 @@ class TreeSitterCodeIntelligenceProvider:
                 self._find_exception_handlers_sync, exception_class, profile
             )
 
+    @traced("provider", component="code_intel")
     async def find_database_operations(
         self,
         tenant_id: str,

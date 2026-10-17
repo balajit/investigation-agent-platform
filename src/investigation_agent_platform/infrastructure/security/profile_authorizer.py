@@ -35,6 +35,16 @@ _ACTION_REQUIRED_EVIDENCE_TYPE: dict[ActionType, str] = {
     ActionType.QUERY_STATE: "DATABASE_STATE",
     ActionType.GET_CODE: "COMMIT_HISTORY",
     ActionType.CORRELATE: "TRACE",
+    # P1-1: code-navigation actions gate on the same evidence-type scheme;
+    # capability names equal ActionType values (profile validation enforces).
+    ActionType.SEARCH_CODE: "SOURCE_CODE",
+    ActionType.FIND_SYMBOL: "SOURCE_CODE",
+    ActionType.FIND_CALL_GRAPH: "CALL_GRAPH",
+    ActionType.GET_CODE_HISTORY: "COMMIT_HISTORY",
+    # P2-2: live probe gates on its own evidence type; profiles opt in by
+    # listing it in investigation.enabled_evidence_types (default lists do
+    # not include it — probing is never on unless declared).
+    ActionType.PROBE_API: "API_PROBE",
 }
 
 
@@ -90,6 +100,11 @@ class ProfileBasedActionAuthorizer:
             ActionType.QUERY_STATE: "QUERY_STATE",
             ActionType.GET_CODE: "GET_CODE",
             ActionType.CORRELATE: "CORRELATE",
+            ActionType.SEARCH_CODE: "SEARCH_CODE",
+            ActionType.FIND_SYMBOL: "FIND_SYMBOL",
+            ActionType.FIND_CALL_GRAPH: "FIND_CALL_GRAPH",
+            ActionType.GET_CODE_HISTORY: "GET_CODE_HISTORY",
+            ActionType.PROBE_API: "PROBE_API",
         }.get(action)
         return capability_for_action in allowed
 

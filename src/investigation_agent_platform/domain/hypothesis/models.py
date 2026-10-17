@@ -42,6 +42,21 @@ class HypothesisEvidenceAssessment(BaseModel):
     reason: str = Field(..., max_length=1024)
 
 
+class HypothesisCausalStep(BaseModel):
+    """One validated causal link proposed for a hypothesis (P0-3).
+
+    Cause/mechanism/effect text comes from the model; evidence_ids must
+    resolve to this investigation's evidence rows (validated at write).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cause: str = Field(..., max_length=1024)
+    mechanism: str = Field(..., max_length=2048)
+    effect: str = Field(..., max_length=1024)
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+
 class Hypothesis(BaseModel):
     """Candidate explanation formulated during investigation."""
 
@@ -60,6 +75,7 @@ class Hypothesis(BaseModel):
     refuting_evidence_ids: list[UUID] = Field(default_factory=list, max_length=200)
     assessments: list[HypothesisEvidenceAssessment] = Field(default_factory=list, max_length=100)
     required_verification: list[str] = Field(default_factory=list, max_length=20)
+    causal_steps: list[HypothesisCausalStep] = Field(default_factory=list, max_length=20)
     parent_hypothesis_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

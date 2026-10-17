@@ -101,6 +101,23 @@ Source of truth for every `IAP_*` variable read in `src/` (see `infrastructure/c
 | IAP_KNOWLEDGE_GRAPHITI_NEO4J_PASSWORD | O | O | R if graphiti | R if graphiti | yes | runtime-env | no |
 | IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE | O (`neo4j`) | O | O | O | no | — | no |
 | IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT | O (`5`) | O | O | O | no | — | no |
+| IAP_KNOWLEDGE_GRAPHITI_ENABLED | O (`false`) | O | O | O | no | — | no |
+| IAP_DISPOSITION_RETENTION_DAYS | O (`30`) | O | O | O | no | — | no |
+| IAP_DISPOSITION_SIMILARITY_THRESHOLD | O (`0.4`) | O | O | O | no | — | no |
+| IAP_DISPOSITION_MAX_CANDIDATES | O (`25`) | O | O | O | no | — | no |
+| IAP_DISPOSITION_LOG_RETENTION_DAYS | O (`30`) | O | O | O | no | — | no |
+| IAP_MCP_LOGS_DB_URL | O (`http://localhost:8100/sse`, enhance-logs script) | O | O | O | no | — | no |
+| IAP_KNOWLEDGE_CACHE_ENABLED | O (`false`) | O | O | O | no | — | no |
+| IAP_KNOWLEDGE_CACHE_TTL_SECONDS | O (`120`, `0` disables store) | O | O | O | no | — | no |
+| IAP_REDIS_URL | O (empty → in-memory backend; compose `redis` in dev, managed endpoint in cloud) | O | O | O | no | runtime-env | no |
+| IAP_MCP_FANOUT_CONCURRENCY | O (empty/unbounded; `1` restores serial fan-out) | O | O | O | no | — | no |
+| IAP_COMPILER_FULL_EXCERPT_RECENT | O (`5`) | O | O | O | no | — | no |
+| IAP_COMPILER_FULL_EXCERPT_RELEVANCE | O (`0.8`) | O | O | O | no | — | no |
+| IAP_COMPILER_LOG_GROUP | O (on; `0`/`false` restores per-row excerpts) | O | O | O | no | — | no |
+| IAP_ACCESS_LOG_BODY | O (`true`; `false` = summary fields only) | O | O | O | no | — | no |
+| IAP_ACCESS_LOG_BODY_CHARS | O (`4096`) | O | O | O | no | — | no |
+| IAP_LOG_APP_NAME | O (`iap`, directory-style log paths only) | O | O | O | no | — | no |
+| IAP_GITHUB_WEBHOOK_SECRET | R if webhook (fail-closed 503 when unset) | O | O | O | yes | runtime-env | no |
 | IAP_ELASTICSEARCH_URL | O | O | R if elastic | R if elastic | no | — | no |
 | IAP_ELASTICSEARCH_TIMEOUT | O (`30`) | O | O | O | no | — | no |
 | IAP_ELASTICSEARCH_QUERY_TIMEOUT | O (`25.0`) | O | O | O | no | — | no |

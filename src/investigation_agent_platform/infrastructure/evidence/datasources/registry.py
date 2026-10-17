@@ -55,6 +55,8 @@ class DatasourceRegistry:
         cache_ttl_seconds: float = _DEFAULT_TTL_SECONDS,
         environment: str | None = None,
         engine_factory: Any | None = None,
+        # P3-1: MCP-only by default — direct-engine fallback requires opt-in.
+        allow_direct_engines: bool = False,
     ) -> None:
         self._profile_repo = profile_repo
         self._secret_resolver = secret_resolver
@@ -62,6 +64,7 @@ class DatasourceRegistry:
         self._ttl = max(1.0, cache_ttl_seconds)
         self._environment = environment
         self._engine_factory = engine_factory
+        self._allow_direct_engines = allow_direct_engines
         self._cache: dict[tuple[str, str, str, int], tuple[Any, Any, float]] = {}
 
     # -- resolution ------------------------------------------------------
@@ -129,6 +132,30 @@ class DatasourceRegistry:
         if cached is not None:
             self._cache.pop(key, None)
             await self._dispose_engine(cached[1])
+
+        # P3-1: MCP first — a datasource declaring mcp_server resolves to its
+        # MCP gateway, never a direct engine.
+        mcp_adapter = self.resolve_mcp(tenant_id, profile, datasource)
+        if mcp_adapter is not None:
+            mcp_adapter.profile = profile
+            self._cache[key] = (mcp_adapter, None, time.monotonic() + self._ttl)
+            logger.info(
+                "Resolved datasource via MCP",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "datasource.resolved_mcp",
+                        "application_id": profile.id,
+                        "datasource_id": datasource.id,
+                    }
+                ),
+            )
+            return mcp_adapter
+        if not self._allow_direct_engines:
+            raise DatasourceResolutionError(
+                f"Datasource {datasource.id!r} declares no mcp_server and direct "
+                "engines are disabled (MCP-only datasource posture)."
+            )
 
         try:
             dsn = await resolve_connection(
@@ -262,13 +289,27 @@ class DatasourceRegistry:
             McpEvidenceAdapter,
         )
 
-        connection = str(entry.get("connection", ""))
-        tenants = [tenant_id, *[t for t in datasource.tenants if t != tenant_id]]
-        return McpEvidenceAdapter(
-            server_params={"command": entry.get("command"), "args": entry.get("args", [])},
-            allowed_tools=list(entry.get("allowed_tools", ["run-sql"])),
-            tool_timeout_seconds=float(entry.get("timeout_seconds", 30.0)),
-            max_items_per_call=int(entry.get("max_rows", 1000)),
-            connection_name=connection,
-            tenant_allowlist={t: {connection} for t in tenants},
-        )
+        # P3-1: entry shape mirrors bootstrap registration (transport,
+        # query_tool, SSE url/headers, optional oauth ref). stdio remains
+        # the default for Oracle-style entries.
+        transport = str(entry.get("transport", "stdio") or "stdio").lower()
+        kwargs: dict[str, Any] = {
+            "allowed_tools": list(entry.get("allowed_tools", ["run-sql"])),
+            "tool_timeout_seconds": float(entry.get("timeout_seconds", 30.0)),
+            "max_items_per_call": int(entry.get("max_rows", 1000)),
+            "connection_name": str(entry.get("connection", "")),
+            "tenant_allowlist": {t: {entry.get("connection", "")} for t in [tenant_id, *[t for t in datasource.tenants if t != tenant_id]]} or None,
+            "transport": transport,
+            "query_tool": str(entry.get("query_tool", "run-sql")),
+            "include_connection": transport == "stdio",
+        }
+        if transport == "sse":
+            kwargs["server_params"] = None
+            kwargs["sse_url"] = str(entry.get("url", ""))
+            kwargs["sse_headers"] = dict(entry.get("headers", {}) or {})
+        else:
+            kwargs["server_params"] = {
+                "command": entry.get("command"),
+                "args": entry.get("args", []),
+            }
+        return McpEvidenceAdapter(**kwargs)

@@ -10,6 +10,7 @@ from investigation_agent_platform.domain.investigation.models import (
     EvidenceManifest,
     Fact,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class InvestigationMemory(BaseModel):
         """Approximates token count using standard 4 characters per token heuristic."""
         return max(1, len(text) // 4)
 
+    @traced("reason", require_scope=False)
     def get_sliding_context(self, max_token_budget: int = 4000) -> dict[str, list[dict[str, str]]]:
         """Constructs a deterministic, token-aware context window prioritizing facts and contradictions."""
         used_tokens = 0

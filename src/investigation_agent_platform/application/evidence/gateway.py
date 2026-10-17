@@ -1,6 +1,8 @@
 # src/investigation_agent_platform/application/evidence/gateway.py
 import asyncio
 import logging
+import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -21,7 +23,12 @@ from investigation_agent_platform.domain.evidence.requests import (
     SourceRequest,
     SymbolRequest,
 )
+from investigation_agent_platform.infrastructure.observability.tracing import traced
 from investigation_agent_platform.ports.correlation.engine import CorrelationExpander
+from investigation_agent_platform.ports.evidence.api_probe import (
+    ApiProbeRequest,
+    ApiProbeResult,
+)
 from investigation_agent_platform.ports.evidence.gateway import (
     EvidenceGatewayProtocol,
     EvidenceQueryResult,
@@ -72,6 +79,63 @@ class ContextCompressor:
         return "\n".join(head) + truncated_msg + "\n".join(tail)
 
 
+
+
+def _dedupe_extra(items: Any) -> dict[str, Any]:
+    """Survivor count only."""
+    try:
+        if isinstance(items, list):
+            return {"iap.items_count": len(items)}
+        return {}
+    except Exception:
+        return {}
+
+
+def _gateway_extra(result: Any) -> dict[str, Any]:
+    """Result counts + per-source outcome tallies (never item contents)."""
+    try:
+        extra: dict[str, Any] = {}
+        total = getattr(result, "total_count", None)
+        if isinstance(total, int):
+            extra["iap.items_count"] = total
+        else:
+            items = getattr(result, "items", None)
+            if isinstance(items, list):
+                extra["iap.items_count"] = len(items)
+        metadata = getattr(result, "provider_metadata", None) or {}
+        per_source = metadata.get("per_source") if isinstance(metadata, dict) else None
+        if isinstance(per_source, list):
+            tallies: dict[str, int] = {}
+            for entry in per_source:
+                if isinstance(entry, dict):
+                    status = str(entry.get("status", "UNKNOWN"))
+                    tallies[status] = tallies.get(status, 0) + 1
+            for status, count in tallies.items():
+                extra[f"iap.sources_{status.lower()}"] = count
+        return extra
+    except Exception:
+        return {}
+
+
+def _resolve_fanout_concurrency(explicit: int | None) -> int | None:
+    """R2: effective MCP fan-out parallelism.
+
+    Explicit ctor value wins; otherwise `IAP_MCP_FANOUT_CONCURRENCY` when it
+    parses as an int. None (or <= 0) = unbounded — one task per candidate.
+    1 restores the legacy serial loop (ops kill-switch).
+    """
+    if explicit is not None:
+        return explicit if explicit > 0 else None
+    raw = (os.environ.get("IAP_MCP_FANOUT_CONCURRENCY", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 class EvidenceDeduplicator:
     """Fingerprint-based deduplicator scoped per tenant.
 
@@ -109,6 +173,7 @@ class EvidenceDeduplicator:
             return (tenant_id, fingerprint) in by_fp
         return False
 
+    @traced("gateway", component="deduplicator", extra_from=_dedupe_extra)
     async def deduplicate(self, tenant_id: str, items: list[Evidence]) -> list[Evidence]:
         deduped: list[Evidence] = []
         seen_batch: set[str] = set()
@@ -138,11 +203,8 @@ class EvidenceDeduplicator:
             self._mark_seen(tenant_id, item.fingerprint)
             deduped.append(item)
         return deduped
-
-
 class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     """Asynchronous orchestrator for routing, redacting, persisting, and correlating evidence."""
-
     def __init__(
         self,
         provider_selector: Any,
@@ -162,6 +224,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         repository_registry: Any | None = None,
         failure_attribution_service: Any | None = None,
         profile_repo: Any | None = None,
+        # R2 concurrent fan-out: max parallel MCP fan-out queries. None (or
+        # <= 0) = unbounded (one task per candidate); 1 restores the legacy
+        # serial loop. Env override `IAP_MCP_FANOUT_CONCURRENCY` wins when set.
+        fanout_concurrency: int | None = None,
     ) -> None:
         if sanitizer is None:
             raise ValueError(
@@ -192,6 +258,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self._repository_registry = repository_registry
         self._failure_attribution_service = failure_attribution_service
         self._profile_repo = profile_repo
+        self._fanout_concurrency = _resolve_fanout_concurrency(fanout_concurrency)
 
     async def _effective_profile(
         self, provider: Any, tenant_id: str, application_id: str
@@ -257,6 +324,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def search_runtime_evidence(
         self,
         tenant_id: str,
@@ -356,6 +424,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def get_application_state(
         self,
         tenant_id: str,
@@ -392,11 +461,128 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 await self._sanitizer.sanitize_evidence(tenant_id, item) for item in result.items
             ]
             deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+            # R2: fan out across every other tenant-authorized MCP state
+            # provider concurrently (an app with Oracle + Postgres gets both
+            # interrogated, not just the resolved primary). Per-source
+            # degrade: one source failing never fails the action; dialect
+            # mismatches land here. `asyncio.gather` preserves candidate
+            # order, so `per_source` stays deterministic.
+            per_source: list[dict[str, Any]] = [
+                {"source": "primary", "status": "SUCCEEDED", "items": len(deduped)}
+            ]
+            extra_items: list[Any] = []
+            try:
+                candidates = self._provider_selector.list_state_providers()
+            except Exception:
+                candidates = []
+
+            async def _fanout_one(
+                key: str, other: Any, semaphore: asyncio.Semaphore | None
+            ) -> tuple[str, str, list[Any]]:
+                # Manual span: decorator cannot name dynamic per-source spans.
+                # Name carries the source key (low-cardinality config value).
+                # Degrade contract preserved: exceptions → DEGRADED, never raise.
+                from opentelemetry.trace import StatusCode
+
+                from investigation_agent_platform.infrastructure.observability.tracing import (
+                    span_attributes,
+                )
+
+                with tracer.start_as_current_span(f"provider.fanout.{key}") as leg:
+                    try:
+                        for attr_key, attr_value in span_attributes(
+                            tenant_id=tenant_id,
+                            investigation_id=str(investigation_id),
+                            component="fanout",
+                            **{"iap.source": key},
+                        ).items():
+                            if attr_value is not None:
+                                leg.set_attribute(attr_key, attr_value)
+                        if semaphore is not None:
+                            async with semaphore:
+                                outcome = await _query_other(key, other)
+                        else:
+                            outcome = await _query_other(key, other)
+                        leg.set_attribute("iap.outcome", "ok")
+                        leg.set_attribute("iap.items_count", len(outcome[2]))
+                        leg.set_status(StatusCode.OK)
+                        return outcome
+                    except Exception as exc:
+                        logger.warning(
+                            "Fan-out state query degraded for source",
+                            extra={"source": str(key), "error": str(exc)},
+                        )
+                        leg.set_attribute("iap.outcome", "degraded")
+                        leg.set_attribute("iap.error_type", type(exc).__name__)
+                        leg.set_status(StatusCode.OK)
+                        return str(key), "DEGRADED", []
+
+            async def _query_other(key: str, other: Any) -> tuple[str, str, list[Any]]:
+                other_result = await asyncio.wait_for(
+                    other.get_application_state(
+                        tenant_id, investigation_id, request, profile
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+                return str(key), "SUCCEEDED", list(other_result.items or [])
+
+            eligible: list[tuple[str, Any]] = []
+            for key, other in candidates:
+                if "-mcp-" not in str(key):
+                    continue
+                if other is provider:
+                    continue
+                serves = getattr(other, "serves_tenant", None)
+                try:
+                    if callable(serves) and not serves(tenant_id):
+                        per_source.append(
+                            {"source": str(key), "status": "SKIPPED", "items": 0}
+                        )
+                        continue
+                except Exception as exc:
+                    logger.warning(
+                        "Fan-out state query degraded for source",
+                        extra={"source": str(key), "error": str(exc)},
+                    )
+                    per_source.append(
+                        {"source": str(key), "status": "DEGRADED", "items": 0}
+                    )
+                    continue
+                eligible.append((str(key), other))
+            if eligible:
+                semaphore = (
+                    asyncio.Semaphore(self._fanout_concurrency)
+                    if self._fanout_concurrency is not None
+                    else None
+                )
+                # gather (not wait_for): each leg already carries its own
+                # per-provider timeout; a global deadline would change the
+                # documented worst case (deferred follow-up, see R2 plan).
+                outcomes = await asyncio.gather(
+                    *(_fanout_one(key, other, semaphore) for key, other in eligible)
+                )
+                for source_key, status, items in outcomes:
+                    extra_items.extend(items)
+                    per_source.append(
+                        {"source": source_key, "status": status, "items": len(items)}
+                    )
+            if extra_items:
+                sanitized_extra = [
+                    await self._sanitizer.sanitize_evidence(tenant_id, item)
+                    for item in extra_items
+                ]
+                # P3-2: dedup ONLY the fan-out extras — re-running dedup over
+                # the already-marked primary items would drop everything.
+                deduped_extra = await self._deduplicator.deduplicate(
+                    tenant_id, sanitized_extra
+                )
+                deduped = list(deduped) + list(deduped_extra)
             return EvidenceQueryResult(
                 items=deduped,
                 cursor=result.cursor,
                 total_count=len(deduped),
                 has_more=result.has_more,
+                provider_metadata={"per_source": per_source},
             )
 
     @retry(
@@ -405,6 +591,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def search_code(
         self,
         tenant_id: str,
@@ -435,6 +622,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                     request.query,
                     profile,
                     investigation_id=investigation_id,
+                    language=request.language,
+                    path_prefix=request.path_prefix,
+                    limit=request.limit,
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -450,11 +640,12 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def find_symbol(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SymbolRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_symbol"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", application_id=application_id)
+            await self._enforce_authorization(tenant_id, "FIND_SYMBOL", application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -491,6 +682,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def get_source(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SourceRequest
     ) -> Evidence:
@@ -510,7 +702,13 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
             raw_evidence = await asyncio.wait_for(
                 provider.get_source(
-                    tenant_id, investigation_id, request.file_path, profile
+                    tenant_id,
+                    investigation_id,
+                    request.file_path,
+                    profile,
+                    revision=request.revision,
+                    start_line=request.start_line,
+                    end_line=request.end_line,
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -522,11 +720,12 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def find_call_graph(
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: CallGraphRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_call_graph"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", application_id=application_id)
+            await self._enforce_authorization(tenant_id, "FIND_CALL_GRAPH", application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -542,19 +741,77 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 raise ExecutionError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
-            callers = await asyncio.wait_for(
-                provider.find_callers(
-                    tenant_id,
-                    request.symbol,
-                    profile,
-                    investigation_id=investigation_id,
-                ),
-                timeout=self._timeout_seconds,
-            )
+            # P1-2: honor direction/depth — INBOUND walks callers,
+            # OUTBOUND walks callees, BOTH walks each side, up to depth hops.
+            direction = str(request.direction or "BOTH").upper()
+            callers: list[Any] = []
+            callees: list[Any] = []
+            if direction in ("INBOUND", "BOTH"):
+                callers = await asyncio.wait_for(
+                    provider.find_callers(
+                        tenant_id,
+                        request.symbol,
+                        profile,
+                        investigation_id=investigation_id,
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+            if direction in ("OUTBOUND", "BOTH"):
+                callees = await asyncio.wait_for(
+                    provider.find_callees(
+                        tenant_id,
+                        request.symbol,
+                        profile,
+                        investigation_id=investigation_id,
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+            hops: list[dict[str, Any]] = []
+            for hop in range(1, request.depth):
+                # Depth > 1: expand one more hop from the previous frontier
+                # on each requested side (bounded: first 10 nodes per side).
+                frontier = [
+                    (n.caller_symbol if direction == "INBOUND" else n.callee_symbol)
+                    for n in (callers if direction == "INBOUND" else callees)[:10]
+                ]
+                grown: list[Any] = []
+                for symbol in frontier:
+                    fn = (
+                        provider.find_callers
+                        if direction == "INBOUND"
+                        else provider.find_callees
+                    )
+                    try:
+                        grown.extend(
+                            await asyncio.wait_for(
+                                fn(
+                                    tenant_id,
+                                    symbol,
+                                    profile,
+                                    investigation_id=investigation_id,
+                                ),
+                                timeout=self._timeout_seconds,
+                            )
+                        )
+                    except Exception:
+                        continue
+                if not grown:
+                    break
+                hops.extend([g.model_dump() for g in grown])
+                if direction == "INBOUND":
+                    callers = list(callers) + grown
+                else:
+                    callees = list(callees) + grown
             return EvidenceQueryResult(
                 items=[],
-                total_count=len(callers),
-                provider_metadata={"callers": [c.model_dump() for c in callers]},
+                total_count=len(callers) + len(callees),
+                provider_metadata={
+                    "direction": direction,
+                    "depth": request.depth,
+                    "callers": [c.model_dump() for c in callers],
+                    "callees": [c.model_dump() for c in callees],
+                    "extended_hops": hops,
+                },
             )
 
     @retry(
@@ -563,6 +820,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def get_code_history(
         self,
         tenant_id: str,
@@ -571,7 +829,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: CodeHistoryRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_code_history"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path, application_id=application_id)
+            await self._enforce_authorization(tenant_id, "GET_CODE_HISTORY", request.file_path, application_id=application_id)
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_code_history_request", None)
             if callable(validate_fn):
@@ -594,12 +852,112 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             deduped = await self._deduplicator.deduplicate(tenant_id, sanitized)
             return EvidenceQueryResult(items=deduped, total_count=len(deduped))
 
+    @traced("gateway", extra_from=_gateway_extra)
+    async def probe_api(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: ApiProbeRequest,
+    ) -> EvidenceQueryResult:
+        """Sandboxed live probe (P2-2): endpoint allowlist enforced in the
+        adapter; gateway adds authorization + sanitization + dedup like every
+        other evidence path."""
+        from investigation_agent_platform.infrastructure.evidence.api.probe_adapter import (
+            HttpxApiProbeAdapter,
+        )
+
+        with tracer.start_as_current_span("AsyncEvidenceGateway.probe_api"):
+            await self._enforce_authorization(
+                tenant_id, "PROBE_API", application_id=application_id
+            )
+            await self._validate_structured_output(request)
+            if self._profile_repo is None:
+                raise ExecutionError(
+                    f"No application profile store; cannot scope probe for '{application_id}'"
+                )
+            adapter = HttpxApiProbeAdapter(profile_repo=self._profile_repo)
+            result = await asyncio.wait_for(
+                adapter.probe(tenant_id, application_id, request),
+                timeout=self._timeout_seconds,
+            )
+            item = self._probe_result_to_evidence(
+                tenant_id, investigation_id, application_id, result
+            )
+            sanitized = await self._sanitizer.sanitize_evidence(tenant_id, item)
+            deduped = await self._deduplicator.deduplicate(tenant_id, [sanitized])
+            return EvidenceQueryResult(items=deduped, total_count=len(deduped))
+
+    @staticmethod
+    def _probe_result_to_evidence(
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        result: ApiProbeResult,
+    ) -> Evidence:
+        import hashlib as _hashlib
+
+        from investigation_agent_platform.domain.evidence.models import (
+            Evidence,
+            EvidenceType,
+        )
+        from investigation_agent_platform.domain.provenance.models import (
+            EvidenceFreshness,
+            EvidenceProvenance,
+            QueryFingerprint,
+            SourceLocation,
+        )
+
+        now = datetime.now(UTC)
+        assert isinstance(result, ApiProbeResult)
+        fp = _hashlib.sha256(
+            f"probe:{tenant_id}:{application_id}:{result.endpoint_id}:{result.resolved_url}".encode()
+        ).hexdigest()
+        return Evidence(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            evidence_type=EvidenceType.API_PROBE,
+            provider="api-probe",
+            source=f"apiprobe://{application_id}/{result.endpoint_id}",
+            title=f"API probe {result.method} -> {result.status_code} ({result.endpoint_id})",
+            summary=(
+                f"Live {result.method} {result.resolved_url} returned "
+                f"{result.status_code} in {result.latency_ms}ms"
+                + (" (body truncated)" if result.response_body_truncated else "")
+                + f". Body: {result.response_body_excerpt[:1500]}"
+            ),
+            content_snippet=result.response_body_excerpt,
+            observed_at=now,
+            retrieved_at=now,
+            provenance=EvidenceProvenance(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                provider_type="api-probe",
+                requested_provider_id="api-probe",
+                actual_provider_id="api-probe",
+                source_system="http",
+                retrieval_timestamp=now,
+                query_fingerprint=QueryFingerprint(
+                    provider_type="api-probe",
+                    operation="probe_api",
+                    normalized_query_hash=fp[:32],
+                ),
+                source_location=SourceLocation(
+                    system="http",
+                    identifier=result.resolved_url,
+                ),
+            ),
+            freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+            fingerprint=f"apiprobe-{fp[:32]}",
+        )
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
         reraise=True,
     )
+    @traced("gateway", extra_from=_gateway_extra)
     async def correlate(
         self,
         tenant_id: str,
@@ -626,6 +984,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     # -- Layer 3 topology integration (prompt1_v1.md D7) -----------------------
 
+    @traced("gateway", extra_from=_gateway_extra)
     async def resolve_code_ownership(
         self,
         tenant_id: str,
@@ -675,6 +1034,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 timeout=self._timeout_seconds,
             )
 
+    @traced("gateway", extra_from=_gateway_extra)
     async def attribute_failure_frames(
         self,
         tenant_id: str,

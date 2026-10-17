@@ -21,6 +21,7 @@ from investigation_agent_platform.application.worker.activities import (
     load_batch_records_activity,
     mark_batch_record_result_activity,
     mark_batch_records_activity,
+    project_topology_activity,
     promote_fulfillment_evidence_activity,
     publish_event_activity,
     reason_activity,
@@ -48,6 +49,7 @@ from investigation_agent_platform.application.worker.workflows import (
     KnowledgeArtifactJanitorWorkflow,
     ReferenceDocsIndexWorkflow,
     RunInvestigationWorkflow,
+    TopologyProjectionWorkflow,
     TopologySnapshotRetentionWorkflow,
 )
 from investigation_agent_platform.bootstrap import build_app_context as _build_app_context
@@ -65,6 +67,7 @@ logger = logging.getLogger(__name__)
 # activity/defn decorators, not one static signature.
 WORKFLOWS: Sequence[type] = [
     RunInvestigationWorkflow,
+    TopologyProjectionWorkflow,
     TopologySnapshotRetentionWorkflow,
     KnowledgeArtifactJanitorWorkflow,
     BulkIntakeWorkflow,
@@ -92,6 +95,7 @@ ACTIVITIES: Sequence[Callable[..., Any]] = [
     record_input_requirement_activity,
     set_input_requirement_state_activity,
     promote_fulfillment_evidence_activity,
+    project_topology_activity,
     load_batch_records_activity,
     mark_batch_records_activity,
     mark_batch_record_result_activity,

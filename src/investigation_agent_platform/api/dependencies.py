@@ -711,33 +711,66 @@ class InMemoryEvidenceRepository(EvidenceRepository):
         # key, never a post-filter over a globally keyed map.
         self._by_investigation: dict[tuple[str, UUID], list[UUID]] = {}
         self._by_fingerprint: dict[tuple[str, str], UUID] = {}
+        # G6: bank-interest (tenant, investigation) -> set of canonical keys.
+        self._interest: dict[tuple[str, UUID], set[str]] = {}
 
     def _is_duplicate_fingerprint(self, tenant_id: str, evidence: Evidence) -> bool:
         key = (tenant_id, evidence.fingerprint)
         existing = self._by_fingerprint.get(key)
         return existing is not None and existing != evidence.evidence_id
 
+    def _scope_of(self, evidence: Evidence) -> str:
+        from investigation_agent_platform.domain.evidence.models import (
+            REFERENCE_LIFECYCLE_TYPES,
+        )
+
+        etype = getattr(evidence.evidence_type, "value", evidence.evidence_type)
+        return "reference" if str(etype) in REFERENCE_LIFECYCLE_TYPES else "observational"
+
     async def save(
         self, tenant_id: str, evidence: Evidence, investigation_id: UUID | None = None
-    ) -> None:
+    ) -> str:
         if self._is_duplicate_fingerprint(tenant_id, evidence):
-            return
+            canonical = self._by_fingerprint[(tenant_id, evidence.fingerprint)]
+            owner_inv = next(
+                (
+                    inv
+                    for (tenant, inv), ids in self._by_investigation.items()
+                    if tenant == tenant_id and canonical in ids
+                ),
+                None,
+            )
+            if (
+                investigation_id is not None
+                and owner_inv is not None
+                and owner_inv != investigation_id
+                and self._scope_of(evidence) == "reference"
+            ):
+                self._interest.setdefault((tenant_id, investigation_id), set()).add(
+                    str(canonical)
+                )
+                return "shared"
+            return "deduplicated"
         self._store[evidence.evidence_id] = evidence
         self._by_fingerprint[(tenant_id, evidence.fingerprint)] = evidence.evidence_id
         if investigation_id is not None:
             ids = self._by_investigation.setdefault((tenant_id, investigation_id), [])
             if evidence.evidence_id not in ids:
                 ids.append(evidence.evidence_id)
+        return "inserted"
 
     async def save_batch(
         self, tenant_id: str, evidence_list: list[Evidence], investigation_id: UUID | None = None
-    ) -> None:
+    ) -> dict[str, int]:
         seen: set[str] = set()
+        counts = {"inserted": 0, "shared": 0, "deduplicated": 0}
         for evidence in evidence_list:
             if evidence.fingerprint in seen:
                 continue
             seen.add(evidence.fingerprint)
-            await self.save(tenant_id, evidence, investigation_id)
+            outcome = await self.save(tenant_id, evidence, investigation_id)
+            counts[outcome] = counts.get(outcome, 0) + 1
+        return counts
 
     async def get_by_id(self, tenant_id: str, evidence_id: UUID) -> Evidence | None:
         ev = self._store.get(evidence_id)
@@ -757,11 +790,40 @@ class InMemoryEvidenceRepository(EvidenceRepository):
         self, tenant_id: str, investigation_id: UUID
     ) -> list[Evidence]:
         ids = self._by_investigation.get((tenant_id, investigation_id), [])
-        return [
+        owned = [
             self._store[i]
             for i in ids
             if i in self._store and self._store[i].tenant_id == tenant_id
         ]
+        seen = {e.evidence_id for e in owned}
+        shared = []
+        for key in self._interest.get((tenant_id, investigation_id), set()):
+            try:
+                canonical = UUID(key)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            ev = self._store.get(canonical)
+            if (
+                ev is not None
+                and ev.tenant_id == tenant_id
+                and ev.evidence_id not in seen
+            ):
+                shared.append(ev)
+                seen.add(ev.evidence_id)
+        return owned + shared
+
+    async def sharing_info(
+        self, tenant_id: str, evidence_keys: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        info: dict[str, dict[str, Any]] = {}
+        for (tenant, inv_id), keys in self._interest.items():
+            if tenant != tenant_id:
+                continue
+            for key in keys:
+                if key in evidence_keys:
+                    entry = info.setdefault(key, {"shared": True, "investigations": []})
+                    entry["investigations"].append(str(inv_id))
+        return info
 
 
 class InMemoryTimelineRepository(TimelineRepository):
@@ -833,11 +895,14 @@ class InMemoryHypothesisRepository(HypothesisRepository):
     async def find_by_investigation_id(
         self, tenant_id: str, investigation_id: UUID
     ) -> list[Hypothesis]:
-        return [
+        # P0-3: deterministic order matching the Postgres repository.
+        rows = [
             h
             for (t, _), (h, iid) in self._store.items()
             if t == tenant_id and iid == investigation_id and h.tenant_id == tenant_id
         ]
+        rows.sort(key=lambda h: (h.created_at, h.id))
+        return rows
 
     async def find_by_investigation_and_tenant(
         self, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 50
@@ -849,6 +914,61 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         ]
         total = len(filtered)
         return filtered[offset : offset + limit], total
+
+
+class InMemoryContradictionRepository:
+    """Process-local contradiction store (P0-3). Mirrors
+    SqlAlchemyContradictionRepository over (tenant, investigation)."""
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, Any], Any] = {}
+
+    async def save(self, tenant_id: str, contradiction: Any, investigation_id: Any) -> None:
+        self._store[(tenant_id, contradiction.contradiction_id)] = (
+            contradiction,
+            investigation_id,
+        )
+
+    async def find_by_investigation_id(
+        self, tenant_id: str, investigation_id: Any
+    ) -> list[Any]:
+        rows = [
+            c
+            for (t, _), (c, iid) in self._store.items()
+            if t == tenant_id and iid == investigation_id
+        ]
+        rows.sort(key=lambda c: (c.created_at, c.contradiction_id))
+        return rows
+
+
+class InMemoryLogExemplarRepository:
+    """Process-local exemplar store. Mirrors SqlAlchemyLogExemplarRepository
+    over (tenant, investigation); member IDs are verbatim evidence UUIDs."""
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, Any], Any] = {}
+
+    async def save_batch(self, tenant_id: str, exemplars: list[Any]) -> int:
+        inserted = 0
+        for exemplar in exemplars or []:
+            if getattr(exemplar, "tenant_id", None) != tenant_id:
+                continue
+            key = (tenant_id, exemplar.id)
+            if key not in self._store:
+                self._store[key] = exemplar
+                inserted += 1
+        return inserted
+
+    async def list_by_investigation(
+        self, tenant_id: str, investigation_id: Any
+    ) -> list[Any]:
+        rows = [
+            e
+            for (t, _), e in self._store.items()
+            if t == tenant_id and e.investigation_id == investigation_id
+        ]
+        rows.sort(key=lambda e: (e.created_at, e.id))
+        return rows
 
 
 class InMemoryFindingConclusionRepository(FindingConclusionRepository):
@@ -1738,6 +1858,10 @@ class AppContext:
         # Part 11.2: findings/conclusions — durable Postgres in production,
         # process-local store in dev/test (mirrors every other Part 6+ repo).
         self.finding_repo: FindingConclusionRepository = InMemoryFindingConclusionRepository()
+        # P0-3: contradictions — durable Postgres in production,
+        # process-local store in dev/test (mirrors every other repo).
+        self.contradiction_repo: Any = InMemoryContradictionRepository()
+        self.log_exemplar_repo: Any = InMemoryLogExemplarRepository()
         # Part 11.7: cluster taxonomy + assignments — durable Postgres in
         # production, process-local store in dev/test.
         self.finding_cluster_repo: FindingClusterRepository = InMemoryFindingClusterRepository()
@@ -1898,6 +2022,12 @@ class AppContext:
         return CreateInvestigationService(
             investigation_repo=self.investigation_repo,
             profile_repo=self.profile_repo,
+            code_issue_index=self.code_issue_index,
+            finding_repo=self.finding_repo,
+            evidence_repo=self.evidence_repo,
+            contradiction_repo=self.contradiction_repo,
+            hypothesis_repo=self.hypothesis_repo,
+            relationship_repo=getattr(self, "relationship_repo", None),
         )
 
     def get_investigation_service(self) -> GetInvestigationService:
@@ -1962,6 +2092,49 @@ class AppContext:
             observability=getattr(self, "observability", None),
         )
 
+    def knowledge_context_cache(self) -> Any | None:
+        """R3 context-cache backend (lazy singleton on the composition root).
+
+        Redis when `IAP_REDIS_URL` is set (dockerized compose service in dev,
+        managed/external endpoint in cloud — adapter pattern, zero code
+        change), else process-local in-memory. None when the cache is
+        disabled (`IAP_KNOWLEDGE_CACHE_ENABLED` default false) so callers run
+        the full pipeline. Backend construction never raises: failure here
+        degrades to uncached, never to broken retrieval.
+        """
+        from investigation_agent_platform.application.knowledge.retrieve import cache_enabled
+
+        if not cache_enabled():
+            return None
+        cached = getattr(self, "_knowledge_context_cache", None)
+        if cached is not None:
+            return cached
+        import os as _os
+
+        backend: Any
+        try:
+            url = (_os.environ.get("IAP_REDIS_URL", "") or "").strip()
+            if url:
+                from investigation_agent_platform.infrastructure.knowledge.context_cache import (
+                    RedisKnowledgeContextCache,
+                )
+
+                backend = RedisKnowledgeContextCache(url)
+            else:
+                from investigation_agent_platform.infrastructure.knowledge.context_cache import (
+                    InMemoryKnowledgeContextCache,
+                )
+
+                backend = InMemoryKnowledgeContextCache()
+        except Exception:
+            from investigation_agent_platform.infrastructure.knowledge.context_cache import (
+                InMemoryKnowledgeContextCache,
+            )
+
+            backend = InMemoryKnowledgeContextCache()
+        self._knowledge_context_cache = backend
+        return backend
+
     def knowledge_retrieval_service(
         self,
         checkers: Any = None,
@@ -1971,9 +2144,10 @@ class AppContext:
     ) -> Any:
         from investigation_agent_platform.application.knowledge.retrieve import (
             KnowledgeRetrievalService,
+            cache_ttl_seconds,
         )
 
-        return KnowledgeRetrievalService(
+        service = KnowledgeRetrievalService(
             artifact_repo=self.artifact_repo,
             checkers=checkers,
             max_reverify_attempts=max_reverify_attempts,
@@ -1984,6 +2158,12 @@ class AppContext:
             if attribution_port is not None
             else getattr(self, "attribution_port", None),
         )
+        # R3: attach the shared cache backend when enabled; the service
+        # fail-opens on any backend error.
+        cache = self.knowledge_context_cache()
+        if cache is not None:
+            service.attach_context_cache(cache, cache_ttl_seconds())
+        return service
 
 
 class _InMemoryIdempotencyStore:

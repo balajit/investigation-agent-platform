@@ -1,3 +1,5 @@
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
 # src/investigation_agent_platform/mcp/tools/reference_docs.py
 """MCP ``search_reference_docs`` tool (Part 11.6).
 
@@ -46,6 +48,8 @@ LimitParam = Annotated[int, Field(ge=1, le=100)]
 CursorParam = Annotated[str | None, Field(min_length=1, max_length=4096)]
 
 
+@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
 async def search_reference_docs_core(
     *,
     services: InvestigationServices,
