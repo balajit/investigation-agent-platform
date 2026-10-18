@@ -163,12 +163,51 @@ def main() -> int:
         report["detection"] = detection
         print(json.dumps({"profile": profile, "report": report}, indent=1, default=str)[:6000])
         if args.persist and not args.dry_run:
+            import asyncio
+            import os as _os
+
             from investigation_agent_platform.domain.profile.models import (
                 ApplicationProfile,
+                ProfileStatus,
             )
 
             validated = ApplicationProfile.model_validate(profile)
             print(f"validated: id={validated.id} services={len(validated.services)}", file=sys.stderr)
+            db_uri = _os.environ.get("IAP_DATABASE_URI", "")
+            if not db_uri:
+                print("error: --persist needs IAP_DATABASE_URI", file=sys.stderr)
+                return 2
+            if db_uri.startswith("postgresql://"):
+                db_uri = "postgresql+asyncpg://" + db_uri[len("postgresql://") :]
+
+            async def _save() -> None:
+                from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+                from investigation_agent_platform.infrastructure.persistence.profile_repository import (
+                    SqlAlchemyApplicationProfileRepository,
+                )
+
+                engine = create_async_engine(db_uri)
+                try:
+                    repo = SqlAlchemyApplicationProfileRepository(
+                        async_sessionmaker(engine, expire_on_commit=False)
+                    )
+                    draft = validated.model_copy(update={"status": ProfileStatus.DRAFT})
+                    # Version past existing revisions: generated profiles
+                    # always start at v1, which silently no-ops against a
+                    # seeded lineage (on_conflict_do_nothing).
+                    existing = await repo.list_revisions(draft.tenant_id, draft.id)
+                    taken = {r.version for r in existing or []}
+                    version = draft.version
+                    while version in taken:
+                        version += 1
+                    draft = draft.model_copy(update={"version": version})
+                    await repo.save(draft.tenant_id, draft)
+                finally:
+                    await engine.dispose()
+
+            asyncio.run(_save())
+            print(f"persisted: id={validated.id} status=DRAFT", file=sys.stderr)
     finally:
         shutil.rmtree(checkout, ignore_errors=True)
     return 0

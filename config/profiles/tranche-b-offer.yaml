@@ -28,7 +28,7 @@ application:
     Calibration target for the tri-modal battery: Spring Boot sample service
     plus shared libraries. Code navigation plus Oracle state evidence.
   environment: development
-  version: 2   # v2: code block repointed at the synthetic sample checkout (data/code-repos/samplecorp/orders-internal). v1 renamed lineage.
+  version: 3   # v3: second repo shared-libs (multi-repo proof). v2 sample-checkout repoint; v1 renamed lineage.
   status: ACTIVE
   owner: calibration
   domain: sample-orders
@@ -57,6 +57,7 @@ application:
         org: samplecorp
         repos:
           - orders-internal
+          - shared-libs
         default_branch: main
         language: java
         source_roots:

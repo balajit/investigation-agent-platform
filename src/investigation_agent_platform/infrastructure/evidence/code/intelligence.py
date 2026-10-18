@@ -119,19 +119,40 @@ class TreeSitterCodeIntelligenceProvider:
         # under the base path are visible but every access is still logged.
         self._tenant_allowlist = tenant_repository_allowlist
         self._graphify_artifact_name = graphify_artifact_name
-        self._graph_cache: dict[str, rx.PyDiGraph] = {}
+        self._graph_cache: dict[str, tuple[Any, int]] = {}
+
+    @staticmethod
+    def _split_repo_entry(svc_org: str, repo: str) -> str:
+        """Locator for one repos entry (mirrors PyGit2Adapter).
+
+        Entries may carry their own org (cross-org checkouts); otherwise
+        the service org applies. Kept local (not imported) so the search
+        provider never depends on the git adapter module.
+        """
+        repo = str(repo or "").strip().strip("/")
+        if "/" in repo:
+            org, name = repo.split("/", 1)
+            if org and name and "/" not in name:
+                return f"{org}/{name}"
+            return repo
+        if svc_org and repo:
+            return f"{svc_org}/{repo}"
+        return repo
 
     @staticmethod
     def _service_locators(profile: ApplicationProfile) -> list[str]:
-        """Checkout locators for every service: ``{org}/{repos[0]}``."""
+        """Checkout locators for every service × every repo."""
         locators: list[str] = []
-        for svc in profile.services:
-            if svc.code.org and svc.code.repos:
-                locators.append(f"{svc.code.org}/{svc.code.repos[0]}")
-            elif svc.code.repos:
-                locators.append(svc.code.repos[0])
-            else:
-                locators.append(svc.name)
+        for svc in getattr(profile, "services", []) or []:
+            code = getattr(svc, "code", None)
+            org = getattr(code, "org", "") if code else ""
+            repos = list(getattr(code, "repos", []) or []) if code else []
+            for repo in repos:
+                locator = TreeSitterCodeIntelligenceProvider._split_repo_entry(org or "", repo)
+                if locator:
+                    locators.append(locator)
+            if not repos:
+                locators.append(getattr(svc, "name", ""))
         return locators
 
     def _authorized_locators(self, tenant_id: str, profile: ApplicationProfile) -> list[str]:
@@ -164,7 +185,13 @@ class TreeSitterCodeIntelligenceProvider:
     # -- Rustworkx Graph Helpers ---------------------------------------
 
     def _load_graphify_graph(self, profile: ApplicationProfile) -> rx.PyDiGraph | None:
-        """Attempts to load a Graphify JSON artifact into a rustworkx.PyDiGraph."""
+        """Attempts to load a Graphify JSON artifact into a rustworkx.PyDiGraph.
+
+        Freshness: the cache entry carries the artifact mtime; a changed
+        file reloads on next use instead of serving a stale graph with
+        fresh confidence. Multi-repo: first locator holding the artifact
+        wins (declared order), same as before.
+        """
         for locator in self._service_locators(profile):
             repo_path = self._repo_base_path / locator
             graph_file = repo_path / self._graphify_artifact_name
@@ -173,8 +200,15 @@ class TreeSitterCodeIntelligenceProvider:
                 continue
 
             cache_key = str(graph_file)
-            if cache_key in self._graph_cache:
-                return self._graph_cache[cache_key]
+            try:
+                current_mtime = graph_file.stat().st_mtime_ns
+            except Exception:
+                current_mtime = -1
+            cached = self._graph_cache.get(cache_key)
+            if cached is not None:
+                graph, mtime = cached[0], cached[1]
+                if mtime == current_mtime:
+                    return graph
 
             try:
                 with open(graph_file, "r", encoding="utf-8") as f:
@@ -195,7 +229,7 @@ class TreeSitterCodeIntelligenceProvider:
                     if src_id in node_lookup and dst_id in node_lookup:
                         graph.add_edge(node_lookup[src_id], node_lookup[dst_id], edge)
 
-                self._graph_cache[cache_key] = graph
+                self._graph_cache[cache_key] = (graph, current_mtime)
                 return graph
             except Exception as exc:
                 logger.warning(
@@ -222,52 +256,64 @@ class TreeSitterCodeIntelligenceProvider:
 
     def _resolve_roots(self, profile: ApplicationProfile) -> list[Path]:
         roots: list[Path] = []
-        for svc in profile.services:
-            locator = (
-                f"{svc.code.org}/{svc.code.repos[0]}"
-                if svc.code.org and svc.code.repos
-                else (svc.code.repos[0] if svc.code.repos else svc.name)
-            )
-            try:
-                base = Path(locator)
-                if base.is_absolute():
-                    logger.warning("Absolute repository path rejected: %s", locator)
-                    continue
-                repo_path = (self._repo_base_path / base).resolve()
-            except Exception:
-                continue
-            try:
-                if not repo_path.is_relative_to(self._repo_base_path):
-                    logger.warning("Repository path traversal blocked: %s", locator)
-                    continue
-            except Exception:
-                continue
-            # Symlink-escape rejection: the resolved repo root itself must be a
-            # real directory under base, not a symlink pointing elsewhere.
-            if repo_path.is_symlink():
-                logger.warning("Repository root is a symlink; access denied: %s", locator)
-                continue
-            if not repo_path.is_dir():
-                continue
-            source_roots = [*svc.code.source_roots, *svc.code.paths] or ["."]
-            for sr in source_roots:
-                if not sr or sr.startswith("/") or sr.startswith("~"):
-                    continue
-                if _has_traversal(sr):
-                    continue
+        for svc in getattr(profile, "services", []) or []:
+            code = getattr(svc, "code", None)
+            org = getattr(code, "org", "") if code else ""
+            repos = list(getattr(code, "repos", []) or []) if code else []
+            locators = [
+                self._split_repo_entry(org or "", repo)
+                for repo in repos
+                if self._split_repo_entry(org or "", repo)
+            ] or ([getattr(svc, "name", "")] if getattr(svc, "name", "") else [])
+            for locator in locators:
                 try:
-                    candidate = (repo_path / sr).resolve()
+                    base = Path(locator)
+                    if base.is_absolute():
+                        logger.warning("Absolute repository path rejected: %s", locator)
+                        continue
+                    repo_path = (self._repo_base_path / base).resolve()
                 except Exception:
                     continue
                 try:
-                    if not candidate.is_relative_to(repo_path):
+                    if not repo_path.is_relative_to(self._repo_base_path):
+                        logger.warning("Repository path traversal blocked: %s", locator)
                         continue
                 except Exception:
                     continue
-                if candidate.is_symlink():
+                # Symlink-escape rejection: the resolved repo root itself must be a
+                # real directory under base, not a symlink pointing elsewhere.
+                if repo_path.is_symlink():
+                    logger.warning("Repository root is a symlink; access denied: %s", locator)
                     continue
-                if candidate.exists():
-                    roots.append(candidate)
+                if not repo_path.is_dir():
+                    continue
+                matched = False
+                source_roots = [*getattr(code, "source_roots", []), *getattr(code, "paths", [])] or ["."]
+                for sr in source_roots:
+                    if not sr or sr.startswith("/") or sr.startswith("~"):
+                        continue
+                    if _has_traversal(sr):
+                        continue
+                    try:
+                        candidate = (repo_path / sr).resolve()
+                    except Exception:
+                        continue
+                    try:
+                        if not candidate.is_relative_to(repo_path):
+                            continue
+                    except Exception:
+                        continue
+                    if candidate.is_symlink():
+                        continue
+                    if candidate.exists():
+                        roots.append(candidate)
+                        matched = True
+                if not matched:
+                    # None of the declared roots exist in this repo (flat
+                    # shared-library layout): scan the repo root itself so
+                    # the repo is not silently invisible. Declared roots
+                    # still win wherever they match — no double scanning.
+                    roots.append(repo_path)
         # deduplicate across services
         uniq: list[Path] = []
         seen: set[str] = set()

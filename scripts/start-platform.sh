@@ -16,6 +16,8 @@ set -euo pipefail
 COMPOSE_FILE="${COMPOSE_FILE:-docker/docker-compose.yml}"
 PORT="${PORT:-8080}"
 TIMEOUT="${TIMEOUT:-120}"
+OPERATOR_HOME="${IAP_OPERATOR_HOME:-${HOME}/workspace/.iap}"
+OPERATOR_SCOPE=""
 RUN_API=true
 RUN_WORKER=true
 RESTART_ONLY=false
@@ -49,14 +51,41 @@ for arg in "$@"; do
     --timeout=*) TIMEOUT="${arg#--timeout=}" ;;
     --port=*) PORT="${arg#--port=}" ;;
     --compose-file=*) COMPOSE_FILE="${arg#--compose-file=}" ;;
+    --operator-home=*) OPERATOR_HOME="${arg#--operator-home=}" ;;
+    --operator-scope=*) OPERATOR_SCOPE="${arg#--operator-scope=}" ;;
     --help|-h)
-      echo "Usage: $0 [--no-api] [--no-worker] [--restart] [--stop] [--timeout=SECS] [--compose-file=PATH] [--port=PORT]"
+      echo "Usage: $0 [--no-api] [--no-worker] [--restart] [--stop] [--timeout=SECS] [--compose-file=PATH] [--port=PORT] [--operator-home=PATH] [--operator-scope=SCOPE]"
       exit 0
       ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
 
+# Operator overlay (optional, DEV/single-scope convenience — NOT the production
+# topology: one API+worker fleet serves ALL scopes, resolving tenant/app
+# credentials per request; booting one stack per scope does not scale past a
+# handful of services. This flag exists so a developer can run one scope
+# locally). Sources the scope's app.env BEFORE the required-var gates so
+# overlays may provide them. Absent scope = current behavior, never an error.
+if [[ -n "${OPERATOR_SCOPE}" ]]; then
+  if [[ ! "${OPERATOR_SCOPE}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || [[ "${OPERATOR_SCOPE}" == *..* ]]; then
+    echo "error: bad --operator-scope (want <org>/<app>/<env>): ${OPERATOR_SCOPE}" >&2
+    exit 2
+  fi
+  _org="${OPERATOR_SCOPE%%/*}"; _rest="${OPERATOR_SCOPE#*/}"; _app="${_rest%%/*}"; _env="${_rest#*/}"
+  # Lever -> leaf merge (leaf wins), mirroring iap-operator.py env resolution.
+  for _overlay in "${OPERATOR_HOME}/scopes/${_org}/${_env}/app.env" "${OPERATOR_HOME}/scopes/${OPERATOR_SCOPE}/app.env"; do
+    if [[ -f "${_overlay}" ]]; then
+      echo "Sourcing operator overlay: ${_overlay}"
+      set -a; source "${_overlay}"; set +a
+    fi
+  done
+  if [[ ! -d "${OPERATOR_HOME}/scopes/${OPERATOR_SCOPE}" ]]; then
+    echo "warn: operator scope not found (continuing without overlays): ${OPERATOR_SCOPE}" >&2
+  fi
+fi
+export IAP_OPERATOR_HOME="${OPERATOR_HOME}"
+export IAP_OPERATOR_SCOPE="${OPERATOR_SCOPE}"
 if [[ -z "${IAP_DATABASE_URI:-}" ]]; then
   echo "error: IAP_DATABASE_URI must be set" >&2
   exit 2

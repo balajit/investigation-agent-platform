@@ -6,8 +6,8 @@
 # only source (an older comment claimed otherwise; no such env var is read).
 servers:
   # Sample orders database (logical sample.orders.prod). Wallet imported from
-  # apps/spring-sample-service/oracle.yaml via:
-  #   eval "$(oracle-mcp/load-oracle-env.sh --app spring-sample-service --db sample.orders.prod)"
+  # scopes/sample-orders-dev/oracle.yaml via:
+  #   eval "$(oracle-mcp/load-oracle-env.sh --scope sample-orders-dev --app spring-sample-service --db sample.orders.prod)"
   #   oracle-mcp/add-datasource.sh --name SAMPLEDB-conn --user "$IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_USER_NAME" \
   #     --jdbc "$IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_JDBC_URL" \
   #     --password-env IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_PASSWORD

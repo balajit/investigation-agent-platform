@@ -1,9 +1,11 @@
 """GitHub discovery for profile generation (P1).
 
 Lists repos for an org (optional topic filter) via REST and detects
-multi-module layouts from file listings. PAT comes from the
-IAP_GITHUB_TOKEN env variable — never logged, never persisted.
-Pure parsing split from I/O for unit tests. stdlib urllib only.
+multi-module layouts from file listings. Token precedence: IAP_GITHUB_TOKEN
+env first, then the `gh` CLI keychain (`gh auth token`) so operators who
+already authenticated `gh` configure nothing twice. The token value is never
+logged or persisted by this module. Pure parsing split from I/O for unit
+tests. stdlib urllib only.
 """
 
 from __future__ import annotations
@@ -43,8 +45,31 @@ class RepoModule:
     build_system: str
 
 
+def _gh_cli_token() -> str:
+    """Token from the `gh` CLI keychain, or "" when unavailable.
+
+    Subprocess only, stderr suppressed, strict timeout; the value flows
+    straight into the Authorization header — never logged, never stored.
+    """
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
 def _auth_headers() -> dict[str, str]:
-    token = os.environ.get("IAP_GITHUB_TOKEN", "").strip()
+    token = os.environ.get("IAP_GITHUB_TOKEN", "").strip() or _gh_cli_token()
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "investigation-agent-platform",
@@ -62,7 +87,7 @@ def _get_json(url: str) -> Any:
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise PermissionError(
-                "GitHub authentication failed; check IAP_GITHUB_TOKEN."
+                "GitHub authentication failed; check IAP_GITHUB_TOKEN or `gh auth login`."
             ) from exc
         if exc.code == 404:
             raise LookupError(f"GitHub resource not found: {url}") from exc

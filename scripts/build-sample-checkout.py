@@ -258,43 +258,84 @@ def run_git(repo: str, *args: str, env: dict) -> None:
                    capture_output=True, text=True)
 
 
-def main() -> int:
-    from pathlib import Path
+LIBS_FILES_V1 = {
+    "settings.gradle": "rootProject.name = 'shared-libs'\n",
+    "build.gradle": "plugins { id 'java' }\n",
+    "src/main/java/com/sample/shared/SharedStrings.java": """package com.sample.shared;
 
-    root = Path(__file__).resolve().parents[1] / REPO
-    if (root / ".git").exists():
-        print(f"refusing: {root} already holds a git repo (delete it to rebuild).")
-        return 2
+/** Shared library: string helpers used across sample services. */
+public final class SharedStrings {
+
+    private SharedStrings() {
+    }
+
+    public static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    public static String defaultIfBlank(String value, String fallback) {
+        return isBlank(value) ? fallback : value;
+    }
+}
+""",
+}
+
+
+def _build_repo(root, files_v1, initial_msg, extra_steps, env) -> str:
+    """Write files, init git, apply extra ({rel: content}, message) steps."""
+    from pathlib import Path as _Path
+
+    root = _Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    for rel, content in FILES_V1.items():
+    for rel, content in files_v1.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    run_git(str(root), "init", "-q", "-b", "main", ".", env=env)
+    run_git(str(root), "add", "-A", env=env)
+    run_git(str(root), "commit", "-q", "-m", initial_msg, env=env)
+    for changes, message in extra_steps:
+        for rel, content in changes.items():
+            (root / rel).write_text(content, encoding="utf-8")
+        run_git(str(root), "add", "-A", env=env)
+        run_git(str(root), "commit", "-q", "-m", message, env=env)
+    log = subprocess.run(["git", "log", "--oneline"], cwd=str(root), env=env,
+                         check=True, capture_output=True, text=True).stdout
+    return log
 
+
+def main() -> int:
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parents[1]
+    targets = [
+        (base / REPO, FILES_V1, "Initial Spring sample checkout", [
+            ({"service/src/main/java/com/sample/orders/service/OrderServiceImpl.java":
+              ORDER_SERVICE_V2}, "Guard null orderType with STANDARD default"),
+            ({"service/src/main/java/com/sample/orders/service/OrderServiceImpl.java":
+              ORDER_SERVICE_V3,
+              "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java":
+              FILTER_V2}, "Tighten filter eligibility window"),
+        ]),
+    ]
+    targets.append((
+        base / "data/code-repos/samplecorp/shared-libs",
+        LIBS_FILES_V1,
+        "Initial shared library checkout",
+        [],
+    ))
     env = dict(os.environ)
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     with tempfile.TemporaryDirectory(prefix="iap-sample-git-home-") as fake_home:
         env["HOME"] = fake_home
-        run_git(str(root), "init", "-q", "-b", "main", ".", env=env)
-        run_git(str(root), "add", "-A", env=env)
-        run_git(str(root), "commit", "-q", "-m", "Initial Spring sample checkout", env=env)
-        (root / "service/src/main/java/com/sample/orders/service/OrderServiceImpl.java").write_text(
-            ORDER_SERVICE_V2, encoding="utf-8"
-        )
-        run_git(str(root), "add", "-A", env=env)
-        run_git(str(root), "commit", "-q", "-m", "Guard null orderType with STANDARD default", env=env)
-        (root / "service/src/main/java/com/sample/orders/service/OrderServiceImpl.java").write_text(
-            ORDER_SERVICE_V3, encoding="utf-8"
-        )
-        (root / "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java").write_text(
-            FILTER_V2, encoding="utf-8"
-        )
-        run_git(str(root), "add", "-A", env=env)
-        run_git(str(root), "commit", "-q", "-m", "Tighten filter eligibility window", env=env)
-        log = subprocess.run(["git", "log", "--oneline"], cwd=str(root), env=env,
-                             check=True, capture_output=True, text=True).stdout
-    print(f"built {root}:\n{log}")
-    return 0
+        code = 0
+        for root, files_v1, initial_msg, extra in targets:
+            if (root / ".git").exists():
+                print(f"skip: {root} already holds a git repo.")
+                continue
+            log = _build_repo(root, files_v1, initial_msg, extra, env)
+            print(f"built {root}:\n{log}")
+    return code
 
 
 if __name__ == "__main__":

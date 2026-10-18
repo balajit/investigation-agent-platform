@@ -60,13 +60,13 @@ One YAML file per application in the external store — never in this repo:
 
 ```text
 ${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/
-  apps/<app-name>/oracle.yaml   # chmod 0600
+  scopes/<org>-<app>-<env>/oracle.yaml   # chmod 0600
 ```
 
 Schema: `oracle-mcp/per-app-oracle.yaml.example`. Logical database names are
 dotted `<domain>.<subdomain>.<env>` (e.g. `sample.orders.prod`); exactly three
 keys per database: `user_name`, `password`, `jdbcUrl`. Loader
-`oracle-mcp/load-oracle-env.sh --app <app> --db <d.sd.e>` emits `export
+`oracle-mcp/load-oracle-env.sh --scope <scope> --app <app> --db <d.sd.e>` emits `export
 IAP_SECRET_ORACLE_<D>_<SD>_<E>_{USER_NAME,PASSWORD,JDBC_URL}` lines for `eval`
 (the same names the `secret://` dev-fallback reads — one mapping, no drift).
 Fail-closed: non-0600 file, `app:`/directory mismatch, unknown db, empty
@@ -105,8 +105,8 @@ against live managers.
 
 1. DBA: read-only account + schema grants (or `_RO` service); confirm the
    password avoids `/ @ "` and whitespace (SQLcl limitation).
-2. Author `apps/<app>/oracle.yaml` (0600) from the example; loader self-check:
-   `load-oracle-env.sh --app <app> --db <d.sd.e>` prints three exports.
+2. Author `scopes/<scope>/oracle.yaml` (0600) from the example; loader self-check:
+   `load-oracle-env.sh --scope <scope> --app <app> --db <d.sd.e>` prints exports.
 3. Import: `eval` the loader output, then `add-datasource.sh --name <CONN>
    --user ... --jdbc ... --password-env ...` (needs `sql` on PATH + DB
    reachability). Verify `CONNMGR TEST` + version query inside SQLcl.

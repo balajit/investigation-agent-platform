@@ -268,3 +268,27 @@ Committed code carries no respondent names: `spring-sample-service` app (profile
 ## 45. Synthetic calibration checkout (2026-10-18)
 
 `scripts/build-sample-checkout.py` builds `data/code-repos/samplecorp/orders-internal` (git-ignored via `data/*`, never committed): Gradle `service`+`commons` modules, technology-generic Spring names, 3-commit history, local-only git identity. Profile v2 and the battery point at it; no respondent names in committed code. Live battery: L1/L2/L4 PASS, L3/L5 PARTIAL (rows banked, unverified), L8 abstains (one fabrication flip on first run, PASS on rerun — the budgeted variance class, critic territory).
+
+## 46. Operator home (2026-10-18)
+
+`~/workspace/.iap` (`IAP_OPERATOR_HOME`) holds everything operator-owned outside the repo: `env/` overlays, `oracle/<app>/oracle.yaml` credentials (moved from the docker-tree `apps/` path; loader resolves new home first with one-shot legacy fallback), `seed/profiles/*.yaml` payloads, `seed/state.json` ledger, `backups/`. `scripts/iap-operator.py` manages it (`init`, `doctor`, `env`, `seed`, `status`, `backup` — credentials excluded from backups unless flagged); seeding validates through the production profile loader and records content hashes so re-seeds SKIP. `start-platform.sh --operator-home/--operator-env` sources overlays before the required-var gates and exports the home. Live drill: init→doctor→env→dry-run→seed→status→backup→SKIP all green against dev, seeded profile readable via API. Seed content stays outside and is never merged to the repo; runtime reads datastores only.
+
+## 47. Operator scopes (2026-10-18)
+
+Supersedes the flat `oracle/<app>` + `env/<name>.env` layout of §46 (one session old, never production-dependent — cut over without compat shims). Operator home is now `scopes/<org>-<app>-<env>/` per app-in-an-environment: free-form namespace, canonical slug shape validated (`>=3` dash-segments), self-contained scopes with no shared/common layer (secrets differ per scope by least privilege). Loader takes `--scope` (file select) + `--app` (content-match guard, strictly stronger than the old dirname match) and exports `IAP_OPERATOR_SCOPE`; CLI subcommands take global `--scope` (single or all-scopes walk); `seed/state.json` keys are `{scope}/{tenant}/{app-id}`; `start-platform --operator-env` is replaced by `--operator-scope`. Fresh drill green including scoped re-seed SKIP.
+
+## 48. Deployment topology: one fleet, N scopes (2026-10-18)
+
+An operator with hundreds of services runs ONE API+worker fleet, not one stack per scope. Scopes are data, not deployments: tenant/app routing (authorizer capabilities, selector `(tenant, app, env)` resolution, per-server tenant allowlists, shared Temporal queues) already multiplexes all apps through shared processes. Credentials resolve per request — `secret://` via the SecretStore (the at-scale answer; one manager, N scopes) or all-scopes `IAP_SECRET_*` injection at deploy. `start-platform --operator-scope` is a dev/single-scope convenience only. Known scaling follow-up (logged, unbuilt): MCP `docker run` per state query (~5s JVM boot) needs persistent per-database servers (SSE, as postgres already does; the oracle registration path hardcodes stdio) before query volume grows.
+
+## 49. Lever-and-leaf scopes (2026-10-18)
+
+Supersedes the flat-slug scope design (§47): operator home is `scopes/<org>/<env>/app.env` env levers (shared 90% + env-varying persistence/endpoints) plus `scopes/<org>/<app>/<env>/` leaves (deltas, `oracle.yaml`, `seed/`). Resolution lever→leaf with per-value provenance; secret denylist fail-closed in lever/overlay files; credentials only in leaf `oracle.yaml`; 0600 on all overlays, 0700 on the operator dir, both doctor-enforced. Scope identity is the path form (`comcast/offermgmt-service/dev`); flat slugs exist display-only and are never parsed (dash-joined segments are ambiguous). Live blueprint rebuilt under this layout; lever+leaf merge and boot-sourcing verified.
+
+## 50. Multi-repo code resolution (2026-10-18)
+
+`repos` lists were schema-legal but only `repos[0]` ever resolved — shared-library repos were invisible. Now all services × all repos resolve with first-hit-wins declared order: `PyGit2Adapter` (`_all_locators`, `_resolve_repo_paths`, `_fetch_blob` per-root loop across get_source/history/compare) and the treesitter search provider (`_service_locators`, `_resolve_roots` with repo-root fallback for flat shared-lib layouts). Entries may carry their own org (`other-org/shared-libs`) for cross-org checkouts. Tenant gates keep any-match semantics; traversal guards apply per root. Live proof `cb3d3be4`: ANSWERED on `SharedStrings`/`defaultIfBlank` with 3 rows from the second repo (`samplecorp/shared-libs`, revision-cited). Three latent `repos[0]` sites fixed, not one.
+
+## 51. Graph artifact freshness (2026-10-18)
+
+The rustworkx graph cache now carries each artifact's mtime and reloads on change instead of serving a stale graph with fresh confidence for the process lifetime. First-locator-wins semantics unchanged. Folding graph rebuilds into the planned `sync` command remains future work.

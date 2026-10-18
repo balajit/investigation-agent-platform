@@ -1,7 +1,7 @@
 # Per-app Oracle credential file — EXAMPLE ONLY. Never put real values here.
 #
-# Real files live OUTSIDE any git checkout, one per application:
-#   ${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/apps/<app-name>/oracle.yaml
+# Real files live OUTSIDE any git checkout, one per operator scope:
+#   ${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/<org>-<app>-<env>/oracle.yaml
 # Copy this file there, fill it in, then `chmod 0600` it. The loader
 # (oracle-mcp/load-oracle-env.sh) refuses files readable by group/other.
 #

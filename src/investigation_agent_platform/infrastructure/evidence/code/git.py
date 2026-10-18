@@ -70,17 +70,66 @@ class PyGit2Adapter:
             )
 
     @staticmethod
+    def _split_repo_entry(svc_org: str, repo: str) -> str:
+        """Locator for one repos entry.
+
+        Entries may carry their own org (``otherorg/shared-libs`` for
+        cross-org checkouts); otherwise the service org applies. Bare
+        names stay bare. One slash max — deeper paths are not locators.
+        """
+        repo = str(repo or "").strip().strip("/")
+        if "/" in repo:
+            org, name = repo.split("/", 1)
+            if org and name and "/" not in name:
+                return f"{org}/{name}"
+            return repo
+        if svc_org and repo:
+            return f"{svc_org}/{repo}"
+        return repo
+
+    @staticmethod
+    def _all_locators(profile: ApplicationProfile) -> list[tuple[str, str]]:
+        """(locator, branch) for every service × every repo, in order.
+
+        Multi-repo: a service listing shared-library repos resolves files
+        across all of them, first hit wins. Repos may name their own org
+        (cross-org checkouts); otherwise the service org applies.
+        Single-repo profiles behave exactly as before (one-element list).
+        """
+        out: list[tuple[str, str]] = []
+        for svc in getattr(profile, "services", []) or []:
+            code = getattr(svc, "code", None)
+            org = getattr(code, "org", "") if code else ""
+            repos = list(getattr(code, "repos", []) or []) if code else []
+            branch = getattr(code, "default_branch", "") if code else ""
+            for repo in repos:
+                locator = PyGit2Adapter._split_repo_entry(org or "", repo)
+                if locator:
+                    out.append((locator, branch or "main"))
+        return out
+
+    @staticmethod
     def _service_locators(profile: ApplicationProfile) -> list[str]:
-        """Checkout locators for every service: ``{org}/{repos[0]}``."""
-        locators: list[str] = []
-        for svc in profile.services:
-            if svc.code.org and svc.code.repos:
-                locators.append(f"{svc.code.org}/{svc.code.repos[0]}")
-            elif svc.code.repos:
-                locators.append(svc.code.repos[0])
-            else:
-                locators.append(svc.name)
-        return locators
+        """Checkout locators for every service × every repo."""
+        return [locator for locator, _ in PyGit2Adapter._all_locators(profile)] or [
+            getattr(svc, "name", "") for svc in getattr(profile, "services", []) or []
+        ]
+
+    def _resolve_repo_paths(self, profile: ApplicationProfile) -> list[tuple[str, str, Path]]:
+        """Validated (locator, branch, path) for every declared repo.
+
+        Traversal guard per root (same rule as the single-repo path).
+        Empty when the profile declares no repos (callers fall back).
+        """
+        from pathlib import Path as _Path
+
+        resolved: list[tuple[str, str, _Path]] = []
+        for locator, branch in self._all_locators(profile):
+            repo_path = (self._repo_base_path / locator).resolve()
+            if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
+                raise ExecutionError(f"Repository path traversal attempt blocked: {locator}")
+            resolved.append((locator, branch, repo_path))
+        return resolved
 
     @staticmethod
     def _strip_locator_prefix(file_path: str, profile: ApplicationProfile) -> str:
@@ -97,7 +146,7 @@ class PyGit2Adapter:
                 code = getattr(svc, "code", None)
                 org = getattr(code, "org", "") if code else ""
                 repos = list(getattr(code, "repos", []) or []) if code else []
-                for repo in [f"{org}/{r}" for r in repos if org and r] + [
+                for repo in [PyGit2Adapter._split_repo_entry(org or "", r) for r in repos] + [
                     str(r) for r in repos if r
                 ]:
                     prefix = str(repo).strip("/") + "/"
@@ -217,16 +266,19 @@ class PyGit2Adapter:
 
     @staticmethod
     def _primary_locator(profile: ApplicationProfile) -> tuple[str, str]:
-        """Locator + branch of the primary service (fail-closed when none)."""
+        """Locator + branch of the first declared repo (compat).
+
+        Resolution itself iterates all locators; this remains for callers
+        needing a single default (branch fallback, logging).
+        """
+        all_locators = PyGit2Adapter._all_locators(profile)
+        if all_locators:
+            return all_locators[0]
         svc = profile.primary_service
         if svc is None:
             raise ExecutionError("Application profile declares no services")
-        locator = (
-            f"{svc.code.org}/{svc.code.repos[0]}"
-            if svc.code.org and svc.code.repos
-            else (svc.code.repos[0] if svc.code.repos else svc.name)
-        )
-        return locator, svc.code.default_branch
+        code = getattr(svc, "code", None)
+        return getattr(svc, "name", ""), getattr(code, "default_branch", "") or "main"
 
     def _require_tenant_scope(self, tenant_id: str, profile: ApplicationProfile) -> None:
         from investigation_agent_platform.domain.common.exceptions import (
@@ -265,24 +317,21 @@ class PyGit2Adapter:
                 revision, start_line, end_line,
             )
 
-    def _get_source_sync(
+    def _fetch_blob(
         self,
-        tenant_id: str,
-        investigation_id: UUID,
+        repo_path: Path,
+        repository: str,
+        branch: str,
         file_path: str,
         profile: ApplicationProfile,
-        revision: str | None = None,
-        start_line: int | None = None,
-        end_line: int | None = None,
-    ) -> Evidence:
-        self._require_tenant_scope(tenant_id, profile)
-        self._validate_tree_path(file_path)
-        file_path = self._strip_locator_prefix(file_path, profile)
-        repository, branch = self._primary_locator(profile)
-        repo_path = (self._repo_base_path / repository).resolve()
-        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
-            raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
+        revision: str | None,
+    ) -> tuple[str, Any, str]:
+        """Fetch one file's text from a single repo root.
 
+        Returns (raw_text, commit, tree_path). Raises CodePathNotFoundError
+        on any miss (caller tries the next declared repo); other failures
+        raise ExecutionError immediately (not per-repo retriable).
+        """
         try:
             repo, tree_path = self._open_repo(repo_path, file_path, profile)
             tree_path = tree_path or file_path
@@ -319,18 +368,59 @@ class PyGit2Adapter:
                 raise ExecutionError(
                     f"File size {blob.size} bytes exceeds maximum limit of {MAX_SOURCE_BYTE_SIZE}"
                 )
-            raw_text = blob.data.decode("utf-8", errors="replace")
+            return blob.data.decode("utf-8", errors="replace"), commit, tree_path
         except CodePathNotFoundError:
+            raise
+        except ExecutionError:
             raise
         except Exception as exc:
             logger.error(
                 "Git source fetch failure",
                 exc_info=exc,
                 extra={
-                    "context": {"file": file_path, "repository": repository, "tenant_id": tenant_id}
+                    "context": {"file": file_path, "repository": repository}
                 },
             )
             raise ExecutionError(f"Failed to fetch source for {file_path}: {exc}") from exc
+
+    def _get_source_sync(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        file_path: str,
+        profile: ApplicationProfile,
+        revision: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> Evidence:
+        self._require_tenant_scope(tenant_id, profile)
+        self._validate_tree_path(file_path)
+        file_path = self._strip_locator_prefix(file_path, profile)
+        roots = self._resolve_repo_paths(profile)
+        if not roots:
+            repository, _ = self._primary_locator(profile)
+            raise CodePathNotFoundError(f"No repositories declared for profile: {repository}")
+
+        # Multi-repo: first root containing the file wins (declared order).
+        last_miss: Exception | None = None
+        raw_text = ""
+        commit: Any = None
+        tree_path = file_path
+        repository = ""
+        for repository, branch, repo_path in roots:
+            try:
+                raw_text, commit, tree_path = self._fetch_blob(
+                    repo_path, repository, branch, file_path, profile, revision
+                )
+                break
+            except CodePathNotFoundError as exc:
+                last_miss = exc
+                continue
+        else:
+            tried = ", ".join(locator for locator, _, _ in roots)
+            raise CodePathNotFoundError(
+                f"Path not found in any declared repository [{tried}]: {file_path}"
+            ) from last_miss
 
         lines = raw_text.splitlines()
         # P1-2: explicit 1-indexed inclusive ranges return exactly the
@@ -452,17 +542,29 @@ class PyGit2Adapter:
         self, tenant_id: str, source_ref: str, target_ref: str, profile: ApplicationProfile
     ) -> CodeDiffResult:
         self._require_tenant_scope(tenant_id, profile)
-        repository, _ = self._primary_locator(profile)
-        repo_path = (self._repo_base_path / repository).resolve()
-        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
-            raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
+        roots = self._resolve_repo_paths(profile)
+        if not roots:
+            repository, _ = self._primary_locator(profile)
+            raise ExecutionError(f"No repositories declared for profile: {repository}")
 
-        repo = pygit2.Repository(str(repo_path))
-        try:
-            old = repo.revparse_single(source_ref)
-            new = repo.revparse_single(target_ref)
-        except KeyError as exc:
-            raise ExecutionError(f"Unknown revision ref: {exc}") from exc
+        # Multi-repo: first root where BOTH revisions resolve wins (a diff
+        # is inherently single-repo; declared order decides).
+        last_miss: Exception | None = None
+        repo: Any = None
+        for repository, _branch, repo_path in roots:
+            repo = pygit2.Repository(str(repo_path))
+            try:
+                old = repo.revparse_single(source_ref)
+                new = repo.revparse_single(target_ref)
+                break
+            except KeyError as exc:
+                last_miss = exc
+                continue
+        else:
+            tried = ", ".join(locator for locator, _, _ in roots)
+            raise ExecutionError(
+                f"Unknown revision ref in any declared repository [{tried}]: {last_miss}"
+            ) from last_miss
         if isinstance(old, pygit2.Commit) and isinstance(new, pygit2.Commit):
             diff = repo.diff(old, new)
         else:
@@ -497,13 +599,31 @@ class PyGit2Adapter:
         self._require_tenant_scope(tenant_id, profile)
         self._validate_tree_path(path)
         path = self._strip_locator_prefix(path, profile)
-        # P1-2: resolve through the primary-service locator like get_source
+        # P1-2: resolve through the declared locators like get_source
         # (ApplicationProfile has no `repository` attribute — the old access
-        # raised AttributeError on every call).
-        repository, branch = self._primary_locator(profile)
-        repo_path = (self._repo_base_path / repository).resolve()
-        if not repo_path.is_relative_to(self._repo_base_path) or repo_path.is_symlink():
-            raise ExecutionError(f"Repository path traversal attempt blocked: {repository}")
+        # raised AttributeError on every call). Multi-repo: first root
+        # containing the path wins (declared order).
+        roots = self._resolve_repo_paths(profile)
+        if not roots:
+            repository, _ = self._primary_locator(profile)
+            raise CodePathNotFoundError(f"No repositories declared for profile: {repository}")
+        last_miss: Exception | None = None
+        repo: Any = None
+        tree_path: str | None = None
+        branch = ""
+        for repository, branch, repo_path in roots:
+            try:
+                repo, tree_path = self._open_repo(repo_path, path, profile)
+                tree_path = tree_path or path
+                break
+            except CodePathNotFoundError as exc:
+                last_miss = exc
+                continue
+        else:
+            tried = ", ".join(locator for locator, _, _ in roots)
+            raise CodePathNotFoundError(
+                f"Path not found in any declared repository [{tried}]: {path}"
+            ) from last_miss
 
         def _tree_entry_id(commit: Any, path: str) -> str | None:
             try:
@@ -514,9 +634,8 @@ class PyGit2Adapter:
 
         evidences: list[Evidence] = []
         try:
-            repo, tree_path = self._open_repo(repo_path, path, profile)
-            tree_path = tree_path or path
-            # Tranche B: nested repos sit on their own branches (develop,
+            # repo/tree_path/branch already resolved by the multi-root loop
+            # above; nested repos sit on their own branches (develop,
             # master) — fall back to HEAD when the profile branch is absent.
             try:
                 tip = repo.revparse_single(branch)

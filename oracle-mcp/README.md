@@ -53,13 +53,20 @@ The external store is mounted read-only; it never enters image layers.
 `oracle-mcp/connections/` and `oracle-mcp/secrets/` are legacy git-ignored
 placeholders — do not put real exports or keys there.
 
-## Per-app credential files (`apps/<app>/oracle.yaml`)
+## Per-scope credential files (`scopes/<org>-<app>-<env>/oracle.yaml`)
 
-One YAML file per application in the external store (never in this repo):
+One YAML file per operator scope in the external store (never in this repo):
 
 ```text
-${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/
-  apps/<app-name>/oracle.yaml   # chmod 0600, dotted db names, see below
+${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/<scope>/oracle.yaml   # chmod 0600
+```
+Scope is a free-form operator namespace in canonical `<org>-<app>-<env>` slug shape (>=3 dash-segments). Legacy path `${IAP_ORACLE_MCP_HOME}/apps/<app>/oracle.yaml` still resolves with a deprecation warning — move it into a scope with:
+```bash
+SCOPE=sample-orders-dev  # your <org>-<app>-<env>
+mkdir -p "${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/${SCOPE}"
+mv "${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/apps/<app>/oracle.yaml" \
+   "${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/${SCOPE}/oracle.yaml"
+chmod 0600 "${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/${SCOPE}/oracle.yaml"
 ```
 
 Schema: `per-app-oracle.yaml.example` (empty values). Logical database names
@@ -76,7 +83,7 @@ The three secret names double as the AWS Secrets Manager JSON fields
 ```bash
 # Bring one database's credentials into the environment (eval-only output):
 set -a
-eval "$(oracle-mcp/load-oracle-env.sh --app spring-sample-service --db sample.orders.prod)"
+eval "$(oracle-mcp/load-oracle-env.sh --scope sample-orders-dev --app spring-sample-service --db sample.orders.prod)"
 set +a
 # ... then import (password travels via env -> SQLcl stdin, never argv/logs):
 oracle-mcp/add-datasource.sh --name SAMPLEDB-conn --user "${IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_USER_NAME}" \
@@ -85,7 +92,7 @@ oracle-mcp/add-datasource.sh --name SAMPLEDB-conn --user "${IAP_SECRET_ORACLE_SA
 ```
 
 Loader fail-closed rules: file must be `0600` (no group/other read),
-`app:` must match the directory, `environment: prod` refuses
+`app:` must equal `--app` (content match), `environment: prod` refuses
 `account_kind: personal` (personal accounts are local-only; prod requires a
 service account). Dotted names map to `IAP_SECRET_ORACLE_<D>_<SD>_<E>_PASSWORD`
 etc. — the same names the app's `secret://oracle/...` resolver fallback reads.

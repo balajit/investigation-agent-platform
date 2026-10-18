@@ -33,20 +33,52 @@ _SPRING_BASENAMES = frozenset(
 
 
 def clone_repo(clone_url: str, branch: str = "") -> Path:
-    """Shallow-clone into a fresh temp dir; returns the checkout path."""
+    """Shallow-clone into a fresh temp dir; returns the checkout path.
+
+    Private repos authenticate with the GitHub token (IAP_GITHUB_TOKEN env
+    first, `gh` CLI keychain fallback — same precedence as API discovery).
+    The token travels inside pygit2's credential callback only: it is never
+    embedded in the URL, logged, or persisted.
+    """
     try:
         import pygit2
     except Exception as exc:
         raise RuntimeError("pygit2 unavailable for profile generation.") from exc
     try:
+        import os as _os
+
+        from investigation_agent_platform.integrations.profile_gen.github import (
+            _gh_cli_token,
+        )
+
+        token = _os.environ.get("IAP_GITHUB_TOKEN", "").strip() or _gh_cli_token()
         target = Path(tempfile.mkdtemp(prefix="iap-profgen-"))
         kwargs: dict[str, Any] = {"depth": 1}
         if branch:
             kwargs["checkout_branch"] = branch
-        pygit2.clone_repository(clone_url, str(target), **kwargs)
+        if token:
+            kwargs["callbacks"] = pygit2.RemoteCallbacks(
+                credentials=pygit2.UserPass("git", token)
+            )
+        try:
+            pygit2.clone_repository(clone_url, str(target), **kwargs)
+        except Exception as branch_exc:
+            # Requested branch missing upstream (wrong default guess):
+            # retry on the remote's default HEAD instead of failing.
+            if branch and "not found" in str(branch_exc).lower():
+                kwargs.pop("checkout_branch", None)
+                pygit2.clone_repository(clone_url, str(target), **kwargs)
+            else:
+                raise
         return target
     except Exception as exc:
-        raise RuntimeError(f"Clone failed: {str(exc)[:300]}") from exc
+        text = str(exc)
+        if "authentication required" in text.lower() or "auth" in text.lower():
+            raise RuntimeError(
+                "Clone failed: private repo needs GitHub auth — set "
+                "IAP_GITHUB_TOKEN or run `gh auth login`."
+            ) from exc
+        raise RuntimeError(f"Clone failed: {text[:300]}") from exc
 
 
 def list_files(root: Path) -> list[str]:

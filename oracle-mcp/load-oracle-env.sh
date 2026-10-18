@@ -3,10 +3,15 @@
 # oracle.yaml in the EXTERNAL store. Nothing secret lives in this repo.
 #
 # Usage:
-#   set -a; eval "$(oracle-mcp/load-oracle-env.sh --app <app> --db <d.sd.e>)"; set +a
+#   set -a; eval "$(oracle-mcp/load-oracle-env.sh --scope <org>/<env>/<app> --app <app> --db <d.sd.e>)"; set +a
 #   # ... then: add-datasource.sh --password-env IAP_SECRET_ORACLE_<D>_<SD>_<E>_PASSWORD ...
 #
-# Layout: ${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/apps/<app>/oracle.yaml
+# Layout (operator scopes first, legacy MCP store as fallback):
+#   ${IAP_OPERATOR_HOME:-~/workspace/.iap}/scopes/<org>/<env>/<app>/oracle.yaml
+#   ${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/apps/<app>/oracle.yaml  (deprecated)
+# Scope is the operator namespace path (org/env/app — env level carries the
+# shared levers, app leaf the deltas + credentials); --app must equal the
+# file's `app:` field (content match — stronger than directory-name match).
 # (see per-app-oracle.yaml.example for the schema).
 #
 # Fail-closed rules (any violation -> stderr + non-zero exit, NO exports):
@@ -25,12 +30,15 @@
 set -euo pipefail
 
 IAP_ORACLE_MCP_HOME="${IAP_ORACLE_MCP_HOME:-${HOME}/workspace/docker/iap/oracle-mcp}"
-APP=""; DB=""
+IAP_OPERATOR_HOME="${IAP_OPERATOR_HOME:-${HOME}/workspace/.iap}"
+APP=""; DB=""; HOME_ARG=""; SCOPE=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --app) APP="${2:?}"; shift 2 ;;
         --db)  DB="${2:?}"; shift 2 ;;
+        --home) HOME_ARG="${2:?}"; shift 2 ;;
+        --scope) SCOPE="${2:?}"; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -39,9 +47,31 @@ done
 [ -n "${DB}" ] || { echo "ERROR: --db is required (dotted, e.g. sample.orders.prod)" >&2; exit 2; }
 [[ "${APP}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "ERROR: bad --app: ${APP}" >&2; exit 2; }
 [[ "${DB}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "ERROR: bad --db: ${DB}" >&2; exit 2; }
-
-FILE="${IAP_ORACLE_MCP_HOME}/apps/${APP}/oracle.yaml"
-[ -f "${FILE}" ] || { echo "ERROR: no credential file: ${FILE}" >&2; exit 1; }
+if [ -n "${HOME_ARG}" ]; then
+    [[ "${HOME_ARG}" =~ ^[A-Za-z0-9_./-]+$ ]] || { echo "ERROR: bad --home: ${HOME_ARG}" >&2; exit 2; }
+    OPERATOR_HOME_RESOLVED="${HOME_ARG}"
+else
+    OPERATOR_HOME_RESOLVED="${IAP_OPERATOR_HOME}"
+fi
+if [ -n "${SCOPE}" ]; then
+    [[ "${SCOPE}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "ERROR: bad --scope (want <org>/<env>/<app>): ${SCOPE}" >&2; exit 2; }
+    [[ "${SCOPE}" != *".."* ]] || { echo "ERROR: bad --scope: ${SCOPE}" >&2; exit 2; }
+    FILE="${OPERATOR_HOME_RESOLVED}/scopes/${SCOPE}/oracle.yaml"
+    [ -f "${FILE}" ] || { echo "ERROR: no credential file: ${FILE}" >&2; exit 1; }
+else
+    OPERATOR_ORACLE_DIR="${OPERATOR_HOME_RESOLVED}/oracle"
+    FILE="${OPERATOR_ORACLE_DIR}/${APP}/oracle.yaml"
+    if [ ! -f "${FILE}" ]; then
+        LEGACY="${IAP_ORACLE_MCP_HOME}/apps/${APP}/oracle.yaml"
+        if [ -f "${LEGACY}" ]; then
+            echo "WARNING: using deprecated credential path ${LEGACY}; move it to a scope (see iap-operator.py migrate)" >&2
+            FILE="${LEGACY}"
+        else
+            echo "ERROR: no credential file: ${FILE} (or legacy ${LEGACY}); pass --scope <org>/<env>/<app>" >&2
+            exit 1
+        fi
+    fi
+fi
 [ -r "${FILE}" ] || { echo "ERROR: credential file unreadable: ${FILE}" >&2; exit 1; }
 if [ "$(stat -f '%Lp' "${FILE}" 2>/dev/null || stat -c '%a' "${FILE}")" -gt 600 ] 2>/dev/null; then
     : # stat format differs per OS; checked portably below
@@ -55,7 +85,7 @@ if [ "${MODE:1:1}" != "0" ] || [ "${MODE:2:1}" != "0" ]; then
     exit 1
 fi
 
-APP_ARG="${APP}" DB_ARG="${DB}" FILE_ARG="${FILE}" python3 - <<'PYEOF'
+APP_ARG="${APP}" DB_ARG="${DB}" FILE_ARG="${FILE}" SCOPE_ARG="${SCOPE}" python3 - <<'PYEOF'
 import os, re, sys
 
 app, db, path = os.environ["APP_ARG"], os.environ["DB_ARG"], os.environ["FILE_ARG"]
@@ -131,6 +161,9 @@ out = {
 }
 if schema:
     out[f"IAP_ORACLE_{stem}_DEFAULT_SCHEMA"] = schema
+scope = os.environ.get("SCOPE_ARG", "")
+if scope:
+    out["IAP_OPERATOR_SCOPE"] = scope
 for name, val in out.items():
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         fail(f"derived env name invalid: {name!r}")
