@@ -1,0 +1,55 @@
+# docker/otel-collector/config.yaml — IAP trace collector (OTEL P4, #10).
+#
+# Receives OTLP from API/worker (host processes → loopback-published :4317),
+# tail-samples (errors always kept; probabilistic 100% in dev), batches, and
+# exports to Tempo (trace UI :3200) plus debug stdout (`docker logs`).
+# Production posture: drop probabilistic_sample_rate toward 0.10 and lower
+# the app-side IAP_OTEL_SAMPLE_RATIO to match; error policy keeps failures
+# regardless. No application change needed for any of this.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    expected_new_traces_per_sec: 50
+    policies:
+      - name: errors-always
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      - name: probabilistic-dev
+        type: probabilistic
+        probabilistic: {sampling_percentage: 100}
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+
+exporters:
+  debug:
+    verbosity: normal
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [debug, otlp/tempo]

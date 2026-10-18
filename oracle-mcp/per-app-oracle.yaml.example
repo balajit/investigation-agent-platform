@@ -1,0 +1,27 @@
+# Per-app Oracle credential file — EXAMPLE ONLY. Never put real values here.
+#
+# Real files live OUTSIDE any git checkout, one per application:
+#   ${IAP_ORACLE_MCP_HOME:-~/workspace/docker/iap/oracle-mcp}/apps/<app-name>/oracle.yaml
+# Copy this file there, fill it in, then `chmod 0600` it. The loader
+# (oracle-mcp/load-oracle-env.sh) refuses files readable by group/other.
+#
+# Logical database names are dotted: <domain>.<subdomain>.<env>
+# (e.g. sample.orders.prod). The same three key names appear in AWS Secrets
+# Manager (JSON doc at iap/oracle/<domain>/<subdomain>/<env>) and OpenBao
+# (KV at secret/iap/oracle/<domain>/<subdomain>/<env>).
+app: spring-sample-service
+environment: local   # local | stg | prod. prod + personal account = hard refusal.
+
+databases:
+  sample.orders.prod:
+    account_kind: personal   # personal | service. personal is local-only.
+    user_name: sample_user
+    password: ""
+    jdbcUrl: "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=oracle-sample-db.example.com)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=SAMPLEDB_RW)))"
+    # Optional, non-secret: default schema for unqualified tables, kept next
+    # to the user so grants can be eyeballed in one place. Source of truth
+    # for query resolution is the profile datasource's `schema_name`
+    # (versioned, reviewed); this value feeds operator tooling via
+    # IAP_ORACLE_<D>_<SD>_<E>_DEFAULT_SCHEMA (NOT an IAP_SECRET_* name —
+    # schemas are configuration, not secrets). Keep the two identical.
+    default_schema: sample_owner

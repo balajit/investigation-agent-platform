@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "investigation-agent-platform"
+version = "0.1.0"
+description = "Agentic investigation platform to investigate system issues"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.0.0",
+    "structlog>=24.1.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "elasticsearch>=8,<9",
+    "asyncpg>=0.29.0",
+    "psycopg[binary]>=3.2.0",
+    "alembic>=1.13.0",
+    "pyyaml>=6.0",
+    "rustworkx>=0.18.1",
+    "sqlglot>=30.18.0",
+    "pygit2>=1.20.1",
+    "tenacity>=9.1.4",
+    "mcp>=2.2.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.20.0",
+    "temporalio>=1.33.0",
+    "minio>=7.2.20",
+    "fsspec>=2026.9.0",
+    "faststream[kafka]>=0.7.6",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.53.0",
+    "pyjwt[crypto]>=2.9.0",
+    "pydeps>=3.0.8",
+    "tiktoken>=0.14.0",
+    "neo4j>=5.26.0",
+    "mem0ai>=2.2.1",
+    "graphiti-core>=0.30.2",
+    "cognee[neo4j]>=1.6.1",
+    "psycopg2-binary>=2.9.13",
+    "pgvector>=0.5.0",
+    "jinja2>=3.1.6",
+    "asyncio>=4.0.0",
+    "azure-identity>=1.26.0",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.0",
+    "redis>=5.0.0",
+    "opentelemetry-exporter-otlp>=1.44.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "uv>=0.4.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "pipdeptree>=2.23.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=5.0.0",
+    "pylint>=3.2.0",
+    "types-pyyaml>=6.0.12.20260906",
+    "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.0",
+    "bandit>=1.8.0",
+    "pip-audit>=2.9.0",
+    "dot>=0.3.0",
+    "pandas-stubs>=3.0.5.260914",
+    "xlsxwriter>=3.2.9",
+    "oracledb>=26.0.1",
+    "pytest-tornasync>=0.6.0.post2",
+    "pytest-trio>=0.8.0",
+    "schemathesis>=4.31,<5",
+    "httpx>=0.28,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/investigation_agent_platform"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# F-072 follow-up: broad `except Exception` (BLE001) and silent
+# try/except-pass/continue (S110/S112) pervade pre-remediation code. They are
+# excluded from the gate ONLY as a documented baseline — new code must use the
+# typed retry taxonomy in application/worker/activities.py instead. The
+# remaining ignores are stylistic patterns grandfathered from the original
+# tree; fix opportunistically, never extend.
+ignore = [
+    "BLE001",
+    "S110",
+    "S112",
+    "SIM102",
+    "SIM113",
+    "SIM117",
+    "PIE810",
+    "C408",
+    "TRY201",
+    "G201",
+    "FURB162",
+    "PERF102",
+    "DTZ001",
+    "RUF059",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]

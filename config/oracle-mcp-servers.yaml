@@ -1,0 +1,34 @@
+# Oracle SQLcl MCP servers (one entry per database — see the Part 3 Oracle/MCP addendum).
+# No secrets in this file: connections/*.backup and the SQLcl encryption key are
+# mounted read-only into each container at runtime. Missing file = no MCP servers.
+# tenants: explicit allowlist per server (default-deny); empty list registers nothing.
+# NOTE: there is no IAP_ORACLE_MCP_SERVERS_JSON override — this YAML file is the
+# only source (an older comment claimed otherwise; no such env var is read).
+servers:
+  # Sample orders database (logical sample.orders.prod). Wallet imported from
+  # apps/spring-sample-service/oracle.yaml via:
+  #   eval "$(oracle-mcp/load-oracle-env.sh --app spring-sample-service --db sample.orders.prod)"
+  #   oracle-mcp/add-datasource.sh --name SAMPLEDB-conn --user "$IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_USER_NAME" \
+  #     --jdbc "$IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_JDBC_URL" \
+  #     --password-env IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_PASSWORD
+  # stdio spawns per call, so this entry is inert until the wallet exists and
+  # the DB is reachable — safe to ship unconnected.
+  - name: sampledb
+    command: docker
+    args: ["run", "-i", "--rm", "--name", "oracle-sqlcl-mcp-sampledb",
+           "-v", "${IAP_ORACLE_MCP_CONNECTIONS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/connections}:/config:ro",
+           "-v", "${IAP_ORACLE_MCP_SECRETS_DIR:-${HOME}/workspace/docker/iap/oracle-mcp/secrets}/sqlcl-encryption-key:/run/secrets/sqlcl-encryption-key:ro",
+           "oracle-sqlcl-mcp:26.2"]
+    connection: SAMPLEDB-conn
+    # SQLcl 26.x speaks connect-then-query (session-scoped sql_run), not the
+    # hypothetical single-shot run-sql: connect first, then bare-SQL query.
+    # dialect: this store's SQL standard — the gateway fans each state query
+    # out only to dialect-matching servers (each store, its own standard).
+    dialect: oracle
+    allowed_tools: ["connect", "sql_run"]
+    query_tool: sql_run
+    connection_tool: connect
+    connection_arg: connection_name
+    timeout_seconds: 30.0
+    max_rows: 1000
+    tenants: ["n-a"]

@@ -1,0 +1,369 @@
+# src/investigation_agent_platform/application/knowledge/capture.py
+"""Knowledge capture: concluded investigation state -> envelopes (Part 6 D4, Slice 0).
+
+Runs AFTER conclusion. Distills interpreted facts from evidence, findings,
+and effective-config snapshots into write-once envelopes. Capture failures
+never fail the investigation (log + metric; the work is already done).
+Mem0/Graphiti projection hooks are no-ops until Slices 1–2 land.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import UUID
+
+from investigation_agent_platform.domain.evidence.models import Evidence
+from investigation_agent_platform.domain.knowledge.models import (
+    ArtifactVisibility,
+    KnowledgeArtifact,
+    RefreshPolicy,
+    sanitize_statement,
+)
+from investigation_agent_platform.infrastructure.observability.tracing import traced
+
+logger = logging.getLogger("iap.application")
+
+def _capture_extra(artifacts: Any) -> dict[str, Any]:
+    """Stored-artifact count only."""
+    try:
+        if isinstance(artifacts, list):
+            return {"iap.artifacts_stored": len(artifacts)}
+        return {}
+    except Exception:
+        return {}
+
+# Kinds captured from conclusion-linked evidence. Static attribution is
+# shareable across tenants on a merged code issue; everything else stays
+# tenant-private by construction (see the domain validator).
+SHARED_KINDS = frozenset({"error_signature", "domain_attribution", "code_reference"})
+
+
+class KnowledgeCaptureService:
+    """Distills envelopes from concluded state and projects them to stores."""
+
+    def __init__(
+        self,
+        artifact_repo: Any,
+        evidence_repo: Any = None,
+        knowledge_store: Any = None,
+        temporal_port: Any = None,
+        clock_now: Any = None,
+        investigation_repo: Any = None,
+        evidence_summary_ttl_days: int = 90,
+        max_episodes_per_investigation: int = 50,
+        observability: Any = None,
+        profile_repo: Any = None,
+        hypothesis_repo: Any = None,
+        finding_repo: Any = None,
+    ) -> None:
+        self.artifact_repo = artifact_repo
+        self.evidence_repo = evidence_repo
+        self.knowledge_store = knowledge_store
+        self.temporal_port = temporal_port
+        self._clock_now = clock_now
+        self.investigation_repo = investigation_repo
+        self.evidence_summary_ttl_days = evidence_summary_ttl_days
+        self.max_episodes_per_investigation = max_episodes_per_investigation
+        self.observability = observability
+        self.profile_repo = profile_repo
+        self.hypothesis_repo = hypothesis_repo
+        self.finding_repo = finding_repo
+        self._group_locks: dict[str, asyncio.Lock] = {}
+
+    def _now(self) -> datetime:
+        return self._clock_now() if self._clock_now else datetime.now(UTC)
+
+    @traced("knowledge", component="capture", extra_from=_capture_extra)
+    async def capture_for_investigation(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[KnowledgeArtifact]:
+        logger.info(
+            "capture_for_investigation started",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "event": "capture_for_investigation started",
+            },
+        )
+        now = self._now()
+        try:
+            artifacts = await self._distill(tenant_id, investigation_id, now)
+        except Exception as exc:
+            # Capture must never fail the (already concluded) investigation.
+            logger.exception(
+                "Knowledge capture failed; investigation unaffected",
+                extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+            )
+            return []
+        stored: list[KnowledgeArtifact] = []
+        for artifact in artifacts:
+            try:
+                await self.artifact_repo.save(tenant_id, artifact)
+                stored.append(artifact)
+            except Exception as exc:
+                logger.warning(
+                    "Artifact store failed; continuing with remainder",
+                    extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+                )
+                continue
+        # D7 budget: envelopes are always stored; projection to Mem0/Graphiti
+        # degrades to envelopes-only once the per-investigation episode cap
+        # is hit. Prior spend is read before this batch so retries and
+        # concurrent captures share one ceiling.
+        prior_spend = await self._prior_spend(tenant_id, investigation_id, len(stored))
+        budget_remaining = max(self.max_episodes_per_investigation - prior_spend, 0)
+        projected = 0
+        skipped = 0
+        for artifact in stored:
+            if budget_remaining <= 0:
+                skipped += 1
+                continue
+            await self._project(tenant_id, artifact)
+            budget_remaining -= 1
+            projected += 1
+        self._emit_telemetry(tenant_id, investigation_id, projected, skipped)
+        if skipped:
+            logger.warning(
+                "Episode budget exceeded; degraded to envelopes-only",
+                extra={
+                    "context": {
+                        "tenant_id": tenant_id,
+                        "projected": projected,
+                        "skipped": skipped,
+                    }
+                },
+            )
+        logger.info(
+            "capture_for_investigation completed",
+            extra={
+                "tenant_id": tenant_id,
+                "investigation_id": str(investigation_id),
+                "artifacts_stored": len(stored),
+                "projected": projected,
+                "skipped": skipped,
+                "event": "capture_for_investigation completed",
+            },
+        )
+        return stored
+
+    async def _prior_spend(self, tenant_id: str, investigation_id: UUID, batch_size: int) -> int:
+        """Artifacts already stored for this investigation before this batch."""
+        try:
+            total = await self.artifact_repo.list_for_investigation(tenant_id, investigation_id)
+            return max(len(total) - batch_size, 0)
+        except Exception:
+            return 0
+
+    def _emit_telemetry(
+        self, tenant_id: str, investigation_id: UUID, projected: int, skipped: int
+    ) -> None:
+        obs = self.observability
+        if obs is None:
+            return
+        try:
+            obs.record_metric(
+                "knowledge.episodes_projected",
+                float(projected),
+                {"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+            )
+            obs.record_metric(
+                "knowledge.episodes_skipped_budget",
+                float(skipped),
+                {"tenant_id": tenant_id, "investigation_id": str(investigation_id)},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Capture telemetry failed",
+                extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+            )
+
+    def _lock_for(self, group_id: str) -> asyncio.Lock:
+        lock = self._group_locks.get(group_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._group_locks[group_id] = lock
+        return lock
+
+    async def _distill(
+        self, tenant_id: str, investigation_id: UUID, now: datetime
+    ) -> list[KnowledgeArtifact]:
+        """Build envelopes from concluded evidence.
+
+        Slice 0 distills two artifact classes without any LLM:
+        - error_signature (SHARED): normalized error identity + code refs.
+        - evidence_summary (TENANT): per-evidence interpreted summaries.
+        LLM-based interpretation distillation lands with the Mem0 slice.
+        """
+        if self.evidence_repo is None:
+            return []
+        items: list[Evidence] = await self.evidence_repo.find_by_investigation_id(
+            tenant_id, investigation_id
+        )
+        # SHARED artifacts require the investigation's code-issue fingerprint;
+        # without one they downgrade to TENANT (fail closed, never share keyless).
+        fingerprint: str | None = None
+        application_id: str | None = None
+        if self.investigation_repo is not None:
+            investigation = await self.investigation_repo.get_by_id(tenant_id, investigation_id)
+            fingerprint = getattr(investigation, "code_issue_fingerprint", None)
+            application_id = getattr(investigation, "application_id", None)
+        ttl_days = self.evidence_summary_ttl_days
+        if self.profile_repo is not None and application_id:
+            # Profile KnowledgeConfig.retention_days overrides the constructor
+            # default — but ONLY when explicitly authored (fields_set), so
+            # default profiles keep the established 90-day behavior.
+            try:
+                profile = await self.profile_repo.get_by_application_id(
+                    tenant_id, application_id
+                )
+            except Exception:
+                profile = None
+            knowledge = getattr(profile, "knowledge", None) if profile else None
+            if (
+                knowledge is not None
+                and "retention_days" in knowledge.model_fields_set
+                and knowledge.retention_days >= 1
+            ):
+                ttl_days = knowledge.retention_days
+        artifacts: list[KnowledgeArtifact] = []
+        seen_signatures: set[str] = set()
+        for item in items:
+            signature = f"{item.provider}:{item.evidence_type.value}:{item.source}"
+            if signature not in seen_signatures:
+                seen_signatures.add(signature)
+                artifacts.append(
+                    KnowledgeArtifact(
+                        tenant_id=tenant_id,
+                        application_id=getattr(item, "application_id", "unknown"),
+                        investigation_id=investigation_id,
+                        kind="error_signature",
+                        statement=sanitize_statement(
+                            f"Observed {item.evidence_type.value} from {item.source}: "
+                            f"{item.summary[:500]}"
+                        ),
+                        confidence=float(item.confidence),
+                        refresh_policy=RefreshPolicy.IMMUTABLE,
+                        valid_from=now,
+                        source_evidence_ids=[item.evidence_id],
+                        visibility=(
+                            ArtifactVisibility.SHARED_CODE_ISSUE
+                            if fingerprint
+                            else ArtifactVisibility.TENANT
+                        ),
+                        code_issue_fingerprint=fingerprint,
+                    )
+                )
+            artifacts.append(
+                KnowledgeArtifact(
+                    tenant_id=tenant_id,
+                    application_id=getattr(item, "application_id", "unknown"),
+                    investigation_id=investigation_id,
+                    kind="evidence_summary",
+                    statement=sanitize_statement(item.summary[:2000]),
+                    confidence=float(item.confidence),
+                    refresh_policy=RefreshPolicy.TTL,
+                    valid_from=now,
+                    valid_to=now + timedelta(days=ttl_days),
+                    source_evidence_ids=[item.evidence_id],
+                    visibility=ArtifactVisibility.TENANT,
+                )
+            )
+        # F: verified premises. VERIFIED hypotheses become defeasible
+        # starting points for future runs (TENANT-scoped; staleness is
+        # handled by TTL + the reverify flow, never by deletion here).
+        try:
+            artifacts.extend(
+                await self._distill_premises(
+                    tenant_id, investigation_id, application_id, now, ttl_days
+                )
+            )
+        except Exception:
+            pass
+        return artifacts
+
+    async def _distill_premises(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: Any,
+        now: datetime,
+        ttl_days: int,
+    ) -> list[KnowledgeArtifact]:
+        """VERIFIED hypotheses as reusable premise artifacts (F, fail-open)."""
+        try:
+            from investigation_agent_platform.domain.knowledge.models import (
+                ArtifactVisibility,
+                KnowledgeArtifact,
+                RefreshPolicy,
+            )
+            from investigation_agent_platform.domain.knowledge.models import (
+                sanitize_statement as _sanitize,
+            )
+
+            if self.hypothesis_repo is None:
+                return []
+            hyps = await self.hypothesis_repo.find_by_investigation_id(
+                tenant_id, investigation_id
+            )
+            premises: list[KnowledgeArtifact] = []
+            for hyp in hyps or []:
+                try:
+                    status = str(
+                        getattr(getattr(hyp, "status", ""), "value", getattr(hyp, "status", ""))
+                    ).upper()
+                    if status != "VERIFIED":
+                        continue
+                    statement = str(getattr(hyp, "statement", "") or "").strip()
+                    if not statement:
+                        continue
+                    supporting = list(getattr(hyp, "supporting_evidence_ids", None) or [])
+                    premises.append(
+                        KnowledgeArtifact(
+                            tenant_id=tenant_id,
+                            application_id=str(application_id or "unknown"),
+                            investigation_id=investigation_id,
+                            kind="verified_premise",
+                            statement=_sanitize(statement[:2000]),
+                            confidence=float(getattr(hyp, "confidence_score", 0.9) or 0.9),
+                            refresh_policy=RefreshPolicy.TTL,
+                            valid_from=now,
+                            valid_to=now + timedelta(days=ttl_days),
+                            source_evidence_ids=list(supporting)[:20],
+                            visibility=ArtifactVisibility.TENANT,
+                        )
+                    )
+                except Exception:
+                    continue
+            return premises
+        except Exception:
+            return []
+
+    async def _project(self, tenant_id: str, artifact: KnowledgeArtifact) -> None:
+        if self.knowledge_store is not None:
+            try:
+                await self.knowledge_store.project_artifact(tenant_id, artifact)
+            except Exception as exc:
+                logger.warning(
+                    "Mem0 projection failed; envelope retained",
+                    extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+                )
+        if self.temporal_port is not None:
+            try:
+                from investigation_agent_platform.ports.knowledge.ports import (
+                    investigation_group_id,
+                )
+
+                group_id = investigation_group_id(artifact.investigation_id)
+                # D7 per-group serialization: concurrent captures for the same
+                # group never interleave project_episode calls (Graphiti
+                # entity-resolution races under concurrent same-group writes).
+                async with self._lock_for(group_id):
+                    await self.temporal_port.project_episode(tenant_id, group_id, artifact)
+            except Exception as exc:
+                logger.warning(
+                    "Graphiti projection failed; envelope retained",
+                    extra={"context": {"tenant_id": tenant_id, "error": str(exc)}},
+                )

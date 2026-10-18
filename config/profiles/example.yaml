@@ -1,0 +1,108 @@
+# config/profiles/example.yaml
+# ---------------------------------------------------------------------------
+# Generic, portable application profile ("the one example").
+#
+# Canonical shape (single schema, no legacy blocks):
+#   * Top-level scalars are snake_case (tenant_id, allowed_capabilities,
+#     status, owner, version, mapping_source_id).
+#   * Services carry per-service telemetry + code; datasources carry typed
+#     connections (secret:// or env:// references only — never credentials).
+#   * `allowed_capabilities` is enforced by the authorizer ANDed with
+#     `investigation.enabledEvidenceTypes`.
+#
+# Validate with:
+#   uv run python scripts/seed_profile.py --file config/profiles/example.yaml --dry-run
+# ---------------------------------------------------------------------------
+
+application:
+  id: example
+  tenant_id: tenant-a
+  name: Example Generic Application
+  description: Reference profile for a generic single-module Python service (portable template).
+  environment: production
+  version: 1
+  status: ACTIVE
+  owner: platform-team
+  domain: reference
+  planes:
+    - backend
+  data_classification: INTERNAL
+  allowed_capabilities:
+    - SEARCH_LOGS
+    - QUERY_STATE
+    - CORRELATE
+    - GET_CODE
+  mapping_source_id: generic-ecs
+  services:
+    - name: example-service
+      role: edge
+      description: Reference single-module Python service.
+      telemetry:
+        log_indices:
+          - example-application-logs-*
+        service_names:
+          - example-service
+      code:
+        org: example
+        repos:
+          - example-service
+        default_branch: main
+        language: python
+        source_roots:
+          - src
+        build_system: uv
+        module_structure: single-module
+      repository_id: example--example-service
+  datasources:
+    - id: primary
+      name: EXAMPLE_DB (postgres)
+      kind: postgres
+      role: state
+      read_only: true
+      allowed_tables:
+        - APP_SESSION
+        - APP_TRANSACTION
+      query_templates:
+        get_session_by_id:
+          description: Fetch session by id.
+          sql: "SELECT * FROM APP_SESSION WHERE SESSION_ID = :session_id"
+          read_only: true
+          allowed_tables:
+            - APP_SESSION
+        get_tx_by_session:
+          description: Fetch transactions by session.
+          sql: "SELECT * FROM APP_TRANSACTION WHERE SESSION_ID = :session_id"
+          read_only: true
+          allowed_tables:
+            - APP_TRANSACTION
+
+correlation:
+  fields:
+    - sessionId
+    - requestId
+    - traceId
+    - correlationId
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+    - TRACE
+    - DATABASE_STATE
+    - COMMIT_HISTORY
+  correlationDepth: 2
+  maximumHypotheses: 5
+  parametersSchema:
+    type: object
+    required:
+      - sessionId
+    properties:
+      sessionId:
+        type: string
+        maxLength: 128
+      orderId:
+        type: string
+        maxLength: 64
+    additionalProperties: false

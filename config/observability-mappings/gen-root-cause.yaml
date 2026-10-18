@@ -1,0 +1,46 @@
+# config/observability-mappings/gen-root-cause.yaml
+# Field contract for the gen root-cause record family (Part 10).
+# Derived from captured mappings (tests/fixtures/elastic_mappings).
+# Note: no @timestamp exists here; observation time comes from epoch-millis
+# updatedAt/createdAt. No severity signal exists: severity filters reject.
+source_id: gen-root-cause
+index_patterns:
+  - "logz-gen-root_cause-prod-es-*"
+tenant_scope:
+  # Tenant is not a first-class concept in this organization today;
+  # app/profile selection is the isolation boundary. Logged at startup.
+  strategy: none_required
+timestamp:
+  candidates: ["updatedAt", "createdAt"]
+  value_type: date_epoch_millis
+message:
+  candidates: ["message"]
+  value_type: text
+service: null
+severity:
+  strategy: unsupported
+identifiers:
+  session_id:
+    candidates: ["XCOSSessionId"]
+    value_type: keyword
+  request_id:
+    candidates: ["requestId"]
+    value_type: keyword
+code_location: null
+sql_statement: null
+sort:
+  field: updatedAt
+  order: desc
+top_level_allowlist:
+  - message
+  - createdAt
+  - updatedAt
+  - errorReason
+  - errorSource
+  - errorDetails
+  - failedServices
+  - itemLevelException
+  - triageToolException
+  - requestId
+  - XCOSSessionId
+  - hubble

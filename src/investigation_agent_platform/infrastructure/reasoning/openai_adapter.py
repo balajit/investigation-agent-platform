@@ -1,0 +1,346 @@
+# src/investigation_agent_platform/infrastructure/reasoning/openai_adapter.py
+"""OpenAI implementation of LLMGateway."""
+
+import asyncio
+import json
+import logging
+import time
+
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+from investigation_agent_platform.infrastructure.configuration.config import LLMConfig
+from investigation_agent_platform.infrastructure.reasoning.pricing import (
+    estimate_cost as _estimate_cost_versioned,
+)
+from investigation_agent_platform.infrastructure.reasoning.streaming_adapters import (
+    count_text_tokens,
+)
+from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
+from investigation_agent_platform.ports.reasoning.llm_gateway import (
+    LLMGateway,
+    LLMGatewayRequest,
+    LLMGatewayResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+# Approximate per-token USD rates (per 1K tokens). Sorted for fallback.
+_MODEL_RATES: dict[str, tuple[float, float]] = {
+    "gpt-4o": (0.005, 0.015),
+    "gpt-4o-mini": (0.00015, 0.0006),
+    "gpt-4-turbo": (0.01, 0.03),
+    "gpt-3.5-turbo": (0.0005, 0.0015),
+    "muse-spark-1.3": (0.00015, 0.0006),
+    "gpt-4.1": (0.005, 0.015),
+}
+
+
+def _estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
+    # Back-compat shim — new code should use pricing.estimate_cost directly to
+    # also capture the pricing version. Kept for existing callers/tests.
+    cost, _ = _estimate_cost_versioned(model_name, prompt_tokens, completion_tokens)
+    return cost
+
+
+def _is_unsupported_format_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "response_format" in message or "json_schema" in message
+
+
+# Data classifications that must never leave the platform boundary toward an
+# external model provider without an explicit per-call authorization reference.
+_RESTRICTED_CLASSIFICATIONS = frozenset({"RESTRICTED", "SECRET", "TOP_SECRET"})
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "http_status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status in (429, 503):
+        return True
+    if status in (401, 403):
+        return False
+    return bool(getattr(exc, "retryable", False))
+
+
+def _openai_base_url(config: LLMConfig) -> str:
+    """Normalized custom base URL ("" when unset; fail-closed on non-http schemes)."""
+    base_url = (config.openai_base_url or "").strip().rstrip("/")
+    if base_url:
+        scheme = base_url.split("://", 1)[0].lower() if "://" in base_url else ""
+        if scheme not in ("http", "https"):
+            raise RuntimeError("openai_base_url must be an http(s) URL")
+    return base_url
+
+
+class OpenAIGateway(LLMGateway):
+    """OpenAI adapter — lazy client init so mypy/test does not require openai.
+
+    Also serves the ``azure`` provider via ``openai.AsyncAzureOpenAI``: the
+    chat ``model`` kwarg is then the Azure deployment name
+    (``LLMConfig.azure_deployment``), while ``model_name`` remains the logical
+    base-model id for registry/pricing.
+    """
+
+    def __init__(self, config: LLMConfig) -> None:
+        self._config = config
+        self._client: object | None = None
+
+    @property
+    def _is_azure(self) -> bool:
+        return (self._config.provider or "openai").lower() == "azure"
+
+    def _wire_model_name(self) -> str:
+        if self._is_azure and self._config.azure_deployment:
+            return self._config.azure_deployment
+        return self._config.model_name
+
+    def _get_client(self) -> object:
+        if self._client is None:
+            try:
+                import openai  # type: ignore[import-not-found]
+
+                if self._is_azure:
+                    endpoint = (self._config.azure_endpoint or "").rstrip("/")
+                    if not endpoint or not self._config.azure_deployment:
+                        raise RuntimeError(
+                            "Azure provider requires IAP_AZURE_ENDPOINT and IAP_AZURE_DEPLOYMENT"
+                        )
+                    self._client = openai.AsyncAzureOpenAI(
+                        api_key=self._config.api_key.get_secret_value(),
+                        azure_endpoint=endpoint,
+                        api_version=self._config.azure_api_version or "2025-01-01-preview",
+                    )
+                else:
+                    base_url = _openai_base_url(self._config)
+                    if base_url:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value(),
+                            base_url=base_url,
+                        )
+                    else:
+                        self._client = openai.AsyncOpenAI(
+                            api_key=self._config.api_key.get_secret_value()
+                        )
+            except ImportError as exc:
+                raise RuntimeError("openai package not installed") from exc
+        return self._client
+
+    def _enforce_envelope_policy(self, tenant_id: str, request: LLMGatewayRequest) -> None:
+        """Refuse provider calls whose data-policy envelope forbids them (F-028)."""
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
+
+        envelope = request.envelope
+        assert envelope is not None
+        if envelope.tenant_id != tenant_id:
+            raise SecurityPolicyViolationException(
+                "Prompt envelope tenant does not match request tenant",
+                details={"tenant_id": tenant_id},
+            )
+        if (
+            envelope.classification.upper() in _RESTRICTED_CLASSIFICATIONS
+            and not envelope.authorization_reference
+        ):
+            raise SecurityPolicyViolationException(
+                f"Data classification '{envelope.classification}' requires an explicit "
+                "authorization reference before it may be sent to a model provider",
+                details={"classification": envelope.classification},
+            )
+        provider = (self._config.provider or "openai").lower()
+        if envelope.allowed_provider and envelope.allowed_provider.lower() not in (
+            provider,
+            "any",
+            # Azure OpenAI serves OpenAI models: accept either label.
+            *([] if provider not in ("azure", "openai") else ["azure", "openai"]),
+        ):
+            raise SecurityPolicyViolationException(
+                f"Envelope permits provider '{envelope.allowed_provider}' but gateway is '{provider}'",
+                details={"allowed_provider": envelope.allowed_provider},
+            )
+
+    def _is_retryable_llm_error(self, exc: BaseException) -> bool:
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(exc, "http_status_code", None)
+        if status is None:
+            status = getattr(exc, "status", None)
+        if status in (429, 503):
+            return True
+        # Fallback to retryable attribute but exclude auth errors (401, 403)
+        if status in (401, 403):
+            return False
+        return bool(getattr(exc, "retryable", False))
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(
+            lambda e: (
+                getattr(e, "status_code", getattr(e, "http_status_code", None)) in (429, 503)
+                or (
+                    getattr(e, "retryable", False)
+                    and getattr(e, "http_status_code", None) not in (401, 403)
+                )
+            )
+        ),
+        reraise=True,
+    )
+    async def _call_with_retry(self, client: object, kwargs: dict[str, object]) -> object:
+        return await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),  # type: ignore[attr-defined]
+            timeout=30,
+        )
+
+    async def complete(self, tenant_id: str, request: LLMGatewayRequest) -> LLMGatewayResponse:
+        start = time.perf_counter()
+        client: object = self._get_client()
+
+        # F-028: enforce the prompt data-policy boundary before any provider call.
+        if request.envelope is not None:
+            self._enforce_envelope_policy(tenant_id, request)
+        else:
+            logger.warning(
+                "LLM call without classified prompt envelope; proceeding with default INTERNAL policy",
+                extra={"tenant_id": tenant_id},
+            )
+
+        # Use structured output if schema provided
+        kwargs: dict[str, object] = {
+            "model": self._wire_model_name(),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": request.system_prompt or "You are an investigation assistant.",
+                },
+                {"role": "user", "content": request.prompt},
+            ],
+            "temperature": request.temperature
+            if request.temperature is not None
+            else self._config.temperature,
+            "max_tokens": request.max_tokens or self._config.max_tokens,
+        }
+        if request.response_schema is not None:
+            # F-027: enforce the supplied JSON schema at the provider layer via
+            # strict structured outputs — not a generic json_object mode with
+            # only post-hoc Pydantic validation. Falls back to json_object only
+            # for API versions that reject the json_schema response format.
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "investigation_decision",
+                    "strict": True,
+                    "schema": request.response_schema,
+                },
+            }
+
+        # Token visibility: estimate what is about to be sent (tiktoken,
+        # char fallback) so every LLM call logs its input size even when the
+        # provider omits usage telemetry. Counts only — never prompt text.
+        wire_model = str(kwargs["model"])
+        system_content = str(request.system_prompt or "You are an investigation assistant.")
+        schema_content = json.dumps(request.response_schema) if request.response_schema else ""
+        estimated_input_tokens = (
+            count_text_tokens(wire_model, system_content)
+            + count_text_tokens(wire_model, request.prompt)
+            + count_text_tokens(wire_model, schema_content)
+        )
+        logger.info(
+            "LLM request tokens model=%s estimated_input_tokens=%s max_tokens=%s",
+            wire_model,
+            estimated_input_tokens,
+            kwargs["max_tokens"],
+            extra={
+                "tenant_id": tenant_id,
+                "model": wire_model,
+                "estimated_input_tokens": estimated_input_tokens,
+                "max_tokens": kwargs["max_tokens"],
+            },
+        )
+
+        # Dynamic dispatch — keep mypy happy with Any
+        try:
+            resp: object = await self._call_with_retry(client, kwargs)
+        except Exception as exc:
+            # Older API versions reject json_schema response_format: retry once
+            # with generic json_object mode rather than failing the call, but
+            # keep strict Pydantic validation downstream as the second boundary.
+            if request.response_schema is not None and _is_unsupported_format_error(exc):
+                logger.warning(
+                    "Provider rejected strict json_schema mode; falling back to json_object",
+                    extra={"tenant_id": tenant_id},
+                )
+                kwargs["response_format"] = {"type": "json_object"}
+                resp = await self._call_with_retry(client, kwargs)
+            else:
+                raise
+
+        # Extract content + usage
+        content: str = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        try:
+            choice = resp.choices[0]  # type: ignore[attr-defined]
+            content = choice.message.content or ""
+            usage = getattr(resp, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        except Exception:
+            logger.warning("Failed to parse OpenAI usage telemetry", extra={"tenant_id": tenant_id})
+
+        # Extract content safely (second pass overwrites the telemetry parse
+        # above with a defensive getattr chain; `content` is already
+        # initialized, so no re-annotation here).
+        try:
+            choices = getattr(resp, "choices", [])
+            if choices:
+                content = choices[0].message.content or ""
+        except Exception:
+            logger.warning(
+                "Failed to parse OpenAI response content", extra={"tenant_id": tenant_id}
+            )
+
+        parsed: dict[str, object] | None = None
+        if request.response_schema is not None and content:
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                pass
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        estimated_cost, pricing_version = _estimate_cost_versioned(
+            self._config.model_name, prompt_tokens, completion_tokens
+        )
+        metadata = LLMCallMetadata(
+            model_name=self._config.model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            estimated_cost_usd=estimated_cost,
+            latency_ms=latency_ms,
+            pricing_version=pricing_version,
+        )
+        logger.info(
+            "LLM response tokens model=%s prompt_tokens=%s completion_tokens=%s "
+            "total_tokens=%s estimated_cost_usd=%.6f latency_ms=%.1f",
+            self._config.model_name,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+            estimated_cost,
+            latency_ms,
+            extra={
+                "tenant_id": tenant_id,
+                "model": self._config.model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "estimated_cost_usd": estimated_cost,
+                "latency_ms": round(latency_ms, 1),
+            },
+        )
+        return LLMGatewayResponse(content=content, parsed=parsed, metadata=metadata)

@@ -1,0 +1,5 @@
+connections/
+secrets/
+apps/
+.env
+*.log

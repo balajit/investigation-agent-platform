@@ -1,0 +1,58 @@
+# config/profiles/gen-verbose.yaml
+# ---------------------------------------------------------------------------
+# Real production profile for the `gen` backend HTTP-transaction log family.
+# Observability mapping: config/observability-mappings/gen-verbose.yaml.
+#
+# Code and state facts for this workload are not yet captured, so the
+# profile stays DRAFT with no datasources — it enables LOG evidence only
+# until code/datasource facts are supplied.
+# ---------------------------------------------------------------------------
+
+application:
+  id: gen-verbose
+  tenant_id: tenant-a
+  name: Gen Service - Verbose HTTP Transaction Log
+  description: >-
+    DRAFT: production observability for the `gen` verbose HTTP-transaction
+    stream. Services carry the known telemetry; datasources pending onboarding facts.
+  environment: production
+  version: 1
+  status: DRAFT
+  owner: platform-team
+  domain: gen
+  planes:
+    - backend
+  data_classification: INTERNAL
+  allowed_capabilities:
+    - SEARCH_LOGS
+  mapping_source_id: gen-verbose
+  services:
+    - name: gen-verbose
+      role: edge
+      description: Verbose HTTP-transaction log stream.
+      telemetry:
+        log_indices:
+          - logz-gen-verbose-prod-es-*
+          - logz-gen-verbose-prod-blue-es-*
+          - logz-gen-verbose-prod-cloud-es-*
+          - logz-gen-verbose-prod-micro-es-*
+        service_names:
+          - gen-verbose
+  datasources: []
+
+correlation:
+  fields:
+    - traceId
+    - trackingId
+    - sessionId
+    - XCOSSessionId
+    - transactionKey
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+  correlationDepth: 2
+  maximumHypotheses: 5

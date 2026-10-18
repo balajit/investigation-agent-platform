@@ -1,0 +1,19 @@
+# IAP logging topology (TO_DO-006: now actually loaded at startup).
+#
+# This file declares handler topology only; formatters are wired in
+# `infrastructure/telemetry/logging.py` so structlog records render as JSON
+# on every handler. Raw values here are non-secret; real overrides come from
+# `IAP_LOG_LEVEL` and `IAP_LOG_FILE` at runtime.
+version: 1
+
+handlers:
+  console:
+    enabled: true
+  file:
+    enabled: true
+    path: "data/iap.log"
+    max_bytes: 10485760
+    backup_count: 5
+
+root:
+  level: INFO

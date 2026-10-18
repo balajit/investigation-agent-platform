@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated LLM source files
+llm_source/
+tmp/
+
+# Local runtime state: buffered-persistence WAL + on-disk artifact store.
+# Both are dev fallback journals / test residue (e.g. system-api-suite fuzz
+# runs); restorable via volume, never commit.
+data/*
+!data/.gitkeep
+
+# Oracle/SQLcl connection material — credentials, never commit
+connections/
+secrets/
+*sqlcl-encryption-key*
+.env
+# Secrets never live in the repository (TO_DO-001): ignore all env files
+# except the secret-free template. Secrets arrive only via runtime-injected
+# environment variables or a secret manager (AWS Secrets Manager, OpenBao).
+.env.*
+!.env.example

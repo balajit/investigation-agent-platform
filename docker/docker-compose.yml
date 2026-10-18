@@ -1,0 +1,167 @@
+services:
+  postgres:
+    # pgvector image (Part 6 D2): Mem0's vector substrate lives on this same
+    # database via CREATE EXTENSION vector (migration 006_pgvector_extension).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: iap
+      POSTGRES_USER: iap
+      POSTGRES_PASSWORD: iap
+    ports:
+      - "5452:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # R3 knowledge-context cache (GEMINI_RECOS). Dockerized Redis for dev;
+  # cloud binds IAP_REDIS_URL to the managed endpoint with zero code change
+  # (adapter pattern). Loopback-published like :9200/:5452; never public.
+  # Ephemeral by design (cache only) — no volume: a restart cold-starts.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", '""']
+    ports:
+      - "6379:6379"
+
+  # OTel trace collector (OTEL P4, #10). API/worker run on the host and export
+  # OTLP gRPC to loopback :4317 (IAP_OTLP_ENDPOINT default). Spans land in
+  # Tempo (UI :3200) and collector stdout (`docker logs docker-otel-collector-1`).
+  # Sampling lives here (tail: errors always, probabilistic 100% dev) plus
+  # the app-side IAP_OTEL_SAMPLE_RATIO head sampler — tighten both before
+  # production traffic. Ephemeral by design — no volume.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.163.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      - tempo
+
+  # Tempo trace backend (#10). OTLP gRPC :4317 in, UI on :3200.
+  # Filesystem store on a named volume (dev convenience, not repo state).
+  tempo:
+    image: grafana/tempo:2.7.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200"
+      - "4317"
+    volumes:
+      - tempo-data:/var/tempo
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+
+  temporal:
+    image: temporalio/auto-setup:1.23
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_USER=iap
+      - POSTGRES_PWD=iap
+      # Image only ships config/dynamicconfig/docker.yaml (empty); the
+      # previously referenced development-sql.yaml doesn't exist in the
+      # image and isn't mounted, which caused the container to fail on
+      # every start ("no such file or directory").
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/docker.yaml
+    depends_on:
+      - postgres
+
+  # auto-setup doesn't bundle the Web UI — it's a separate image that talks
+  # to the frontend gRPC port above. This is what actually serves :8233.
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    ports:
+      - "8233:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - temporal
+
+  # Dev log shipper for the IAP self profile (tmp/TO_DO_OPS_001.md): tails the
+  # structlog JSON logs into `logs-n-a-iap-development-*`, matching the
+  # `logs-n-a-*-development-*` contract. Config: docker/logging/filebeat.yml.
+  # P3-1: crystaldba Postgres MCP (restricted read-only, SSE). One instance
+  # per database — this one fronts IAP's own application database so
+  # self-triage flows through MCP like every other datasource. DATABASE_URI
+  # resolves from shell env (secret-injected, never baked); the SSE port
+  # stays on the internal compose network (no published port).
+  postgres-mcp-iap:
+    image: crystaldba/postgres-mcp:0.3.0
+    command: ["--access-mode=restricted", "--transport=sse"]
+    environment:
+      DATABASE_URI: ${IAP_MCP_IAP_DB_URI:-${IAP_DATABASE_URI}}
+    ports:
+      - "127.0.0.1:8100:8000"
+    depends_on:
+      - postgres
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.12.0
+    user: "0:0"
+    command: ["--strict.perms=false"]
+    volumes:
+      - ../data:/logs/data:ro
+      - ../tmp:/logs/tmp:ro
+      - ./logging/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      - elasticsearch
+
+  kafka:
+    image: bitnamilegacy/kafka:3.7 
+    ports:
+      - "9093:9092"
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      # Advertised as localhost:9093 (not the in-network kafka:9092) so
+      # host-local dev processes (API, worker, scripts) behind the
+      # 9093->9092 port mapping resolve metadata correctly. No in-network
+      # Kafka consumers exist in this compose file.
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+
+
+  # Part 6 Slice 2 + Layer 3: single shared Neo4j 5.26 Community instance.
+  # Graphiti (group_id namespacing) and Layer 3 topology (label namespaces)
+  # share one database — Community allows exactly one. See docs
+  # (part-6 design, ISSUE-4) for the Enterprise/Aura upgrade trigger.
+  neo4j:
+    image: neo4j:5.26-community
+    ports:
+      - "7474:7474"  # browser
+      - "7687:7687"  # bolt
+    environment:
+      - NEO4J_AUTH=neo4j/iap-neo4j-dev
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neodat:/data
+      - neologs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "iap-neo4j-dev", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:
+  neodat:
+  neologs:
+  filebeat-data:
+  tempo-data:

@@ -1,0 +1,937 @@
+# src/investigation_agent_platform/infrastructure/configuration/config.py
+"""Infrastructure configuration models and strongly-typed environment loaders."""
+
+import logging
+import os
+from pathlib import Path
+
+import yaml
+from opentelemetry import trace
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+from investigation_agent_platform.domain.profile.models import ApplicationProfile
+
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+
+
+class DatabaseConfig(BaseModel):
+    """Database connection and pooling parameters."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    connection_uri: SecretStr = Field(..., min_length=1)
+    pool_size: int = Field(default=10, ge=1, le=100)
+    max_overflow: int = Field(default=20, ge=0)
+
+
+class LLMConfig(BaseModel):
+    """Large Language Model provider configuration.
+
+    Providers: ``openai`` | ``anthropic`` | ``azure`` (Azure OpenAI).
+    Azure uses the OpenAI SDK's ``AsyncAzureOpenAI`` client: ``api_key`` +
+    ``azure_endpoint`` + ``azure_api_version``, with ``azure_deployment`` as
+    the wire name for chat completions. ``model_name`` stays the logical
+    base-model id (e.g. ``gpt-4o``) so registry/pricing policy still applies.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    api_key: SecretStr = Field(..., min_length=1)
+    model_name: str = Field(default="gpt-4o", min_length=1)
+    provider: str = Field(default="openai", description="openai|anthropic|azure|muse")
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=4096, ge=128)
+    # Custom OpenAI-compatible endpoint (e.g. a gateway or local proxy).
+    # Empty (default) uses the provider SDK default. Only http/https URLs
+    # are accepted; the gateway refuses anything else at client build time.
+    openai_base_url: str = Field(default="", max_length=512)
+    # Azure OpenAI wiring (only required when provider == "azure").
+    azure_endpoint: str = Field(default="", max_length=512)
+    azure_api_version: str = Field(default="2024-02-01", min_length=1, max_length=64)
+    azure_deployment: str = Field(default="", max_length=128)
+    azure_embedding_deployment: str = Field(default="", max_length=128)
+    azure_embedding_api_version: str = Field(default="", max_length=64)
+    azure_embedding_endpoint: str = Field(default="", max_length=512)
+    azure_embedding_api_key: SecretStr = Field(default=SecretStr(""))
+
+
+def _first_env(*names: str, default: str = "") -> str:
+    """Return the first set non-empty env var among ``names`` (aliases first)."""
+    for name in names:
+        value = os.environ.get(name, "")
+        if value:
+            return value
+    return default
+
+
+def _provider_var(provider: str, setting: str) -> str:
+    """Canonical per-provider env name: ``IAP_<NAME>_<SETTING>``."""
+    return f"IAP_{provider.upper()}_{setting}"
+
+
+def _llm_config_from_env(
+    *,
+    model_default: str = "gpt-4o",
+    provider_default: str = "openai",
+    temperature_default: float = 0.0,
+    max_tokens_default: int = 4096,
+    api_key_override: str | None = None,
+) -> LLMConfig:
+    """Build ``LLMConfig`` from env using the per-provider standard.
+
+    ``IAP_LLM_PROVIDER`` selects the provider (openai|anthropic|azure|muse);
+    every other setting lives under ``IAP_<NAME>_*`` with no
+    fallback aliases:
+
+    - openai: MODEL, API_KEY, ENDPOINT (optional custom gateway)
+    - anthropic: MODEL, API_KEY
+    - azure: MODEL (base id), API_KEY, ENDPOINT, DEPLOYMENT, API_VERSION,
+      EMBEDDING_DEPLOYMENT, EMBEDDING_ENDPOINT, EMBEDDING_API_VERSION,
+      EMBEDDING_API_KEY
+    - muse: MODEL, API_KEY, ENDPOINT (required — Muse is never sent to the
+      default OpenAI endpoint)
+
+    Shared: ``IAP_LLM_TEMPERATURE``, ``IAP_LLM_MAX_TOKENS``.
+    """
+    provider = _first_env("IAP_LLM_PROVIDER", default=provider_default)
+    key = provider.lower()
+    api_key = api_key_override or os.environ.get(_provider_var(key, "API_KEY"), "")
+    if not api_key:
+        raise PlatformConfigurationError(
+            f"LLM api key is missing for provider '{provider}'; set "
+            f"{_provider_var(key, 'API_KEY')} "
+            "(refusing to build an unauthenticated gateway)"
+        )
+    model_name = _first_env(_provider_var(key, "MODEL"), default=model_default)
+    base_url = os.environ.get(_provider_var(key, "ENDPOINT"), "")
+    cfg = LLMConfig(
+        api_key=SecretStr(api_key),
+        model_name=model_name,
+        provider=provider,
+        temperature=float(os.environ.get("IAP_LLM_TEMPERATURE", str(temperature_default))),
+        max_tokens=int(os.environ.get("IAP_LLM_MAX_TOKENS", str(max_tokens_default))),
+        openai_base_url=base_url,
+        azure_endpoint=os.environ.get(_provider_var("azure", "ENDPOINT"), ""),
+        azure_api_version=os.environ.get(_provider_var("azure", "API_VERSION"), "2024-02-01"),
+        azure_deployment=os.environ.get(_provider_var("azure", "DEPLOYMENT"), ""),
+        azure_embedding_deployment=os.environ.get(
+            _provider_var("azure", "EMBEDDING_DEPLOYMENT"), ""
+        ),
+        azure_embedding_api_version=os.environ.get(
+            _provider_var("azure", "EMBEDDING_API_VERSION"), ""
+        ),
+        azure_embedding_endpoint=os.environ.get(_provider_var("azure", "EMBEDDING_ENDPOINT"), ""),
+        azure_embedding_api_key=SecretStr(
+            os.environ.get(_provider_var("azure", "EMBEDDING_API_KEY"), "")
+        ),
+    )
+    if cfg.provider.lower() == "azure":
+        missing = [
+            name
+            for name, value in (
+                ("azure_endpoint", cfg.azure_endpoint),
+                ("azure_deployment", cfg.azure_deployment),
+            )
+            if not value
+        ]
+        if missing:
+            msg = (
+                "Boot halted: provider 'azure' requires missing settings: "
+                + ", ".join(missing)
+                + " (set IAP_AZURE_ENDPOINT / IAP_AZURE_DEPLOYMENT)"
+            )
+            logger.critical(msg, extra={"missing": missing})
+            raise PlatformConfigurationError(msg)
+    if cfg.provider.lower() == "muse" and not cfg.openai_base_url:
+        msg = (
+            "Boot halted: provider 'muse' requires IAP_MUSE_ENDPOINT; "
+            "refusing to send Muse models to the default OpenAI endpoint"
+        )
+        logger.critical(msg)
+        raise PlatformConfigurationError(msg)
+    return cfg
+
+
+class BudgetConfig(BaseModel):
+    """Platform budget and tool call limit configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_tool_calls: int = Field(default=50, ge=1)
+    max_reasoning_calls: int = Field(default=20, ge=1)
+    max_duration_seconds: int = Field(default=1800, ge=10)
+
+
+class TemporalConfig(BaseModel):
+    """Temporal workflow engine configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_host: str = Field(default="localhost:7233", min_length=1)
+    namespace: str = Field(default="default", min_length=1)
+    task_queue: str = Field(default="investigation-tasks", min_length=1)
+    # Part 11.3E: workload-isolated queues share one deployable worker
+    # package; splitting services comes only with measured need.
+    indexing_task_queue: str = Field(default="indexing-tasks", min_length=1)
+    analytics_task_queue: str = Field(default="analytics-tasks", min_length=1)
+    max_concurrent_activities: int = Field(default=100, ge=1, le=1000)
+    max_concurrent_workflows: int = Field(default=50, ge=1, le=1000)
+
+
+class KafkaConfig(BaseModel):
+    """Kafka messaging broker configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bootstrap_servers: str = Field(default="localhost:9092", min_length=1)
+    topic_prefix: str = Field(default="investigation", min_length=1)
+    consumer_group: str = Field(default="investigation-agent-group", min_length=1)
+
+
+class QuotaConfig(BaseModel):
+    """Platform-wide default quota limits (Part 11.3D).
+
+    Per-tenant overrides arrive via future policy storage; these defaults
+    apply when no override resolves. All values mirror QuotaPolicy fields.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_concurrent_investigations: int = Field(default=10, ge=0, le=1000)
+    max_concurrent_jobs: int = Field(default=5, ge=0, le=500)
+    max_queued_jobs: int = Field(default=50, ge=0, le=5000)
+    max_batch_records: int = Field(default=500, ge=1, le=5000)
+    max_reference_source_bytes: int = Field(default=500_000_000, ge=0)
+    max_reference_files: int = Field(default=50_000, ge=0)
+    max_vector_rows: int = Field(default=5_000_000, ge=0)
+    max_llm_tokens_per_day: int = Field(default=10_000_000, ge=0)
+    max_active_chat_sessions: int = Field(default=100, ge=0, le=10000)
+    max_active_streams: int = Field(default=100, ge=0, le=10000)
+    max_report_history: int = Field(default=50, ge=0, le=1000)
+    max_artifact_bytes: int = Field(default=10_000_000_000, ge=0)
+
+
+class ObjectStorageConfig(BaseModel):
+    """S3/MinIO tier-2 payload storage configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint_url: str | None = Field(default=None)
+    bucket_name: str = Field(default="investigation-evidence-payloads", min_length=1)
+    region: str = Field(default="us-east-1", min_length=1)
+    access_key: SecretStr = Field(default=SecretStr(""))
+    secret_key: SecretStr = Field(default=SecretStr(""))
+
+
+class TelemetryConfig(BaseModel):
+    """OpenTelemetry instrumentation setup."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    service_name: str = Field(default="investigation-agent-platform", min_length=1)
+    otlp_endpoint: str = Field(default="http://localhost:4317", min_length=1)
+    enabled: bool = Field(default=True)
+    # #10: head sampler ratio (0.0-1.0, dev default 1.0; prod ~0.10 with
+    # collector tail-sampling keeping errors). ParentBased: child spans
+    # follow the parent decision, so traces stay complete.
+    sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class EvidenceConfig(BaseModel):
+    """Evidence provider connection details (Part 3 addendum).
+
+    Every field is optional: unconfigured providers stay unregistered on the
+    selector (never stubbed). Oracle additionally requires the ``oracledb``
+    package, which is not a default dependency — absence fails that one
+    registration closed with a named log, never boot.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    elasticsearch_url: str | None = Field(default=None)
+    elastic_request_timeout: int = Field(default=30, ge=1, le=300)
+    # Provider query timeout (Elasticsearch `timeout` body parameter). Separate
+    # from `elastic_request_timeout` (client/cancellation boundary); the
+    # relationship is documented in Part 9 Phase 3.
+    elastic_query_timeout_seconds: float = Field(default=25.0, ge=1.0, le=300.0)
+    # Cursor signing key for Elastic pagination tokens. Fail-closed: production
+    # boot halts when empty (see `_validate_evidence_secrets`). Non-production
+    # may run without one; the adapter then requires an explicit key.
+    cursor_signing_key: SecretStr = Field(default=SecretStr(""))
+    cursor_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    # Operator-tunable provider ceilings. Each is capped by an immutable
+    # security maximum (`le=`): operators may lower bounds, never raise them.
+    elastic_max_hits: int = Field(default=200, ge=1, le=200)
+    elastic_max_time_window_seconds: int = Field(default=7 * 24 * 3600, ge=1, le=7 * 24 * 3600)
+    elastic_max_keyword_terms: int = Field(default=20, ge=1, le=20)
+    elastic_max_services: int = Field(default=10, ge=1, le=10)
+    oracle_dsn: SecretStr = Field(default=SecretStr(""))
+    oracle_query_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
+    # PostgreSQL state backend (profile-driven datasources + optional global
+    # fallback). Same conventions as Oracle: full SQLAlchemy URL in the DSN.
+    postgres_dsn: SecretStr = Field(default=SecretStr(""))
+    postgres_query_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
+    gateway_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # File-backed log evidence (generic file-log provider). Roots are
+    # relative to the process working directory unless absolute; every
+    # resolved file must stay inside one of them. Empty roots means the
+    # provider stays unregistered (fail closed, same rule as optionals).
+    file_log_roots: str = Field(default="data", max_length=1024)
+    file_log_max_bytes_per_file: int = Field(default=2097152, ge=1024, le=104857600)
+    file_log_max_files: int = Field(default=20, ge=1, le=200)
+    # YAML listing Oracle SQLcl MCP servers (no secrets — mounts carry those).
+    # Each entry: {name, command, args, connection, allowed_tools,
+    # timeout_seconds, max_rows, tenants} plus optional query_tool (default
+    # run-sql), connection_tool + connection_arg for stateful servers
+    # (SQLcl 26.x: connect then session-scoped sql_run). Missing file = no MCP servers.
+    oracle_mcp_config: str = Field(default="config/oracle-mcp-servers.yaml", min_length=1)
+    # YAML listing Postgres (crystaldba) MCP servers (P3-1). One entry per
+    # database (crystaldba serves a single DATABASE_URI per instance). Each
+    # entry: {name, kind=postgres, transport=sse|stdio, url|command|args,
+    # query_tool=execute_sql, tenants}. Missing file = no MCP servers.
+    postgres_mcp_config: str = Field(default="config/postgres-mcp-servers.yaml", min_length=1)
+    # P3-1: direct-engine state providers (oracle-primary/postgres-primary)
+    # exist only as a non-default fallback. Default False = all datasource
+    # interrogation goes through MCP gateways, including self-triage.
+    direct_state_providers: bool = Field(default=False)
+    # Directory of ObservabilitySourceMapping YAML documents (Part 10).
+    # Missing directory = generic-ECS fallback only, never a stub mapping.
+    mapping_profiles_path: str = Field(default="config/observability-mappings", min_length=1)
+
+
+class McpConfig(BaseModel):
+    """MCP investigation-service transport configuration (Part 9 Phase 6).
+
+    The MCP server is an agent-facing interface over the application
+    investigation services — never an infrastructure administration surface.
+    Only the three investigation tools are exposed; transports share one
+    tool/application layer so behavior is identical.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=False)
+    transport: str = Field(default="stdio", min_length=1)
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8899, ge=1, le=65535)
+    server_name: str = Field(default="investigation-agent-platform", min_length=1)
+    # HTTP transport identity headers (names only; values verified per request).
+    tenant_header: str = Field(default="X-Tenant-ID", min_length=1)
+    investigation_header: str = Field(default="X-Investigation-ID", min_length=1)
+    # stdio transport scope: a stdio server instance is bound to exactly one
+    # investigation (no per-request auth on stdio). Empty = stdio refused.
+    stdio_tenant_id: str = Field(default="", max_length=128)
+    stdio_investigation_id: str = Field(default="", max_length=36)
+    stdio_actor_id: str = Field(default="local-operator", max_length=256)
+
+
+class BufferConfig(BaseModel):
+    """Dev-only buffered persistence (SQLite WAL + background flush).
+
+    Outside production, repository writes go to Postgres when reachable and
+    are journaled to a local SQLite write-ahead log otherwise, then replayed
+    by a background flusher. ``path`` should live on a persisted volume when
+    the app runs containerized so the buffer survives restarts. Production
+    ignores this config entirely (F-001 fail-fast).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=True)
+    path: str = Field(default="data/iap-buffer.sqlite3", min_length=1, max_length=512)
+    flush_interval_seconds: float = Field(default=5.0, ge=1.0, le=300.0)
+
+
+class TopologyConfig(BaseModel):
+    """Layer 3 static-code/organizational topology (Neo4j) configuration.
+
+    Credentials are ``SecretStr`` and must never be logged. ``required``
+    controls whether production startup fails hard when topology cannot be
+    wired (F-001 precedent: production must never silently degrade).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=False)
+    required: bool = Field(default=False)
+    uri: SecretStr = Field(default=SecretStr(""))
+    username: SecretStr = Field(default=SecretStr(""))
+    password: SecretStr = Field(default=SecretStr(""))
+    database: str = Field(default="neo4j", min_length=1)
+    encrypted: bool = Field(default=True)
+    connection_timeout_seconds: float = Field(default=10.0, ge=1.0, le=120.0)
+    query_timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
+    max_connection_pool_size: int = Field(default=50, ge=1, le=500)
+    ingestion_batch_size: int = Field(default=500, ge=1, le=10000)
+    max_lookup_nodes: int = Field(default=200, ge=1, le=100000)
+    max_lookup_edges: int = Field(default=1000, ge=1, le=1000000)
+    code_repo_base_path: str = Field(
+        default="",
+        max_length=1024,
+        description="Filesystem base for on-demand tiers (CODEOWNERS, micro "
+        "parse). Empty disables file-based tiers gracefully; same IAP_CODE_REPO_BASE "
+        "convention as the code intelligence provider.",
+    )
+    # ISSUE-4: snapshot retention / garbage collection. Disabled by default —
+    # an operator opts in explicitly once a cleanup schedule is wired.
+    retention_enabled: bool = Field(default=False)
+    retention_window_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Snapshots ingested within this many days are always kept, "
+        "regardless of the LRU bound (D9/ISSUES_0926 risk 2).",
+    )
+    retention_max_snapshots_per_repository: int = Field(
+        default=20,
+        ge=1,
+        le=10000,
+        description="LRU bound: the N most-recently-ingested READY/SUPERSEDED "
+        "snapshots per repository are always kept even if older than the window.",
+    )
+    # Part 8: optional Cognee enrichment pilot. Default off; all Cognee
+    # imports stay isolated in infrastructure/topology/cognee_adapter.py so
+    # non-pilot installs never load the dependency.
+    cognee_enabled: bool = Field(default=False)
+    cognee_dataset_salt: SecretStr = Field(default=SecretStr(""))
+
+
+class KnowledgeConfig(BaseModel):
+    """Execution knowledge layer configuration (Part 6 Slice 0).
+
+    Slice 0 needs no external services: envelopes live in Postgres and the
+    Mem0/Graphiti adapters default to disabled. Later slices flip `mem0` /
+    `graphiti` on with their own connection settings.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = Field(default=True)
+    max_reverify_attempts: int = Field(default=3, ge=1, le=10)
+    max_episodes_per_investigation: int = Field(default=50, ge=1, le=1000)
+    evidence_summary_ttl_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description="TTL window for evidence_summary artifacts captured from "
+        "concluded investigations. After this window retrieval excludes them "
+        "as EXPIRED.",
+    )
+    max_episode_bytes: int = Field(
+        default=8192,
+        ge=512,
+        le=1048576,
+        description="Per-episode byte cap for Graphiti projection (D7). "
+        "Oversized bodies are truncated with a recoverable pointer, never rejected.",
+    )
+    mem0_enabled: bool = Field(default=False)
+    graphiti_enabled: bool = Field(default=False)
+    # Slice 1 (Mem0): model + embedder + vector-store wiring. pgvector
+    # reuses the application Postgres via connection string override.
+    mem0_model: str = Field(default="gpt-4o-mini", min_length=1)
+    mem0_embedder_model: str = Field(default="text-embedding-3-small", min_length=1)
+    mem0_embedding_dims: int = Field(default=1536, ge=1, le=16384)
+    mem0_collection: str = Field(default="iap_memories", min_length=1)
+    mem0_pgvector_url: SecretStr = Field(default=SecretStr(""))
+    # Slice 2 (Graphiti): self-hosted graphiti-core against Neo4j. Shares
+    # the Layer 3 Neo4j connection settings by default; override only when
+    # the knowledge graph must live on a separate instance.
+    graphiti_model: str = Field(default="gpt-4o-mini", min_length=1)
+    graphiti_embedder_model: str = Field(default="text-embedding-3-small", min_length=1)
+    graphiti_neo4j_uri: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_user: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_password: SecretStr = Field(default=SecretStr(""))
+    graphiti_neo4j_database: str = Field(default="neo4j", min_length=1)
+    graphiti_semaphore_limit: int = Field(default=5, ge=1, le=100)
+
+
+def _evidence_config_from_env() -> EvidenceConfig:
+    """Build ``EvidenceConfig`` from ``IAP_ELASTICSEARCH_*``/``IAP_ORACLE_*`` variables."""
+    return EvidenceConfig(
+        elasticsearch_url=os.environ.get("IAP_ELASTICSEARCH_URL"),
+        elastic_request_timeout=int(os.environ.get("IAP_ELASTICSEARCH_TIMEOUT", "30")),
+        elastic_query_timeout_seconds=float(
+            os.environ.get("IAP_ELASTICSEARCH_QUERY_TIMEOUT", "25.0")
+        ),
+        cursor_signing_key=SecretStr(os.environ.get("IAP_ELASTIC_CURSOR_SIGNING_KEY", "")),
+        cursor_ttl_seconds=int(os.environ.get("IAP_ELASTIC_CURSOR_TTL_SECONDS", "3600")),
+        elastic_max_hits=int(os.environ.get("IAP_ELASTICSEARCH_MAX_HITS", "200")),
+        elastic_max_time_window_seconds=int(
+            os.environ.get("IAP_ELASTICSEARCH_MAX_TIME_WINDOW_SECONDS", str(7 * 24 * 3600))
+        ),
+        elastic_max_keyword_terms=int(os.environ.get("IAP_ELASTICSEARCH_MAX_KEYWORD_TERMS", "20")),
+        elastic_max_services=int(os.environ.get("IAP_ELASTICSEARCH_MAX_SERVICES", "10")),
+        oracle_dsn=SecretStr(os.environ.get("IAP_ORACLE_DSN", "")),
+        oracle_query_timeout=float(os.environ.get("IAP_ORACLE_QUERY_TIMEOUT", "30.0")),
+        postgres_dsn=SecretStr(os.environ.get("IAP_POSTGRES_DSN", "")),
+        postgres_query_timeout=float(os.environ.get("IAP_POSTGRES_QUERY_TIMEOUT", "30.0")),
+        gateway_timeout_seconds=float(os.environ.get("IAP_GATEWAY_TIMEOUT_SECONDS", "30.0")),
+        file_log_roots=os.environ.get("IAP_FILE_LOG_ROOTS", "data"),
+        file_log_max_bytes_per_file=int(os.environ.get("IAP_FILE_LOG_MAX_BYTES", "2097152")),
+        file_log_max_files=int(os.environ.get("IAP_FILE_LOG_MAX_FILES", "20")),
+        mapping_profiles_path=os.environ.get(
+            "IAP_MAPPING_PROFILES_PATH", "config/observability-mappings"
+        ),
+        postgres_mcp_config=os.environ.get(
+            "IAP_POSTGRES_MCP_CONFIG", "config/postgres-mcp-servers.yaml"
+        ),
+        direct_state_providers=os.environ.get(
+            "IAP_DIRECT_STATE_PROVIDERS", "false"
+        ).lower()
+        == "true",
+    )
+
+
+def _validate_evidence_secrets(evidence: EvidenceConfig, environment: str) -> None:
+    """Fail closed when production lacks required evidence secrets.
+
+    The Elastic cursor signing key is a production security boundary: cursor
+    integrity must never rest on a source-controlled constant. Non-production
+    environments may run without one (tests pass explicit keys); the adapter
+    refuses to sign with an empty key regardless of environment.
+    """
+    if environment.lower() == "production" and not evidence.cursor_signing_key.get_secret_value():
+        msg = "Boot halted: IAP_ELASTIC_CURSOR_SIGNING_KEY is required in production"
+        logger.critical(msg)
+        raise PlatformConfigurationError(msg)
+
+
+def _buffer_config_from_env() -> BufferConfig:
+    """Build ``BufferConfig`` from ``IAP_BUFFER_*`` environment variables."""
+    return BufferConfig(
+        enabled=os.environ.get("IAP_BUFFER_ENABLED", "true").lower() == "true",
+        path=os.environ.get("IAP_BUFFER_PATH", "data/iap-buffer.sqlite3"),
+        flush_interval_seconds=float(os.environ.get("IAP_BUFFER_FLUSH_INTERVAL_SECONDS", "5.0")),
+    )
+
+
+def _quota_config_from_env() -> QuotaConfig:
+    """Build ``QuotaConfig`` from ``IAP_QUOTA_*`` environment variables."""
+    return QuotaConfig(
+        max_concurrent_investigations=int(os.environ.get("IAP_QUOTA_MAX_CONCURRENT_INV", "10")),
+        max_concurrent_jobs=int(os.environ.get("IAP_QUOTA_MAX_CONCURRENT_JOBS", "5")),
+        max_queued_jobs=int(os.environ.get("IAP_QUOTA_MAX_QUEUED_JOBS", "50")),
+        max_batch_records=int(os.environ.get("IAP_QUOTA_MAX_BATCH_RECORDS", "500")),
+        max_reference_source_bytes=int(
+            os.environ.get("IAP_QUOTA_MAX_REF_SOURCE_BYTES", "500000000")
+        ),
+        max_reference_files=int(os.environ.get("IAP_QUOTA_MAX_REF_FILES", "50000")),
+        max_vector_rows=int(os.environ.get("IAP_QUOTA_MAX_VECTOR_ROWS", "5000000")),
+        max_llm_tokens_per_day=int(os.environ.get("IAP_QUOTA_MAX_LLM_TOKENS_DAY", "10000000")),
+        max_active_chat_sessions=int(os.environ.get("IAP_QUOTA_MAX_CHAT_SESSIONS", "100")),
+        max_active_streams=int(os.environ.get("IAP_QUOTA_MAX_STREAMS", "100")),
+        max_report_history=int(os.environ.get("IAP_QUOTA_MAX_REPORT_HISTORY", "50")),
+        max_artifact_bytes=int(os.environ.get("IAP_QUOTA_MAX_ARTIFACT_BYTES", "10000000000")),
+    )
+
+
+def _temporal_config_from_env() -> TemporalConfig:
+    """Build ``TemporalConfig`` from ``IAP_TEMPORAL_*`` environment variables."""
+    return TemporalConfig(
+        target_host=os.environ.get("IAP_TEMPORAL_HOST", "localhost:7233"),
+        namespace=os.environ.get("IAP_TEMPORAL_NAMESPACE", "default"),
+        task_queue=os.environ.get("IAP_TEMPORAL_TASK_QUEUE", "investigation-tasks"),
+        indexing_task_queue=os.environ.get("IAP_TEMPORAL_INDEXING_QUEUE", "indexing-tasks"),
+        analytics_task_queue=os.environ.get("IAP_TEMPORAL_ANALYTICS_QUEUE", "analytics-tasks"),
+        max_concurrent_activities=int(os.environ.get("IAP_TEMPORAL_MAX_ACTIVITIES", "100")),
+        max_concurrent_workflows=int(os.environ.get("IAP_TEMPORAL_MAX_WORKFLOWS", "50")),
+    )
+
+
+def _mcp_config_from_env() -> McpConfig:
+    """Build ``McpConfig`` from ``IAP_MCP_*`` environment variables."""
+    return McpConfig(
+        enabled=os.environ.get("IAP_MCP_ENABLED", "false").lower() == "true",
+        transport=os.environ.get("IAP_MCP_TRANSPORT", "stdio"),
+        host=os.environ.get("IAP_MCP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("IAP_MCP_PORT", "8899")),
+        server_name=os.environ.get("IAP_MCP_SERVER_NAME", "investigation-agent-platform"),
+        tenant_header=os.environ.get("IAP_MCP_TENANT_HEADER", "X-Tenant-ID"),
+        investigation_header=os.environ.get("IAP_MCP_INVESTIGATION_HEADER", "X-Investigation-ID"),
+        stdio_tenant_id=os.environ.get("IAP_MCP_TENANT_ID", ""),
+        stdio_investigation_id=os.environ.get("IAP_MCP_INVESTIGATION_ID", ""),
+        stdio_actor_id=os.environ.get("IAP_MCP_ACTOR_ID", "local-operator"),
+    )
+
+
+def _knowledge_config_from_env() -> KnowledgeConfig:
+    """Build ``KnowledgeConfig`` from ``IAP_KNOWLEDGE_*`` environment variables."""
+    return KnowledgeConfig(
+        enabled=os.environ.get("IAP_KNOWLEDGE_ENABLED", "true").lower() == "true",
+        max_reverify_attempts=int(os.environ.get("IAP_KNOWLEDGE_MAX_REVERIFY_ATTEMPTS", "3")),
+        max_episodes_per_investigation=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODES", "50")),
+        evidence_summary_ttl_days=int(os.environ.get("IAP_KNOWLEDGE_EVIDENCE_TTL_DAYS", "90")),
+        max_episode_bytes=int(os.environ.get("IAP_KNOWLEDGE_MAX_EPISODE_BYTES", "8192")),
+        mem0_enabled=os.environ.get("IAP_KNOWLEDGE_MEM0_ENABLED", "false").lower() == "true",
+        graphiti_enabled=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_ENABLED", "false").lower()
+        == "true",
+        mem0_model=os.environ.get("IAP_KNOWLEDGE_MEM0_MODEL", "gpt-4o-mini"),
+        mem0_embedder_model=os.environ.get("IAP_KNOWLEDGE_MEM0_EMBEDDER", "text-embedding-3-small"),
+        mem0_embedding_dims=int(os.environ.get("IAP_KNOWLEDGE_MEM0_DIMS", "1536")),
+        mem0_collection=os.environ.get("IAP_KNOWLEDGE_MEM0_COLLECTION", "iap_memories"),
+        mem0_pgvector_url=SecretStr(os.environ.get("IAP_KNOWLEDGE_MEM0_PGVECTOR_URL", "")),
+        graphiti_model=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_MODEL", "gpt-4o-mini"),
+        graphiti_embedder_model=os.environ.get(
+            "IAP_KNOWLEDGE_GRAPHITI_EMBEDDER", "text-embedding-3-small"
+        ),
+        graphiti_neo4j_uri=SecretStr(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_URI", "")),
+        graphiti_neo4j_user=SecretStr(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_USER", "")),
+        graphiti_neo4j_password=SecretStr(
+            os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_PASSWORD", "")
+        ),
+        graphiti_neo4j_database=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE", "neo4j"),
+        graphiti_semaphore_limit=int(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")),
+    )
+
+
+class ApplicationConfig(BaseModel):
+    """Root application runtime configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    environment: str = Field(default="production", min_length=1)
+    application_id: str = Field(default="investigation-agent-platform", min_length=1)
+    database: DatabaseConfig
+    llm: LLMConfig
+    budget: BudgetConfig
+    temporal: TemporalConfig = Field(default_factory=TemporalConfig)
+    kafka: KafkaConfig = Field(default_factory=KafkaConfig)
+    quotas: QuotaConfig = Field(default_factory=QuotaConfig)
+    storage: ObjectStorageConfig = Field(default_factory=ObjectStorageConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    topology: TopologyConfig = Field(default_factory=TopologyConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
+
+
+class PlatformHeader(BaseModel):
+    """Platform section header inside application settings."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(default="investigation-platform", min_length=1)
+    environment: str = Field(default="production", min_length=1)
+
+
+class InvestigationSettings(BaseModel):
+    """Non-secret investigation tuning knobs from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    default_timeout_seconds: int = Field(default=1800, ge=10)
+    max_tool_calls: int = Field(default=50, ge=1)
+    max_reasoning_calls: int = Field(default=20, ge=1)
+    max_duration_seconds: int = Field(default=1800, ge=10)
+    max_hypotheses: int = Field(default=10, ge=1)
+    max_evidence_items: int = Field(default=25, ge=1)
+
+
+class PersistenceSettings(BaseModel):
+    """Non-secret persistence tuning from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(default="postgresql", min_length=1)
+    connection_pool_size: int = Field(default=10, ge=1, le=100)
+    max_overflow: int = Field(default=20, ge=0)
+
+
+class ReasoningSettings(BaseModel):
+    """Non-secret reasoning defaults from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(default="openai", min_length=1)
+    model: str = Field(default="gpt-4o", min_length=1)
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=4096, ge=128)
+
+
+class ObservabilitySettings(BaseModel):
+    """Non-secret observability defaults from ``config/application.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tracing_enabled: bool = Field(default=True)
+    otlp_endpoint: str = Field(default="http://localhost:4317", min_length=1)
+
+
+class PlatformSettings(BaseModel):
+    """Strongly typed application configuration settings document."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    platform: PlatformHeader = Field(default_factory=PlatformHeader)
+    investigation: InvestigationSettings = Field(default_factory=InvestigationSettings)
+    persistence: PersistenceSettings = Field(default_factory=PersistenceSettings)
+    reasoning: ReasoningSettings = Field(default_factory=ReasoningSettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+
+
+def load_platform_settings(path: str | Path) -> PlatformSettings:
+    """Loads `config/application.yaml` into its strongly typed structure."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.error("Configuration file missing", extra={"config_path": str(config_path)})
+        raise PlatformConfigurationError(f"Configuration file not found: {config_path}")
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        return PlatformSettings.model_validate(raw)
+    except Exception as exc:
+        logger.exception(
+            "Failed to parse YAML configuration", extra={"config_path": str(config_path)}
+        )
+        raise PlatformConfigurationError(
+            f"Invalid configuration file {config_path}: {exc}"
+        ) from exc
+
+
+def load_application_profile_from_file(path: str | Path) -> ApplicationProfile:
+    """Loads an `config/profiles/*.yaml` document into an ApplicationProfile."""
+    profile_path = Path(path)
+    if not profile_path.is_file():
+        logger.error("Profile file missing", extra={"profile_path": str(profile_path)})
+        raise PlatformConfigurationError(f"Profile file not found: {profile_path}")
+    try:
+        raw = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.exception(
+            "Failed to parse YAML profile document", extra={"profile_path": str(profile_path)}
+        )
+        raise PlatformConfigurationError(f"Invalid profile file {profile_path}: {exc}") from exc
+
+    application = raw.get("application") or {}
+    profile_doc = {**application, **{k: v for k, v in raw.items() if k != "application"}}
+    try:
+        return ApplicationProfile.model_validate(profile_doc)
+    except Exception as exc:
+        logger.exception(
+            "Profile schema validation failure", extra={"profile_path": str(profile_path)}
+        )
+        raise PlatformConfigurationError(f"Invalid profile document {profile_path}: {exc}") from exc
+
+
+def _topology_config_from_env() -> TopologyConfig:
+    """Build ``TopologyConfig`` from ``IAP_TOPOLOGY_*`` environment variables.
+
+    Defaults to disabled/not-required so existing deployments are unaffected
+    until Neo4j is explicitly configured.
+    """
+    return TopologyConfig(
+        enabled=os.environ.get("IAP_TOPOLOGY_ENABLED", "false").lower() == "true",
+        required=os.environ.get("IAP_TOPOLOGY_REQUIRED", "false").lower() == "true",
+        uri=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_URI", "")),
+        username=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_USERNAME", "")),
+        password=SecretStr(os.environ.get("IAP_TOPOLOGY_NEO4J_PASSWORD", "")),
+        database=os.environ.get("IAP_TOPOLOGY_NEO4J_DATABASE", "neo4j"),
+        encrypted=os.environ.get("IAP_TOPOLOGY_NEO4J_ENCRYPTED", "true").lower() == "true",
+        connection_timeout_seconds=float(
+            os.environ.get("IAP_TOPOLOGY_CONNECTION_TIMEOUT_SECONDS", "10.0")
+        ),
+        query_timeout_seconds=float(os.environ.get("IAP_TOPOLOGY_QUERY_TIMEOUT_SECONDS", "15.0")),
+        max_connection_pool_size=int(os.environ.get("IAP_TOPOLOGY_MAX_POOL_SIZE", "50")),
+        ingestion_batch_size=int(os.environ.get("IAP_TOPOLOGY_BATCH_SIZE", "500")),
+        max_lookup_nodes=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_NODES", "200")),
+        max_lookup_edges=int(os.environ.get("IAP_TOPOLOGY_MAX_LOOKUP_EDGES", "1000")),
+        code_repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", ""),
+        retention_enabled=os.environ.get("IAP_TOPOLOGY_RETENTION_ENABLED", "false").lower()
+        == "true",
+        retention_window_days=int(os.environ.get("IAP_TOPOLOGY_RETENTION_WINDOW_DAYS", "30")),
+        retention_max_snapshots_per_repository=int(
+            os.environ.get("IAP_TOPOLOGY_RETENTION_MAX_SNAPSHOTS", "20")
+        ),
+        cognee_enabled=os.environ.get("IAP_COGNEE_ENABLED", "false").lower() == "true",
+        cognee_dataset_salt=SecretStr(os.environ.get("IAP_COGNEE_DATASET_SALT", "")),
+    )
+
+
+def load_application_config_from_yaml(
+    path: str | Path = Path("config/application.yaml"),
+    database_uri: str | None = None,
+    llm_api_key: str | None = None,
+) -> ApplicationConfig:
+    """Binds YAML platform settings to an ApplicationConfig, enforcing secret environment sources."""
+    with tracer.start_as_current_span("load_application_config_from_yaml"):
+        settings = load_platform_settings(path)
+
+        db_uri = database_uri or os.environ.get("IAP_DATABASE_URI", "")
+        provider_name = _first_env("IAP_LLM_PROVIDER", default="openai")
+        llm_key = llm_api_key or os.environ.get(_provider_var(provider_name.lower(), "API_KEY"), "")
+        if not db_uri or not llm_key:
+            missing = [
+                name
+                for name, value in (
+                    ("IAP_DATABASE_URI", db_uri),
+                    (
+                        f"IAP_{provider_name.upper()}_API_KEY",
+                        llm_key,
+                    ),
+                )
+                if not value
+            ]
+            msg = f"Boot halted: missing required environment variables: {', '.join(missing)}"
+            logger.critical(msg, extra={"missing_vars": missing})
+            raise PlatformConfigurationError(msg)
+
+        persistence = settings.persistence
+        reasoning = settings.reasoning
+        investigation = settings.investigation
+        platform = settings.platform
+        environment = os.environ.get("IAP_ENVIRONMENT", platform.environment)
+
+        try:
+            evidence_config = _evidence_config_from_env()
+            _validate_evidence_secrets(evidence_config, environment)
+            return ApplicationConfig(
+                environment=environment,
+                application_id=os.environ.get("IAP_APP_ID", platform.name),
+                database=DatabaseConfig(
+                    connection_uri=SecretStr(db_uri),
+                    pool_size=int(
+                        os.environ.get(
+                            "IAP_DB_POOL_SIZE", str(persistence.connection_pool_size)
+                        )
+                    ),
+                    max_overflow=int(
+                        os.environ.get(
+                            "IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow)
+                        )
+                    ),
+                ),
+                llm=_llm_config_from_env(
+                    model_default=reasoning.model,
+                    provider_default=reasoning.provider,
+                    temperature_default=reasoning.temperature,
+                    max_tokens_default=reasoning.max_tokens,
+                    api_key_override=llm_key,
+                ),
+                budget=BudgetConfig(
+                    max_tool_calls=int(
+                        os.environ.get(
+                            "IAP_MAX_TOOL_CALLS", str(investigation.max_tool_calls)
+                        )
+                    ),
+                    max_reasoning_calls=int(
+                        os.environ.get(
+                            "IAP_MAX_REASONING_CALLS",
+                            str(investigation.max_reasoning_calls),
+                        )
+                    ),
+                    max_duration_seconds=int(
+                        os.environ.get(
+                            "IAP_MAX_DURATION_SECONDS",
+                            str(investigation.max_duration_seconds),
+                        )
+                    ),
+                ),
+                temporal=_temporal_config_from_env(),
+                quotas=_quota_config_from_env(),
+                kafka=KafkaConfig(
+                    bootstrap_servers=os.environ.get("IAP_KAFKA_SERVERS", "localhost:9092"),
+                    topic_prefix=os.environ.get("IAP_KAFKA_TOPIC_PREFIX", "investigation"),
+                    consumer_group=os.environ.get("IAP_KAFKA_GROUP", "investigation-agent-group"),
+                ),
+                storage=ObjectStorageConfig(
+                    endpoint_url=os.environ.get("IAP_STORAGE_ENDPOINT"),
+                    bucket_name=os.environ.get(
+                        "IAP_STORAGE_BUCKET", "investigation-evidence-payloads"
+                    ),
+                    region=os.environ.get("IAP_STORAGE_REGION", "us-east-1"),
+                    access_key=SecretStr(os.environ.get("IAP_STORAGE_ACCESS_KEY", "")),
+                    secret_key=SecretStr(os.environ.get("IAP_STORAGE_SECRET_KEY", "")),
+                ),
+                telemetry=TelemetryConfig(
+                    service_name=os.environ.get("IAP_TELEMETRY_SERVICE", platform.name),
+                    otlp_endpoint=os.environ.get("IAP_OTLP_ENDPOINT", "http://localhost:4317"),
+                    enabled=os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true",
+                    sample_ratio=float(os.environ.get("IAP_OTEL_SAMPLE_RATIO", "1.0")),
+                ),
+                topology=_topology_config_from_env(),
+                knowledge=_knowledge_config_from_env(),
+                evidence=evidence_config,
+                mcp=_mcp_config_from_env(),
+                buffer=_buffer_config_from_env(),
+            )
+        except Exception as exc:
+            logger.critical("Boot halted: invalid configuration settings", exc_info=exc)
+            raise PlatformConfigurationError(
+                f"Boot halted: invalid configuration settings: {exc!s}"
+            ) from exc
+
+
+def load_application_config_from_env() -> ApplicationConfig:
+    """Loads and validates configuration from environment, halting boot on failure."""
+    with tracer.start_as_current_span("load_application_config_from_env"):
+        db_uri = os.environ.get("IAP_DATABASE_URI", "")
+        provider_name = _first_env("IAP_LLM_PROVIDER", default="openai")
+        llm_key = os.environ.get(_provider_var(provider_name.lower(), "API_KEY"), "")
+
+        if not db_uri or not llm_key:
+            missing = []
+            if not db_uri:
+                missing.append("IAP_DATABASE_URI")
+            if not llm_key:
+                missing.append(f"IAP_{provider_name.upper()}_API_KEY")
+            msg = f"Boot halted: missing required environment variables: {', '.join(missing)}"
+            logger.critical(msg, extra={"missing_vars": missing})
+            raise PlatformConfigurationError(msg)
+
+        try:
+            environment = os.environ.get("IAP_ENVIRONMENT", "production")
+            evidence_config = _evidence_config_from_env()
+            _validate_evidence_secrets(evidence_config, environment)
+            return ApplicationConfig(
+                environment=environment,
+                application_id=os.environ.get("IAP_APP_ID", "investigation-agent-platform"),
+                database=DatabaseConfig(
+                    connection_uri=SecretStr(db_uri),
+                    pool_size=int(os.environ.get("IAP_DB_POOL_SIZE", "10")),
+                    max_overflow=int(os.environ.get("IAP_DB_MAX_OVERFLOW", "20")),
+                ),
+                llm=_llm_config_from_env(api_key_override=llm_key),
+                budget=BudgetConfig(
+                    max_tool_calls=int(os.environ.get("IAP_MAX_TOOL_CALLS", "50")),
+                    max_reasoning_calls=int(os.environ.get("IAP_MAX_REASONING_CALLS", "20")),
+                    max_duration_seconds=int(os.environ.get("IAP_MAX_DURATION_SECONDS", "1800")),
+                ),
+                temporal=_temporal_config_from_env(),
+                quotas=_quota_config_from_env(),
+                kafka=KafkaConfig(
+                    bootstrap_servers=os.environ.get("IAP_KAFKA_SERVERS", "localhost:9092"),
+                    topic_prefix=os.environ.get("IAP_KAFKA_TOPIC_PREFIX", "investigation"),
+                    consumer_group=os.environ.get("IAP_KAFKA_GROUP", "investigation-agent-group"),
+                ),
+                storage=ObjectStorageConfig(
+                    endpoint_url=os.environ.get("IAP_STORAGE_ENDPOINT"),
+                    bucket_name=os.environ.get(
+                        "IAP_STORAGE_BUCKET", "investigation-evidence-payloads"
+                    ),
+                    region=os.environ.get("IAP_STORAGE_REGION", "us-east-1"),
+                    access_key=SecretStr(os.environ.get("IAP_STORAGE_ACCESS_KEY", "")),
+                    secret_key=SecretStr(os.environ.get("IAP_STORAGE_SECRET_KEY", "")),
+                ),
+                telemetry=TelemetryConfig(
+                    service_name=os.environ.get(
+                        "IAP_TELEMETRY_SERVICE", "investigation-agent-platform"
+                    ),
+                    otlp_endpoint=os.environ.get("IAP_OTLP_ENDPOINT", "http://localhost:4317"),
+                    enabled=os.environ.get("IAP_TELEMETRY_ENABLED", "true").lower() == "true",
+                    sample_ratio=float(os.environ.get("IAP_OTEL_SAMPLE_RATIO", "1.0")),
+                ),
+                topology=_topology_config_from_env(),
+                knowledge=_knowledge_config_from_env(),
+                evidence=evidence_config,
+                mcp=_mcp_config_from_env(),
+                buffer=_buffer_config_from_env(),
+            )
+        except Exception as exc:
+            if isinstance(exc, PlatformConfigurationError):
+                raise exc
+            logger.critical("Boot halted: invalid configuration settings from env", exc_info=exc)
+            raise PlatformConfigurationError(
+                f"Boot halted: invalid configuration settings: {exc!s}"
+            ) from exc

@@ -1,0 +1,235 @@
+# config/profiles/iap-self.yaml
+# ---------------------------------------------------------------------------
+# Self-investigation profile: the Investigation Agent Platform investigating
+# its own issues (tenant n-a, development).
+#
+# Every value below was grounded in this repo (no invented facts):
+#   * service/code — local checkout (local/investigation-agent-platform @ main),
+#     OTel default service name (TelemetryConfig), uv-managed Python layout.
+#   * telemetry — generic-ecs mapping; log index family follows the documented
+#     synthesis rule `logs-{tenant}-*-{environment}-*` for mapping-bound reads.
+#   * datasources — postgres tables/columns from
+#     infrastructure/persistence/models.py; elastic/kafka/s3 entries mirror
+#     EvidenceConfig/KafkaConfig/ObjectStorageConfig (SELECT-servable postgres
+#     only; the rest are declared for documentation, provider-deferred).
+#   * referenceDocs — this repo's own docs/ as a local source.
+#   * No secrets anywhere: connections are env:// references resolved at runtime.
+#
+# Validate with:
+#   uv run python scripts/seed_profile.py --file config/profiles/iap-self.yaml --dry-run
+# Load into the dev database with (idempotent on (tenant_id, id, version)):
+#   IAP_DATABASE_URI='postgresql+asyncpg://...' \
+#     uv run python scripts/seed_profile.py --file config/profiles/iap-self.yaml
+# ---------------------------------------------------------------------------
+
+application:
+  id: investigation-agent-platform
+  tenant_id: n-a
+  name: Investigation Agent Platform (self)
+  description: >-
+    ACTIVE development profile for investigating the Investigation Agent
+    Platform itself: FastAPI control plane plus Temporal worker (single OTel
+    service), Postgres-backed aggregate state, Elastic log backend, Kafka job
+    messaging, and S3/MinIO evidence payloads.
+  environment: development
+  version: 16   # v16: self checkout relocated data/code-repos/balajit -> local (org local).
+  status: ACTIVE
+  owner: platform-team
+  domain: investigation-platform
+  planes:
+    - backend
+    - workers
+  data_classification: INTERNAL
+  allowed_capabilities:
+    - SEARCH_LOGS
+    - QUERY_STATE
+    - CORRELATE
+    - GET_CODE
+    - SEARCH_CODE
+    - FIND_SYMBOL
+    - FIND_CALL_GRAPH
+    - GET_CODE_HISTORY
+    - PROBE_API
+    - WALK_STACK
+    - TRACE_LOGIC
+    - TRACE_JOURNEY
+    - WALK_SESSION_GRAPH
+    - SEARCH_REF_DOCS
+  tags:
+    - dogfood
+  mapping_source_id: generic-ecs
+  investigation:
+    defaultTimeWindow: 3600
+    maximumEvidencePerQuery: 50
+    maximumInvestigationDuration: 7200
+    enabledEvidenceTypes:
+      - LOG
+      - TRACE
+      - DATABASE_STATE
+      - COMMIT_HISTORY
+      - SOURCE_CODE
+      - CALL_GRAPH
+      - API_PROBE
+      - EXCEPTION_PATH
+      - DOCUMENTATION
+    correlationDepth: 2
+    maximumHypotheses: 5
+  services:
+    - name: investigation-agent-platform
+      role: edge
+      description: FastAPI API (main.py) plus Temporal worker (bootstrap/worker.py) under one OTel service name.
+      telemetry:
+        log_indices:
+          - logs-n-a-*-development-*
+        service_names:
+          - investigation-agent-platform
+      code:
+        org: local
+        repos:
+          - investigation-agent-platform
+        default_branch: main
+        language: python
+        source_roots:
+          - src
+        build_system: uv
+        module_structure: src/investigation_agent_platform
+      repository_id: local--investigation-agent-platform
+      probeable_endpoints:
+        - id: health-live
+          description: Platform liveness probe (GET-only, self-observability).
+          method: GET
+          base_url: http://localhost:8080
+          path_template: /api/v1/health/live
+          path_placeholders: []
+          allowed_query_params: []
+  datasources:
+    - id: primary
+      name: IAP application database (postgres)
+      kind: postgres
+      role: state
+      description: The platform's own Postgres (investigations, evidence, profiles, outbox, jobs, knowledge).
+      connection_ref: env://IAP_DATABASE_URI
+      read_only: true
+      allowed_tables:
+        - investigations
+        - evidence
+        - application_profiles
+        - outbox_events
+        - background_jobs
+        - knowledge_artifacts
+        - timeline_events
+        - findings
+        - hypotheses
+        - chat_sessions
+      session_entity: investigations
+      session_key: session_id
+      relationships:
+        - from_entity: investigations
+          from_key: id
+          to_entity: evidence
+          to_key: investigation_id
+          source: operator
+      query_templates:
+        investigations_recent:
+          description: Newest investigations for the tenant.
+          sql: "SELECT id, application_id, status, phase, title, created_at FROM investigations WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - investigations
+        investigations_by_status:
+          description: Investigations filtered by status.
+          sql: "SELECT id, application_id, status, phase, title, created_at FROM investigations WHERE tenant_id = :tenant_id AND status = :status ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - investigations
+        evidence_recent:
+          description: Newest evidence rows for the tenant.
+          sql: "SELECT id, type, source_type, source_id, summary, retrieved_at FROM evidence WHERE tenant_id = :tenant_id ORDER BY retrieved_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - evidence
+        profile_revisions:
+          description: Revision history for one application profile.
+          sql: "SELECT id, version, name, environment FROM application_profiles WHERE tenant_id = :tenant_id AND id = :application_id ORDER BY version DESC"
+          read_only: true
+          allowed_tables:
+            - application_profiles
+        outbox_undispatched:
+          description: Outbox events not yet dispatched (stuck-publisher signal).
+          sql: "SELECT id, event_type, created_at FROM outbox_events WHERE tenant_id = :tenant_id AND dispatched_at IS NULL ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - outbox_events
+        jobs_recent:
+          description: Newest background jobs for the tenant.
+          sql: "SELECT id, kind, status, progress, total, created_at FROM background_jobs WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - background_jobs
+        knowledge_recent:
+          description: Newest knowledge artifacts for an application.
+          sql: "SELECT id, kind, status, visibility, confidence, created_at FROM knowledge_artifacts WHERE tenant_id = :tenant_id AND application_id = :application_id ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - knowledge_artifacts
+        timeline_recent:
+          description: Newest timeline events for the tenant.
+          sql: "SELECT id, event_type, description, timestamp FROM timeline_events WHERE tenant_id = :tenant_id ORDER BY timestamp DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - timeline_events
+        findings_recent:
+          description: Newest findings for the tenant.
+          sql: "SELECT id, finding_type, title, severity, confidence, created_at FROM findings WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT 20"
+          read_only: true
+          allowed_tables:
+            - findings
+    - id: elastic-logs
+      name: IAP log backend (elasticsearch)
+      kind: elasticsearch
+      role: logs
+      description: Platform log store queried through the Elastic runtime path (provider-deferred; no SELECT templates).
+      connection_ref: env://IAP_ELASTICSEARCH_URL
+      read_only: true
+    - id: kafka-bus
+      name: IAP job messaging (kafka)
+      kind: kafka
+      role: queue
+      description: Job progress/events bus (provider-deferred; dev-default broker).
+      read_only: true
+      kafka:
+        bootstrap_servers:
+          - localhost:9092
+    - id: evidence-store
+      name: IAP evidence payloads (s3)
+      kind: s3
+      role: object_store
+      description: Tier-2 evidence payload bucket (provider-deferred).
+      read_only: true
+      s3:
+        bucket: investigation-evidence-payloads
+
+correlation:
+  fields:
+    - sessionId
+    - requestId
+    - traceId
+    - correlationId
+    - investigation_id
+  priority:
+    - traceId
+    - investigation_id
+    - sessionId
+    - requestId
+    - correlationId
+
+referenceDocs:
+  configVersion: "1.0"
+  sources:
+    - kind: local_path
+      root: docs
+      paths: []
+  allowedHosts: []
+  localAllowedRoots:
+    - docs
+  embeddingModel: text-embedding-3-small

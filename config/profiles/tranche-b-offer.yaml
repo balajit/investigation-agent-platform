@@ -1,0 +1,127 @@
+# config/profiles/tranche-b-offer.yaml
+# ---------------------------------------------------------------------------
+# Tranche B calibration profile: spring sample service (tenant n-a).
+#
+# TENANT DATA for the tri-modal calibration battery — not platform knowledge.
+# Every value below was grounded in the wired checkout (no invented facts):
+#   * service/code — data/code-repos/samplecorp/orders-internal (service +
+#     commons modules; synthetic Spring fixture with 3-commit history built
+#     by scripts/build-sample-checkout.py — no respondent data anywhere).
+#   * language java; source_roots cover the three modules.
+#   * Capabilities: code navigation plus Oracle state via the SQLcl MCP
+#     gateway; no telemetry or log access is declared for this application.
+#   * correlation adds trackingId alongside the session family (generic
+#     two-tier journey identity: session = journey, trackingId = step).
+#
+# Validate with:
+#   uv run python scripts/seed_profile.py --file config/profiles/tranche-b-offer.yaml --dry-run
+# Load into the dev database with (idempotent on (tenant_id, id, version)):
+#   IAP_DATABASE_URI='postgresql+asyncpg://...' \
+#     uv run python scripts/seed_profile.py --file config/profiles/tranche-b-offer.yaml
+# ---------------------------------------------------------------------------
+
+application:
+  id: spring-sample-service
+  tenant_id: n-a
+  name: Spring Sample Service (Tranche B)
+  description: >-
+    Calibration target for the tri-modal battery: Spring Boot sample service
+    plus shared libraries. Code navigation plus Oracle state evidence.
+  environment: development
+  version: 2   # v2: code block repointed at the synthetic sample checkout (data/code-repos/samplecorp/orders-internal). v1 renamed lineage.
+  status: ACTIVE
+  owner: calibration
+  domain: sample-orders
+  planes:
+    - backend
+  data_classification: INTERNAL
+  allowed_capabilities:
+    - SEARCH_CODE
+    - FIND_SYMBOL
+    - FIND_CALL_GRAPH
+    - GET_CODE
+    - GET_CODE_HISTORY
+    - CORRELATE
+    - WALK_STACK
+    - TRACE_LOGIC
+    - QUERY_STATE
+  tags:
+    - calibration
+    - tranche-b
+  mapping_source_id: generic-ecs
+  services:
+    - name: spring-sample-service
+      role: edge
+      description: Spring Boot sample order service with rule-driven determination.
+      code:
+        org: samplecorp
+        repos:
+          - orders-internal
+        default_branch: main
+        language: java
+        source_roots:
+          - service
+          - commons
+        build_system: gradle
+        module_structure: com/sample/orders
+      repository_id: samplecorp--orders-internal
+investigation:
+  defaultTimeWindow: 3600
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 3600
+  enabledEvidenceTypes:
+    - SOURCE_CODE
+    - CALL_GRAPH
+    - COMMIT_HISTORY
+    - TRACE
+    - DATABASE_STATE
+  correlationDepth: 2
+  maximumHypotheses: 5
+correlation:
+  fields:
+    - sessionId
+    - requestId
+    - traceId
+    - trackingId
+    - correlationId
+    - investigation_id
+  priority:
+    - trackingId
+    - traceId
+    - investigation_id
+    - sessionId
+    - requestId
+    - correlationId
+datasources:
+  # Sample Oracle database via the SQLcl MCP gateway (oracle-mcp-sampledb).
+  # No connection_ref: on the MCP path credentials live in the external
+  # wallet (imported with add-datasource.sh from
+  # apps/spring-sample-service/oracle.yaml), selected per
+  # call by connection name — there is no DSN to resolve. Read-only is
+  # enforced three-deep: grant at the DB, SELECT-only gate in the adapter,
+  # read_only here (registry refuses otherwise).
+  - id: sample-orders
+    name: Sample orders database (Oracle, read-only via SQLcl MCP)
+    kind: oracle
+    role: state
+    description: >-
+      SAMPLEDB_RW (logical sample.orders.prod) through oracle-mcp-sampledb.
+      Investigation replica preferred; personal account local-only.
+    mcp_server: sampledb   # bare catalog name (config/oracle-mcp-servers.yaml entry); provider registers as oracle-mcp-sampledb.
+    # Default schema for unqualified tables (adapter issues ALTER SESSION
+    # SET CURRENT_SCHEMA after connect). Mirrors default_schema in
+    # apps/spring-sample-service/oracle.yaml — keep identical.
+    schema_name: sample_owner
+    read_only: true
+    tenants:
+      - n-a
+    allowed_tables: []
+    # No FROM-table introspection is declared yet; these templates are the
+    # datasource's whole SQL surface (SELECT-only, validator-enforced).
+    query_templates:
+      default:
+        description: Oracle version banner of the connected sample database (connectivity + version probe; also the empty-template_id fallback).
+        sql: SELECT BANNER FROM v$version
+      version:
+        description: Oracle version banner of the connected sample database.
+        sql: SELECT BANNER FROM v$version

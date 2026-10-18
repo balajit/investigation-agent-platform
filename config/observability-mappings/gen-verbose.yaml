@@ -1,0 +1,71 @@
+# config/observability-mappings/gen-verbose.yaml
+# Field contract for the gen verbose HTTP-transaction log family (Part 10).
+# Derived from captured mappings (tests/fixtures/elastic_mappings).
+# Deliberately EXCLUDED from the allowlist: RequestBody/ResponseBody
+# (secret-bearing free-text blobs), memory/counter telemetry, and
+# customer-identifying top-level fields not needed for investigation.
+source_id: gen-verbose
+index_patterns:
+  - "logz-gen-verbose-prod-es-*"
+  - "logz-gen-verbose-prod-blue-es-*"
+  - "logz-gen-verbose-prod-cloud-es-*"
+  - "logz-gen-verbose-prod-micro-es-*"
+tenant_scope:
+  # Tenant is not a first-class concept in this organization today;
+  # app/profile selection is the isolation boundary. Logged at startup.
+  strategy: none_required
+timestamp:
+  candidates: ["@timestamp"]
+  value_type: date_iso
+message:
+  candidates: ["message"]
+  value_type: text
+service:
+  candidates: ["appName", "Service", "System", "originServiceName"]
+  value_type: keyword
+severity:
+  strategy: error_flag
+  error_field: error
+  error_code_field: errorCode
+identifiers:
+  trace_id:
+    candidates: ["traceId", "trackingId"]
+    value_type: keyword
+  session_id:
+    candidates: ["sessionId", "XCOSSessionId"]
+    value_type: keyword
+  transaction_key:
+    candidates: ["TransactionKey", "Tracking"]
+    value_type: keyword
+code_location: null
+sql_statement: null
+sort:
+  field: "@timestamp"
+  order: desc
+  format: epoch_millis
+  unmapped_type: long
+top_level_allowlist:
+  - "@timestamp"
+  - message
+  - Action
+  - Method
+  - Service
+  - ServiceOperationName
+  - System
+  - TransactionKey
+  - Tracking
+  - appName
+  - httpMethod
+  - requestUrl
+  - responseStatusCode
+  - responseStatusMessage
+  - requestDuration
+  - error
+  - errorCode
+  - errorMessage
+  - traceId
+  - trackingId
+  - sessionId
+  - originServiceName
+  - extract
+  - hubble

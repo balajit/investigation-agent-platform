@@ -1,0 +1,53 @@
+# config/profiles/gen-root-cause.yaml
+# ---------------------------------------------------------------------------
+# Real production profile for the `gen` root-cause record family.
+# Observability mapping: config/observability-mappings/gen-root-cause.yaml.
+# Note this stream has NO @timestamp (observation time is epoch-millis
+# updatedAt/createdAt) and NO severity signal, so severity filters reject
+# rather than degrade silently.
+#
+# Code and state facts are not yet captured; the profile stays DRAFT.
+# ---------------------------------------------------------------------------
+
+application:
+  id: gen-root-cause
+  tenant_id: tenant-a
+  name: Gen Service - Root Cause Records
+  description: >-
+    DRAFT: production observability for the `gen` root-cause record family.
+    Services carry the known telemetry; datasources pending onboarding facts.
+  environment: production
+  version: 1
+  status: DRAFT
+  owner: platform-team
+  domain: gen
+  planes:
+    - backend
+  data_classification: INTERNAL
+  allowed_capabilities:
+    - SEARCH_LOGS
+  mapping_source_id: gen-root-cause
+  services:
+    - name: gen-root-cause
+      role: edge
+      description: Root-cause record stream.
+      telemetry:
+        log_indices:
+          - logz-gen-root_cause-prod-es-*
+        service_names:
+          - gen-root-cause
+  datasources: []
+
+correlation:
+  fields:
+    - requestId
+    - XCOSSessionId
+
+investigation:
+  defaultTimeWindow: 1800
+  maximumEvidencePerQuery: 25
+  maximumInvestigationDuration: 900
+  enabledEvidenceTypes:
+    - LOG
+  correlationDepth: 2
+  maximumHypotheses: 5
