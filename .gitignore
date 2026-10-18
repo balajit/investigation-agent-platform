@@ -13,6 +13,12 @@ wheels/
 llm_source/
 tmp/
 
+# PoC scratch space (entity-hub spike, etc.): analysis notes, extracted
+# metadata, scratch queries. Untracked by design so respondent data and
+# run outputs never pollute the repo; delete the whole directory when the
+# PoC concludes and the generalized solution lands in code+docs.
+poc/
+
 # Local runtime state: buffered-persistence WAL + on-disk artifact store.
 # Both are dev fallback journals / test residue (e.g. system-api-suite fuzz
 # runs); restorable via volume, never commit.
