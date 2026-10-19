@@ -177,6 +177,36 @@ class ProviderUnavailableException(DomainException):
         )
 
 
+class RateLimitException(DomainException):
+    """Provider throttled the request (HTTP 429 or equivalent).
+
+    Retryable so gateway/adapter retry predicates pick it up with no
+    decorator changes ("retry then record"). Carries the server's
+    ``retry_after`` hint (seconds) when the response supplied one —
+    surfaced in the action outcome for operator visibility, never
+    executed as a sleep (workflow backoff is a separate replay-safety
+    design; see ledger).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        merged = dict(details or {})
+        if retry_after is not None:
+            merged.setdefault("retry_after", retry_after)
+        super().__init__(
+            message=message,
+            error_code="RATE_LIMITED",
+            details=merged,
+            retryable=True,
+            http_status_code=429,
+        )
+        self.retry_after = retry_after
+
+
 # Infrastructure & System Configuration Exceptions
 class PlatformConfigurationError(DomainException):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:

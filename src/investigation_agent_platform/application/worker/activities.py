@@ -307,6 +307,107 @@ def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
     return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=True)
 
 
+def classify_provider_failure(
+    exc: BaseException, absent_label: str
+) -> tuple[str, str, bool]:
+    """(miss_reason, outcome_status, blocking) for a provider failure (Phase 3.1).
+
+    Precedence: explicit exception type, then auth-signal message patterns,
+    then the legacy absent label. A timeout is transient until gateway
+    retries exhaust — the caller records TIMEOUT ("retry then record"),
+    never absence. Only first-party CredentialProviderError blocks the
+    investigation (expired credentials cannot be worked around); sniffed
+    auth signals from third-party messages degrade as unavailable.
+    Function-level imports per C13 (see _sanitize).
+    """
+    # Function-level: keeps the worker import graph light (C13).
+    from investigation_agent_platform.domain.common.exceptions import (
+        CredentialProviderError,
+        ExecutionError,
+        ProviderNotConfiguredError,
+        ProviderTimeoutException,
+        ProviderUnavailableException,
+        RateLimitException,
+        UnsupportedCapabilityError,
+    )
+
+    if isinstance(exc, UnsupportedCapabilityError):
+        return ("unsupported_capability", "DEGRADED", False)
+    if isinstance(exc, ProviderTimeoutException):
+        return ("timeout", "DEGRADED", False)
+    try:
+        import asyncio as _asyncio
+
+        if isinstance(exc, (_asyncio.TimeoutError, TimeoutError)):
+            return ("timeout", "DEGRADED", False)
+    except Exception:
+        pass
+    if isinstance(exc, CredentialProviderError):
+        return ("auth_failed", "BLOCKED", True)
+    if isinstance(exc, ProviderNotConfiguredError):
+        return (absent_label, "DEGRADED", False)
+    if isinstance(exc, ProviderUnavailableException):
+        return ("provider_unavailable", "DEGRADED", False)
+    if isinstance(exc, ConnectionError):
+        return ("provider_unavailable", "DEGRADED", False)
+    if isinstance(exc, RateLimitException):
+        # Throttling is transient by definition: degrade, never block.
+        # retry_after rides the outcome/logging extras for visibility —
+        # never executed as a sleep (workflow backoff is a separate
+        # replay-safety design; see ledger).
+        return ("rate_limited", "DEGRADED", False)
+    try:
+        text = str(exc).lower()
+    except Exception:
+        text = ""
+    if any(
+        signal in text
+        for signal in ("timed out", "timeout", "deadline exceeded", "timedout")
+    ):
+        return ("timeout", "DEGRADED", False)
+    if any(
+        signal in text
+        for signal in (
+            "429",
+            "too many requests",
+            "rate limit exceeded",
+            "rate limited",
+            "rate-limit",
+            "ratelimit",
+        )
+    ):
+        # Untyped third-party throttle text degrades as rate_limited —
+        # never blocking (only first-party RateLimitException carries a
+        # trusted retry_after, and even that never blocks).
+        return ("rate_limited", "DEGRADED", False)
+    if any(
+        signal in text
+        for signal in (
+            "unauthorized",
+            "unauthenticated",
+            "authentication failed",
+            "invalid credentials",
+            "expired token",
+            "access denied",
+            " 401",
+            " 403",
+            "(401)",
+            "(403)",
+        )
+    ):
+        # Sniffed auth signals degrade as unavailable: only first-party
+        # CredentialProviderError blocks the run (above). A third-party
+        # message mentioning auth must never halt an investigation by itself.
+        return ("provider_unavailable", "DEGRADED", False)
+    if isinstance(exc, ExecutionError):
+        # Genuinely unclassified execution failure. Provider/profile
+        # absence raises ProviderNotConfiguredError at the gateway, so a
+        # bare ExecutionError here is an internal provider fault — never
+        # mislabeled as "not configured".
+        return ("internal_error", "DEGRADED", False)
+    raise exc
+
+
 # ---------------------------------------------------------------------------
 # Wave 2 shared helpers (TO_DO-007/011/012/013/016): telemetry extras,
 # strict input coercion, idempotency wiring, actor threading, domain graph.
@@ -1578,6 +1679,37 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                 orientation_notes=knowledge_orientation,
                 hub_orientation=await _hub_orientation_for(ctx, tenant_id, investigation),
             )
+            # Phase 3.4: an LLM outage is a platform failure, not a default
+            # action. A REASONING_UNAVAILABLE decision previously flowed
+            # through with action=None and the workflow dispatched QUERY_STATE
+            # — a contentless loop that could end as causeless abstention.
+            # Surface it explicitly; the workflow breaks with the cause.
+            _decision_meta = getattr(decision, "metadata", None) or {}
+            _unavailable_reason = str(_decision_meta.get("reason", "") or "").strip()
+            if (
+                str(_decision_meta.get("status", "") or "") == "REASONING_UNAVAILABLE"
+                or str(getattr(decision, "reasoning_chain", "") or "")
+                == "REASONING_UNAVAILABLE"
+            ):
+                logger.warning(
+                    "reason_activity reasoning unavailable; propagating typed failure",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="reason_activity reasoning unavailable",
+                        error=_unavailable_reason[:500],
+                    ),
+                )
+                return GenericActivityResult(
+                    success=True,
+                    data={
+                        "reasoning_unavailable": True,
+                        "reason": _unavailable_reason[:1000],
+                        "conclusion_readiness": 0.0,
+                        "observations": [],
+                        "iteration": iteration,
+                    },
+                )
             # Choreography: the workflow dispatches on next_action /
             # action_parameters — they must be propagated here, not dropped.
             # (Previously only readiness/observations were returned, so the
@@ -2299,9 +2431,20 @@ async def execute_action_activity(
             investigation_id=inv_id_str,
         )
         if _replayed is not None:
+            _replayed_data = dict(_replayed.get("data") or {})
+            # Phase 3.2: execute rows stored before action_outcome are
+            # legacy, not absent — tag explicitly instead of inventing an
+            # outcome. The workflow records an empty outcome (identical to
+            # live pre-fix behavior) while operators can distinguish replay
+            # age. Budget rows are current-shape (keyed on budget_exceeded).
+            if (
+                _replayed_data.get("action_outcome") is None
+                and not _replayed_data.get("budget_exceeded")
+            ):
+                _replayed_data["idempotency_replay_legacy"] = True
             return GenericActivityResult(
                 success=bool(_replayed.get("success", True)),
-                data=dict(_replayed.get("data") or {}),
+                data=_replayed_data,
                 error=_replayed.get("error"),
             )
 
@@ -2544,8 +2687,12 @@ async def execute_action_activity(
 
         async def _handle_query_state() -> int:
             from investigation_agent_platform.domain.common.exceptions import (
+                CredentialProviderError,
                 ExecutionError,
                 ProviderNotConfiguredError,
+                ProviderTimeoutException,
+                ProviderUnavailableException,
+                RateLimitException,
             )
             from investigation_agent_platform.domain.evidence.requests import (
                 ApplicationStateRequest,
@@ -2565,20 +2712,37 @@ async def execute_action_activity(
                 qres = await gateway.get_application_state(
                     tenant_id, investigation_id, application_id or "example-app", req
                 )
-            except (ProviderNotConfiguredError, ExecutionError) as exc:
-                # D-phase doctrine: provider-absent degrades to empty, never
-                # fails the run (same contract as code navigation).
+            except (
+                ProviderTimeoutException,
+                TimeoutError,
+                CredentialProviderError,
+                ProviderUnavailableException,
+                RateLimitException,
+                ConnectionError,
+                ProviderNotConfiguredError,
+                ExecutionError,
+            ) as exc:
+                # Phase 3.1: typed failure outcomes (same contract as code
+                # navigation) — timeouts, auth blocks, and outages surface
+                # distinctly instead of all reading "provider absent".
+                miss_reason, outcome_status, _blocking = classify_provider_failure(
+                    exc, "state_provider_not_configured"
+                )
+                outcome_detail["status"] = outcome_status
+                outcome_detail["miss_reason"] = miss_reason
+                if isinstance(exc, RateLimitException):
+                    outcome_detail["error_code"] = "RATE_LIMITED"
                 logger.warning(
-                    "QUERY_STATE provider absent; degrades to empty",
+                    "QUERY_STATE provider failure; degrading",
                     extra=_log_extra(
                         tenant_id=tenant_id,
                         investigation_id=inv_id_str,
-                        event="query_state provider absent",
+                        event="query_state provider failure",
                         error=str(exc),
+                        miss_reason=miss_reason,
+                        retry_after=getattr(exc, "retry_after", None),
                     ),
                 )
-                outcome_detail["status"] = "DEGRADED"
-                outcome_detail["miss_reason"] = "state_provider_not_configured"
                 return 0
             # P3-2: per-source fan-out breakdown rides into the outcome.
             outcome_detail["sources"] = list(
@@ -2658,7 +2822,12 @@ async def execute_action_activity(
         async def _handle_get_code() -> int:
             from investigation_agent_platform.domain.common.exceptions import (
                 CodePathNotFoundError,
+                CredentialProviderError,
+                ExecutionError,
                 ProviderNotConfiguredError,
+                ProviderTimeoutException,
+                ProviderUnavailableException,
+                RateLimitException,
             )
             from investigation_agent_platform.domain.evidence.requests import SourceRequest
 
@@ -2700,23 +2869,37 @@ async def execute_action_activity(
                 evidence = await gateway.get_source(
                     tenant_id, investigation_id, application_id or "example-app", req
                 )
-            except ProviderNotConfiguredError as exc:
-                # Unconfigured code provider: deterministic for this
-                # deployment, so degrade to empty and let the loop try other
-                # capabilities instead of failing the investigation. The
-                # decision trace (recent_actions) shows the attempt, steering
-                # the reasoner away from repeating it.
+            except (
+                ProviderTimeoutException,
+                TimeoutError,
+                CredentialProviderError,
+                ProviderUnavailableException,
+                RateLimitException,
+                ConnectionError,
+                ProviderNotConfiguredError,
+                ExecutionError,
+            ) as exc:
+                # Phase 3.1: typed failure outcomes — a timed-out or
+                # unauthorized git read is infrastructure, not absence.
+                # CodePathNotFoundError below still owns genuine path misses.
+                miss_reason, outcome_status, _blocking = classify_provider_failure(
+                    exc, "code_provider_not_configured"
+                )
+                outcome_detail["status"] = outcome_status
+                outcome_detail["miss_reason"] = miss_reason
+                if isinstance(exc, RateLimitException):
+                    outcome_detail["error_code"] = "RATE_LIMITED"
                 logger.warning(
-                    "Code provider not configured; GET_CODE degrades to empty",
+                    "GET_CODE provider failure; degrading",
                     extra=_log_extra(
                         tenant_id=tenant_id,
                         investigation_id=inv_id_str,
-                        event="get_code provider absent",
+                        event="get_code provider failure",
                         error=str(exc),
+                        miss_reason=miss_reason,
+                        retry_after=getattr(exc, "retry_after", None),
                     ),
                 )
-                outcome_detail["status"] = "DEGRADED"
-                outcome_detail["miss_reason"] = "code_provider_not_configured"
                 return 0
             except CodePathNotFoundError as exc:
                 # Path miss (agent-guessed path not in the tree): exploration
@@ -3399,8 +3582,12 @@ async def execute_action_activity(
             (used where the gateway returns metadata-only results).
             """
             from investigation_agent_platform.domain.common.exceptions import (
+                CredentialProviderError,
                 ExecutionError,
                 ProviderNotConfiguredError,
+                ProviderTimeoutException,
+                ProviderUnavailableException,
+                RateLimitException,
                 UnsupportedCapabilityError,
             )
 
@@ -3443,19 +3630,39 @@ async def execute_action_activity(
                 outcome_detail["miss_reason"] = "unsupported_capability"
                 outcome_detail["capability"] = getattr(exc, "capability", None)
                 return 0
-            except (ProviderNotConfiguredError, ExecutionError) as exc:
+            except (
+                ProviderTimeoutException,
+                TimeoutError,
+                CredentialProviderError,
+                ProviderUnavailableException,
+                RateLimitException,
+                ConnectionError,
+                ProviderNotConfiguredError,
+                ExecutionError,
+            ) as exc:
+                # Phase 3.1: typed failure outcomes. Timeouts (after gateway
+                # retries exhaust), auth blocks, and unavailability surface
+                # distinctly — a timeout is transient, an expired credential
+                # blocks the run, and none of them is "provider absent".
+                miss_reason, outcome_status, _blocking = classify_provider_failure(
+                    exc, miss_label
+                )
+                outcome_detail["status"] = outcome_status
+                outcome_detail["miss_reason"] = miss_reason
+                if isinstance(exc, RateLimitException):
+                    outcome_detail["error_code"] = "RATE_LIMITED"
                 logger.warning(
                     "%s degrades to empty",
                     action_label,
                     extra=_log_extra(
                         tenant_id=tenant_id,
                         investigation_id=inv_id_str,
-                        event=f"{action_label} provider absent",
+                        event=f"{action_label} provider failure",
                         error=str(exc),
+                        miss_reason=miss_reason,
+                        retry_after=getattr(exc, "retry_after", None),
                     ),
                 )
-                outcome_detail["status"] = "DEGRADED"
-                outcome_detail["miss_reason"] = miss_label
                 return 0
             banked = _bank(qres.items)
             if summarize is not None:
@@ -3921,10 +4128,6 @@ async def execute_action_activity(
                     ),
                 )
             except Exception as exc:
-                from investigation_agent_platform.domain.common.exceptions import (
-                    UnsupportedCapabilityError,
-                )
-
                 logger.warning(
                     "TRACE_LOGIC symbol lookup failed; degrading",
                     extra=_log_extra(
@@ -3934,14 +4137,16 @@ async def execute_action_activity(
                         error=str(exc),
                     ),
                 )
-                outcome_detail["status"] = "DEGRADED"
-                # A pinned revision the provider cannot honor is unproven,
-                # not absent — keep it distinct from a genuine symbol miss.
-                if isinstance(exc, UnsupportedCapabilityError):
-                    outcome_detail["miss_reason"] = "unsupported_capability"
+                try:
+                    miss_reason, outcome_status, _blocking = classify_provider_failure(
+                        exc, "trace_logic_symbol_miss"
+                    )
+                except Exception:
+                    miss_reason, outcome_status = "trace_logic_symbol_miss", "DEGRADED"
+                outcome_detail["status"] = outcome_status
+                outcome_detail["miss_reason"] = miss_reason
+                if miss_reason == "unsupported_capability":
                     outcome_detail["capability"] = getattr(exc, "capability", None)
-                else:
-                    outcome_detail["miss_reason"] = "trace_logic_symbol_miss"
                 return 0
             # Phase 0.2/0.4: symbols arrive in provider_metadata (not
             # items); convert to discovery packets, then read a window
@@ -4604,6 +4809,7 @@ async def execute_action_activity(
                 status=ActionOutcomeStatus(_outcome_status),
                 evidence_ids=list(outcome_detail.get("evidence_ids") or [])[:25],
                 item_count=items_count,
+                error_code=outcome_detail.get("error_code"),
                 miss_reason=outcome_detail.get("miss_reason"),
                 duration_ms=_dispatch_ms,
                 sources=[
@@ -4671,7 +4877,14 @@ async def execute_action_activity(
                 operation=_idem_operation,
                 response={
                     "success": True,
-                    "data": {"status": result_status, "items_count": items_count},
+                    "data": {
+                        "status": result_status,
+                        "items_count": items_count,
+                        # Phase 3.2: the stored response must equal the live
+                        # return below — a replayed action without the outcome
+                        # would silently change the next-turn history.
+                        "action_outcome": action_outcome.model_dump(mode="json"),
+                    },
                 },
                 activity="execute_action_activity",
                 investigation_id=inv_id_str,
@@ -5156,7 +5369,7 @@ async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
         if _replayed is not None:
             return GenericActivityResult(
                 success=bool(_replayed.get("success", True)),
-                data=dict(_replayed.get("data") or {"step": step}),
+                data=dict(_replayed.get("data") or {}),
                 error=_replayed.get("error"),
             )
 

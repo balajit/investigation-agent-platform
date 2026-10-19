@@ -52,6 +52,58 @@ def _is_unsupported_format_error(exc: BaseException) -> bool:
 _RESTRICTED_CLASSIFICATIONS = frozenset({"RESTRICTED", "SECRET", "TOP_SECRET"})
 
 
+def _retry_after_hint(exc: BaseException) -> float | None:
+    """Server's Retry-After hint in seconds, else None (fail-open)."""
+    try:
+        candidates = []
+        response = getattr(exc, "response", None)
+        if response is not None:
+            candidates.append(getattr(response, "headers", None))
+        candidates.append(getattr(exc, "headers", None))
+        for headers in candidates:
+            if not headers:
+                continue
+            get = getattr(headers, "get", None)
+            raw = get("retry-after") if callable(get) else None
+            if raw is None and callable(get):
+                raw = get("Retry-After")
+            if raw is None:
+                continue
+            return float(str(raw).split(",")[0].strip())
+    except (TypeError, ValueError):
+        pass
+    except Exception:
+        pass
+    return None
+
+
+def _translate_rate_limit(exc: BaseException, provider: str) -> BaseException:
+    """Final-raise provider 429s as typed RateLimitException.
+
+    Called outside the retry decorator, so existing 3-attempt behavior is
+    byte-identical — only the exhausted error changes shape. Non-429s and
+    already-typed errors pass through untouched.
+    """
+    from investigation_agent_platform.domain.common.exceptions import RateLimitException
+
+    if isinstance(exc, RateLimitException):
+        return exc
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "http_status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status != 429:
+        return exc
+    retry_after = _retry_after_hint(exc)
+    suffix = f"; retry after {retry_after:g}s" if retry_after is not None else ""
+    return RateLimitException(
+        f"{provider} rate limited the request{suffix}",
+        details={"provider": provider},
+        retry_after=retry_after,
+    )
+
+
 def _is_retryable_llm_error(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None)
     if status is None:
@@ -274,9 +326,12 @@ class OpenAIGateway(LLMGateway):
                     extra={"tenant_id": tenant_id},
                 )
                 kwargs["response_format"] = {"type": "json_object"}
-                resp = await self._call_with_retry(client, kwargs)
+                try:
+                    resp = await self._call_with_retry(client, kwargs)
+                except Exception as exc2:
+                    raise _translate_rate_limit(exc2, "openai") from exc2
             else:
-                raise
+                raise _translate_rate_limit(exc, "openai") from exc
 
         # Extract content + usage
         content: str = ""

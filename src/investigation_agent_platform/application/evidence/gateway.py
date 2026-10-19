@@ -12,6 +12,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from investigation_agent_platform.domain.common.exceptions import (
     ExecutionError,
+    ProviderNotConfiguredError,
     SecurityPolicyViolationException,
     UnsupportedCapabilityError,
 )
@@ -46,6 +47,21 @@ from investigation_agent_platform.ports.security.redactor import (
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _is_retryable_gateway_failure(exc: BaseException) -> bool:
+    """Tenacity predicate for gateway provider calls (Phase 3.1).
+
+    Retryable-flagged domain errors retry as before. Builtin timeouts from
+    the asyncio.wait_for boundary also retry (bounded by the decorator):
+    a timeout is transient until proven otherwise — the final failure is
+    recorded as a typed TIMEOUT outcome by the caller ("retry then
+    record"), never mistaken for absence.
+    """
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    return bool(getattr(exc, "retryable", False))
+
 
 # P0-3: platform log rows embed investigation/workflow IDs
 # (wf-investigation-<uuid>). A row naming a DIFFERENT investigation than the
@@ -410,7 +426,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -531,7 +547,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -557,7 +573,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope state access"
                 )
 
@@ -815,7 +831,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -837,10 +853,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ExecutionError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             self._require_revision_capability(provider, request.revision, request.require_revision)
@@ -866,7 +882,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -883,10 +899,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ExecutionError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             self._require_revision_capability(provider, request.revision, request.require_revision)
@@ -910,7 +926,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -925,10 +941,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 await validate_fn(tenant_id, request)
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
-                raise ExecutionError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             raw_evidence = await asyncio.wait_for(
@@ -948,7 +964,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -966,10 +982,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ExecutionError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             self._require_revision_capability(provider, request.revision, request.require_revision)
@@ -1052,7 +1068,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)
@@ -1071,10 +1087,10 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 await validate_fn(tenant_id, request)
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
-                raise ExecutionError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             items = await asyncio.wait_for(
@@ -1108,7 +1124,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             )
             await self._validate_structured_output(request)
             if self._profile_repo is None:
-                raise ExecutionError(
+                raise ProviderNotConfiguredError(
                     f"No application profile store; cannot scope probe for '{application_id}'"
                 )
             adapter = HttpxApiProbeAdapter(profile_repo=self._profile_repo)
@@ -1189,7 +1205,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(lambda e: getattr(e, "retryable", False)),
+        retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
     @traced("gateway", extra_from=_gateway_extra)

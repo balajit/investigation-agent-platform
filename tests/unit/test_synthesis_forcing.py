@@ -330,10 +330,12 @@ def test_force_replan_redirects_repeated_empties():
         _should_force_replan,
     )
 
+    # Production shape: completed enriched turns only — the current
+    # proposal arrives via reason_data, not history (the call site runs
+    # before the current action is appended).
     history = [
         {"action": "SEARCH_CODE", "evidence_added": 0},
         {"action": "SEARCH_CODE", "evidence_added": 0},
-        {"action": "SEARCH_CODE"},
     ]
     hit = _should_force_replan(
         "Show recent errors for payments",
@@ -345,10 +347,10 @@ def test_force_replan_redirects_repeated_empties():
     assert hit["next_action"] == "SEARCH_LOGS"
     assert hit["action_parameters"]["keywords"]
     # Banked evidence blocks; different proposal blocks; cap blocks.
+    # A single prior turn is not a pattern — needs two enriched empties.
     rich = [
         {"action": "SEARCH_CODE", "evidence_added": 0},
         {"action": "SEARCH_CODE", "evidence_added": 4},
-        {"action": "SEARCH_CODE"},
     ]
     assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, rich, 0) is None
     assert _should_force_replan(
@@ -356,6 +358,12 @@ def test_force_replan_redirects_repeated_empties():
     ) is None
     assert _should_force_replan(
         "errors here", {"next_action": "SEARCH_CODE"}, history, 2
+    ) is None
+    assert _should_force_replan(
+        "errors here",
+        {"next_action": "SEARCH_CODE"},
+        [{"action": "SEARCH_CODE", "evidence_added": 0}],
+        0,
     ) is None
     assert _should_force_replan(None, None, None, 0) is None
 

@@ -593,12 +593,21 @@ class ReasoningCoordinator(InvestigationReasoner):
             resp = await gateway.complete(tenant_id, req)
         except Exception as exc:
             # Provider/transport failure: explicit, non-conclusive — never a
-            # fabricated stub decision (F-007).
+            # fabricated stub decision (F-007). A throttled provider keeps
+            # its marker in the reason so the typed failure downstream names
+            # throttling, not a generic outage.
             logger.warning(
                 "LLM gateway call failed; returning REASONING_UNAVAILABLE",
                 extra={"tenant_id": tenant_id, "error": str(exc)},
             )
-            return self._unavailable_decision(f"llm_gateway_error:{type(exc).__name__}")
+            from investigation_agent_platform.domain.common.exceptions import (
+                RateLimitException,
+            )
+
+            suffix = (
+                ":rate_limited" if isinstance(exc, RateLimitException) else ""
+            )
+            return self._unavailable_decision(f"llm_gateway_error:{type(exc).__name__}{suffix}")
 
         if self._observability is not None:
             try:

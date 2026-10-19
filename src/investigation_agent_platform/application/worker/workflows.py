@@ -491,21 +491,22 @@ def _should_force_replan(
 ) -> dict | None:
     """Alternative gathering action after repeated empties, or None.
 
-    Fires when the two most recent ENRICHED turns (excluding the
-    just-appended pre-execution entry) share one action with no evidence
-    banked on either, and the current proposal repeats it. Returns
-    {next_action, params} for the first alternative family, or None.
-    Bounded (max 2 per run). Pure.
+    Fires when the two most recent enriched turns share one action with no
+    evidence banked on either, and the current proposal repeats it. The
+    production call site runs before the current action is appended, so
+    the proposal arrives via reason_data (not history): history holds only
+    completed enriched turns. Returns {next_action, params} for the first
+    alternative family, or None. Bounded (max 2 per run). Pure.
     """
     try:
         if int(forced_count or 0) >= 2:
             return None
         entries = [e for e in (action_history or []) if isinstance(e, dict)]
-        # [-1] is the just-appended pre-execution entry (no outcome yet);
-        # [-3:-1] are the last two enriched turns.
-        if len(entries) < 3:
+        # Production shape: completed enriched turns only. The last two
+        # are the prior turns; the current proposal comes from reason_data.
+        if len(entries) < 2:
             return None
-        prior_two = entries[-3:-1]
+        prior_two = entries[-2:]
         actions = [str(e.get("action", "") or "").upper() for e in prior_two]
         if not actions[0] or actions[0] != actions[1]:
             return None
@@ -709,6 +710,24 @@ def _caused_by_idempotency_wedge(exc: BaseException) -> bool:
                 return False
             seen += 1
         return False
+    except Exception:
+        return False
+
+
+def _is_auth_blocked(exec_data: Any) -> bool:
+    """True when the executed action blocked on provider auth (pure).
+
+    Phase 3.1: an expired credential cannot be worked around by trying
+    other capabilities, so the loop must halt rather than publish a thin
+    answer. Narrowly keyed on auth_failed — other BLOCKED outcomes
+    (e.g. authorization denial) keep their existing loop behavior.
+    """
+    try:
+        outcome = (exec_data or {}).get("action_outcome") or {}
+        return (
+            outcome.get("status") == "BLOCKED"
+            and outcome.get("miss_reason") == "auth_failed"
+        )
     except Exception:
         return False
 
@@ -1119,6 +1138,17 @@ class RunInvestigationWorkflow:
             if reason_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
                 break
+            # Phase 3.4: reasoning outage is a typed platform failure with
+            # its cause — never a default QUERY_STATE that loops toward a
+            # causeless abstention. Terminal handling records last_error.
+            if reason_res.data.get("reasoning_unavailable"):
+                _ru_reason = str(reason_res.data.get("reason", "") or "")[:200]
+                last_error = (
+                    f"reasoning_unavailable:{_ru_reason}"
+                    if _ru_reason
+                    else "reasoning_unavailable"
+                )
+                break
             # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
             # D2: stack-walk forcing first — explicit intake frames outrank
@@ -1317,6 +1347,15 @@ class RunInvestigationWorkflow:
                     evidence_banked_total += len(_outcome.get("evidence_ids", []) or [])
                 except TypeError:
                     pass
+
+            # Phase 3.1: provider auth block halts the loop before any
+            # further retrieval. Fail loudly with the cause (terminal
+            # handling records last_error) instead of looping toward a
+            # thin answer. Reads execute_res directly: _exec_data only
+            # exists when history was non-empty.
+            if _is_auth_blocked(execute_res.data or {}):
+                last_error = "provider_blocked:auth_failed"
+                break
 
             # Retrieve evidence (EvidenceGateway).
             retrieve_res = await workflow.execute_activity(
