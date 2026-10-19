@@ -5763,6 +5763,9 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 # F: abstention still publishes ranked alternatives so
                 # partial answers survive instead of evaporating.
                 ranked_alternatives=_ranked_alternative_statements(),
+                next_check=VerificationEngine.next_check_for_abstention(
+                    kind, list(limitations or [])
+                ),
             ),
         )
 
@@ -6263,6 +6266,14 @@ async def conclude_investigation_activity(
                             finding_repo: Any = getattr(ctx, "finding_repo", None)
                             if finding_repo is not None:
                                 try:
+                                    _epistemic_reason = str(reason or "").strip().lower()
+                                    _epistemic_check = (
+                                        "Raise the iteration or evidence budget and "
+                                        "resume, then re-verify."
+                                        if _epistemic_reason == "budget_exceeded"
+                                        else "Bind supporting evidence and a cited causal "
+                                        "chain to a candidate hypothesis, then re-verify."
+                                    )
                                     await finding_repo.save_conclusion(
                                         tenant_id,
                                         InvestigationConclusion(
@@ -6281,6 +6292,7 @@ async def conclude_investigation_activity(
                                                     "verification bar within budget."
                                                 )
                                             ],
+                                            next_check=_epistemic_check,
                                         ),
                                     )
                                     target = InvestigationStatus.COMPLETED

@@ -88,7 +88,10 @@ def _hyp(statement, status=HypothesisStatus.PROPOSED, assessed_ids=()):
 
 def _verifiable_setup():
     items = [_ev(EvidenceType.RUNTIME_LOG, "p1") for _ in range(3)]
-    items += [_ev(EvidenceType.METRIC, "p2", snippet="pool saturation 99") for _ in range(3)]
+    items += [
+        _ev(EvidenceType.METRIC, "p2", snippet="pool saturation 99, checkout latency exceeded deadline")
+        for _ in range(3)
+    ]
     chain = [
         CausalRelationship(
             cause="pool exhaustion",
@@ -266,3 +269,205 @@ class TestConclusionMapping:
         )
         assert conclusion.next_check is not None
         assert "re-verify" in conclusion.next_check
+
+
+def _chain_step(cause, mechanism, effect, evidence_ids):
+    return CausalRelationship(
+        cause=cause,
+        effect=effect,
+        mechanism=mechanism,
+        confidence=0.9,
+        evidence_ids=list(evidence_ids),
+    )
+
+
+class TestCausalStepGrounding:
+    def test_step_citing_nothing_is_inconclusive(self):
+        engine = VerificationEngine()
+        items, _ = _verifiable_setup()
+        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
+        chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [])]
+        result = engine.evaluate_hypothesis(
+            candidate, items, [], chain, RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.INCONCLUSIVE
+        assert "cites no evidence" in result.explanation
+
+    def test_step_citing_unknown_id_is_inconclusive(self):
+        engine = VerificationEngine()
+        items, _ = _verifiable_setup()
+        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
+        chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [uuid4()])]
+        result = engine.evaluate_hypothesis(
+            candidate, items, [], chain, RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.INCONCLUSIVE
+        assert "unknown id" in result.explanation
+
+    def test_step_citing_only_docs_is_inconclusive(self):
+        engine = VerificationEngine()
+        doc = _ev(EvidenceType.DOCUMENTATION, "p1", snippet="pooling runbook guidance")
+        items, _ = _verifiable_setup()
+        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
+        chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [doc.evidence_id])]
+        result = engine.evaluate_hypothesis(
+            candidate, [doc, *items], [], chain, RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.INCONCLUSIVE
+        assert "orientation/docs" in result.explanation
+
+    def test_undemonstrated_relation_demotes_to_likely(self):
+        engine = VerificationEngine()
+        code = [
+            _ev(EvidenceType.SOURCE_CODE, "p1", snippet="def healthy():\n    return True"),
+            _ev(EvidenceType.SOURCE_CODE, "p2", snippet="def ready():\n    return True"),
+        ]
+        logs = [_ev(EvidenceType.RUNTIME_LOG, "p1", snippet="ok") for _ in range(4)]
+        items = code + logs
+        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
+        chain = [
+            _chain_step(
+                "pool exhaustion",
+                "threads block on pool",
+                "checkout latency",
+                [e.evidence_id for e in code],
+            ),
+            _chain_step(
+                "checkout latency",
+                "deadline exceeded",
+                "timeout",
+                [e.evidence_id for e in logs[:2]],
+            ),
+        ]
+        result = engine.evaluate_hypothesis(
+            candidate, items, [], chain, RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.VERIFIED
+        assert result.tier == "likely"
+        assert any(lim.code == LimitationCode.RELATION_UNDEMONSTRATED for lim in result.limitations)
+        assert "RELATION_UNDEMONSTRATED" in result.explanation
+
+    def test_demonstrated_relation_stays_established(self):
+        engine = VerificationEngine()
+        code = _ev(
+            EvidenceType.SOURCE_CODE,
+            "p1",
+            snippet="if pool_exhaustion:\n    threads block on pool",
+        )
+        metric = _ev(
+            EvidenceType.METRIC,
+            "p2",
+            snippet="checkout latency exceeded deadline, raising timeout",
+        )
+        filler = [_ev(EvidenceType.RUNTIME_LOG, "p1", snippet="ok") for _ in range(2)]
+        filler += [_ev(EvidenceType.RUNTIME_LOG, "p2", snippet="ok") for _ in range(2)]
+        items = [code, metric, *filler]
+        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
+        chain = [
+            _chain_step(
+                "pool exhaustion",
+                "threads block on pool",
+                "checkout latency",
+                [code.evidence_id],
+            ),
+            _chain_step(
+                "checkout latency",
+                "deadline exceeded",
+                "timeout",
+                [metric.evidence_id],
+            ),
+        ]
+        result = engine.evaluate_hypothesis(
+            candidate, items, [], chain, RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.VERIFIED
+        assert result.tier == "established"
+        assert not any(
+            lim.code == LimitationCode.RELATION_UNDEMONSTRATED for lim in result.limitations
+        )
+
+    def test_next_check_relation_priority(self):
+        relation_lim = VerificationLimitation(code=LimitationCode.RELATION_UNDEMONSTRATED, detail="d")
+        unmapped_lim = VerificationLimitation(code=LimitationCode.CONCLUSION_UNMAPPED, detail="d")
+        single_lim = VerificationLimitation(code=LimitationCode.SINGLE_PROVIDER, detail="d")
+        assert "causal step" in (
+            VerificationEngine.next_check_for([relation_lim], [], []) or ""
+        )
+        # Relation outranks sentence mapping and single-provider corroboration.
+        assert "causal step" in (
+            VerificationEngine.next_check_for(
+                [unmapped_lim, single_lim, relation_lim], [], ["slow cache"]
+            )
+            or ""
+        )
+        # An untested rival still outranks the relation check.
+        rival_lim = VerificationLimitation(code=LimitationCode.RIVAL_UNTESTED, detail="d")
+        assert "untested rival" in (
+            VerificationEngine.next_check_for(
+                [rival_lim, relation_lim], ["slow downstream"], []
+            )
+            or ""
+        )
+
+
+class TestAbstentionNextCheck:
+    def test_all_rejected_directs_new_hypothesis(self):
+        out = VerificationEngine.next_check_for_abstention(
+            "refuted", ["all hypotheses rejected or contradicted"]
+        )
+        assert out is not None and "consistent with the refuting evidence" in out
+
+    def test_refuting_items_direct_resolve(self):
+        out = VerificationEngine.next_check_for_abstention(
+            "refuted", ["3 refuting evidence item(s) bound"]
+        )
+        assert out is not None and "3 refuting evidence item(s) bound" in out
+
+    def test_bare_refuted_falls_back(self):
+        out = VerificationEngine.next_check_for_abstention("refuted", ["stale"])
+        assert out == "Resolve the refuting evidence, then re-verify."
+
+    def test_no_bound_evidence(self):
+        out = VerificationEngine.next_check_for_abstention(
+            "insufficient", ["no bound supporting evidence"]
+        )
+        assert out is not None and "Cite and bind supporting evidence" in out
+
+    def test_no_causal_chain(self):
+        out = VerificationEngine.next_check_for_abstention(
+            "insufficient", ["no validated causal chain"]
+        )
+        assert out is not None and "cited evidence for each link" in out
+
+    def test_gate_blocker_passthrough_truncates(self):
+        blocker = "x" * 400
+        out = VerificationEngine.next_check_for_abstention("insufficient", [blocker])
+        assert out == f"Resolve '{'x' * 300}', then re-verify."
+
+    def test_refuting_beats_no_bound_evidence(self):
+        out = VerificationEngine.next_check_for_abstention(
+            "refuted",
+            ["no bound supporting evidence", "2 refuting evidence item(s) bound"],
+        )
+        assert out is not None and "2 refuting evidence item(s) bound" in out
+
+    def test_empty_reasons_yields_none(self):
+        assert VerificationEngine.next_check_for_abstention("insufficient", []) is None
+        assert VerificationEngine.next_check_for_abstention("insufficient", None) is None
+
+    def test_never_raises_on_garbage(self):
+        out = VerificationEngine.next_check_for_abstention(None, [None, 123, {}])
+        assert out is None or isinstance(out, str)
+
+    def test_abstention_statuses_accept_next_check(self):
+        for status in ("INSUFFICIENT_EVIDENCE", "NO_ROOT_CAUSE_FOUND"):
+            conclusion = InvestigationConclusion(
+                tenant_id="t",
+                investigation_id=uuid4(),
+                status=status,
+                root_cause=None,
+                supporting_evidence_ids=[],
+                limitations=["no bound supporting evidence"],
+                next_check="Cite and bind supporting evidence, then re-verify.",
+            )
+            assert conclusion.next_check is not None

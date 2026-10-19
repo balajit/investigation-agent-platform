@@ -257,11 +257,16 @@ class LimitationCode(str, Enum):
         no independent corroboration.
     CONCLUSION_UNMAPPED: a material sentence of the published conclusion
         maps to no cited claim or evidence row (Phase 2.4).
+    RELATION_UNDEMONSTRATED: a causal step is type-grounded (it cites code
+        or runtime rows) but no single cited row shows the asserted
+        relation — the mechanism is supported, not demonstrated, so the
+        claim publishes as likely, never established.
     """
 
     RIVAL_UNTESTED = "RIVAL_UNTESTED"
     SINGLE_PROVIDER = "SINGLE_PROVIDER"
     CONCLUSION_UNMAPPED = "CONCLUSION_UNMAPPED"
+    RELATION_UNDEMONSTRATED = "RELATION_UNDEMONSTRATED"
 
 
 class VerificationLimitation(BaseModel):
@@ -1511,6 +1516,153 @@ class VerificationEngine:
             pass
         return out
 
+    # Evidence types that ground a causal step: source text or a runtime
+    # observation. Orientation, docs, graph summaries, and commit titles
+    # are direction, never grounding. DIVERGENCE is a machine-checked
+    # diff — grounding, not prose.
+    _STEP_GROUNDING_TYPES = frozenset(
+        {
+            "SOURCE_CODE",
+            "EXCEPTION_PATH",
+            "RUNTIME_LOG",
+            "RUNTIME_TRACE",
+            "LOG",
+            "TRACE",
+            "DATABASE_STATE",
+            "METRIC",
+            "SYSTEM_EVENT",
+            "API_PROBE",
+            "DIVERGENCE",
+        }
+    )
+
+    @staticmethod
+    def _evidence_by_id(evidence_items: list[Any]) -> dict[str, Any]:
+        by_id: dict[str, Any] = {}
+        for item in evidence_items or []:
+            try:
+                by_id[str(getattr(item, "evidence_id", ""))] = item
+            except Exception:
+                continue
+        return by_id
+
+    @staticmethod
+    def _row_text(item: Any) -> str:
+        parts = []
+        for field in ("title", "summary", "content_snippet", "source"):
+            try:
+                parts.append(str(getattr(item, field, "") or ""))
+            except Exception:
+                continue
+        try:
+            location = getattr(getattr(item, "provenance", None), "source_location", None)
+            parts.append(str(getattr(location, "file_path", "") or ""))
+        except Exception:
+            pass
+        return " ".join(parts)
+
+    @staticmethod
+    def _text_stems(text: str) -> set[str]:
+        return {
+            VerificationEngine._stem_token(w)
+            for w in re.split(r"[^a-z0-9]+", (text or "").lower())
+            if len(w) >= 3
+        }
+
+    @staticmethod
+    def causal_step_grounding(
+        causal_chain: list[Any], evidence_items: list[Any]
+    ) -> tuple[bool, str]:
+        """Blocking gate: every causal step cites banked grounding rows.
+
+        A step with no citations, citations to unknown IDs, or citations
+        only to orientation/docs rows is unproven — INCONCLUSIVE, not a
+        low-confidence VERIFIED. Relation demonstration is a separate,
+        demoting check below.
+        """
+        if not causal_chain:
+            return (True, "")
+        by_id = VerificationEngine._evidence_by_id(evidence_items)
+        for index, step in enumerate(causal_chain):
+            try:
+                cited_ids = [str(eid) for eid in (getattr(step, "evidence_ids", None) or [])]
+            except Exception:
+                cited_ids = []
+            if not cited_ids:
+                return (False, f"causal step {index} cites no evidence")
+            rows = [by_id[eid] for eid in cited_ids if eid in by_id]
+            if len(rows) < len(cited_ids):
+                return (
+                    False,
+                    f"causal step {index} cites {len(cited_ids) - len(rows)} unknown id(s)",
+                )
+            grounded = [
+                r
+                for r in rows
+                if str(
+                    getattr(getattr(r, "evidence_type", ""), "value", getattr(r, "evidence_type", ""))
+                    or ""
+                ).upper()
+                in VerificationEngine._STEP_GROUNDING_TYPES
+            ]
+            if not grounded:
+                return (
+                    False,
+                    f"causal step {index} cites only orientation/docs rows, never code/runtime",
+                )
+        return (True, "")
+
+    @staticmethod
+    def causal_relation_demonstrated(
+        causal_chain: list[Any], evidence_items: list[Any]
+    ) -> tuple[bool, str]:
+        """Demoting check: does a cited row show each step's relation?
+
+        A step is demonstrated when one cited row contains subject terms
+        from at least two of its {cause, mechanism, effect} fields (fewer
+        when a field is empty). Lexical matching cannot prove a mechanism,
+        so failure demotes to likely — it never blocks. An undemonstrable
+        step (empty fields throughout) fails open: nothing to check.
+        """
+        if not causal_chain:
+            return (True, "")
+        by_id = VerificationEngine._evidence_by_id(evidence_items)
+        for index, step in enumerate(causal_chain):
+            try:
+                fields = [
+                    VerificationEngine._text_stems(str(getattr(step, name, "") or ""))
+                    for name in ("cause", "mechanism", "effect")
+                ]
+            except Exception:
+                continue
+            fields = [f for f in fields if f]
+            if not fields:
+                continue
+            needed = min(2, len(fields))
+            rows = [
+                by_id[str(eid)]
+                for eid in (getattr(step, "evidence_ids", None) or [])
+                if str(eid) in by_id
+            ]
+            demonstrated = False
+            for row in rows:
+                try:
+                    row_stems = VerificationEngine._text_stems(
+                        VerificationEngine._row_text(row)
+                    )
+                except Exception:
+                    continue
+                hits = sum(1 for stems in fields if stems & row_stems)
+                if hits >= needed:
+                    demonstrated = True
+                    break
+            if not demonstrated:
+                return (
+                    False,
+                    f"causal step {index} cited but no cited row shows its asserted relation",
+                )
+        return (True, "")
+
     @staticmethod
     def _bound_corpus(evidence_items: list[Any]) -> tuple[list[str], list[str]]:
         """(value texts, file paths) from bound evidence rows."""
@@ -1625,7 +1777,8 @@ class VerificationEngine:
         """The single re-verify directive that would promote this conclusion.
 
         Priority follows information value: an untested rival first (it can
-        overturn the winner), then uncited sentences, then corroboration.
+        overturn the winner), then an undemonstrated relation in the
+        winner's own steps, then uncited sentences, then corroboration.
         """
         codes: set[str] = set()
         for lim in limitations or []:
@@ -1641,15 +1794,64 @@ class VerificationEngine:
         sentences = [str(x or "").strip() for x in (unmapped or []) if str(x or "").strip()]
         if "RIVAL_UNTESTED" in codes and rivals:
             return f"Evaluate the untested rival hypothesis against evidence, then re-verify: {rivals[0][:300]}"
-        if "CONCLUSION_UNMAPPED" in codes and sentences:
-            return f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
         if "RIVAL_UNTESTED" in codes:
             return "Evaluate every rival hypothesis against evidence, then re-verify."
+        if "RELATION_UNDEMONSTRATED" in codes:
+            return "Cite the code/log rows showing each causal step's mechanism, then re-verify."
+        if "CONCLUSION_UNMAPPED" in codes and sentences:
+            return f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
         if "CONCLUSION_UNMAPPED" in codes:
             return "Cite evidence for each conclusion sentence, then re-verify."
         if "SINGLE_PROVIDER" in codes:
             return "Corroborate with an independent evidence provider, then re-verify."
         return None
+
+    @staticmethod
+    def next_check_for_abstention(kind: Any, reasons: list[Any] | None) -> str | None:
+        """The single re-verify directive for an abstained investigation.
+
+        Pure and deterministic: maps the abstention kind and its reason
+        list to one operator check. Specific reason strings precede the
+        kind blanket, so "all hypotheses rejected" never receives a
+        refuting-evidence directive when no refuting items exist. Wording
+        is unblock-neutral ("then re-verify"), never "promote." Fail-open:
+        any exception yields None — persistence never blocks on this.
+        """
+        try:
+            texts = [str(r or "").strip() for r in (reasons or []) if str(r or "").strip()]
+            if not texts:
+                return None
+            lowered = [t.lower() for t in texts]
+            if any("all hypotheses rejected or contradicted" in t for t in lowered):
+                return (
+                    "Formulate a hypothesis consistent with the refuting evidence, "
+                    "then re-verify."
+                )
+            refuting = next(
+                (
+                    t
+                    for t in texts
+                    if re.match(r"^\d+ refuting evidence item\(s\) bound", t.lower())
+                ),
+                "",
+            )
+            if refuting:
+                return f"Resolve the {refuting[:120]}, then re-verify."
+            if str(kind or "").strip().lower() == "refuted":
+                return "Resolve the refuting evidence, then re-verify."
+            if any(t == "no bound supporting evidence" for t in lowered):
+                return (
+                    "Cite and bind supporting evidence to the candidate hypothesis, "
+                    "then re-verify."
+                )
+            if any(t == "no validated causal chain" for t in lowered):
+                return (
+                    "Bind a causal chain with cited evidence for each link, "
+                    "then re-verify."
+                )
+            return f"Resolve '{texts[0][:300]}', then re-verify."
+        except Exception:
+            return None
 
     @traced("reason", require_scope=False, extra_from=_verification_extra)
     def evaluate_hypothesis(
@@ -1730,6 +1932,30 @@ class VerificationEngine:
                 corroborating_evidence_ids=[],
                 explanation=f"Unresolved contradictions ({len(unresolved)}) exceed limit.",
                 confidence=confidence,
+            )
+
+        # Causal steps must cite banked grounding rows (code or runtime).
+        # A step citing nothing, unknown IDs, or only orientation/docs is
+        # unproven — INCONCLUSIVE. Relation demonstration demotes (below),
+        # it never blocks.
+        step_grounded, step_reason = VerificationEngine.causal_step_grounding(
+            causal_chain, evidence_items
+        )
+        if not step_grounded:
+            return VerificationResult(
+                hypothesis_id=hypothesis.id,
+                status=VerificationStatus.INCONCLUSIVE,
+                corroborating_evidence_ids=[],
+                explanation=(
+                    "Causal claim not grounded in cited evidence: "
+                    f"{step_reason}."
+                ),
+                confidence=InvestigationConfidence(
+                    coverage_score=0.3,
+                    reliability_score=0.5,
+                    causal_score=0.0,
+                    contradiction_penalty=0.0,
+                ),
             )
 
         # F-050: cross-layer corroboration requires INDEPENDENT sources — distinct
@@ -1825,6 +2051,23 @@ class VerificationEngine:
                 )
                 limitations.extend(rival_limits)
                 if demote:
+                    tier = "likely"
+                relation_ok, relation_reason = (
+                    VerificationEngine.causal_relation_demonstrated(
+                        causal_chain, evidence_items
+                    )
+                )
+                if not relation_ok:
+                    limitations.append(
+                        VerificationLimitation(
+                            code=LimitationCode.RELATION_UNDEMONSTRATED,
+                            detail=(
+                                f"{relation_reason}; the mechanism is "
+                                "supported, not demonstrated: likely, not "
+                                "established."
+                            )[:500],
+                        )
+                    )
                     tier = "likely"
                 if len(providers) < 2:
                     limitations.append(

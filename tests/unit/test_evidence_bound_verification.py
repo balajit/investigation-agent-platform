@@ -823,7 +823,8 @@ class TestPublishBand:
 
         chain = [CausalRelationship(
             cause="pool saturation", effect="checkout latency",
-            mechanism="exhausted connections queue", confidence=0.7, evidence_ids=[],
+            mechanism="exhausted connections queue", confidence=0.7,
+            evidence_ids=[r.evidence_id for r in rows[:2]],
         )]
         result = engine.evaluate_hypothesis(
             hyp, rows, [], chain, RootCauseVerificationPolicy.runtime(),
