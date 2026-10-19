@@ -47,7 +47,7 @@ def _configure_cognee_env() -> dict[str, str]:
     Cognee routes through litellm: Azure models need the `azure/<deployment>`
     prefix (bare deployment names misroute to OpenAI and hang). Endpoint/key
     values mirror scripts/azure_openai.py (the validated reference):
-      chat:       gto-salestech resource, 2025-01-01-preview, gpt-4.1
+      chat:        resource, 2025-0-preview, gpt-4.1
       embeddings: example embedding resource, 2023-05-15, text-embedding-ada-002
     """
     chat_deploy = _env("COGNEE_LLM_DEPLOYMENT", "IAP_AZURE_DEPLOYMENT", default="gpt-4.1")
