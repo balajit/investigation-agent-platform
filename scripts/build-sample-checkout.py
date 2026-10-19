@@ -26,9 +26,19 @@ REPO = "data/code-repos/samplecorp/orders-internal"
 GIT_IDENTITY = ["-c", "user.name=iap-calibration", "-c", "user.email=iap-calibration@example.com"]
 
 FILES_V1 = {
-    "settings.gradle": "rootProject.name = 'orders-internal'\ninclude 'service', 'commons'\n",
+    "settings.gradle": "rootProject.name = 'orders-internal'\ninclude 'service', 'commons', 'db'\n",
     "service/build.gradle": "plugins { id 'java' }\n",
     "commons/build.gradle": "plugins { id 'java' }\n",
+    "db/schema.sql": """-- Synthetic FK golden: product/market/offer centers + link table + dormant child.
+CREATE TABLE product (id NUMBER PRIMARY KEY, name VARCHAR2(200));
+CREATE TABLE market (id NUMBER PRIMARY KEY, name VARCHAR2(200));
+CREATE TABLE base_offer (id NUMBER PRIMARY KEY, product_id NUMBER REFERENCES product(id));
+CREATE TABLE billing_code (id NUMBER PRIMARY KEY, code VARCHAR2(50));
+CREATE TABLE product_market (product_id NUMBER REFERENCES product(id), market_id NUMBER REFERENCES market(id));
+CREATE TABLE dormant_child (id NUMBER PRIMARY KEY, product_id NUMBER REFERENCES product(id));
+""",
+    "analysis/edges_golden.json": """{"edges": [{"src": "OrderServiceImpl", "dst": "LegacyCodeMapper", "kind": "calls"}, {"src": "SampleOrderFilter", "dst": "OrderServiceImpl", "kind": "calls"}, {"src": "base_offer", "dst": "product", "kind": "fk"}, {"src": "product_market", "dst": "product", "kind": "fk"}, {"src": "product_market", "dst": "market", "kind": "fk"}]}
+""",
     "service/src/main/java/com/sample/orders/service/OrderServiceImpl.java": """package com.sample.orders.service;
 
 import com.sample.orders.legacy.LegacyCodeMapper;

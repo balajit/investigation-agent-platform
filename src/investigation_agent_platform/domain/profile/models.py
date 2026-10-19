@@ -255,6 +255,24 @@ class FileLogDatasourceSpec(BaseModel):
     max_bytes_per_file: int | None = Field(default=None, ge=1024, le=104857600)
 
 
+class DomainHub(BaseModel):
+    """One domain center (Phase 2): product/market/offer-style hub with witness scores.
+
+    Populated by the hub lookup primitive into the profile merge derived
+    slot (versioned, offline). Orientation reads it; verify corroborates
+    hub membership; fingerprint gates rebuilds.
+    """
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=128)
+    score: float = Field(default=0.0)
+    fan_in: int = Field(default=0, ge=0)
+    fan_out: int = Field(default=0, ge=0)
+    witnesses: list[str] = Field(default_factory=list, max_length=10)
+    fingerprint: str = Field(default="", max_length=128)
+
+
 class EntityRelationship(BaseModel):
     """One join edge between tables/entities (G-0).
 
@@ -499,6 +517,7 @@ class ApplicationProfile(BaseModel):
     derivation: DerivationReport | None = None
     services: list[Service] = Field(default_factory=list, max_length=50)
     datasources: list[Datasource] = Field(default_factory=list, max_length=100)
+    domain_hubs: list[DomainHub] = Field(default_factory=list, max_length=100)
     mapping_source_id: str = Field(default=GENERIC_ECS_SOURCE_ID, max_length=128)
     correlation: CorrelationConfig = Field(default_factory=CorrelationConfig)
     investigation: InvestigationConfig = Field(default_factory=InvestigationConfig)

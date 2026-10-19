@@ -13,6 +13,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from investigation_agent_platform.domain.common.exceptions import (
     ExecutionError,
     SecurityPolicyViolationException,
+    UnsupportedCapabilityError,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.evidence.requests import (
@@ -345,12 +346,6 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             return None
 
     async def _enforce_authorization(
-        self,
-        tenant_id: str,
-        capability: str,
-        resource: str = "",
-        application_id: str | None = None,
-    ) -> None:
         # The profile authorizer scopes by application: without the
         # application_id it fail-closes (no profile → deny). Every public
         # gateway method holds application_id and must thread it through —
@@ -666,6 +661,15 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                     per_source.append(
                         {"source": source_key, "status": status, "items": len(items)}
                     )
+            if not per_source:
+                per_source.append(
+                    {
+                        "source": "state-mcp-fanout",
+                        "status": "DEGRADED",
+                        "items": 0,
+                        "reason": "no-state-mcp-servers-registered",
+                    }
+                )
             if extra_items:
                 sanitized_extra = [
                     await self._sanitizer.sanitize_evidence(tenant_id, item)
@@ -808,6 +812,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 raise ExecutionError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
+            self._require_revision_capability(provider, request.revision, request.require_revision)
             raw_items = await asyncio.wait_for(
                 provider.search_code(
                     tenant_id,
@@ -817,6 +822,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                     language=request.language,
                     path_prefix=request.path_prefix,
                     limit=request.limit,
+                    revision=request.revision,
                 ),
                 timeout=self._timeout_seconds,
             )

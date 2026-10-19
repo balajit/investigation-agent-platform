@@ -426,6 +426,55 @@ def _coerced_data(cls: type, params: object, *, activity: str) -> dict[str, Any]
     )
 
 
+async def _hub_orientation_for(ctx: Any, tenant_id: str, investigation: Any) -> dict[str, Any] | None:
+    """Build hub orientation from the investigation's profile (best-effort, never raises).
+
+    Looks up domain_hubs by problem-description characteristic and returns a
+    hub_orientation_block, or None when the profile has no hubs. Activities
+    pass it into coordinator.reason(); the prompt treats it as direction only.
+    """
+    try:
+        from investigation_agent_platform.domain.analysis.hub_memory import (
+            hub_orientation_block,
+            lookup_hubs,
+        )
+
+        profile_repo: Any = getattr(ctx, "profile_repo", None)
+        if profile_repo is None or investigation is None:
+            return None
+        app_id = str(getattr(investigation, "application_id", "") or "")
+        if not app_id:
+            return None
+        try:
+            profile = await profile_repo.get_by_application_id(tenant_id, app_id)
+        except Exception:
+            return None
+        if profile is None:
+            return None
+        hubs = getattr(profile, "domain_hubs", None) or []
+        hub_dicts = []
+        for h in hubs:
+            try:
+                hub_dicts.append(h.model_dump() if hasattr(h, "model_dump") else dict(h))
+            except Exception:
+                continue
+        if not hub_dicts:
+            return None
+        problem = str(getattr(getattr(investigation, "request", None), "problem_description", "") or getattr(investigation, "problem_description", "") or "")
+        matched: list[dict[str, Any]] = []
+        for token in [t for t in problem.replace("/", " ").replace("_", " ").split() if len(t) >= 4][:8]:
+            matched.extend(lookup_hubs(hub_dicts, token, limit=5))
+        seen: dict[str, dict[str, Any]] = {}
+        for h in matched:
+            seen.setdefault(str(h.get("name", "")), h)
+        top = sorted(seen.values(), key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))))[:5]
+        if not top:
+            top = sorted(hub_dicts, key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))))[:3]
+        return hub_orientation_block(top)
+    except Exception:
+        return None
+
+
 def _idempotency_store_for(ctx: Any) -> Any | None:
     """Return the ctx idempotency store when it speaks the durable protocol.
 
@@ -1466,6 +1515,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             decision = await coordinator.reason(
                 tenant_id, state, recent_actions=recent_actions,
                 orientation_notes=knowledge_orientation,
+                hub_orientation=await _hub_orientation_for(ctx, tenant_id, investigation),
             )
             # Choreography: the workflow dispatches on next_action /
             # action_parameters — they must be propagated here, not dropped.
@@ -1881,6 +1931,7 @@ async def fallback_call_graph_to_search(    *,
     record_outcome: Any,
     outcome_detail: dict,
     inv_id_str: Any = "",
+    union: bool = False,
 ) -> int:
     """B-5: empty graph (no call_graph.json / stale checkout) degrades
     to a SEARCH_CODE keyword query for the symbol instead of EMPTY.
@@ -1891,6 +1942,11 @@ async def fallback_call_graph_to_search(    *,
     fallback deterministic: graph miss always searches. Banked rows
     carry miss_reason so the reasoner knows they are keyword rows,
     not true graph edges. Module-level for unit testability.
+
+    Union mode (union=True): the graph banked a row but one side is
+    empty (0 callers or 0 callees) — graph incompleteness, not proof
+    of absence. Keyword rows supplement (union) instead of replacing,
+    marked call_graph_partial_search_union.
     """
     from investigation_agent_platform.domain.evidence.requests import (
         CodeSearchRequest,
@@ -1899,6 +1955,7 @@ async def fallback_call_graph_to_search(    *,
     symbol = str((parameters or {}).get("symbol", "") or "").strip()
     if not symbol:
         return 0
+    marker = "call_graph_partial_search_union" if union else "call_graph_empty_search_fallback"
     try:
         qres = await gateway.search_code(
             tenant_id,
@@ -1927,7 +1984,7 @@ async def fallback_call_graph_to_search(    *,
     if evidence_repo is not None and banked:
         await evidence_repo.save_batch(tenant_id, banked, investigation_id)
     if banked:
-        outcome_detail["miss_reason"] = "call_graph_empty_search_fallback"
+        outcome_detail["miss_reason"] = marker
     return record_outcome(banked)
 
 
@@ -3510,6 +3567,8 @@ async def execute_action_activity(
                 meta = (getattr(qres, "provider_metadata", None) or {})
                 callers = meta.get("callers", []) or []
                 callees = meta.get("callees", []) or []
+                outcome_detail["_graph_callers"] = len(callers)
+                outcome_detail["_graph_callees"] = len(callees)
                 if not callers and not callees:
                     return []
                 import hashlib as _hashlib
@@ -3582,6 +3641,8 @@ async def execute_action_activity(
                 summarize=_summarize,
             )
             if banked_count == 0:
+                outcome_detail.pop("_graph_callers", None)
+                outcome_detail.pop("_graph_callees", None)
                 return await fallback_call_graph_to_search(
                     gateway=gateway,
                     tenant_id=tenant_id,
@@ -3594,6 +3655,23 @@ async def execute_action_activity(
                     outcome_detail=outcome_detail,
                     inv_id_str=inv_id_str,
                 )
+            _callers_n = outcome_detail.pop("_graph_callers", 1)
+            _callees_n = outcome_detail.pop("_graph_callees", 1)
+            if _callers_n == 0 or _callees_n == 0:
+                extra = await fallback_call_graph_to_search(
+                    gateway=gateway,
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    application_id=application_id,
+                    parameters=parameters,
+                    evidence_repo=evidence_repo,
+                    bank=_bank,
+                    record_outcome=_record_outcome,
+                    outcome_detail=outcome_detail,
+                    inv_id_str=inv_id_str,
+                    union=True,
+                )
+                return banked_count + extra
             return banked_count
         async def _handle_get_code_history() -> int:
             from investigation_agent_platform.domain.evidence.requests import (

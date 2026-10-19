@@ -91,7 +91,15 @@ class TreeSitterCodeIntelligenceProvider:
 
     Scans repo_base_path / services[].code (org/repos + sourceRoots) and uses tree-sitter
     and pre-computed Rustworkx (PyDiGraph) call graph artifacts for high-performance analysis.
+
+    Scans the live checkout and cannot pin to a caller-supplied revision, so
+    ``revision_supported`` is False and results never claim a pinned revision.
     """
+
+    # Phase 0.1: this provider reads the working tree at HEAD only. A
+    # requested revision can be honored by the git adapter for GET_CODE, but
+    # not here; results are candidate discovery, never revision-pinned proof.
+    revision_supported: bool = False
 
     def __init__(
         self,
@@ -1061,6 +1069,7 @@ class TreeSitterCodeIntelligenceProvider:
         language: str | None = None,
         path_prefix: str | None = None,
         limit: int = 20,
+        revision: str | None = None,
     ) -> list[Evidence]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.search_code"):
             self._require_tenant_scope(tenant_id, profile)
@@ -1089,6 +1098,7 @@ class TreeSitterCodeIntelligenceProvider:
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeSymbol]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_symbol"):
             self._require_tenant_scope(tenant_id, profile)
@@ -1101,6 +1111,7 @@ class TreeSitterCodeIntelligenceProvider:
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callers"):
             self._require_tenant_scope(tenant_id, profile)
@@ -1113,6 +1124,7 @@ class TreeSitterCodeIntelligenceProvider:
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CallGraphNode]:
         with tracer.start_as_current_span("TreeSitterCodeIntelligenceProvider.find_callees"):
             self._require_tenant_scope(tenant_id, profile)
@@ -1125,6 +1137,7 @@ class TreeSitterCodeIntelligenceProvider:
         exception_class: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeLocation]:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_exception_handlers"
@@ -1141,6 +1154,7 @@ class TreeSitterCodeIntelligenceProvider:
         entity_or_table: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeLocation]:
         with tracer.start_as_current_span(
             "TreeSitterCodeIntelligenceProvider.find_database_operations"

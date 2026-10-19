@@ -296,3 +296,23 @@ The rustworkx graph cache now carries each artifact's mtime and reloads on chang
 ## 52. Context-window shrink (2026-10-18)
 
 Compiled context now enforces a token ceiling (`IAP_COMPILER_MAX_TOKENS`, default 12000, chars/4 estimator): newest-first evidence ordering (bound Tier-1, then retrieved-desc — caps shed oldest first instead of first-N), terminal-hypothesis compaction (REJECTED/CONTRADICTED slim to claim+verdict; VERIFIED stays full), and priority purge (unbound Tier-1→marker oldest-first, timeline/pending/findings tails) with a `purged` ledger + `estimated_tokens` on every compiled context. Bound citations never shed (exact-ID protection). Prompt version v009. Live proof: loop ANSWERED under the new contract.
+
+## 53. Acquired judgement built (2026-10-19)
+
+Phases 0–7 landed per `docs/ACQUIRED_JUDGEMENT_Implementation_plan.md`: Phase 0 content keys (`domain/analysis/content_keys`), `analyzer/v1` contracts (`domain/analysis/sidecar_v1`), FK/edge goldens in `scripts/build-sample-checkout.py`; Phase 1 `analyzer_*` tables (migration `021_analyzer_tables`) + `RepositoryAnalyzer` ingest/merge + generated-code heuristics; Phase 2 DB extractor SQL builders + fingerprint (`domain/analysis/db_extractor`), hub ranking (`hub_ranking`), `DomainHub` profile slot + lookup/orientation/verify helpers (`hub_memory`); Phase 3 association store with capture/reinforce/recall/janitor + jump-start packet + mid-loop fact banking (`associations`); Phase 4 per-investigation customer context + mismatch detector (`customer_context`); Phase 5 Spoon-grade edge queries — blast radius, dependency depth, shared-lib fan-out, env diffs, platform single-point (`cross_repo`); Phase 6 deterministic `sync_merge` + `iap-operator.py sync` (fingerprint-gated rebuilds, closing the §51 future-work thread); Phase 7 runbook (operator `sync --dry-run` before `seed`), `poc/` scratch deleted after productization. Conventions hold: respondent-free content, sorted/pinned/normalized deterministic outputs, fail-closed ingestion, idempotent `(repo, SHA, stage)` writes, per-tenant memory. V1 exclusions kept: no new ActionType, no live per-run extraction, no critic coupling, mem0 lane behind flag (Postgres-only until real human-context content is identified).
+
+## 54. Memory wired live (2026-10-19)
+
+Follow-through on §53: `reason_activity` supplies `hub_orientation` from profile `domain_hubs` (characteristic token walk, top-5; best-effort, never raises), `DomainHubView` added to the wire `ProfileView` (v4 reseeded, 4 hubs live), git falls back to unambiguous case-insensitive basenames, and empty state fan-out reports `no-state-mcp-servers-registered` DEGRADED instead of silent zero rows. Live reruns: L4 FAIL→ANSWERED (`35b37deb`), L8 fabrication→INSUFFICIENT (`527755ca`), S9 hub probe ANSWERED (`12eed256`), corrected-frames intake banks EXCEPTION_PATH rows (`d5ce2b0a`). Residual: L2/L3/L5 banked-but-unverified is closed by §55; live Oracle wallet restored (see §56).
+
+## 55. Cited-stem validation (2026-10-19)
+
+Caller-enumeration answers ("X and Y call Z") name bare class stems with no slash-path, so the G9 path-token gate rejected fully cited hypotheses. `VerificationEngine._names_cited_stem` accepts a claim token only on exact case-insensitive basename-stem equality with a cited file (no edit-distance fuzz; corpus-foreign subjects still fail). Live: L2/L3/L5 PARTIAL→ANSWERED (`082e98eb`, `fd34beda`, `ff3c5e78`). Full unit suite 1912 passed.
+
+## 56. Live Oracle restored (2026-10-19)
+
+The `SAMPLEDB-conn` wallet was re-imported from the operator-home credential file (documented runbook path; credentials never enter the repo), restoring the state leg that had been down since the respondent-free rename. Probe `fa842c44` returned `ROOT_CAUSE_ESTABLISHED` with the exact 19c banner banked as one `DATABASE_STATE` row. The empty-fan-out DEGRADED signal from the prior session stays as the fail-closed guard for future wallet outages.
+
+## 57. Datasource-choice scoping (2026-10-19)
+
+With Oracle live again, code questions drifting into `QUERY_STATE` cost real queries (banner rows for code-location questions). Two guards: `classify_question_shape` labels code/state/log/unknown from the complaint and threads `question_shape` into reason context with prompt steering (code-shaped leads with code capabilities, never state/log first); and the call-graph path now banks a keyword union when one graph side is empty (0 callers or 0 callees is graph incompleteness, not proof of absence — the model had concluded "no callers" from a 0-caller row while the filter truly calls the service). Live probe `f22af1c9` (callers of OrderServiceImpl): zero Oracle legs, union rows banked, ANSWERED naming SampleOrderFilter. Full unit suite 1915 passed.

@@ -281,6 +281,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         state: InvestigationState,
         recent_actions: list[dict[str, Any]] | None = None,
         orientation_notes: list[dict[str, Any]] | None = None,
+        hub_orientation: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> InvestigationDecision:
         investigation_id = str(getattr(getattr(state, "investigation", None), "id", ""))
         logger.info(
@@ -295,7 +296,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         )
         try:
             decision = await self._reason_inner(
-                tenant_id, state, recent_actions, orientation_notes
+                tenant_id, state, recent_actions, orientation_notes, hub_orientation
             )
         except Exception:
             logger.exception(
@@ -328,6 +329,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         state: InvestigationState,
         recent_actions: list[dict[str, Any]] | None = None,
         orientation_notes: list[dict[str, Any]] | None = None,
+        hub_orientation: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> InvestigationDecision:
         # F-048: structured instruction/data separation — evidence travels as
         # typed records in a dedicated envelope field, never concatenated
@@ -412,6 +414,31 @@ class ReasoningCoordinator(InvestigationReasoner):
         facts_block["knowledge_orientation"] = [
             note for note in (orientation_notes or []) if isinstance(note, dict)
         ][:5]
+        # Acquired judgement: hub + association orientation beside refdoc
+        # orientation. Memory suggests, evidence decides: direction only,
+        # never cited — claims still need code/log/state citations.
+        # No hub affinity is itself a signal toward honest abstention.
+        hub_block = hub_orientation if hub_orientation is not None else getattr(state, "hub_orientation", None)
+        if isinstance(hub_block, dict) and hub_block:
+            facts_block["hub_orientation"] = hub_block
+        elif isinstance(hub_block, list):
+            facts_block["hub_orientation"] = [n for n in hub_block if isinstance(n, dict)][:5]
+        # Misrouting fix: question-shape signal scopes datasource choice.
+        # Code-shaped questions with empty evidence used to drift into
+        # QUERY_STATE (Oracle banner rows for a code-location question) via
+        # the generic empty-evidence default. The shape steers the first
+        # evidence family; the validator still decides every claim.
+        try:
+            from investigation_agent_platform.domain.analysis.question_shape import (
+                classify_question_shape,
+            )
+
+            _problem = str(
+                getattr(getattr(getattr(state, "investigation", None), "request", None), "problem_description", "") or ""
+            )
+            facts_block["question_shape"] = classify_question_shape(_problem)
+        except Exception:
+            facts_block["question_shape"] = "unknown"
         # P0-1: compiled context sections — hypotheses, timeline, pending
         # questions, findings, and bounded evidence excerpts WITH code
         # bodies. Previously hydrated state never reached the model.
@@ -491,9 +518,14 @@ class ReasoningCoordinator(InvestigationReasoner):
                     "When evidence_records is empty, use SEARCH_LOGS with "
                     '{"keywords": [terms taken from the problem_description], '
                     '"services": []} to gather log evidence '
-                    "first — leave services EMPTY unless the state names exact "
-                    "service identifiers (a wrong service filter matches "
-                    "nothing). EXCEPTION (explicit code target): if the "
+                     "first — leave services EMPTY unless the state names exact "
+                     "service identifiers (a wrong service filter matches "
+                     "nothing). EXCEPTION (question_shape=code): when "
+                     "STRUCTURED_CONTEXT_JSON question_shape is \"code\", "
+                     "lead with code capabilities (SEARCH_CODE, FIND_SYMBOL, "
+                     "FIND_CALL_GRAPH, GET_CODE) — never QUERY_STATE or "
+                     "SEARCH_LOGS first; a database banner row cannot answer "
+                     "a code-location question. EXCEPTION (explicit code target): if the "
                     "problem_description names an exact repo-relative source "
                     "path (e.g. 'src/svc/handler.py') together with what to "
                     "read (a function, symbol, or line range), the FIRST "
@@ -563,10 +595,12 @@ class ReasoningCoordinator(InvestigationReasoner):
                      "evidence you actually used; uncited hypotheses "
                      "cannot verify. "
                      "knowledge_orientation notes (reference docs, prior "
-                     "findings) are direction only: use them to choose what "
+                     "findings) and hub_orientation notes (domain hubs, "
+                     "ranked associations) are direction only: use them to choose what "
                      "to query next, never as verification — a claim learned "
                      "from orientation still needs code/log/state citations "
-                     "before VERIFY_HYPOTHESIS. "
+                     "before VERIFY_HYPOTHESIS. No hub affinity is itself a "
+                     "signal: prefer honest abstention over unverified answers. "
                      "Each reason turn carries triage_route (TRANSIENT / "
                      "CONFIG / DATA / BUG / UNKNOWN): TRANSIENT means favor "
                      "recent-window log evidence and retry/deploy signals "

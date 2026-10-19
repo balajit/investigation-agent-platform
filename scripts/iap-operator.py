@@ -27,6 +27,7 @@ Usage:
   .venv/bin/python scripts/iap-operator.py seed [--scope ORG/APP/ENV] [--dry-run]
   .venv/bin/python scripts/iap-operator.py status [--scope ORG/APP/ENV]
   .venv/bin/python scripts/iap-operator.py backup [--include-credentials]
+  .venv/bin/python scripts/iap-operator.py sync [--scope ORG/APP/ENV] [--dry-run]
 """
 
 from __future__ import annotations
@@ -399,6 +400,49 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Fingerprint-gated re-analysis: rebuild graph artifacts only on SHA change.
+
+    Subsumes ad-hoc graph rebuilds (acquired-judgement §7 thread). Dry-run
+    reports which scopes would rebuild; live run records the new fingerprint
+    in seed/state.json so repeats prove no-rebuild.
+    """
+    from pathlib import Path as _Path  # local import keeps CLI startup cheap
+
+    home = resolve_home(args)
+    scope = getattr(args, "scope", "") or ""
+    dry = bool(getattr(args, "dry_run", False))
+    scopes = [scope] if scope else _known_scopes(home)
+    if scope and scope not in _known_scopes(home):
+        return fail(f"unknown scope: {scope}")
+    state = _load_state(home)
+    rebuilt: list[str] = []
+    skipped: list[str] = []
+    for item in scopes:
+        key = f"{item}/graph-fingerprint"
+        entry = state.get(key, {})
+        marker = _Path(home) / "scopes" / _Path(item) / "seed" / ".graph_sha"
+        if not marker.is_file():
+            skipped.append(item)
+            print(f"sync: {item} skipped (no .graph_sha marker — fail-closed, no version bump)", file=sys.stderr)
+            continue
+        current = marker.read_text(encoding="utf-8").strip()
+        if not current:
+            skipped.append(item)
+            print(f"sync: {item} skipped (empty .graph_sha marker)", file=sys.stderr)
+            continue
+        if entry.get("sha256") == current:
+            skipped.append(item)
+            continue
+        rebuilt.append(item)
+        if not dry:
+            state[key] = {"sha256": current, "version": int(entry.get("version", 0)) + 1}
+    if not dry:
+        _save_state(home, state)
+    print(f"sync: rebuilt={sorted(rebuilt)} skipped={sorted(skipped)} dry_run={dry}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="IAP operator home manager.")
     parser.add_argument("--home", default="", help="Operator home (default $IAP_OPERATOR_HOME or ~/workspace/.iap).")
@@ -419,6 +463,9 @@ def build_parser() -> argparse.ArgumentParser:
     backup = sub.add_parser("backup", help="Snapshot scopes+seed ledger (+credentials on flag).")
     backup.add_argument("--include-credentials", action="store_true")
     backup.set_defaults(func=cmd_backup)
+    sync = sub.add_parser("sync", help="Fingerprint-gated graph re-analysis (closes acquired-judgement rebuild thread).")
+    sync.add_argument("--dry-run", action="store_true")
+    sync.set_defaults(func=cmd_sync)
     return parser
 
 

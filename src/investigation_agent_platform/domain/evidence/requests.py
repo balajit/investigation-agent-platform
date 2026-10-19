@@ -140,6 +140,10 @@ class CodeSearchRequest(BaseModel):
     path_prefix: str | None = Field(default=None, max_length=512)
     symbol_type: SymbolType | None = None
     limit: int = Field(default=20, ge=1, le=100)
+    # When True the caller asserts the revision is load-bearing; a provider
+    # that cannot pin to it must raise UNSUPPORTED_CAPABILITY instead of
+    # returning results that silently describe a different revision.
+    require_revision: bool = False
 
     @field_validator("repository", "path_prefix")
     @classmethod
@@ -158,6 +162,8 @@ class SymbolRequest(BaseModel):
     revision: str = Field(default="HEAD", max_length=128)
     symbol_name: str = Field(..., max_length=256)
     symbol_type: SymbolType | None = None
+    # See CodeSearchRequest.require_revision.
+    require_revision: bool = False
 
 
 class SourceRequest(BaseModel):
@@ -189,6 +195,8 @@ class CallGraphRequest(BaseModel):
     symbol: str = Field(..., max_length=256)
     direction: str = Field(default="BOTH", pattern="^(INBOUND|OUTBOUND|BOTH)$")
     depth: int = Field(default=2, ge=1, le=5)
+    # See CodeSearchRequest.require_revision.
+    require_revision: bool = False
 
 
 class CodeHistoryRequest(BaseModel):

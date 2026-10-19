@@ -71,6 +71,41 @@ def merge_relationships(
         return list(derived or [])
 
 
+def _hub_key(hub: dict[str, Any]) -> str:
+    try:
+        return str(hub.get("name", "")).strip().lower()
+    except Exception:
+        return ""
+
+
+def merge_domain_hubs(
+    derived: list[dict[str, Any]], operator: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge operator hub augmentations over derived hub rankings (pure).
+
+    Operator hubs win on name conflict; derived order is score-descending.
+    Deterministic: derived sorted by (-score, name), operator additions appended.
+    """
+    try:
+        merged: dict[str, dict[str, Any]] = {}
+        ranked = sorted(
+            (h for h in (derived or []) if isinstance(h, dict) and _hub_key(h)),
+            key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))),
+        )
+        for hub in ranked:
+            merged.setdefault(_hub_key(hub), {**hub, "source": "derived"})
+        for hub in operator or []:
+            try:
+                if not isinstance(hub, dict) or not _hub_key(hub):
+                    continue
+                merged[_hub_key(hub)] = {**hub, "source": "operator"}
+            except Exception:
+                continue
+        return [merged[k] for k in merged]
+    except Exception:
+        return list(derived or [])
+
+
 def materialize_session_templates(profile: dict[str, Any]) -> dict[str, Any]:
     """Generate session join templates into datasources (pure).
 

@@ -279,6 +279,32 @@ class CodePathNotFoundError(ExecutionError):
         self.error_code = "CODE_PATH_NOT_FOUND"
 
 
+class UnsupportedCapabilityError(ExecutionError):
+    """A provider cannot honor a required capability (e.g. a pinned revision).
+
+    Distinct from a provider outage and from "no data": the provider is
+    healthy but structurally cannot satisfy the request. Callers must not
+    collapse this into an empty result or a no-match — a revision-pinned
+    lookup that cannot be honored is unproven, not absent. Never retryable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        capability: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        merged = dict(details or {})
+        merged.setdefault("capability", capability)
+        super().__init__(
+            message=message,
+            details=merged,
+            retryable=False,
+        )
+        self.error_code = "UNSUPPORTED_CAPABILITY"
+        self.capability = capability
+
+
 class ConcurrencyError(DomainException):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(

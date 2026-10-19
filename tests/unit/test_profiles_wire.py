@@ -97,6 +97,7 @@ def _expected_sanitized():
         ],
         "derivation": None,
         "description": "contract test profile",
+        "domain_hubs": [],
         "expectations": {"endpoints": []},
         "domain": None,
         "environment": "production",

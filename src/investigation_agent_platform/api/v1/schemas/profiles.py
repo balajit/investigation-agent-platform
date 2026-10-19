@@ -165,13 +165,22 @@ class DatasourceView(BaseModel):
 
 class EntityRelationshipView(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     from_entity: str
     from_key: str
     to_entity: str
     to_key: str
     source: str = "derived"
     tombstoned: bool = False
+
+
+class DomainHubView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    score: float = 0.0
+    fan_in: int = 0
+    fan_out: int = 0
+    witnesses: list[str] = Field(default_factory=list)
+    fingerprint: str = ""
 
 
 class CorrelationConfigView(BaseModel):
@@ -310,6 +319,7 @@ class ProfileView(BaseModel):
     derivation: DerivationReportView | None
     services: list[ServiceView]
     datasources: list[DatasourceView]
+    domain_hubs: list[DomainHubView] = Field(default_factory=list)
     mapping_source_id: str
     correlation: CorrelationConfigView
     investigation: InvestigationConfigView

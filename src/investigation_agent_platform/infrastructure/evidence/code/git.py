@@ -317,6 +317,42 @@ class PyGit2Adapter:
                 revision, start_line, end_line,
             )
 
+    @staticmethod
+    def _case_insensitive_tree_path(commit: Any, tree_path: str) -> str | None:
+        """Case-insensitive basename fallback within the same tree directory (L4 typo-path).
+
+        Returns the corrected tree path when exactly one entry in the parent
+        directory matches case-insensitively; None otherwise (fail-closed:
+        ambiguous or absent stays a miss).
+        """
+        try:
+            parts = [p for p in str(tree_path or "").split("/") if p not in ("", ".")]
+            if not parts:
+                return None
+            parent_parts, want = parts[:-1], parts[-1].casefold()
+            node: Any = commit.tree
+            for part in parent_parts:
+                try:
+                    child = node[part]
+                except KeyError:
+                    return None
+                node = child.peel(__import__("pygit2").Tree) if hasattr(child, "peel") else child
+                if not hasattr(node, "__iter__"):
+                    return None
+            matches = []
+            for entry in node:
+                try:
+                    name = str(entry.name or "")
+                    if name.casefold() == want:
+                        matches.append("/".join([*parent_parts, name]))
+                except Exception:
+                    continue
+            if len(matches) == 1:
+                return matches[0]
+            return None
+        except Exception:
+            return None
+
     def _fetch_blob(
         self,
         repo_path: Path,
@@ -358,9 +394,18 @@ class PyGit2Adapter:
             try:
                 entry = commit.tree[tree_path]
             except KeyError as exc:
-                raise CodePathNotFoundError(
-                    f"Path not found in {repository}@{rev}: {file_path}"
-                ) from exc
+                corrected = self._case_insensitive_tree_path(commit, tree_path)
+                if corrected is None:
+                    raise CodePathNotFoundError(
+                        f"Path not found in {repository}@{rev}: {file_path}"
+                    ) from exc
+                tree_path = corrected
+                try:
+                    entry = commit.tree[tree_path]
+                except KeyError as exc2:
+                    raise CodePathNotFoundError(
+                        f"Path not found in {repository}@{rev}: {file_path}"
+                    ) from exc2
             if not isinstance(entry, pygit2.Blob):
                 raise CodePathNotFoundError(f"Path is not a file: {file_path}")
             blob: pygit2.Blob = entry

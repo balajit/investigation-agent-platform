@@ -607,6 +607,67 @@ class TestCorrectedPathClaims:
         )
 
 
+class TestCitedStemClaims:
+    def test_caller_enumeration_naming_cited_stems_validates(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+            VerificationStatus,
+        )
+
+        engine = VerificationEngine()
+        rows = [
+            _code_evidence_at_path(
+                "samplecorp/orders-internal/service/src/main/java/com/sample/orders/proxy/OrderServiceRestProxy.java"
+            ),
+            _code_evidence_at_path(
+                "samplecorp/orders-internal/service/src/main/java/com/sample/orders/helper/OrderQualifyHelper.java"
+            ),
+        ]
+        result = engine.validate_location_claim(
+            _loc_hyp(
+                "OrderServiceRestProxy and OrderQualifyHelper call the order service handler."
+            ),
+            rows,
+            [],
+        )
+        assert result is not None
+        assert result.status == VerificationStatus.VERIFIED
+        assert result.location_validated is True
+
+    def test_corpus_foreign_subject_still_rejected(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        engine = VerificationEngine()
+        rows = [
+            _code_evidence_at_path(
+                "samplecorp/orders-internal/service/src/main/java/com/sample/orders/proxy/OrderServiceRestProxy.java"
+            ),
+        ]
+        assert (
+            engine.validate_location_claim(
+                _loc_hyp("The quantum module calls the order service handler."),
+                rows,
+                [],
+            )
+            is None
+        )
+
+    def test_near_miss_stem_never_matches(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        assert (
+            VerificationEngine._names_cited_stem(
+                "OrderServiceRestProx calls the handler.",
+                [_code_evidence_at_path("org/repo/OrderServiceRestProxy.java")],
+            )
+            is None
+        )
+
+
 class TestSelectVerifiableCandidate:
     def _hyp(self, hid, status, supporting):
         from uuid import uuid4

@@ -455,6 +455,45 @@ class VerificationEngine:
         except Exception:
             return None
 
+    @staticmethod
+    def _names_cited_stem(statement: str, cited: list) -> str | None:
+        """First bare filename stem in a claim matching a cited evidence file (pure).
+
+        Caller-enumeration answers state "X and Y call Z" with bare class
+        names and no slash-paths, so the G9 path-token fallback cannot see
+        them. A stem matches only when it equals a cited file's basename
+        stem (case-insensitive, extension stripped): naming the actual
+        cited file qualifies; a corpus-foreign subject (quantum-module)
+        never matches. No edit-distance fuzz (near-miss typos stay misses).
+        """
+        try:
+            import re as _re
+
+            stems: set[str] = set()
+            for item in cited or []:
+                try:
+                    provenance = getattr(item, "provenance", None)
+                    location = getattr(provenance, "source_location", None)
+                    file_path = str(getattr(location, "file_path", "") or "")
+                    base = file_path.strip().strip("/").split("/")[-1]
+                    if "." in base:
+                        base = base.rsplit(".", 1)[0]
+                    if base:
+                        stems.add(base.casefold())
+                except Exception:
+                    continue
+            if not stems:
+                return None
+            for match in _re.finditer(r"[A-Za-z][A-Za-z0-9_]*", statement or ""):
+                token = match.group(0)
+                if len(token) < 4 or token.lower() in VerificationEngine._SUBJECT_STOPWORDS:
+                    continue
+                if token.casefold() in stems:
+                    return token
+            return None
+        except Exception:
+            return None
+
     # T1-2: verbs splitting a location claim into subject | location.
     # Correction phrasing included ("correct file is", "actual path is").
     _SUBJECT_SPLIT_VERBS = (
@@ -742,6 +781,8 @@ class VerificationEngine:
             cited_pre = VerificationEngine._cited_location_evidence(evidence_items)
             corrected_path = VerificationEngine._names_cited_path(statement, cited_pre)
             if not corrected_path:
+                corrected_path = VerificationEngine._names_cited_stem(statement, cited_pre)
+            if not corrected_path:
                 return None
         else:
             corrected_path = None
@@ -768,6 +809,7 @@ class VerificationEngine:
         try:
             _path_grounded = (
                 VerificationEngine._names_cited_path(statement, cited) is not None
+                or VerificationEngine._names_cited_stem(statement, cited) is not None
             )
         except Exception:
             _path_grounded = False
@@ -925,6 +967,7 @@ class VerificationEngine:
         hypothesis: Any,
         evidence_items: list,
         contradictions: list,
+        hub_names: list[str] | None = None,
     ) -> Any | None:
         """#65 state-answer validation. Returns a VERIFIED result with
         state_validated=True when eligible, else None (normal path).
@@ -1000,6 +1043,24 @@ class VerificationEngine:
         if not VerificationEngine._state_value_grounded(statement, value_texts):
             return None
         providers = {str(getattr(e, "provider", "unknown")) for e in cited}
+        hub_note = ""
+        try:
+            if hub_names:
+                from investigation_agent_platform.domain.analysis.hub_memory import (
+                    hub_membership_corroborates,
+                )
+
+                cited_tables = []
+                for e in cited:
+                    for field in ("title", "summary", "content_snippet"):
+                        try:
+                            cited_tables.append(str(getattr(e, field, "") or ""))
+                        except Exception:
+                            continue
+                if hub_membership_corroborates(list(hub_names), cited_tables):
+                    hub_note = " Hub-membership corroborated (orientation only)."
+        except Exception:
+            hub_note = ""
         confidence = InvestigationConfidence(
             coverage_score=1.0,
             reliability_score=1.0,
@@ -1012,7 +1073,7 @@ class VerificationEngine:
             corroborating_evidence_ids=[e.evidence_id for e in cited],
             explanation=(
                 f"State answer validated against {len(cited)} database-state "
-                f"citation(s) from {len(providers)} provider(s); no causal claim made."
+                f"citation(s) from {len(providers)} provider(s); no causal claim made.{hub_note}"
             ),
             confidence=confidence,
             state_validated=True,

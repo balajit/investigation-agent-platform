@@ -370,6 +370,41 @@ class TestIdempotencyWaitForOwner:
             raise AssertionError("expected ApplicationFailure")
 
 
+class TestCallGraphKeywordUnion:
+    def test_union_marks_partial_and_adds(self):
+        import asyncio as _asyncio
+        from types import SimpleNamespace
+
+        from investigation_agent_platform.application.worker.activities import (
+            fallback_call_graph_to_search,
+        )
+
+        hits = [SimpleNamespace(evidence_id="e1")]
+
+        class FakeGateway:
+            async def search_code(self, *args, **kwargs):
+                return SimpleNamespace(items=list(hits))
+
+        outcome = {}
+
+        async def _run():
+            return await fallback_call_graph_to_search(
+                gateway=FakeGateway(),
+                tenant_id="t",
+                investigation_id="i",
+                application_id="app",
+                parameters={"symbol": "OrderServiceImpl"},
+                evidence_repo=None,
+                bank=lambda items: list(items),
+                record_outcome=lambda banked: len(banked),
+                outcome_detail=outcome,
+                union=True,
+            )
+
+        assert _asyncio.run(_run()) == 1
+        assert outcome["miss_reason"] == "call_graph_partial_search_union"
+
+
 class TestReferenceOrientationShaping:
     def test_shapes_hits_to_bounded_notes(self):
         from types import SimpleNamespace

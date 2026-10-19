@@ -11,7 +11,14 @@ from investigation_agent_platform.domain.profile.models import ApplicationProfil
 
 
 class CodeLocation(BaseModel):
-    """Represents a specific source location in code."""
+    """Represents a specific source location in code.
+
+    ``revision`` is the revision the location was actually observed at and
+    ``revision_supported`` states whether the provider can pin to a caller
+    supplied revision at all. A provider that scans a live checkout (no
+    revision parameter) must report ``revision_supported=False`` so callers
+    treat the hit as candidate discovery, never as proof at a pinned commit.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -19,6 +26,8 @@ class CodeLocation(BaseModel):
     line_number: int
     column_number: int | None = None
     snippet: str | None = None
+    revision: str | None = None
+    revision_supported: bool = False
 
 
 class CodeSymbol(BaseModel):
@@ -81,7 +90,14 @@ class CodeEvidenceProviderProtocol(Protocol):
 
 @runtime_checkable
 class CodeIntelligenceProviderProtocol(Protocol):
-    """Port for deep code-intelligence operations (AST, symbol graphs, call hierarchies)."""
+    """Port for deep code-intelligence operations (AST, symbol graphs, call hierarchies).
+
+    ``revision_supported`` advertises whether the provider can pin results to
+    a caller-supplied revision. Providers that only scan a live checkout must
+    set it to ``False``; callers must then treat their output as discovery.
+    """
+
+    revision_supported: bool
 
     async def search_code(
         self,
@@ -89,6 +105,7 @@ class CodeIntelligenceProviderProtocol(Protocol):
         query: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[Evidence]: ...
 
     async def find_symbol(
@@ -97,6 +114,7 @@ class CodeIntelligenceProviderProtocol(Protocol):
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeSymbol]: ...
 
     async def find_callers(
@@ -105,6 +123,7 @@ class CodeIntelligenceProviderProtocol(Protocol):
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CallGraphNode]: ...
 
     async def find_callees(
@@ -113,6 +132,7 @@ class CodeIntelligenceProviderProtocol(Protocol):
         symbol_name: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CallGraphNode]: ...
 
     async def find_exception_handlers(
@@ -121,6 +141,7 @@ class CodeIntelligenceProviderProtocol(Protocol):
         exception_class: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeLocation]: ...
 
     async def find_database_operations(
@@ -129,4 +150,5 @@ class CodeIntelligenceProviderProtocol(Protocol):
         entity_or_table: str,
         profile: ApplicationProfile,
         investigation_id: UUID | None = None,
+        revision: str | None = None,
     ) -> list[CodeLocation]: ...

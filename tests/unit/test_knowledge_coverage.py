@@ -699,10 +699,16 @@ class TestKnowledgeMigrationChain:
         newest19 = script.get_revision("018_log_exemplars")
         assert newest19 is not None
         assert newest19.down_revision == "017_contradictions"
-        newest20 = script.get_revision("020_conclusion_verifier")
+        newest19b = script.get_revision("019_shared_code_evidence")
+        assert newest19b is not None
+        assert newest19b.down_revision == "018_log_exemplars"
+        newest20a = script.get_revision("020_conclusion_verifier")
+        assert newest20a is not None
+        assert newest20a.down_revision == "019_shared_code_evidence"
+        newest20 = script.get_revision("021_analyzer_tables")
         assert newest20 is not None
-        assert newest20.down_revision == "019_shared_code_evidence"
-        assert script.get_heads() == ["020_conclusion_verifier"]
+        assert newest20.down_revision == "020_conclusion_verifier"
+        assert script.get_heads() == ["021_analyzer_tables"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base
