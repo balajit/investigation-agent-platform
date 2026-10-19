@@ -78,7 +78,7 @@ def _system_prompt_for(problem):
 
 
 def test_prompt_version_bumped_for_g1():
-    assert REASONER_PROMPT_VERSION == "v2-code-grounded-008"
+    assert REASONER_PROMPT_VERSION == "v2-code-grounded-009"
 
 
 def test_explicit_path_short_circuits_to_get_code_first():

@@ -263,7 +263,7 @@ Measured, not eliminated (temperature is 0.7 in this env — `0.0` was never det
 
 ## 44. Respondent-free identifiers (2026-10-18)
 
-Committed code carries no respondent names: `spring-sample-service` app (profile v1, new lineage), `sampledb`/`SAMPLEDB-conn`/`sample-orders`, logical `sample.orders.prod`, schema `sample_owner`, placeholder host/service/user in examples. Boundary (deliberate): functional pointers to the untracked calibration checkout (`org/repos/modules/source_roots`, real class names in battery symptoms) stay — they reference untracked local data, and renaming them breaks code evidence. Docs/ledger history untouched (evidence trail). Live Oracle stays down until the wallet is re-imported under the new connection name.
+Committed code carries no respondent names: `spring-sample-service` app (profile v1, new lineage), `sampledb`/`SAMPLEDB-conn`/`sample-orders`, logical `sample.orders.prod`, schema `sample_owner`, placeholder host/service/user in examples. Boundary (deliberate): functional pointers to the untracked calibration checkout (`org/repos/modules/source_roots`, real class names in battery symptoms) stay — they reference untracked local data, and renaming them breaks code evidence. Docs/ledger history scrubbed of respondent names (run IDs/dates/counts/outcomes preserved as evidence trail). Live Oracle stays down until the wallet is re-imported under the new connection name.
 
 ## 45. Synthetic calibration checkout (2026-10-18)
 
@@ -283,7 +283,7 @@ An operator with hundreds of services runs ONE API+worker fleet, not one stack p
 
 ## 49. Lever-and-leaf scopes (2026-10-18)
 
-Supersedes the flat-slug scope design (§47): operator home is `scopes/<org>/<env>/app.env` env levers (shared 90% + env-varying persistence/endpoints) plus `scopes/<org>/<app>/<env>/` leaves (deltas, `oracle.yaml`, `seed/`). Resolution lever→leaf with per-value provenance; secret denylist fail-closed in lever/overlay files; credentials only in leaf `oracle.yaml`; 0600 on all overlays, 0700 on the operator dir, both doctor-enforced. Scope identity is the path form (`comcast/offermgmt-service/dev`); flat slugs exist display-only and are never parsed (dash-joined segments are ambiguous). Live blueprint rebuilt under this layout; lever+leaf merge and boot-sourcing verified.
+Supersedes the flat-slug scope design (§47): operator home is `scopes/<org>/<env>/app.env` env levers (shared 90% + env-varying persistence/endpoints) plus `scopes/<org>/<app>/<env>/` leaves (deltas, `oracle.yaml`, `seed/`). Resolution lever→leaf with per-value provenance; secret denylist fail-closed in lever/overlay files; credentials only in leaf `oracle.yaml`; 0600 on all overlays, 0700 on the operator dir, both doctor-enforced. Scope identity is the path form (`samplecorp/spring-sample-service/dev`); flat slugs exist display-only and are never parsed (dash-joined segments are ambiguous). Live blueprint rebuilt under this layout; lever+leaf merge and boot-sourcing verified.
 
 ## 50. Multi-repo code resolution (2026-10-18)
 
@@ -292,3 +292,7 @@ Supersedes the flat-slug scope design (§47): operator home is `scopes/<org>/<en
 ## 51. Graph artifact freshness (2026-10-18)
 
 The rustworkx graph cache now carries each artifact's mtime and reloads on change instead of serving a stale graph with fresh confidence for the process lifetime. First-locator-wins semantics unchanged. Folding graph rebuilds into the planned `sync` command remains future work.
+
+## 52. Context-window shrink (2026-10-18)
+
+Compiled context now enforces a token ceiling (`IAP_COMPILER_MAX_TOKENS`, default 12000, chars/4 estimator): newest-first evidence ordering (bound Tier-1, then retrieved-desc — caps shed oldest first instead of first-N), terminal-hypothesis compaction (REJECTED/CONTRADICTED slim to claim+verdict; VERIFIED stays full), and priority purge (unbound Tier-1→marker oldest-first, timeline/pending/findings tails) with a `purged` ledger + `estimated_tokens` on every compiled context. Bound citations never shed (exact-ID protection). Prompt version v009. Live proof: loop ANSWERED under the new contract.

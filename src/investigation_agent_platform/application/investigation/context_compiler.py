@@ -20,7 +20,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
 # shape changes; persisted per decision for replay/evaluation.
-REASONER_PROMPT_VERSION = "v2-code-grounded-008"
+REASONER_PROMPT_VERSION = "v2-code-grounded-009"
 
 MAX_CODE_EXCERPTS = 8
 MAX_CODE_EXCERPT_CHARS = 1500
@@ -28,6 +28,27 @@ MAX_HYPOTHESES = 10
 MAX_TIMELINE_EVENTS = 8
 MAX_PENDING_QUESTIONS = 10
 MAX_FINDINGS = 5
+
+# Context-window shrink: global token ceiling for the compiled context so
+# older content purges as newer arrives (counts/chars caps alone are blind
+# to the model window). Priority order is fixed — pinned sections (problem,
+# plan, active hypotheses + bound Tier-1 rows) are NEVER purged; everything
+# else sheds oldest-first with a compaction note recording what left.
+# Estimator is chars/4 (model-agnostic, dependency-free); conservative by
+# design. Default 12000 preserves current behavior; tighten per model via
+# IAP_COMPILER_MAX_TOKENS.
+def context_token_budget() -> int:
+    """Global compiled-context token ceiling (default 12000)."""
+    return _env_int("IAP_COMPILER_MAX_TOKENS", 12000)
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative token estimate (chars/4, rounded up)."""
+    try:
+        length = len(text or "")
+    except Exception:
+        return 0
+    return (length + 3) // 4 if length else 0
 
 # R4 relevance-tiered excerpts: Tier 1 carries full snippets, Tier 2 carries
 # summary + provenance + a by-ID retrieval marker. Tiers subdivide the
@@ -173,7 +194,25 @@ def compile_evidence_excerpts(
     per-row excerpts for the expensive diamond hunt.
     """
     bound = bound_evidence_ids or set()
-    items = list(evidence_items[:100])
+
+    def _eid(e: Any) -> str:
+        return str(_get(e, "evidence_id", "") or "")
+
+    def _retrieved(e: Any) -> str:
+        return str(_get(e, "retrieved_at", "") or "")
+
+    # Newest-first: bound rows lead, then most-recently-retrieved — so caps
+    # shed the OLDEST rows first as new evidence arrives, never the reverse.
+    # (Grouping representatives become newest-of-group.) Pool 500 bounds the
+    # sort cost on unbounded banks; the [:100] keeps the newest of the pool.
+    pool = list(evidence_items[:500])
+    bound_items = sorted(
+        [e for e in pool if _eid(e) in bound], key=_retrieved, reverse=True
+    )
+    rest = sorted(
+        [e for e in pool if _eid(e) not in bound], key=_retrieved, reverse=True
+    )
+    items = (bound_items + rest)[:100]
     recent_ids = _most_recent_ids(items, tier1_recent_count())
     floor = tier1_relevance_floor()
     units = _group_log_items(items, log_group)
@@ -337,10 +376,27 @@ def log_grouping_enabled(state: Any) -> bool:
         return True
 
 
+# Dead-end statuses render slim: the claim + verdict survive, the working
+# apparatus (citation lists, verification checklists) purges. VERIFIED stays
+# full — it is the likely conclusion and its statement must not truncate.
+_TERMINAL_HYPOTHESIS_STATUSES = frozenset({"REJECTED", "CONTRADICTED"})
+
+
 @traced("reason", require_scope=False)
 def compile_hypotheses(hypotheses: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for h in (hypotheses or [])[:MAX_HYPOTHESES]:
+        status = str(_get(_get(h, "status", ""), "value", _get(h, "status", "")))
+        if status in _TERMINAL_HYPOTHESIS_STATUSES:
+            out.append(
+                {
+                    "id": str(_get(h, "id", "")),
+                    "statement": str(_get(h, "statement", "") or "")[:200],
+                    "status": status,
+                    "terminal": True,
+                }
+            )
+            continue
         out.append(
             {
                 "id": str(_get(h, "id", "")),
@@ -375,6 +431,87 @@ def compile_timeline(timeline: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _section_tokens(value: Any) -> int:
+    """Estimate tokens for a compiled section (JSON-serialized)."""
+    import json as _json
+
+    try:
+        return estimate_tokens(_json.dumps(value, default=str))
+    except Exception:
+        return 0
+
+
+def _is_bound_excerpt(excerpt: dict[str, Any]) -> bool:
+    """Conservative bound-row heuristic for the purge pass.
+
+    Excerpt dicts do not carry bound flags, so treat content-bearing rows
+    with revision provenance as pinned; everything else is sheddable. Errs
+    toward keeping (returns True on any doubt) — over-shedding citations
+    is worse than over-budget context, and the loop re-checks.
+    """
+    try:
+        return bool(excerpt.get("revision"))
+    except Exception:
+        return True
+
+
+def enforce_context_budget(
+    ctx: dict[str, Any], bound: set[str] | None = None, budget: int | None = None
+) -> dict[str, Any]:
+    """Shed oldest-first until the compiled context fits the token budget.
+
+    Sacrifice order (pinned sections never shed): unbound Tier-1 excerpts →
+    Tier-2 (content replaced by the retrieval marker, oldest first) →
+    timeline tail beyond newest 3 → pending-questions tail beyond 5 →
+    findings tail beyond 3. Records purged counts + final estimate alongside.
+    Deterministic: same input, same output.
+    """
+    ceiling = budget if budget is not None else context_token_budget()
+    bound_ids = set(bound or [])
+    purged = {"excerpts_demoted": 0, "timeline_dropped": 0, "pending_dropped": 0, "findings_dropped": 0}
+
+    def _total() -> int:
+        return sum(
+            _section_tokens(ctx.get(key))
+            for key in ("plan", "hypotheses", "timeline", "pending_questions", "findings", "evidence_excerpts")
+        )
+
+    excerpts = ctx.get("evidence_excerpts") or []
+    # Oldest-first demotion. Bound rows (hypothesis citations) are NEVER
+    # demoted — the ID check is exact; the revision heuristic below only
+    # protects unlisted-but-likely-cited rows conservatively.
+    demotable = [
+        e for e in excerpts
+        if isinstance(e, dict) and e.get("tier") == 1 and e.get("content")
+        and str(e.get("evidence_id", "") or "") not in bound_ids
+        and not _is_bound_excerpt(e)
+    ]
+    demotable.sort(key=lambda e: str(e.get("retrieved_at", "") or ""))
+    while _total() > ceiling and demotable:
+        victim = demotable.pop(0)
+        victim["content"] = _TIER2_MARKER
+        victim["tier"] = 2
+        victim["content_truncated"] = True
+        purged["excerpts_demoted"] += 1
+    timeline = ctx.get("timeline") or []
+    while _total() > ceiling and len(timeline) > 3:
+        timeline.pop(0)
+        purged["timeline_dropped"] += 1
+    ctx["timeline"] = timeline
+    for key, cap, counter in (
+        ("pending_questions", 5, "pending_dropped"),
+        ("findings", 3, "findings_dropped"),
+    ):
+        section = ctx.get(key) or []
+        while _total() > ceiling and len(section) > cap:
+            section.pop(0)
+            purged[counter] += 1
+        ctx[key] = section
+    ctx["purged"] = purged
+    ctx["estimated_tokens"] = _total()
+    return ctx
 
 
 @traced("reason", require_scope=False)
@@ -417,20 +554,23 @@ def compile_reasoning_context(state: Any) -> dict[str, Any]:
             "event": "compile_reasoning_context completed",
         },
     )
-    return {
-        "prompt_version": REASONER_PROMPT_VERSION,
-        "plan": classify_surfaces(problem),
-        "hypotheses": compile_hypotheses(hypotheses),
-        "timeline": compile_timeline(_get(state, "timeline", []) or []),
-        "pending_questions": [
-            str(q)[:300] for q in (_get(state, "pending_questions", []) or [])
-        ][:MAX_PENDING_QUESTIONS],
-        "findings": [
-            {
-                "title": str(_get(f, "title", "") or "")[:200],
-                "statement": str(_get(f, "statement", "") or "")[:500],
-            }
-            for f in (_get(state, "findings", []) or [])
-        ][:MAX_FINDINGS],
-        "evidence_excerpts": excerpts,
-    }
+    return enforce_context_budget(
+        {
+            "prompt_version": REASONER_PROMPT_VERSION,
+            "plan": classify_surfaces(problem),
+            "hypotheses": compile_hypotheses(hypotheses),
+            "timeline": compile_timeline(_get(state, "timeline", []) or []),
+            "pending_questions": [
+                str(q)[:300] for q in (_get(state, "pending_questions", []) or [])
+            ][:MAX_PENDING_QUESTIONS],
+            "findings": [
+                {
+                    "title": str(_get(f, "title", "") or "")[:200],
+                    "statement": str(_get(f, "statement", "") or "")[:500],
+                }
+                for f in (_get(state, "findings", []) or [])
+            ][:MAX_FINDINGS],
+            "evidence_excerpts": excerpts,
+        },
+        bound=bound,
+    )

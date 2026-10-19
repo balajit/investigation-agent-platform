@@ -5,7 +5,7 @@ from openai import AsyncAzureOpenAI
 
 # Load your configurations into environment variables (or parse them directly)
 os.environ["IAP_AZURE_MODEL_NAME"] = "azure/gpt-4.1"
-os.environ["AZURE_EMBEDDING_API_BASE"] = "https://xcpai-agents.services.ai.azure.com"
+os.environ["AZURE_EMBEDDING_API_BASE"] = "https://example-embedding.services.ai.azure.com"
 os.environ["AZURE_API_BASE"] = "https://gto-salestech-ai-service.openai.azure.com"
 os.environ["AZURE_EMBEDDING_VERSION"] = "2023-05-15"
 os.environ["AZURE_API_VERSION"] = "2025-01-01-preview"

@@ -48,7 +48,7 @@ def _configure_cognee_env() -> dict[str, str]:
     prefix (bare deployment names misroute to OpenAI and hang). Endpoint/key
     values mirror scripts/azure_openai.py (the validated reference):
       chat:       gto-salestech resource, 2025-01-01-preview, gpt-4.1
-      embeddings: xcpai resource, 2023-05-15, text-embedding-ada-002
+      embeddings: example embedding resource, 2023-05-15, text-embedding-ada-002
     """
     chat_deploy = _env("COGNEE_LLM_DEPLOYMENT", "IAP_AZURE_DEPLOYMENT", default="gpt-4.1")
     embed_deploy = _env(

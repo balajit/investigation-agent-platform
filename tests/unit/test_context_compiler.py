@@ -213,3 +213,139 @@ def test_compiled_context_wires_hypothesis_bound_set():
     ctx = compile_reasoning_context(state)
     assert ctx["evidence_excerpts"][0]["tier"] == 1
     assert ctx["evidence_excerpts"][0]["content"] == "def f(): cited"
+
+
+def _code_evidence(summary="code", snippet="x = 1", retrieved=None):
+
+    ev = _evidence(
+        summary=summary, snippet=snippet, etype=EvidenceType.SOURCE_CODE
+    )
+    if retrieved is not None:
+        fresh = ev.freshness.model_copy(update={"retrieved_at": retrieved})
+        ev = ev.model_copy(update={"retrieved_at": retrieved, "freshness": fresh})
+    return ev
+
+
+class TestContextShrink:
+    def test_estimate_tokens(self):
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            estimate_tokens,
+        )
+
+        assert estimate_tokens("") == 0
+        assert estimate_tokens("abcd") == 1
+        assert estimate_tokens("abcde") == 2
+
+    def test_newest_survives_cap(self):
+        from datetime import timedelta
+
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            compile_evidence_excerpts,
+        )
+
+        now = datetime.now(UTC)
+        items = [
+            _code_evidence(summary=f"row-{i}", retrieved=now - timedelta(minutes=i))
+            for i in range(120)
+        ]
+        excerpts = compile_evidence_excerpts(items)
+        assert len(excerpts) <= 100
+        summaries = [e["summary"] for e in excerpts]
+        assert "row-0" in summaries  # newest kept
+        assert "row-119" not in summaries  # oldest shed
+
+    def test_bound_never_demoted(self):
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            enforce_context_budget,
+        )
+
+        old = {
+            "evidence_id": "bound-1", "tier": 1, "content": "x" * 5000,
+            "summary": "s", "retrieved_at": "2020-01-01",
+        }
+        new = {
+            "evidence_id": "new-1", "tier": 1, "content": "y" * 100,
+            "summary": "s", "retrieved_at": "2026-01-01",
+        }
+        ctx = {
+            "plan": {}, "hypotheses": [], "timeline": [], "pending_questions": [],
+            "findings": [], "evidence_excerpts": [old, new],
+        }
+        out = enforce_context_budget(ctx, bound={"bound-1"}, budget=200)
+        by_id = {e["evidence_id"]: e for e in out["evidence_excerpts"]}
+        assert by_id["bound-1"]["tier"] == 1
+        assert by_id["bound-1"]["content"] == "x" * 5000
+        # Unbound row demoted to the retrieval marker; bound content intact.
+        assert by_id["new-1"]["tier"] == 2
+        assert out["purged"]["excerpts_demoted"] == 1
+
+    def test_budget_drops_oldest_first(self):
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            enforce_context_budget,
+        )
+
+        def _row(eid, year, size=2000):
+            return {
+                "evidence_id": eid, "tier": 1, "content": "z" * size,
+                "summary": "s", "retrieved_at": f"{year}-06-01",
+            }
+
+        ctx = {
+            "plan": {}, "hypotheses": [], "timeline": [],
+            "pending_questions": [], "findings": [],
+            "evidence_excerpts": [_row("old", "2020"), _row("mid", "2023"), _row("new", "2026")],
+        }
+        out = enforce_context_budget(ctx, budget=1100)
+        by_id = {e["evidence_id"]: e for e in out["evidence_excerpts"]}
+        assert by_id["old"]["tier"] == 2  # oldest demoted first
+        assert out["purged"]["excerpts_demoted"] >= 1
+
+    def test_terminal_hypotheses_compact(self):
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            compile_hypotheses,
+        )
+        from investigation_agent_platform.domain.hypothesis.models import (
+            Hypothesis,
+            HypothesisStatus,
+        )
+
+        def _hyp(statement, status):
+            iid = uuid4()
+            return Hypothesis(
+                tenant_id="t", investigation_id=iid, title=statement[:50],
+                description=statement, statement=statement, status=status,
+            )
+
+        hyps = [
+            _hyp("rejected claim with a long tail " + "x" * 500, HypothesisStatus.REJECTED),
+            _hyp("live claim", HypothesisStatus.UNDER_INVESTIGATION),
+        ]
+        out = compile_hypotheses(hyps)
+        assert out[0].get("terminal") is True
+        assert len(out[0]["statement"]) <= 200
+        assert "supporting_evidence_ids" not in out[0]
+        assert out[1].get("terminal", False) is False
+
+    def test_compiled_context_carries_purge_ledger(self):
+        ctx = compile_reasoning_context(_state([_evidence()]))
+        assert "purged" in ctx
+        assert "estimated_tokens" in ctx
+        assert ctx["estimated_tokens"] > 0
+
+    def test_enforce_deterministic(self):
+        from investigation_agent_platform.application.investigation.context_compiler import (
+            enforce_context_budget,
+        )
+
+        def _ctx():
+            return {
+                "plan": {"a": 1}, "hypotheses": [],
+                "timeline": [{"event": f"e{i}"} for i in range(10)],
+                "pending_questions": [f"q{i}" for i in range(10)],
+                "findings": [], "evidence_excerpts": [],
+            }
+
+        first = enforce_context_budget(_ctx(), budget=300)
+        second = enforce_context_budget(_ctx(), budget=300)
+        assert first["purged"] == second["purged"]
+        assert first["estimated_tokens"] == second["estimated_tokens"]

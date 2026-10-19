@@ -48,8 +48,8 @@ Comparing four sampled streams:
 | Message | `message` (`match_only_text`) | `message` (**`keyword`**, different type!) | `message` (`match_only_text`) | *(none)* | `message` (`match_only_text`) |
 | Service/app name | `appName`, `Service`, `System`, `originServiceName` (4 candidates, no ECS `service.name`) | `appName`, `Service` | *(none)* | *(none)* | *(none — has `channel_name`, `division`)* |
 | Severity/level | **no field at all** — closest signal is `error` (boolean) + `errorCode` (long) + `errorMessage` (keyword) | same pattern | `errorReason`/`errorSource`/`itemLevelException` (free text, not enum) | `errorInfo.{name,reason,status}` (nested, different shape) | `error_code`/`error_description` |
-| Trace/correlation | `traceId`, `trackingId`, `TransactionKey`, `Tracking`, `messageId`, `SourceKey` (6 candidates) | `Tracking`, `TransactionKey` | `requestId`, `XCOSSessionId` | `ctpSessionID`, `sessionIDs` (plural) | `session_id` (snake_case!) |
-| Session | *(see trace row — overlaps)* | — | `XCOSSessionId` | `ctpSessionID` | `session_id` |
+| Trace/correlation | `traceId`, `trackingId`, `TransactionKey`, `Tracking`, `messageId`, `SourceKey` (6 candidates) | `Tracking`, `TransactionKey` | `requestId`, `SSessionId` | `tpSessionID`, `sessionIDs` (plural) | `session_id` (snake_case!) |
+| Session | *(see trace row — overlaps)* | — | `SessionId` | `tpSessionID` | `session_id` |
 | Code location | **no field anywhere in any sampled stream** | — | — | — | — |
 | DB statement | **no field anywhere in any sampled stream** | — | — | — | — |
 | Business context | `extract.request.{ACCOUNT_NUMBER,ORDERID,CHANNEL,...}` (nested, camel/SCREAMING_SNAKE mixed) | — | — | — | `account_number`, `order_ref_id`, `order_type` (snake_case, flat) |
@@ -89,7 +89,7 @@ This does **not** mean the platform's tenant model is removed or weakened — th
 | `projection.py::ALLOWED_TOP_LEVEL_FIELDS` | ECS namespace set (`service`, `log`, `labels`, `code`, `db`, `trace`, `span`, …) | None of these top-level keys exist in the sampled data except as coincidental prefixes |
 | `projection.py::_parse_observed` | `src.get("@timestamp")`, ISO-string parse only | Some streams need epoch-millis (`createdAt`/`updatedAt` as raw `long`) — current parser would treat these as `TIMESTAMP_INVALID` today (not crash, but always "unknown observed time" for `root_cause`) |
 | `projection.py::_derive_classification` | `labels.data_classification` / `labels.classification` / `event.classification` | None exist; classification is always the `INTERNAL` default today, silently, for every real record |
-| `domain/evidence/requests.py::ALLOWED_IDENTIFIER_KEYS` | `{trace_id, span_id, service_name, user_id, session_id, container_id}` | None of these exact keys exist; real correlation fields are `traceId`/`trackingId`/`sessionId`/`XCOSSessionId`/`ctpSessionID`/etc. |
+| `domain/evidence/requests.py::ALLOWED_IDENTIFIER_KEYS` | `{trace_id, span_id, service_name, user_id, session_id, container_id}` | None of these exact keys exist; real correlation fields are `traceId`/`trackingId`/`sessionId`/`SSessionId`/`tpSessionID`/etc. |
 | `trace_telemetry.py::_extract_code_fields` | `code.function`, `log.origin.function`, `code.file.name`/`lineno` | No such fields in any sampled stream |
 | `trace_telemetry.py::_extract_sql_field` | `db.statement`, `db.dialect`/`db.system` | No such fields in any sampled stream |
 
@@ -217,7 +217,7 @@ identifiers:
     candidates: ["traceId", "trackingId"]
     value_type: keyword
   session_id:
-    candidates: ["sessionId", "XCOSSessionId"]
+    candidates: ["sessionId", "SSessionId"]
     value_type: keyword
   transaction_key:
     candidates: ["TransactionKey", "Tracking"]
@@ -258,7 +258,7 @@ severity:
   strategy: unsupported   # no signal — severity filters rejected for this source
 identifiers:
   session_id:
-    candidates: ["XCOSSessionId"]
+    candidates: ["SSessionId"]
     value_type: keyword
   request_id:
     candidates: ["requestId"]
