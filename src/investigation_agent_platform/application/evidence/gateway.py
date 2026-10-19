@@ -345,7 +345,38 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         except Exception:
             return None
 
+    @staticmethod
+    def _require_revision_capability(
+        provider: Any, revision: str | None, require_revision: bool
+    ) -> None:
+        """Fail closed when a pinned revision is required but unsupported.
+
+        A provider that scans a live checkout cannot describe another
+        revision. Returning its rows would silently attribute HEAD to the
+        requested revision, so a load-bearing revision is a typed
+        capability error, not an empty result.
+        """
+        requested = str(revision or "").strip()
+        if not require_revision or requested in ("", "HEAD"):
+            return
+        if not bool(getattr(provider, "revision_supported", False)):
+            provider_id = getattr(provider, "provider_id", type(provider).__name__)
+            raise UnsupportedCapabilityError(
+                f"Provider '{provider_id}' cannot honor revision '{requested}'",
+                capability="revision",
+                details={
+                    "provider_id": str(provider_id),
+                    "requested_revision": requested,
+                },
+            )
+
     async def _enforce_authorization(
+        self,
+        tenant_id: str,
+        capability: str,
+        resource: str = "",
+        application_id: str | None = None,
+    ) -> None:
         # The profile authorizer scopes by application: without the
         # application_id it fail-closes (no profile → deny). Every public
         # gateway method holds application_id and must thread it through —
@@ -858,12 +889,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 raise ExecutionError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
+            self._require_revision_capability(provider, request.revision, request.require_revision)
             symbols = await asyncio.wait_for(
                 provider.find_symbol(
                     tenant_id,
                     request.symbol_name,
                     profile,
                     investigation_id=investigation_id,
+                    revision=request.revision,
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -939,6 +972,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 raise ExecutionError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
+            self._require_revision_capability(provider, request.revision, request.require_revision)
             # P1-2: honor direction/depth — INBOUND walks callers,
             # OUTBOUND walks callees, BOTH walks each side, up to depth hops.
             direction = str(request.direction or "BOTH").upper()
@@ -951,6 +985,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                         request.symbol,
                         profile,
                         investigation_id=investigation_id,
+                        revision=request.revision,
                     ),
                     timeout=self._timeout_seconds,
                 )
@@ -961,6 +996,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                         request.symbol,
                         profile,
                         investigation_id=investigation_id,
+                        revision=request.revision,
                     ),
                     timeout=self._timeout_seconds,
                 )
@@ -987,6 +1023,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                                     symbol,
                                     profile,
                                     investigation_id=investigation_id,
+                                    revision=request.revision,
                                 ),
                                 timeout=self._timeout_seconds,
                             )

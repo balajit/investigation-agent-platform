@@ -548,7 +548,7 @@ class TestMigrationChainFinal:
 
     def test_chain_is_linear_ending_at_head(self) -> None:
         chain, _ = self._versions()
-        assert chain[-1] == "021_analyzer_tables"
+        assert chain[-1] == "022_conclusion_next_check"
         assert len(chain) == len(set(chain))
         assert "016_profile_v2_columns" in chain
         assert "015_batch_intake" in chain
@@ -561,7 +561,7 @@ class TestMigrationChainFinal:
 
         cfg = Config(Path(__file__).resolve().parents[2] / "alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["021_analyzer_tables"]
+        assert script.get_heads() == ["022_conclusion_next_check"]
 
     def test_every_revision_has_upgrade_and_downgrade(self) -> None:
         _, modules = self._versions()

@@ -205,7 +205,7 @@ class TestConcessionDetector:
 
 
 class TestDefinitionClaimRequiresRangeRead:
-    def _evidence(self, operation):
+    def _evidence(self, operation, line_start=None, line_end=None):
         from datetime import UTC, datetime
         from uuid import uuid4
 
@@ -241,7 +241,8 @@ class TestDefinitionClaimRequiresRangeRead:
                 query_fingerprint=QueryFingerprint(
                     provider_type="test", operation=operation, normalized_query_hash="h"
                 ),
-                source_location=SourceLocation(system="test", identifier="x"),
+                source_location=SourceLocation(system="test", identifier="x",
+                                               line_start=line_start, line_end=line_end),
             ),
             freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
             fingerprint=f"fp-{uuid4()}",
@@ -270,7 +271,7 @@ class TestDefinitionClaimRequiresRangeRead:
         hyp = self._hyp("The widget is defined in src/widgets.py")
         result = engine.evaluate_hypothesis(hyp, [self._evidence("SEARCH_CODE")], [], [], object())
         assert result.status == VerificationStatus.INCONCLUSIVE
-        assert "range-read" in result.explanation
+        assert "range read" in result.explanation
 
     def test_range_read_definition_claim_passes_check(self):
         from investigation_agent_platform.application.investigation.verification import (
@@ -278,8 +279,11 @@ class TestDefinitionClaimRequiresRangeRead:
         )
 
         engine = VerificationEngine()
-        assert engine.has_range_read([self._evidence("GET_SOURCE")]) is True
-        assert engine.has_range_read([self._evidence("SEARCH_CODE")]) is False
+        # A range read must record actual lines — the operation name alone
+        # is not evidence of a range.
+        assert engine.has_range_read([self._evidence("GET_SOURCE", 1, 50)]) is True
+        assert engine.has_range_read([self._evidence("GET_SOURCE")]) is False
+        assert engine.has_range_read([self._evidence("SEARCH_CODE", 5, 5)]) is False
         assert VerificationEngine.claims_definition("X is defined in Y") is True
         assert VerificationEngine.claims_definition("X is located near Y") is False
 
@@ -394,10 +398,11 @@ class TestLocationAnswerPath:
         assert result.location_validated is True
         assert len(result.corroborating_evidence_ids) == 1
 
-    def test_listing_with_call_graph_validates(self):
+    def test_listing_with_call_graph_alone_no_longer_validates(self):
+        # Phase 2.2: a graph/location row that does not SHOW the call is not
+        # a call site. Caller-list claims fail closed on it by design.
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
-            VerificationStatus,
         )
 
         engine = VerificationEngine()
@@ -406,6 +411,19 @@ class TestLocationAnswerPath:
         from investigation_agent_platform.domain.evidence.models import EvidenceType
 
         ev = ev.model_copy(update={"evidence_type": EvidenceType.CALL_GRAPH})
+        assert engine.validate_location_claim(hyp, [ev], []) is None
+
+    def test_listing_with_shown_call_site_validates(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+            VerificationStatus,
+        )
+
+        engine = VerificationEngine()
+        hyp = _loc_hyp("The callers of f are g and h")
+        ev = _code_evidence("GET_SOURCE").model_copy(
+            update={"content_snippet": "10| def g():\n11|     return f(1)"}
+        )
         result = engine.validate_location_claim(hyp, [ev], [])
         assert result is not None
         assert result.status == VerificationStatus.VERIFIED

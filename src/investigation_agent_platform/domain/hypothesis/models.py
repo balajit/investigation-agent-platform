@@ -30,8 +30,50 @@ class AssessmentStrength(StrEnum):
     DECISIVE = "DECISIVE"
 
 
+class ClaimKind(StrEnum):
+    """What a hypothesis asserts — selects the verification rule (Phase 2).
+
+    DEFINITION: "symbol S is defined/implemented in file F" — needs a range
+        read whose window contains S.
+    CALL_EDGE: "caller C calls callee S" / "callers of S" — needs a call site.
+    BEHAVIOR: "the code does X at runtime" — needs code AND runtime evidence.
+    ABSENCE: "X does not exist / is never called" — needs a scoped, empty
+        search proof; an empty result alone is never proof.
+    CAUSAL: root-cause mechanism — the existing causal-chain path.
+    """
+
+    DEFINITION = "DEFINITION"
+    CALL_EDGE = "CALL_EDGE"
+    BEHAVIOR = "BEHAVIOR"
+    ABSENCE = "ABSENCE"
+    CAUSAL = "CAUSAL"
+
+
+class ClaimTarget(BaseModel):
+    """Typed subject of a claim so verifiers need not re-parse prose.
+
+    ``symbol`` is the subject (defined symbol, or the callee of a call edge);
+    ``counterpart`` is the other side of a relation (the caller); ``scope``
+    names what an absence claim searched (path prefix / repository@revision).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str | None = Field(default=None, max_length=256)
+    counterpart: str | None = Field(default=None, max_length=256)
+    file_path: str | None = Field(default=None, max_length=512)
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    scope: str | None = Field(default=None, max_length=512)
+
+
 class HypothesisEvidenceAssessment(BaseModel):
-    """Assessment linking evidence evaluation to hypothesis status."""
+    """Assessment linking evidence evaluation to hypothesis status.
+
+    Phase 2.1: ``claim_kind``/``claim_target`` bind a cited row to the
+    specific claim it supports. They default to None so rows persisted in
+    ``assessments_json`` before this change still validate unchanged.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -40,6 +82,8 @@ class HypothesisEvidenceAssessment(BaseModel):
     assessment: AssessmentType
     strength: AssessmentStrength
     reason: str = Field(..., max_length=1024)
+    claim_kind: ClaimKind | None = None
+    claim_target: ClaimTarget | None = None
 
 
 class HypothesisCausalStep(BaseModel):
@@ -79,6 +123,21 @@ class Hypothesis(BaseModel):
     parent_hypothesis_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def claim_kind(self) -> ClaimKind | None:
+        """Typed claim kind recorded at formulation (None for legacy rows)."""
+        for asm in self.assessments:
+            if asm.claim_kind is not None:
+                return asm.claim_kind
+        return None
+
+    @property
+    def claim_target(self) -> ClaimTarget | None:
+        for asm in self.assessments:
+            if asm.claim_target is not None:
+                return asm.claim_target
+        return None
 
     @model_validator(mode="after")
     def validate_assessment_consistency(self) -> "Hypothesis":

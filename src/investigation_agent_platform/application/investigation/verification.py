@@ -8,7 +8,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from investigation_agent_platform.domain.evidence.models import Evidence
-from investigation_agent_platform.domain.hypothesis.models import Hypothesis
+from investigation_agent_platform.domain.hypothesis.models import (
+    ClaimKind,
+    ClaimTarget,
+    Hypothesis,
+)
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 
@@ -243,12 +247,37 @@ class RootCauseVerificationPolicy(BaseModel):
         )
 
 
+class LimitationCode(str, Enum):
+    """Typed caveats on a VERIFIED result (Phase 2.3).
+
+    RIVAL_UNTESTED: a sibling hypothesis was never evaluated against
+        evidence — the winner was not contrasted, so it publishes as
+        likely, never established.
+    SINGLE_PROVIDER: every corroborating row comes from one provider —
+        no independent corroboration.
+    CONCLUSION_UNMAPPED: a material sentence of the published conclusion
+        maps to no cited claim or evidence row (Phase 2.4).
+    """
+
+    RIVAL_UNTESTED = "RIVAL_UNTESTED"
+    SINGLE_PROVIDER = "SINGLE_PROVIDER"
+    CONCLUSION_UNMAPPED = "CONCLUSION_UNMAPPED"
+
+
+class VerificationLimitation(BaseModel):
+    code: LimitationCode
+    detail: str = Field(default="", max_length=500)
+
+
 class VerificationResult(BaseModel):
     hypothesis_id: UUID
     status: VerificationStatus
     corroborating_evidence_ids: list[UUID] = Field(default_factory=list)
     explanation: str
     confidence: InvestigationConfidence
+    # Phase 2.3: typed caveats. The explanation names these codes — never
+    # a bare item count — so a reader knows exactly what "likely" means.
+    limitations: list[VerificationLimitation] = Field(default_factory=list)
     # G1: location-answer validation bypasses causal verification; the gate
     # and conclude paths branch on this flag (never on status text).
     location_validated: bool = False
@@ -381,18 +410,310 @@ class VerificationEngine:
             return False
 
     @staticmethod
-    def has_range_read(evidence_items: list) -> bool:
-        """At least one citation comes from a range-read operation."""
+    def _item_window(item: Any) -> tuple[int, int] | None:
+        """Actual (start_line, end_line) recorded in provenance, else None."""
+        location = getattr(getattr(item, "provenance", None), "source_location", None)
+        start = getattr(location, "line_start", None)
+        end = getattr(location, "line_end", None)
+        if isinstance(start, bool) or isinstance(end, bool):
+            return None
+        if not isinstance(start, int) or not isinstance(end, int):
+            return None
+        if start < 1 or end < start:
+            return None
+        return (start, end)
+
+    @staticmethod
+    def _item_file(item: Any) -> str:
+        location = getattr(getattr(item, "provenance", None), "source_location", None)
+        return str(getattr(location, "file_path", "") or "")
+
+    @staticmethod
+    def _item_type(item: Any) -> str:
+        etype = getattr(item, "evidence_type", "")
+        return str(getattr(etype, "value", etype) or "").upper()
+
+    @staticmethod
+    def _is_range_read(item: Any) -> bool:
+        """One citation that is a real line-range read.
+
+        Phase 0.4 labeled path-only reads; Phase 2.2 additionally requires
+        the provenance to record an actual start/end line — the operation
+        name alone (GET_CODE) is not evidence of a range.
+        """
         try:
-            for item in evidence_items or []:
-                provenance = getattr(item, "provenance", None)
-                fingerprint = getattr(provenance, "query_fingerprint", None)
-                operation = str(getattr(fingerprint, "operation", "") or "").upper()
-                if operation in VerificationEngine.GET_OPERATIONS:
-                    return True
-            return False
+            provenance = getattr(item, "provenance", None)
+            fingerprint = getattr(provenance, "query_fingerprint", None)
+            operation = str(getattr(fingerprint, "operation", "") or "").upper()
+            if operation not in VerificationEngine.GET_OPERATIONS:
+                return False
+            attributes = getattr(item, "attributes", None) or {}
+            if not isinstance(attributes, dict):
+                attributes = {}
+            if attributes.get("read_mode") == "path_only" or attributes.get(
+                "discovery_only"
+            ):
+                return False
+            return VerificationEngine._item_window(item) is not None
         except Exception:
             return False
+
+    @staticmethod
+    def has_range_read(evidence_items: list) -> bool:
+        """At least one citation comes from an actual line-range read."""
+        try:
+            return any(VerificationEngine._is_range_read(i) for i in evidence_items or [])
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Phase 2.2: claim-kind verification. Each rule answers one question:
+    # "does the CITED evidence demonstrate THIS kind of claim?" — never
+    # "does evidence exist". Each returns (ok, reason); reason is the
+    # operator-facing explanation when ok is False.
+    # ------------------------------------------------------------------
+    CALL_EDGE_PATTERNS = ("callers of", "caller of", "called by")
+    RUNTIME_EVIDENCE_TYPES = frozenset(
+        {
+            "RUNTIME_LOG",
+            "RUNTIME_TRACE",
+            "LOG",
+            "TRACE",
+            "DATABASE_STATE",
+            "METRIC",
+            "SYSTEM_EVENT",
+            "API_PROBE",
+            "DIVERGENCE",
+        }
+    )
+    CODE_EVIDENCE_TYPES = frozenset({"SOURCE_CODE", "EXCEPTION_PATH"})
+    _DECLARATION_PREFIX = re.compile(
+        r"(?:^|\s)(?:async\s+)?(?:def|class|function|func|fn|void|public|private|protected|static)\s+[\w.<>\[\], ]*$"
+    )
+
+    @staticmethod
+    def effective_claim_kind(hypothesis: Any) -> ClaimKind | None:
+        """Typed kind when recorded; otherwise inferred for the two kinds
+        that have unambiguous phrasing (call edge, definition).
+
+        BEHAVIOR and ABSENCE are never inferred from prose: guessing would
+        reclassify legitimate causal statements ("the lock is never
+        released") and block them. They apply only when typed.
+        """
+        typed = getattr(hypothesis, "claim_kind", None)
+        if typed is not None:
+            try:
+                return ClaimKind(typed)
+            except ValueError:
+                return None
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        lowered = f" {statement.lower()} "
+        if any(pattern in lowered for pattern in VerificationEngine.CALL_EDGE_PATTERNS):
+            return ClaimKind.CALL_EDGE
+        if VerificationEngine.claims_definition(statement):
+            return ClaimKind.DEFINITION
+        return None
+
+    @staticmethod
+    def _symbol_in_text(symbol: str, text: str) -> bool:
+        """Whole-identifier match (also the last segment of a qualified name)."""
+        candidates = {symbol}
+        for sep in ("::", ".", "#"):
+            if sep in symbol:
+                candidates.add(symbol.rsplit(sep, 1)[-1])
+        for name in candidates:
+            if not name:
+                continue
+            if re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text or ""
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _call_shown(callee: str, snippet: str) -> bool:
+        """True when the snippet contains a call expression for ``callee``.
+
+        A declaration line (``def callee(``) matches ``callee(`` too, so
+        declarations are excluded: a definition is not a call site.
+        """
+        names = {callee}
+        for sep in ("::", ".", "#"):
+            if sep in callee:
+                names.add(callee.rsplit(sep, 1)[-1])
+        for raw in (snippet or "").splitlines():
+            line = raw.split("| ", 1)[1] if "| " in raw and raw.split("|", 1)[0].strip().isdigit() else raw
+            for name in names:
+                if not name:
+                    continue
+                for match in re.finditer(
+                    rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", line
+                ):
+                    if VerificationEngine._DECLARATION_PREFIX.search(line[: match.start()]):
+                        continue
+                    return True
+        return False
+
+    @staticmethod
+    def _extract_call_edge(statement: str) -> tuple[str | None, str | None]:
+        """(callee, caller) from untyped prose; (None, None) when unclear."""
+        text = statement or ""
+        ident = r"[`'\"]?([A-Za-z_][\w.:#]*)[`'\"]?"
+        m = re.search(rf"callers?\s+of\s+{ident}", text, re.IGNORECASE)
+        if m:
+            return (m.group(1), None)
+        m = re.search(
+            rf"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", text, re.IGNORECASE
+        )
+        if m:
+            return (m.group(1), m.group(2))
+        return (None, None)
+
+    @staticmethod
+    def definition_window_proof(
+        evidence_items: list[Any], target: ClaimTarget | None
+    ) -> tuple[bool, str]:
+        """A real range read whose window contains the defined symbol."""
+        reads = [i for i in evidence_items or [] if VerificationEngine._is_range_read(i)]
+        if not reads:
+            return (False, "no range read with recorded start/end lines (a path-only or head read is discovery)")
+        if target is not None and target.file_path:
+            reads = [
+                i
+                for i in reads
+                if VerificationEngine._paths_match(
+                    target.file_path, VerificationEngine._item_file(i)
+                )
+            ]
+            if not reads:
+                return (False, f"no range read of {target.file_path}")
+        if target is not None and target.line_start:
+            line = target.line_start
+            reads = [
+                i
+                for i in reads
+                if (w := VerificationEngine._item_window(i)) and w[0] <= line <= w[1]
+            ]
+            if not reads:
+                return (False, f"no read window covers line {line}")
+        if target is not None and target.symbol:
+            reads = [
+                i
+                for i in reads
+                if VerificationEngine._symbol_in_text(
+                    target.symbol, str(getattr(i, "content_snippet", "") or "")
+                )
+            ]
+            if not reads:
+                return (False, f"no read window contains symbol '{target.symbol}'")
+        return (True, "")
+
+    @staticmethod
+    def call_site_proof(
+        evidence_items: list[Any], target: ClaimTarget | None, statement: str
+    ) -> tuple[bool, str]:
+        """A cited code row that shows the call expression itself."""
+        callee = target.symbol if target is not None else None
+        caller = target.counterpart if target is not None else None
+        if not callee:
+            callee, extracted_caller = VerificationEngine._extract_call_edge(statement)
+            caller = caller or extracted_caller
+        if not callee:
+            return (False, "call edge names no identifiable callee (set target.symbol)")
+        rows = [
+            i
+            for i in VerificationEngine._cited_location_evidence(evidence_items)
+            if VerificationEngine._item_window(i) is not None
+        ]
+        if not rows:
+            return (False, "no cited code row with file, line range and revision provenance")
+        shown = [
+            i
+            for i in rows
+            if VerificationEngine._call_shown(
+                callee, str(getattr(i, "content_snippet", "") or "")
+            )
+        ]
+        if not shown:
+            return (False, f"no cited row shows a call to '{callee}' (a search hit or graph row that does not show the call is not a call site)")
+        if caller:
+            shown = [
+                i
+                for i in shown
+                if VerificationEngine._symbol_in_text(
+                    caller, str(getattr(i, "content_snippet", "") or "")
+                )
+                or VerificationEngine._symbol_in_text(
+                    caller, VerificationEngine._item_file(i)
+                )
+            ]
+            if not shown:
+                return (False, f"call to '{callee}' is shown but not from '{caller}'")
+        return (True, "")
+
+    @staticmethod
+    def behavior_proof(evidence_items: list[Any]) -> tuple[bool, str]:
+        """Code (range-read) AND runtime evidence — code alone is structure."""
+        has_code = any(
+            VerificationEngine._item_type(i) in VerificationEngine.CODE_EVIDENCE_TYPES
+            and VerificationEngine._is_range_read(i)
+            for i in evidence_items or []
+        )
+        has_runtime = any(
+            VerificationEngine._item_type(i) in VerificationEngine.RUNTIME_EVIDENCE_TYPES
+            for i in evidence_items or []
+        )
+        if has_code and has_runtime:
+            return (True, "")
+        missing = []
+        if not has_code:
+            missing.append("a code range read")
+        if not has_runtime:
+            missing.append("runtime evidence (log, trace, state, metric or probe)")
+        return (False, "behavior claim lacks " + " and ".join(missing))
+
+    @staticmethod
+    def absence_proof(
+        evidence_items: list[Any], target: ClaimTarget | None
+    ) -> tuple[bool, str]:
+        """Scoped empty search: states its scope and records zero matches.
+
+        Accepted proof shape (produced by typed no-match outcomes): an
+        evidence row with ``attributes.search_scope`` and
+        ``attributes.match_count == 0`` whose scope covers the claimed one.
+        """
+        scope = (target.scope or "").strip() if target is not None else ""
+        if not scope:
+            return (False, "absence claim states no search scope (set target.scope)")
+        for item in evidence_items or []:
+            attributes = getattr(item, "attributes", None) or {}
+            if not isinstance(attributes, dict):
+                continue
+            proof_scope = str(attributes.get("search_scope", "") or "").strip()
+            if attributes.get("match_count") != 0 or not proof_scope:
+                continue
+            if proof_scope.lower() == scope.lower() or scope.lower() in proof_scope.lower():
+                return (True, "")
+        return (False, f"no scoped empty-search evidence covers '{scope}'; an empty result alone is not proof of absence")
+
+    def check_claim_kind(
+        self, hypothesis: Any, evidence_items: list[Any]
+    ) -> tuple[bool, str] | None:
+        """Claim-kind gate. None means no kind-specific rule applies."""
+        kind = VerificationEngine.effective_claim_kind(hypothesis)
+        if kind is None or kind == ClaimKind.CAUSAL:
+            return None
+        target = getattr(hypothesis, "claim_target", None)
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        if kind == ClaimKind.DEFINITION:
+            return VerificationEngine.definition_window_proof(evidence_items, target)
+        if kind == ClaimKind.CALL_EDGE:
+            return VerificationEngine.call_site_proof(evidence_items, target, statement)
+        if kind == ClaimKind.BEHAVIOR:
+            return VerificationEngine.behavior_proof(evidence_items)
+        if kind == ClaimKind.ABSENCE:
+            return VerificationEngine.absence_proof(evidence_items, target)
+        return None
 
     @staticmethod
     def claims_location(statement: str) -> bool:
@@ -773,10 +1094,19 @@ class VerificationEngine:
         independent citation, cap 0.95), labeled as such in the explanation.
         """
         statement = str(getattr(hypothesis, "statement", "") or "")
+        # Phase 2.2: a typed behavior/absence/causal claim is never a
+        # location answer, whatever its phrasing ("found in" inside a
+        # behavior claim must not take the citations-only fast path).
+        claim_kind = VerificationEngine.effective_claim_kind(hypothesis)
+        if claim_kind in (ClaimKind.BEHAVIOR, ClaimKind.ABSENCE, ClaimKind.CAUSAL):
+            return None
         # G9 correction fallback: phrasing patterns miss ("the correct file
         # is X"), so a statement naming a cited evidence path qualifies as
         # a location claim on evidence grounds. Phrase path unchanged.
-        by_phrase = VerificationEngine.claims_location(statement)
+        by_phrase = VerificationEngine.claims_location(statement) or claim_kind in (
+            ClaimKind.DEFINITION,
+            ClaimKind.CALL_EDGE,
+        )
         if not by_phrase:
             cited_pre = VerificationEngine._cited_location_evidence(evidence_items)
             corrected_path = VerificationEngine._names_cited_path(statement, cited_pre)
@@ -799,6 +1129,13 @@ class VerificationEngine:
             return None
         cited = VerificationEngine._cited_location_evidence(evidence_items)
         if not cited:
+            return None
+        # Phase 2.2: the cited rows must demonstrate THIS kind of claim —
+        # a definition needs a range window containing the symbol; a call
+        # edge needs a row showing the call. Existence of a location-bearing
+        # row (including a search hit) is no longer enough.
+        kind_gate = self.check_claim_kind(hypothesis, cited)
+        if kind_gate is not None and not kind_gate[0]:
             return None
         # T1-2: subject grounding — the claim must be ABOUT the cited
         # rows. Satisfied either by a statement path matching cited
@@ -1078,6 +1415,242 @@ class VerificationEngine:
             confidence=confidence,
             state_validated=True,
         )
+
+    _TESTED_STATUSES = frozenset({"SUPPORTED", "CONTRADICTED", "VERIFIED", "REJECTED"})
+
+    @staticmethod
+    def _rival_tested(rival: Any) -> bool:
+        """A rival counts as tested when evidence was evaluated against it
+        (assessments recorded) or its lifecycle advanced past investigation.
+        Fail-closed on unreadable rows: a sibling we cannot read is a live
+        alternative, never an evaluated one."""
+        try:
+            if getattr(rival, "assessments", None):
+                return True
+            status = str(
+                getattr(getattr(rival, "status", ""), "value", getattr(rival, "status", ""))
+            ).upper()
+            if not status:
+                return False
+            return status in VerificationEngine._TESTED_STATUSES
+        except Exception:
+            # Fail-closed on unreadable rows: a sibling we cannot read is a
+            # live alternative, never an evaluated one.
+            return False
+
+    @staticmethod
+    def rival_contrast(
+        candidate: Any, siblings: list[Any] | None
+    ) -> tuple[bool, list[VerificationLimitation]]:
+        """(demote_to_likely, limitations) from untested rival hypotheses.
+
+        A sibling the loop never evaluated is a live alternative the winner
+        was not contrasted against — the claim publishes as likely at best.
+        The candidate itself is excluded by id.
+        """
+        try:
+            candidate_id = getattr(candidate, "id", None)
+            untested: list[str] = []
+            for sib in siblings or []:
+                try:
+                    if candidate_id is not None and getattr(sib, "id", None) == candidate_id:
+                        continue
+                    if not VerificationEngine._rival_tested(sib):
+                        untested.append(str(getattr(sib, "statement", "") or "")[:200])
+                except Exception:
+                    continue
+            if not untested:
+                return (False, [])
+            return (
+                True,
+                [
+                    VerificationLimitation(
+                        code=LimitationCode.RIVAL_UNTESTED,
+                        detail=(
+                            f"{len(untested)} rival hypothesis(es) never evaluated "
+                            f"against evidence (e.g. {untested[0][:160]}). "
+                            "Winner not contrasted: likely, not established."
+                        )[:500],
+                    )
+                ],
+            )
+        except Exception:
+            return (False, [])
+
+    _CAUSAL_SPLIT_VERBS = (
+        "causes",
+        "caused",
+        "causing",
+        "leads to",
+        "led to",
+        "triggers",
+        "triggered",
+        "results in",
+        "resulted in",
+        "due to",
+        "because of",
+    )
+
+    @staticmethod
+    def untested_rival_statements(candidate: Any, siblings: list[Any] | None) -> list[str]:
+        """Statements of live rivals never evaluated against evidence."""
+        out: list[str] = []
+        try:
+            candidate_id = getattr(candidate, "id", None)
+            for sib in siblings or []:
+                try:
+                    if candidate_id is not None and getattr(sib, "id", None) == candidate_id:
+                        continue
+                    if not VerificationEngine._rival_tested(sib):
+                        text = str(getattr(sib, "statement", "") or "").strip()
+                        if text:
+                            out.append(text[:500])
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def _bound_corpus(evidence_items: list[Any]) -> tuple[list[str], list[str]]:
+        """(value texts, file paths) from bound evidence rows."""
+        texts: list[str] = []
+        paths: list[str] = []
+        for item in evidence_items or []:
+            try:
+                for field in ("title", "summary", "content_snippet", "source"):
+                    texts.append(str(getattr(item, field, "") or ""))
+                location = getattr(getattr(item, "provenance", None), "source_location", None)
+                file_path = str(getattr(location, "file_path", "") or "")
+                if file_path:
+                    paths.append(file_path)
+                    texts.append(file_path)
+            except Exception:
+                continue
+        return texts, paths
+
+    @staticmethod
+    def sentence_mapped(
+        sentence: str, value_texts: list[Any], file_paths: list[Any]
+    ) -> bool:
+        """One conclusion sentence maps to a cited path, a grounded subject,
+        or a distinctive value in the bound rows — else it is prose."""
+        text = (sentence or "").strip()
+        if not text:
+            return True
+        try:
+            for path in VerificationEngine._statement_paths(text):
+                if any(
+                    VerificationEngine._paths_match(path, str(fp)) for fp in file_paths
+                ):
+                    return True
+            subjects = VerificationEngine._claim_subject_tokens(
+                text, VerificationEngine._CAUSAL_SPLIT_VERBS
+            )
+            if subjects:
+                corpus = " ".join(str(t or "") for t in value_texts).lower()
+                stems = {
+                    VerificationEngine._stem_token(w)
+                    for w in re.split(r"[^a-z0-9]+", corpus)
+                    if len(w) >= 3
+                }
+                if any(token in stems for token in subjects):
+                    return True
+            # Short numeric literals ("20", "v2") never survive the stem
+            # corpus above; match them as substrings — state answers hinge
+            # on values, and a claimed value either occurs or it does not.
+            corpus_text = " ".join(str(t or "") for t in value_texts).lower()
+            for match in re.finditer(r"[A-Za-z0-9]*[0-9][A-Za-z0-9./-]*", text):
+                raw = match.group(0).strip(".,;:)]}'\"").lower()
+                if len(raw) >= 2 and raw in corpus_text:
+                    return True
+            return VerificationEngine._state_value_grounded(text, list(value_texts))
+        except Exception:
+            # Fail-open on analysis errors: never demote on a crash.
+            return True
+
+    @staticmethod
+    def map_conclusion_sentences(
+        root_cause: str,
+        evidence_items: list[Any],
+        causal_texts: list[Any] | None = None,
+    ) -> list[str]:
+        """Conclusion sentences mapping to no cited claim or evidence row.
+
+        Pure and deterministic: split on sentence boundaries, then require
+        each sentence to name a cited path, ground its causal subject in the
+        bound rows, or state a distinctive value the rows contain.
+        """
+        value_texts, file_paths = VerificationEngine._bound_corpus(evidence_items)
+        value_texts.extend(str(t or "") for t in (causal_texts or []))
+        unmapped: list[str] = []
+        try:
+            for raw in re.split(r"(?<=[.!?])\s+", (root_cause or "").strip()):
+                sentence = raw.strip().strip(".,;:!?\"'")
+                if not sentence:
+                    continue
+                if not VerificationEngine.sentence_mapped(sentence, value_texts, file_paths):
+                    unmapped.append(sentence)
+        except Exception:
+            return []
+        return unmapped
+
+    @staticmethod
+    def apply_conclusion_mapping(verification: Any, unmapped: list[Any]) -> Any:
+        """Demote a conclusion whose sentences outrun its citations to likely."""
+        if not unmapped:
+            return verification
+        try:
+            first = str(unmapped[0] or "")[:160]
+            limitations = list(getattr(verification, "limitations", None) or [])
+            limitations.append(
+                VerificationLimitation(
+                    code=LimitationCode.CONCLUSION_UNMAPPED,
+                    detail=(
+                        f"{len(unmapped)} conclusion sentence(s) map to no cited "
+                        f"claim or evidence row (e.g. {first})."
+                    )[:500],
+                )
+            )
+            return verification.model_copy(update={"tier": "likely", "limitations": limitations})
+        except Exception:
+            return verification
+
+    @staticmethod
+    def next_check_for(
+        limitations: list[Any],
+        untested_rivals: list[Any] | None = None,
+        unmapped: list[Any] | None = None,
+    ) -> str | None:
+        """The single re-verify directive that would promote this conclusion.
+
+        Priority follows information value: an untested rival first (it can
+        overturn the winner), then uncited sentences, then corroboration.
+        """
+        codes: set[str] = set()
+        for lim in limitations or []:
+            try:
+                codes.add(
+                    str(
+                        getattr(getattr(lim, "code", ""), "value", getattr(lim, "code", ""))
+                    ).upper()
+                )
+            except Exception:
+                continue
+        rivals = [str(r or "").strip() for r in (untested_rivals or []) if str(r or "").strip()]
+        sentences = [str(x or "").strip() for x in (unmapped or []) if str(x or "").strip()]
+        if "RIVAL_UNTESTED" in codes and rivals:
+            return f"Evaluate the untested rival hypothesis against evidence, then re-verify: {rivals[0][:300]}"
+        if "CONCLUSION_UNMAPPED" in codes and sentences:
+            return f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
+        if "RIVAL_UNTESTED" in codes:
+            return "Evaluate every rival hypothesis against evidence, then re-verify."
+        if "CONCLUSION_UNMAPPED" in codes:
+            return "Cite evidence for each conclusion sentence, then re-verify."
+        if "SINGLE_PROVIDER" in codes:
+            return "Corroborate with an independent evidence provider, then re-verify."
+        return None
+
     @traced("reason", require_scope=False, extra_from=_verification_extra)
     def evaluate_hypothesis(
         self,
@@ -1086,6 +1659,7 @@ class VerificationEngine:
         contradictions: list[Contradiction],
         causal_chain: list[CausalRelationship],
         policy: RootCauseVerificationPolicy,
+        sibling_hypotheses: list[Any] | None = None,
     ) -> VerificationResult:
         if VerificationEngine.concedes_claim(getattr(hypothesis, "statement", "")):
             confidence = InvestigationConfidence(
@@ -1103,6 +1677,24 @@ class VerificationEngine:
                     "language); abstention-shaped claims never verify."
                 ),
                 confidence=confidence,
+            )
+        kind_gate = self.check_claim_kind(hypothesis, evidence_items)
+        if kind_gate is not None and not kind_gate[0]:
+            kind = VerificationEngine.effective_claim_kind(hypothesis)
+            return VerificationResult(
+                hypothesis_id=hypothesis.id,
+                status=VerificationStatus.INCONCLUSIVE,
+                corroborating_evidence_ids=[],
+                explanation=(
+                    f"{kind.value if kind else 'Claim'} claim not demonstrated by "
+                    f"its cited evidence: {kind_gate[1]}."
+                ),
+                confidence=InvestigationConfidence(
+                    coverage_score=0.3,
+                    reliability_score=0.5,
+                    causal_score=0.0,
+                    contradiction_penalty=0.0,
+                ),
             )
         if VerificationEngine.claims_definition(
             getattr(hypothesis, "statement", "")
@@ -1190,9 +1782,12 @@ class VerificationEngine:
         # reason is the first causal link (highest-confidence mechanism) or
         # the top corroborating item; against-evidence quotes unresolved
         # non-blocking contradictions (HIGH/CRITICAL would have blocked).
+        # Phase 2.3: rival contrast demotes to likely, and typed limitations
+        # name the caveats.
         tier = "established"
         best_reason = ""
         against_evidence: list[str] = []
+        limitations: list[VerificationLimitation] = []
         if status == VerificationStatus.VERIFIED:
             try:
                 overall = float(confidence.overall_confidence)
@@ -1223,20 +1818,61 @@ class VerificationEngine:
                 against_evidence = against_evidence[:5]
             except Exception:
                 pass
-        return VerificationResult(
-            hypothesis_id=hypothesis.id,
-            status=status,
-            corroborating_evidence_ids=corroborating_ids,
-            explanation=(
+        if status == VerificationStatus.VERIFIED:
+            try:
+                demote, rival_limits = VerificationEngine.rival_contrast(
+                    hypothesis, sibling_hypotheses
+                )
+                limitations.extend(rival_limits)
+                if demote:
+                    tier = "likely"
+                if len(providers) < 2:
+                    limitations.append(
+                        VerificationLimitation(
+                            code=LimitationCode.SINGLE_PROVIDER,
+                            detail=(
+                                "All corroborating rows come from one provider "
+                                f"({min(providers) if providers else 'unknown'}); "
+                                "no independent corroboration."
+                            )[:500],
+                        )
+                    )
+            except Exception:
+                pass
+        if status == VerificationStatus.VERIFIED:
+            shown = (
+                f"{len(causal_chain)} causal link(s) across "
+                f"{len(providers)} provider(s) and {len(types)} evidence type(s)"
+            )
+            caveats = (
+                " Limitations: "
+                + "; ".join(f"{lim.code.value}: {lim.detail}" for lim in limitations)
+                if limitations
+                else " No caveats beyond the heuristic score."
+            )
+            explanation = (
+                f"Verified: {shown}. "
+                f"Heuristic score (coverage={coverage:.2f}, reliability={reliability:.2f}, "
+                f"causal={causal:.2f}).{caveats} "
+                "Final conclusions require ConclusionGate approval."
+            )
+        else:
+            explanation = (
                 "Heuristic verification score "
                 f"(coverage={coverage:.2f} from {len(corroborating_ids)} items across "
                 f"{len(providers)} providers, reliability={reliability:.2f}, causal={causal:.2f}). "
                 "Heuristic only — final conclusions require ConclusionGate approval."
-            ),
+            )
+        return VerificationResult(
+            hypothesis_id=hypothesis.id,
+            status=status,
+            corroborating_evidence_ids=corroborating_ids,
+            explanation=explanation,
             confidence=confidence,
             tier=tier,
             best_reason=best_reason,
             against_evidence=against_evidence,
+            limitations=limitations,
         )
 
 

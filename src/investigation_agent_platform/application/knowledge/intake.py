@@ -16,6 +16,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from investigation_agent_platform.domain.common.exceptions import (
+    DomainValidationException,
+)
 from investigation_agent_platform.domain.common.utils import Clock, SystemClock
 from investigation_agent_platform.domain.investigation.models import (
     ActorType,
@@ -56,6 +59,8 @@ def build_intake_seed(
     severity: Any = None,
     expected: dict[str, Any] | None = None,
     actual: dict[str, Any] | None = None,
+    repository: str | None = None,
+    revision: str | None = None,
 ) -> dict[str, Any]:
     """Intake seed for investigation orientation (D1, pure).
 
@@ -64,11 +69,17 @@ def build_intake_seed(
     turn resolution into banked rows), severity (for the triage
     classifier), and golden expected/actual pairs (for silent-failure
     comparison). Bounded and JSON-scalar only. Never invents.
+
+    Phase 0.5: the resolved repository and revision are persisted so the
+    investigation carries its target identity. An unresolved repository or
+    revision defaults to ``UNPINNED`` — never a silent ``HEAD``.
     """
     try:
         seed: dict[str, Any] = {
             "error_class": str(error_class or "")[:256],
             "failing_symbol": str(failing_symbol or "")[:256],
+            "repository": str(repository or "").strip()[:512] or "UNPINNED",
+            "revision": str(revision or "").strip()[:128] or "UNPINNED",
         }
         if caller_symbol:
             seed["caller_symbol"] = str(caller_symbol)[:256]
@@ -141,6 +152,62 @@ class IntakeResult:
     code_issue_fingerprint: str
 
 
+class RepositoryScopeError(DomainValidationException):
+    """The application profile declares more than one repository and the
+    caller did not choose one.
+
+    Phase 0.5: picking the first repo would silently investigate the wrong
+    codebase. Ambiguity fails closed; the caller must name the repository.
+    """
+
+    def __init__(self, application_id: str, candidates: list[str]) -> None:
+        super().__init__(
+            message=(
+                f"Application '{application_id}' declares multiple repositories; "
+                "repository must be specified explicitly"
+            ),
+            details={
+                "application_id": application_id,
+                "candidates": list(candidates),
+            },
+        )
+        self.error_code = "AMBIGUOUS_REPOSITORY_SCOPE"
+        self.candidates = list(candidates)
+
+
+def resolve_repository_scope(profile: Any) -> tuple[str, list[str]]:
+    """Resolve a single canonical repository from an application profile (pure).
+
+    Returns ``(repository_id, candidates)``. ``Service.repository_id`` is
+    canonical; ``ServiceCode.repos`` locators are the fallback. One distinct
+    value resolves; zero yields ``("", [])`` (unpinned); more than one yields
+    ``("", candidates)`` so the caller can fail closed.
+    """
+    try:
+        services = list(getattr(profile, "services", None) or [])
+        repo_ids = {
+            str(getattr(service, "repository_id", "") or "").strip()
+            for service in services
+        }
+        repo_ids.discard("")
+        if len(repo_ids) == 1:
+            return next(iter(repo_ids)), sorted(repo_ids)
+        if len(repo_ids) > 1:
+            return "", sorted(repo_ids)
+        locators: set[str] = set()
+        for service in services:
+            code = getattr(service, "code", None)
+            for repo in list(getattr(code, "repos", None) or []):
+                name = str(repo or "").strip()
+                if name:
+                    locators.add(name)
+        if len(locators) == 1:
+            return next(iter(locators)), sorted(locators)
+        return "", sorted(locators)
+    except Exception:
+        return "", []
+
+
 class ErrorIntakeService:
     """Merge-or-fork intake for auto-forwarded (and analyst-reported) errors."""
 
@@ -150,11 +217,15 @@ class ErrorIntakeService:
         session_repo: Any,
         code_issue_index: Any,
         clock: Clock | None = None,
+        profile_repo: Any | None = None,
     ) -> None:
         self.investigation_repo = investigation_repo
         self.session_repo = session_repo
         self.code_issue_index = code_issue_index
         self.clock = clock or SystemClock()
+        # Phase 0.5: optional; when present, resolves the canonical
+        # repository for the application so intake carries target identity.
+        self.profile_repo = profile_repo
 
     @traced("knowledge", component="intake", extra_from=_intake_extra)
     async def intake(
@@ -180,6 +251,16 @@ class ErrorIntakeService:
         actual: dict[str, Any] | None = None,
     ) -> IntakeResult:
         now = occurred_at or datetime.now(UTC)
+        # Phase 0.5: resolve the canonical repository from the application
+        # profile when the caller did not pin one. Ambiguous multi-repo
+        # scope fails closed rather than guessing; an absent scope stays
+        # UNPINNED (visible), never a silent HEAD.
+        repository = await self._resolve_repository(
+            tenant_id=tenant_id,
+            application_id=application_id,
+            repository=repository,
+        )
+        revision_value = (revision or "").strip()
         intake_seed = build_intake_seed(
             error_class=error_class,
             failing_symbol=failing_symbol,
@@ -191,11 +272,13 @@ class ErrorIntakeService:
             severity=severity,
             expected=expected,
             actual=actual,
+            repository=repository,
+            revision=revision_value,
         )
         fingerprint = build_code_issue_fingerprint(
             error_class=error_class,
-            repository=(repository or "").strip() or "unknown",
-            revision=(revision or "").strip() or "unknown",
+            repository=(repository or "").strip() or "UNPINNED",
+            revision=(revision_value or "").strip() or "UNPINNED",
             failing_symbol=(failing_symbol or "").strip() or _silent_symbol(error_class, problem_description),
             caller_symbol=caller_symbol,
             top_frame_file=top_frame_file,
@@ -271,6 +354,30 @@ class ErrorIntakeService:
             code_issue_fingerprint=fingerprint,
         )
 
+    async def _resolve_repository(
+        self, *, tenant_id: str, application_id: str, repository: str
+    ) -> str:
+        """Return the caller's repository, or resolve it from the profile."""
+        explicit = (repository or "").strip()
+        if explicit and explicit.upper() not in ("UNPINNED", "UNKNOWN", "HEAD"):
+            return explicit
+        if self.profile_repo is None:
+            return explicit
+        try:
+            profile = await self.profile_repo.get_by_application_id(
+                tenant_id, application_id
+            )
+        except Exception:
+            return explicit
+        if profile is None:
+            return explicit
+        resolved, candidates = resolve_repository_scope(profile)
+        if resolved:
+            return resolved
+        if len(candidates) > 1:
+            raise RepositoryScopeError(application_id, candidates)
+        return explicit
+
     async def _create_investigation(
         self,
         *,
@@ -293,6 +400,16 @@ class ErrorIntakeService:
             environment="production",
             time_window=(now, now),
         )
+        seed = dict(intake_seed or {})
+        metadata: dict[str, Any] = {}
+        if seed:
+            metadata["intake_seed"] = seed
+        # Phase 0.5: target identity lives on the investigation, not only
+        # inside the seed, so downstream stages can read it directly.
+        if seed.get("repository"):
+            metadata["repository"] = seed["repository"]
+        if seed.get("revision"):
+            metadata["revision"] = seed["revision"]
         investigation = Investigation(
             session_id=session_id,
             application_id=application_id,
@@ -303,7 +420,7 @@ class ErrorIntakeService:
             created_at=now,
             updated_at=now,
             code_issue_fingerprint=fingerprint,
-            metadata={"intake_seed": dict(intake_seed or {})} if intake_seed else {},
+            metadata=metadata,
         )
         await self.investigation_repo.create(tenant_id, investigation)
         return investigation

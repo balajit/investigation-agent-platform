@@ -37,6 +37,10 @@ tracer = trace.get_tracer(__name__)
 
 MAX_SOURCE_LINE_COUNT = 2000
 MAX_SOURCE_BYTE_SIZE = 1_048_576  # 1MB text ceiling
+# Evidence.content_snippet caps at 4096 chars; range content is fitted to
+# this budget on whole-line boundaries so provenance never claims lines the
+# snippet does not contain.
+MAX_SNIPPET_CHARS = 4000
 
 
 class PyGit2Adapter:
@@ -151,7 +155,7 @@ class PyGit2Adapter:
                 ]:
                     prefix = str(repo).strip("/") + "/"
                     if text.startswith(prefix):
-                        return text[len(prefix):]
+                        return text[len(prefix) :]
             return text
         except Exception:
             return str(file_path or "")
@@ -302,7 +306,11 @@ class PyGit2Adapter:
 
     @traced("provider", component="code_git")
     async def get_source(
-        self, tenant_id: str, investigation_id: UUID, file_path: str, profile: ApplicationProfile,
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        file_path: str,
+        profile: ApplicationProfile,
         revision: str | None = None,
         start_line: int | None = None,
         end_line: int | None = None,
@@ -313,8 +321,14 @@ class PyGit2Adapter:
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("file_path", file_path)
             return await asyncio.to_thread(
-                self._get_source_sync, tenant_id, investigation_id, file_path, profile,
-                revision, start_line, end_line,
+                self._get_source_sync,
+                tenant_id,
+                investigation_id,
+                file_path,
+                profile,
+                revision,
+                start_line,
+                end_line,
             )
 
     @staticmethod
@@ -422,9 +436,7 @@ class PyGit2Adapter:
             logger.error(
                 "Git source fetch failure",
                 exc_info=exc,
-                extra={
-                    "context": {"file": file_path, "repository": repository}
-                },
+                extra={"context": {"file": file_path, "repository": repository}},
             )
             raise ExecutionError(f"Failed to fetch source for {file_path}: {exc}") from exc
 
@@ -482,16 +494,27 @@ class PyGit2Adapter:
         else:
             start = 0
             end = min(len(lines), MAX_SOURCE_LINE_COUNT)
-        # Evidence.content_snippet caps at 4096 chars: truncate long files to
-        # the head (previously any file over ~4KB failed Evidence validation
-        # and GET_CODE errored instead of returning a snippet).
+        # Fit whole lines into the snippet budget and record the ACTUAL
+        # included range in provenance. Claiming lines the snippet does not
+        # contain would let verification pass a definition/call claim the
+        # model never saw; truncation is disclosed via attributes so the
+        # caller can continue at next_start_line.
         window = lines[start:end]
         if numbered:
-            selected_content = "\n".join(
-                f"{n}| {text}" for n, text in zip(range(start + 1, end + 1), window)
-            )[:4000]
+            candidate_lines = [f"{n}| {text}" for n, text in zip(range(start + 1, end + 1), window)]
         else:
-            selected_content = "\n".join(window)[:4000]
+            candidate_lines = list(window)
+        selected_lines: list[str] = []
+        used = 0
+        for text in candidate_lines:
+            cost = len(text) + (1 if selected_lines else 0)
+            if used + cost > MAX_SNIPPET_CHARS and selected_lines:
+                break
+            selected_lines.append(text)
+            used += cost
+        selected_content = "\n".join(selected_lines)
+        actual_end = start + len(selected_lines)
+        truncated = len(selected_lines) < len(candidate_lines)
         try:
             observed_at = datetime.fromtimestamp(commit.commit_time, UTC)
         except Exception:
@@ -500,7 +523,7 @@ class PyGit2Adapter:
 
         commit_sha = str(commit.id)
         query_hash = hashlib.sha256(
-            f"{repository}:{file_path}:{commit_sha}:{start}:{end}".encode()
+            f"{repository}:{file_path}:{commit_sha}:{start}:{actual_end}".encode()
         ).hexdigest()
 
         prov = EvidenceProvenance(
@@ -521,7 +544,7 @@ class PyGit2Adapter:
                 identifier=f"{repository}/{file_path}",
                 file_path=file_path,
                 line_start=start + 1,
-                line_end=end,
+                line_end=actual_end,
                 revision=commit_sha,
             ),
         )
@@ -536,9 +559,14 @@ class PyGit2Adapter:
             evidence_type=EvidenceType.SOURCE_CODE,
             provider=self._provider_id,
             source=f"git://{repository}/{file_path}@{commit_sha}",
-            title=f"Source: {file_path} (lines {start + 1}-{end})",
+            title=f"Source: {file_path} (lines {start + 1}-{actual_end})",
             summary=f"Code snippet from {repository}/{file_path} at revision {commit_sha[:8]}",
             content_snippet=selected_content,
+            attributes={
+                "truncated": truncated,
+                "next_start_line": actual_end + 1 if truncated else None,
+                "requested_end_line": end if truncated else None,
+            },
             observed_at=observed_at,
             retrieved_at=now,
             provenance=prov,

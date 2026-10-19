@@ -88,6 +88,7 @@ class SqlAlchemyFindingConclusionRepository:
             provisional=bool(row.provisional),
             ranked_alternatives=list(row.ranked_alternatives or []),
             verifier_version=row.verifier_version,
+            next_check=getattr(row, "next_check", None),
         )
 
     # -- writes ----------------------------------------------------------
@@ -237,6 +238,7 @@ class SqlAlchemyFindingConclusionRepository:
                         against_evidence=list(getattr(conclusion, "against_evidence", []) or []),
                         provisional=bool(getattr(conclusion, "provisional", False)),
                         ranked_alternatives=list(getattr(conclusion, "ranked_alternatives", []) or []),
+                        next_check=getattr(conclusion, "next_check", None),
                     )
                     .on_conflict_do_update(
                         constraint="uq_conclusion_investigation",
@@ -260,6 +262,7 @@ class SqlAlchemyFindingConclusionRepository:
                             "against_evidence": list(getattr(conclusion, "against_evidence", []) or []),
                             "provisional": bool(getattr(conclusion, "provisional", False)),
                             "ranked_alternatives": list(getattr(conclusion, "ranked_alternatives", []) or []),
+                            "next_check": getattr(conclusion, "next_check", None),
                         },
                     )
                 )

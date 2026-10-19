@@ -20,14 +20,22 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
 # shape changes; persisted per decision for replay/evaluation.
-REASONER_PROMPT_VERSION = "v2-code-grounded-009"
+REASONER_PROMPT_VERSION = "v3-claim-grounded-011"
+CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8
-MAX_CODE_EXCERPT_CHARS = 1500
+# A code packet carries the requested range, not a 1,500-char head. The
+# provider already caps content at 4,000 chars; keeping the same cap here
+# means a range read is not silently cut before the asserted line. Truncated
+# packets disclose the cut and carry next_window so the model can continue.
+MAX_CODE_EXCERPT_CHARS = 4000
+MAX_EVIDENCE_POOL = 500
+MAX_VISIBLE_EXCERPTS = 100
 MAX_HYPOTHESES = 10
 MAX_TIMELINE_EVENTS = 8
 MAX_PENDING_QUESTIONS = 10
 MAX_FINDINGS = 5
+
 
 # Context-window shrink: global token ceiling for the compiled context so
 # older content purges as newer arrives (counts/chars caps alone are blind
@@ -49,6 +57,7 @@ def estimate_tokens(text: str) -> int:
     except Exception:
         return 0
     return (length + 3) // 4 if length else 0
+
 
 # R4 relevance-tiered excerpts: Tier 1 carries full snippets, Tier 2 carries
 # summary + provenance + a by-ID retrieval marker. Tiers subdivide the
@@ -80,6 +89,7 @@ def tier1_recent_count() -> int:
 def tier1_relevance_floor() -> float:
     """R4: relevance at/above which excerpts keep full snippets (default 0.8)."""
     return _env_float("IAP_COMPILER_FULL_EXCERPT_RELEVANCE", 0.8)
+
 
 # P2-1: deterministic issue-surface classifier. Guidance only — the plan
 # tells the model which surfaces this complaint shape implies; it is never
@@ -156,7 +166,11 @@ def _most_recent_ids(items: list[Any], count: int) -> set[str]:
         return str(_get(e, "retrieved_at", "") or "")
 
     ranked = sorted(items, key=_retrieved_key, reverse=True)
-    return {str(_get(e, "evidence_id", "")) for e in ranked[: max(0, count)] if _get(e, "evidence_id", "")}
+    return {
+        str(_get(e, "evidence_id", ""))
+        for e in ranked[: max(0, count)]
+        if _get(e, "evidence_id", "")
+    }
 
 
 def _bound_evidence_ids(hypotheses: list[Any]) -> set[str]:
@@ -169,6 +183,169 @@ def _bound_evidence_ids(hypotheses: list[Any]) -> set[str]:
                 if text:
                     bound.add(text)
     return bound
+
+
+def _is_code_type(etype: str) -> bool:
+    return "CODE" in etype.upper() or "EXCEPTION" in etype.upper()
+
+
+def _read_mode(e: Any, snippet: str) -> str:
+    attrs = _get(e, "attributes", {}) or {}
+    if isinstance(attrs, dict):
+        declared = str(attrs.get("read_mode", "") or "")
+        if declared in ("range", "path_only"):
+            return declared
+        if bool(attrs.get("discovery_only")):
+            return "path_only"
+    # Legacy rows: numbered lines are the provider's range-read shape.
+    first = snippet.splitlines()[0] if snippet else ""
+    parts = first.split("|", 1)
+    if len(parts) == 2 and parts[0].strip().isdigit():
+        return "range"
+    return "path_only"
+
+
+def _last_visible_line(content: str) -> int | None:
+    """Last numbered line in provider range content (``480| text``)."""
+    for raw in reversed(content.splitlines()):
+        head = raw.split("|", 1)[0].strip()
+        if head.isdigit():
+            return int(head)
+    return None
+
+
+def _next_window(
+    content: str, truncated: bool, start_line: Any, end_line: Any
+) -> dict[str, int] | None:
+    """Continuation hint when a packet was cut, or None when complete."""
+    if not truncated or not content:
+        return None
+    last = _last_visible_line(content)
+    if last is None:
+        try:
+            last = int(start_line or 1) + content.count("\n")
+        except (TypeError, ValueError):
+            return None
+    nxt_start = last + 1
+    try:
+        limit = int(end_line) if end_line else nxt_start + 199
+    except (TypeError, ValueError):
+        limit = nxt_start + 199
+    if nxt_start > limit:
+        return None
+    return {"start_line": nxt_start, "end_line": min(limit, nxt_start + 199)}
+
+
+def _symbol_spans(e: Any, start_line: Any) -> list[dict[str, Any]]:
+    attrs = _get(e, "attributes", {}) or {}
+    if not isinstance(attrs, dict):
+        return []
+    name = str(attrs.get("symbol_name", "") or "").strip()
+    if not name:
+        return []
+    try:
+        line = int(start_line) if start_line else None
+    except (TypeError, ValueError):
+        line = None
+    return [
+        {
+            "name": name[:256],
+            "kind": str(attrs.get("symbol_kind", "") or "symbol")[:64],
+            "line": line,
+        }
+    ]
+
+
+def _code_packet(
+    e: Any,
+    *,
+    evidence_id: str,
+    snippet: str,
+    content: str,
+    content_truncated: bool,
+    bound: bool,
+    start_line: Any,
+    end_line: Any,
+) -> dict[str, Any]:
+    """Range/target/continuation fields for a code excerpt (Phase 1.1).
+
+    The packet is deliberately additive: existing excerpt keys stay in place
+    so older readers keep working, while the prompt can now show the model
+    exactly which window it received and how to continue.
+    """
+    prov = _get(e, "provenance", None)
+    location = _get(prov, "source_location", None)
+    file_path = str(_get(location, "file_path", "") or "")
+    revision = str(_get(location, "revision", "") or "")
+    attrs = _get(e, "attributes", {}) or {}
+    mode = _read_mode(e, snippet)
+    discovery = bool(
+        (isinstance(attrs, dict) and attrs.get("discovery_only")) or mode == "path_only"
+    )
+    next_window = _next_window(content, content_truncated, start_line, end_line)
+    if next_window is None and isinstance(attrs, dict) and attrs.get("truncated"):
+        # Provider cut the requested window to fit its snippet budget:
+        # continue where the snippet stopped, bounded by what was asked.
+        try:
+            provider_start = int(attrs.get("next_start_line") or 0)
+        except (TypeError, ValueError):
+            provider_start = 0
+        if provider_start > 0:
+            try:
+                provider_limit = int(attrs.get("requested_end_line") or 0) or None
+            except (TypeError, ValueError):
+                provider_limit = None
+            window_end = provider_limit or (provider_start + 199)
+            if provider_start <= window_end:
+                next_window = {
+                    "start_line": provider_start,
+                    "end_line": min(window_end, provider_start + 199),
+                }
+    if bound:
+        why = "hypothesis_citation"
+    elif mode == "range":
+        why = "range_read"
+    elif discovery:
+        why = "discovery"
+    else:
+        why = "recent_code"
+    return {
+        "packet_version": CODE_PACKET_VERSION,
+        "citable_evidence_id": evidence_id,
+        "target": {
+            "file_path": file_path,
+            "revision": revision,
+            "symbol": str((attrs.get("symbol_name") if isinstance(attrs, dict) else "") or "")
+            or None,
+            "frame": None,
+        },
+        "window": {
+            "start_line": start_line,
+            "end_line": end_line,
+            "why": why,
+        },
+        "read_mode": mode,
+        "discovery_only": discovery,
+        "symbol_spans": _symbol_spans(e, start_line),
+        "next_window": next_window,
+        "claim_priority": 0 if bound else (1 if mode == "range" else 2),
+    }
+
+
+def _sort_key(e: Any) -> tuple[str, str, str]:
+    """Deterministic ordering even when the repository returns rows unordered."""
+    return (
+        str(_get(e, "retrieved_at", "") or ""),
+        str(_get(e, "observed_at", "") or ""),
+        str(_get(e, "evidence_id", "") or ""),
+    )
+
+
+def _code_sort_key(e: Any) -> tuple[int, str, str, str]:
+    """Range reads before path-only heads, then newest-first, then ID."""
+    mode = _read_mode(e, str(_get(e, "content_snippet", "") or ""))
+    retrieved, observed, evidence_id = _sort_key(e)
+    return (1 if mode == "range" else 0, retrieved, observed, evidence_id)
 
 
 @traced("reason", require_scope=False)
@@ -198,21 +375,30 @@ def compile_evidence_excerpts(
     def _eid(e: Any) -> str:
         return str(_get(e, "evidence_id", "") or "")
 
-    def _retrieved(e: Any) -> str:
-        return str(_get(e, "retrieved_at", "") or "")
-
-    # Newest-first: bound rows lead, then most-recently-retrieved — so caps
-    # shed the OLDEST rows first as new evidence arrives, never the reverse.
-    # (Grouping representatives become newest-of-group.) Pool 500 bounds the
-    # sort cost on unbounded banks; the [:100] keeps the newest of the pool.
-    pool = list(evidence_items[:500])
-    bound_items = sorted(
-        [e for e in pool if _eid(e) in bound], key=_retrieved, reverse=True
+    # Newest-first: bound rows lead, then code (range reads before heads),
+    # then the rest — so caps shed the OLDEST rows first as new evidence
+    # arrives. Code is promoted ahead of logs because a claim's decisive
+    # range must not be crowded out by newer log rows (Phase 1.1). The 500
+    # pool bounds the sort cost; the [:100] keeps the highest-priority 100.
+    pool = list(evidence_items[:MAX_EVIDENCE_POOL])
+    bound_items = sorted([e for e in pool if _eid(e) in bound], key=_sort_key, reverse=True)
+    code_items = sorted(
+        [
+            e
+            for e in pool
+            if _eid(e) not in bound
+            and _is_code_type(str(_get(_get(e, "evidence_type", ""), "value", e) or ""))
+        ],
+        key=_code_sort_key,
+        reverse=True,
     )
+    code_ids = {_eid(e) for e in code_items}
     rest = sorted(
-        [e for e in pool if _eid(e) not in bound], key=_retrieved, reverse=True
+        [e for e in pool if _eid(e) not in bound and _eid(e) not in code_ids],
+        key=_sort_key,
+        reverse=True,
     )
-    items = (bound_items + rest)[:100]
+    items = (bound_items + code_items + rest)[:MAX_VISIBLE_EXCERPTS]
     recent_ids = _most_recent_ids(items, tier1_recent_count())
     floor = tier1_relevance_floor()
     units = _group_log_items(items, log_group)
@@ -235,7 +421,7 @@ def compile_evidence_excerpts(
             and not (set(member_ids) & recent_ids)
         ):
             tier = 2
-        is_code = "CODE" in etype.upper() or "EXCEPTION" in etype.upper()
+        is_code = _is_code_type(etype)
         content = ""
         content_truncated = False
         if tier == 1 and is_code and snippet and code_count < MAX_CODE_EXCERPTS:
@@ -245,44 +431,62 @@ def compile_evidence_excerpts(
                 content_truncated = True
             else:
                 content = snippet
+            # The provider may have cut the requested window to fit its own
+            # snippet budget (honest provenance + truncated attributes).
+            # Surface that cut here so the packet never looks complete when
+            # the requested range continues past the snippet.
+            attrs = _get(e, "attributes", {}) or {}
+            if isinstance(attrs, dict) and attrs.get("truncated"):
+                content_truncated = True
         elif tier == 2 and snippet:
             content = _TIER2_MARKER
         prov = _get(e, "provenance", None)
-        excerpts.append(
-            {
-                "evidence_id": evidence_id,
-                "evidence_type": etype,
-                "source": str(_get(e, "source", "") or ""),
-                "summary": summary[:1000],
-                "summary_truncated": len(summary) > 1000,
-                "content": content,
-                "content_truncated": content_truncated,
-                "tier": tier,
-                "log_group": (
-                    {"count": len(member_ids), "member_ids": member_ids}
-                    if len(member_ids) > 1
-                    else None
-                ),
-                "relevance": _get(e, "relevance", 1.0),
-                "confidence": _get(e, "confidence", 1.0),
-                "is_redacted": bool(_get(e, "is_redacted", False)),
-                "observed_at": str(_get(e, "observed_at", "") or ""),
-                "retrieved_at": str(_get(e, "retrieved_at", "") or ""),
-                "provider": str(_get(e, "provider", "") or ""),
-                "revision": str(
-                    _get(_get(prov, "source_location", None), "revision", "") or ""
-                ),
-            }
-        )
+        location = _get(prov, "source_location", None)
+        start_line = _get(location, "line_start", None)
+        end_line = _get(location, "line_end", None)
+        excerpt: dict[str, Any] = {
+            "evidence_id": evidence_id,
+            "evidence_type": etype,
+            "source": str(_get(e, "source", "") or ""),
+            "summary": summary[:1000],
+            "summary_truncated": len(summary) > 1000,
+            "content": content,
+            "content_truncated": content_truncated,
+            "tier": tier,
+            "log_group": (
+                {"count": len(member_ids), "member_ids": member_ids}
+                if len(member_ids) > 1
+                else None
+            ),
+            "relevance": _get(e, "relevance", 1.0),
+            "confidence": _get(e, "confidence", 1.0),
+            "is_redacted": bool(_get(e, "is_redacted", False)),
+            "observed_at": str(_get(e, "observed_at", "") or ""),
+            "retrieved_at": str(_get(e, "retrieved_at", "") or ""),
+            "provider": str(_get(e, "provider", "") or ""),
+            "revision": str(_get(location, "revision", "") or ""),
+        }
+        if is_code and content:
+            excerpt.update(
+                _code_packet(
+                    e,
+                    evidence_id=evidence_id,
+                    snippet=snippet,
+                    content=content,
+                    content_truncated=content_truncated,
+                    bound=bool(evidence_id in bound or (set(member_ids) & bound)),
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            )
+        excerpts.append(excerpt)
     return excerpts
 
 
 _LOG_GROUP_TYPES = frozenset({"RUNTIME_LOG", "RUNTIME_TRACE", "LOG", "TRACE"})
 
 
-def _group_relevance(
-    representative: Any, member_ids: list[str], items: list[Any]
-) -> float:
+def _group_relevance(representative: Any, member_ids: list[str], items: list[Any]) -> float:
     """Max relevance across group members (a hot member keeps the group Tier 1)."""
     try:
         best = float(_get(representative, "relevance", 1.0) or 0.0)
@@ -302,9 +506,7 @@ def _group_relevance(
     return best
 
 
-def _group_log_items(
-    items: list[Any], enabled: bool
-) -> list[tuple[Any, list[str]]]:
+def _group_log_items(items: list[Any], enabled: bool) -> list[tuple[Any, list[str]]]:
     """Partition into (representative, member-ID) units, first-appearance order.
 
     Log-type rows with identical masked shape share one unit (representative
@@ -411,8 +613,7 @@ def compile_hypotheses(hypotheses: list[Any]) -> list[dict[str, Any]]:
                     str(i) for i in (_get(h, "refuting_evidence_ids", []) or [])
                 ][:20],
                 "required_verification": [
-                    str(r)[:200]
-                    for r in (_get(h, "required_verification", []) or [])
+                    str(r)[:200] for r in (_get(h, "required_verification", []) or [])
                 ][:10],
             }
         )
@@ -444,17 +645,40 @@ def _section_tokens(value: Any) -> int:
 
 
 def _is_bound_excerpt(excerpt: dict[str, Any]) -> bool:
-    """Conservative bound-row heuristic for the purge pass.
+    """True only for excerpts the compiler itself marked as claim-bound.
 
-    Excerpt dicts do not carry bound flags, so treat content-bearing rows
-    with revision provenance as pinned; everything else is sheddable. Errs
-    toward keeping (returns True on any doubt) — over-shedding citations
-    is worse than over-budget context, and the loop re-checks.
+    Older excerpts (no ``claim_priority``) are not protected: revision
+    presence alone used to pin every code row, which let a single large
+    packet blow the token ceiling while the budget could not shed it.
     """
     try:
-        return bool(excerpt.get("revision"))
+        return excerpt.get("claim_priority") == 0
     except Exception:
-        return True
+        return False
+
+
+def _shrink_code_packet(excerpt: dict[str, Any]) -> bool:
+    """Cut one code packet within itself and disclose the continuation.
+
+    Returns True when the packet was shortened. The header/target/window
+    stay; ``next_window`` tells the model exactly how to read further, so a
+    budget cut never silently replaces asserted lines with a summary.
+    """
+    content = str(excerpt.get("content") or "")
+    if excerpt.get("packet_version") != CODE_PACKET_VERSION or len(content) <= 1500:
+        return False
+    cut = content[:1500]
+    # Prefer a line boundary when one exists in the first 1,500 chars.
+    newline = cut.rfind("\n")
+    if newline > 500:
+        cut = cut[:newline]
+    window = excerpt.get("window") or {}
+    excerpt["content"] = cut
+    excerpt["content_truncated"] = True
+    excerpt["next_window"] = _next_window(
+        cut, True, window.get("start_line"), window.get("end_line")
+    )
+    return True
 
 
 def enforce_context_budget(
@@ -462,29 +686,64 @@ def enforce_context_budget(
 ) -> dict[str, Any]:
     """Shed oldest-first until the compiled context fits the token budget.
 
-    Sacrifice order (pinned sections never shed): unbound Tier-1 excerpts →
-    Tier-2 (content replaced by the retrieval marker, oldest first) →
+    Sacrifice order (pinned sections never shed): unbound code packets shrink
+    within themselves (disclosing ``next_window``) → unbound Tier-1 excerpts
+    demote → Tier-2 (content replaced by the retrieval marker, oldest first) →
     timeline tail beyond newest 3 → pending-questions tail beyond 5 →
     findings tail beyond 3. Records purged counts + final estimate alongside.
     Deterministic: same input, same output.
     """
     ceiling = budget if budget is not None else context_token_budget()
     bound_ids = set(bound or [])
-    purged = {"excerpts_demoted": 0, "timeline_dropped": 0, "pending_dropped": 0, "findings_dropped": 0}
+    purged = {
+        "excerpts_demoted": 0,
+        "code_packets_shrunk": 0,
+        "timeline_dropped": 0,
+        "pending_dropped": 0,
+        "findings_dropped": 0,
+    }
 
     def _total() -> int:
         return sum(
             _section_tokens(ctx.get(key))
-            for key in ("plan", "hypotheses", "timeline", "pending_questions", "findings", "evidence_excerpts")
+            for key in (
+                "plan",
+                "hypotheses",
+                "timeline",
+                "pending_questions",
+                "findings",
+                "evidence_excerpts",
+            )
         )
 
     excerpts = ctx.get("evidence_excerpts") or []
-    # Oldest-first demotion. Bound rows (hypothesis citations) are NEVER
-    # demoted — the ID check is exact; the revision heuristic below only
-    # protects unlisted-but-likely-cited rows conservatively.
+    # 1) Shrink unbound code packets before demoting any packet entirely.
+    shrinkable = [
+        e
+        for e in excerpts
+        if isinstance(e, dict)
+        and e.get("tier") == 1
+        and e.get("content")
+        and e.get("packet_version") == CODE_PACKET_VERSION
+        and str(e.get("evidence_id", "") or "") not in bound_ids
+        and not _is_bound_excerpt(e)
+    ]
+    while _total() > ceiling:
+        candidates = [e for e in shrinkable if len(str(e.get("content") or "")) > 1500]
+        if not candidates:
+            break
+        victim = max(candidates, key=lambda e: len(str(e.get("content") or "")))
+        if not _shrink_code_packet(victim):
+            break
+        purged["code_packets_shrunk"] += 1
+    # 2) Oldest-first demotion. Bound rows (hypothesis citations) are NEVER
+    # demoted — the ID check is exact.
     demotable = [
-        e for e in excerpts
-        if isinstance(e, dict) and e.get("tier") == 1 and e.get("content")
+        e
+        for e in excerpts
+        if isinstance(e, dict)
+        and e.get("tier") == 1
+        and e.get("content")
         and str(e.get("evidence_id", "") or "") not in bound_ids
         and not _is_bound_excerpt(e)
     ]
@@ -518,7 +777,11 @@ def enforce_context_budget(
 def compile_reasoning_context(state: Any) -> dict[str, Any]:
     """Assemble the P0-1 context sections from hydrated investigation state."""
     problem = str(
-        getattr(getattr(getattr(state, "investigation", None), "request", None), "problem_description", "")
+        getattr(
+            getattr(getattr(state, "investigation", None), "request", None),
+            "problem_description",
+            "",
+        )
         or ""
     )
     hypotheses = _get(state, "active_hypotheses", []) or []

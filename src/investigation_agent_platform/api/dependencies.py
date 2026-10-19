@@ -2068,6 +2068,7 @@ class AppContext:
             session_repo=self.session_repo,
             code_issue_index=self.code_issue_index,
             clock=clock,
+            profile_repo=self.profile_repo,
         )
 
     def knowledge_capture_service(

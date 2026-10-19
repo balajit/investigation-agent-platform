@@ -49,11 +49,13 @@ class TestAllLocators:
             PyGit2Adapter,
         )
 
-        profile = _profile([
-            _service("o1", ["r1", "r2"], branch="dev"),
-            _service("o2", ["r3"]),
-            _service("", ["bare"]),
-        ])
+        profile = _profile(
+            [
+                _service("o1", ["r1", "r2"], branch="dev"),
+                _service("o2", ["r3"]),
+                _service("", ["bare"]),
+            ]
+        )
         assert PyGit2Adapter._all_locators(profile) == [
             ("o1/r1", "dev"),
             ("o1/r2", "dev"),
@@ -98,9 +100,7 @@ class TestFetchBlobMultiRepo:
         adapter = PyGit2Adapter(repo_base_path=str(tmp_path))
         profile = _profile([_service("o1", ["r1", "r2"])])
 
-        text, _commit, tree_path = adapter._fetch_blob(
-            r2, "o1/r2", "main", "b.txt", profile, None
-        )
+        text, _commit, tree_path = adapter._fetch_blob(r2, "o1/r2", "main", "b.txt", profile, None)
         assert "from-two" in text
 
         # Full path: file only in second repo resolves through the loop.
@@ -147,9 +147,7 @@ class TestCrossOrgEntries:
         assert PyGit2Adapter._split_repo_entry("svc-org", "other-org/shared-libs") == (
             "other-org/shared-libs"
         )
-        assert PyGit2Adapter._split_repo_entry("svc-org", "plain-repo") == (
-            "svc-org/plain-repo"
-        )
+        assert PyGit2Adapter._split_repo_entry("svc-org", "plain-repo") == ("svc-org/plain-repo")
         assert PyGit2Adapter._split_repo_entry("", "bare") == "bare"
         assert PyGit2Adapter._split_repo_entry("o", "a/b/c") == "a/b/c"
 
@@ -158,9 +156,11 @@ class TestCrossOrgEntries:
             PyGit2Adapter,
         )
 
-        profile = _profile([
-            _service("svc-org", ["main-repo", "other-org/shared-libs"]),
-        ])
+        profile = _profile(
+            [
+                _service("svc-org", ["main-repo", "other-org/shared-libs"]),
+            ]
+        )
         assert PyGit2Adapter._all_locators(profile) == [
             ("svc-org/main-repo", "main"),
             ("other-org/shared-libs", "main"),
@@ -238,3 +238,51 @@ class TestGraphArtifactFreshness:
         provider = self._provider(tmp_path)
         profile = _profile([_service("o", ["r1"])])
         assert provider._load_graphify_graph(profile) is None
+
+
+class TestHonestRangeProvenance:
+    """A range read larger than the snippet budget must claim only the
+    lines the snippet actually contains (never the requested window),
+    and disclose how to continue."""
+
+    def _big_repo(self, tmp_path) -> tuple:
+        from uuid import uuid4
+
+        from investigation_agent_platform.infrastructure.evidence.code.git import (
+            PyGit2Adapter,
+        )
+
+        repo_dir = tmp_path / "o1" / "r1"
+        repo_dir.mkdir(parents=True)
+        body = "\n".join(f"result = compute_{n}(value_{n})" for n in range(1, 301))
+        _git_repo(repo_dir, {"svc/handler.py": body})
+        adapter = PyGit2Adapter(repo_base_path=str(tmp_path))
+        profile = _profile([_service("o1", ["r1"])])
+        return adapter, profile, uuid4()
+
+    def test_oversize_range_claims_only_included_lines(self, tmp_path) -> None:
+        adapter, profile, iid = self._big_repo(tmp_path)
+        ev = adapter._get_source_sync("tenant-a", iid, "svc/handler.py", profile, None, 1, 300)
+        loc = ev.provenance.source_location
+        assert loc.line_start == 1
+        assert loc.line_end < 300
+        assert ev.attributes["truncated"] is True
+        assert ev.attributes["next_start_line"] == loc.line_end + 1
+        assert ev.attributes["requested_end_line"] == 300
+        assert len(ev.content_snippet) <= 4096
+        numbered = [
+            int(raw.split("|", 1)[0])
+            for raw in ev.content_snippet.splitlines()
+            if raw.split("|", 1)[0].strip().isdigit()
+        ]
+        assert numbered
+        assert min(numbered) == loc.line_start
+        assert max(numbered) == loc.line_end
+
+    def test_fitting_range_is_unchanged_and_untruncated(self, tmp_path) -> None:
+        adapter, profile, iid = self._big_repo(tmp_path)
+        ev = adapter._get_source_sync("tenant-a", iid, "svc/handler.py", profile, None, 10, 20)
+        loc = ev.provenance.source_location
+        assert (loc.line_start, loc.line_end) == (10, 20)
+        assert ev.attributes["truncated"] is False
+        assert "10| " in ev.content_snippet

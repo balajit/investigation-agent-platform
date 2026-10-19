@@ -1255,6 +1255,7 @@ class RunInvestigationWorkflow:
                         action=_dispatched_action,
                         parameters=dict(_reason_data.get("action_parameters", {})),
                         hypotheses=list(_reason_data.get("hypotheses_evaluated", []) or []),
+                        claims=list(_reason_data.get("claims", []) or []),
                     ),
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=retry_policy,

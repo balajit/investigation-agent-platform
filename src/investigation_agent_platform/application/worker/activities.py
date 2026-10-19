@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from temporalio import activity
 
@@ -102,9 +102,7 @@ async def _persist_log_exemplars(
                 member_evidence_ids=member_ids[:500],
                 count=len(member_ids),
                 representative_snippet=str(
-                    getattr(first, "content_snippet", "")
-                    or getattr(first, "summary", "")
-                    or ""
+                    getattr(first, "content_snippet", "") or getattr(first, "summary", "") or ""
                 )[:4096],
             )
         )
@@ -134,6 +132,7 @@ async def _persist_log_exemplars(
         ),
     )
     return int(inserted or 0)
+
 
 # Action types that must reach the evidence gateway to execute; used to
 # fail closed (EVIDENCE_PROVIDER_UNAVAILABLE) rather than silently no-op when
@@ -426,7 +425,9 @@ def _coerced_data(cls: type, params: object, *, activity: str) -> dict[str, Any]
     )
 
 
-async def _hub_orientation_for(ctx: Any, tenant_id: str, investigation: Any) -> dict[str, Any] | None:
+async def _hub_orientation_for(
+    ctx: Any, tenant_id: str, investigation: Any
+) -> dict[str, Any] | None:
     """Build hub orientation from the investigation's profile (best-effort, never raises).
 
     Looks up domain_hubs by problem-description characteristic and returns a
@@ -460,16 +461,28 @@ async def _hub_orientation_for(ctx: Any, tenant_id: str, investigation: Any) -> 
                 continue
         if not hub_dicts:
             return None
-        problem = str(getattr(getattr(investigation, "request", None), "problem_description", "") or getattr(investigation, "problem_description", "") or "")
+        problem = str(
+            getattr(getattr(investigation, "request", None), "problem_description", "")
+            or getattr(investigation, "problem_description", "")
+            or ""
+        )
         matched: list[dict[str, Any]] = []
-        for token in [t for t in problem.replace("/", " ").replace("_", " ").split() if len(t) >= 4][:8]:
+        for token in [
+            t for t in problem.replace("/", " ").replace("_", " ").split() if len(t) >= 4
+        ][:8]:
             matched.extend(lookup_hubs(hub_dicts, token, limit=5))
         seen: dict[str, dict[str, Any]] = {}
         for h in matched:
             seen.setdefault(str(h.get("name", "")), h)
-        top = sorted(seen.values(), key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))))[:5]
+        top = sorted(
+            seen.values(),
+            key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))),
+        )[:5]
         if not top:
-            top = sorted(hub_dicts, key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))))[:3]
+            top = sorted(
+                hub_dicts,
+                key=lambda h: (-float(h.get("score", 0.0) or 0.0), str(h.get("name", ""))),
+            )[:3]
         return hub_orientation_block(top)
     except Exception:
         return None
@@ -796,6 +809,10 @@ class ExecuteActionInput:
     # the workflow so FORMULATE_HYPOTHESIS can persist them. Empty for all
     # other actions.
     hypotheses: list[str] = field(default_factory=list)
+    # Phase 2.1: typed claims (decision.claims) with per-claim evidence
+    # binding. Empty for legacy callers; FORMULATE falls back to the
+    # batch-wide supporting_evidence_ids parameter for statements without one.
+    claims: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -811,7 +828,7 @@ class VerifyRootCauseInput:
     investigation_id: str
     # D5: triage route selects the runtime verification preset for
     # failure-shaped runs; empty (legacy callers) keeps the default.
-    triage_route: str = "" 
+    triage_route: str = ""
 
 
 @dataclass
@@ -854,11 +871,7 @@ def _stamp_loop_telemetry(inv: Any, telemetry: dict[str, Any] | None) -> Any:
     if not telemetry:
         return inv
     stamped_metadata = dict(getattr(inv, "metadata", None) or {})
-    stamped = {
-        str(key): telemetry[key]
-        for key in sorted(telemetry)
-        if isinstance(key, str)
-    }
+    stamped = {str(key): telemetry[key] for key in sorted(telemetry) if isinstance(key, str)}
     # Variance triage (#29/#50): pin the effective sampler config alongside
     # the loop counters so future rerun comparisons can rule out config
     # drift. Activity context (not workflow code), so env reads are safe.
@@ -868,9 +881,7 @@ def _stamp_loop_telemetry(inv: Any, telemetry: dict[str, Any] | None) -> Any:
         _provider = str(_os.environ.get("IAP_LLM_PROVIDER", "") or "").strip()
         _model = ""
         if _provider:
-            _model = str(
-                _os.environ.get(f"IAP_{_provider.upper()}_MODEL", "") or ""
-            ).strip()
+            _model = str(_os.environ.get(f"IAP_{_provider.upper()}_MODEL", "") or "").strip()
         stamped.setdefault("llm_provider", _provider)
         stamped.setdefault("llm_model", _model)
         stamped.setdefault(
@@ -1038,9 +1049,7 @@ async def _count_hypothesis_lifecycle(
     return counts
 
 
-async def _count_evidence_banked(
-    ctx: Any, tenant_id: str, investigation_id: Any
-) -> int:
+async def _count_evidence_banked(ctx: Any, tenant_id: str, investigation_id: Any) -> int:
     """Banked evidence row count (fail-open to 0)."""
     try:
         repo: Any = getattr(ctx, "evidence_repo", None)
@@ -1195,8 +1204,12 @@ async def create_investigation_activity(
         logger.exception(
             "create_investigation_activity failed",
             extra=_log_extra(
-                tenant_id=getattr(params, "tenant_id", "") if isinstance(params, CreateInvestigationInput) else "",
-                investigation_id=getattr(params, "investigation_id", "") if isinstance(params, CreateInvestigationInput) else "",
+                tenant_id=getattr(params, "tenant_id", "")
+                if isinstance(params, CreateInvestigationInput)
+                else "",
+                investigation_id=getattr(params, "investigation_id", "")
+                if isinstance(params, CreateInvestigationInput)
+                else "",
                 event="create_investigation_activity failed",
                 error=str(exc),
                 error_type=type(exc).__name__,
@@ -1214,9 +1227,7 @@ async def retrieve_evidence_activity(
     # side-effect writes dedupe on evidence fingerprint, and the workflow
     # loop intentionally re-queries every iteration expecting fresh results;
     # an activity-level replay key would freeze a point-in-time count.
-    data = _coerced_data(
-        RetrieveEvidenceInput, params, activity="retrieve_evidence_activity"
-    )
+    data = _coerced_data(RetrieveEvidenceInput, params, activity="retrieve_evidence_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     inv_id_probe = str(data.get("investigation_id", ""))
     logger.info(
@@ -1309,7 +1320,8 @@ async def retrieve_evidence_activity(
                     ),
                 )
                 return GenericActivityResult(
-                    success=True, data={"items_count": 0, "total_count": 0, "degraded": "unauthorized"},
+                    success=True,
+                    data={"items_count": 0, "total_count": 0, "degraded": "unauthorized"},
                 )
             logger.exception(
                 "retrieve_evidence_activity gateway call failed",
@@ -1351,6 +1363,50 @@ async def retrieve_evidence_activity(
             ),
         )
         raise _application_failure_from_exc(exc) from exc
+
+
+def select_reasoning_evidence(items: Any, hypotheses: Any, limit: int = 200) -> list[Any]:
+    """Phase 1.3: deterministic, claim-prioritized evidence hydration.
+
+    The repository returns rows unordered, and ``InvestigationState.evidence``
+    holds at most 200. Taking the first N therefore dropped cited or code rows
+    arbitrarily. Priority: rows cited by a hypothesis, then code rows, then
+    the newest of the rest; the final order is a stable
+    (retrieved_at, observed_at, evidence_id) sort so retries see identical input.
+    """
+
+    def _key(e: Any) -> tuple[str, str, str]:
+        return (
+            str(getattr(e, "retrieved_at", "") or ""),
+            str(getattr(e, "observed_at", "") or ""),
+            str(getattr(e, "evidence_id", "") or ""),
+        )
+
+    cited: set[str] = set()
+    for h in hypotheses or []:
+        for attr in ("supporting_evidence_ids", "refuting_evidence_ids"):
+            cited.update(str(i) for i in (getattr(h, attr, None) or []) if i)
+
+    def _is_code(e: Any) -> bool:
+        etype = str(getattr(getattr(e, "evidence_type", ""), "value", "") or "").upper()
+        return "CODE" in etype or "EXCEPTION" in etype
+
+    ordered = sorted(items or [], key=_key)
+    chosen: list[Any] = []
+    seen: set[str] = set()
+
+    def _take(rows: list[Any]) -> None:
+        for row in reversed(rows):  # newest first within each tier
+            rid = str(getattr(row, "evidence_id", "") or "")
+            if rid in seen or len(chosen) >= limit:
+                continue
+            seen.add(rid)
+            chosen.append(row)
+
+    _take([e for e in ordered if str(getattr(e, "evidence_id", "")) in cited])
+    _take([e for e in ordered if _is_code(e)])
+    _take(ordered)
+    return sorted(chosen, key=_key)
 
 
 @activity.defn
@@ -1476,18 +1532,21 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             # it keeps gathering, never formulates, readiness stays 0, and
             # every run ends FAILED at the iteration cap.
             try:
+                hyps: list[Any] = []
+                hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
+                if hypothesis_repo is not None:
+                    hyps = list(
+                        await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
+                    )[:50]
+                    state = state.model_copy(update={"active_hypotheses": hyps})
                 evidence_repo: Any = getattr(ctx, "evidence_repo", None)
                 if evidence_repo is not None:
                     items = await evidence_repo.find_by_investigation_id(
                         tenant_id, investigation_id
                     )
-                    state = state.model_copy(update={"evidence": list(items)[:100]})
-                hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
-                if hypothesis_repo is not None:
-                    hyps = await hypothesis_repo.find_by_investigation_id(
-                        tenant_id, investigation_id
+                    state = state.model_copy(
+                        update={"evidence": select_reasoning_evidence(items, hyps)}
                     )
-                    state = state.model_copy(update={"active_hypotheses": list(hyps)[:50]})
                 finding_repo: Any = getattr(ctx, "finding_repo", None)
                 if finding_repo is not None:
                     found, _ = await finding_repo.list_findings(
@@ -1513,7 +1572,9 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                 )
 
             decision = await coordinator.reason(
-                tenant_id, state, recent_actions=recent_actions,
+                tenant_id,
+                state,
+                recent_actions=recent_actions,
                 orientation_notes=knowledge_orientation,
                 hub_orientation=await _hub_orientation_for(ctx, tenant_id, investigation),
             )
@@ -1523,12 +1584,8 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             # workflow always fell back to QUERY_STATE and reasoning was
             # effectively severed from execution.)
             action = getattr(decision, "action", None)
-            action_type_value = getattr(
-                getattr(action, "action_type", None), "value", None
-            )
-            hypotheses_out = list(
-                getattr(decision, "hypotheses_evaluated", None) or []
-            )
+            action_type_value = getattr(getattr(action, "action_type", None), "value", None)
+            hypotheses_out = list(getattr(decision, "hypotheses_evaluated", None) or [])
             # P0-3: persist model-reported contradictions instead of dropping
             # them — verification and the conclusion gate read them back from
             # the repo. Best-effort: persistence trouble must never fail
@@ -1657,22 +1714,22 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     "observations": list(decision.observations or []),
                     "iteration": iteration,
                     "next_action": action_type_value or "QUERY_STATE",
-                    "action_parameters": dict(
-                        getattr(action, "parameters", None) or {}
-                    ),
+                    "action_parameters": dict(getattr(action, "parameters", None) or {}),
                     "hypotheses_evaluated": hypotheses_out,
+                    # Phase 2.1: typed claims with per-claim evidence binding.
+                    "claims": [
+                        c.model_dump(mode="json")
+                        for c in (getattr(decision, "claims", None) or [])
+                        if hasattr(c, "model_dump")
+                    ],
                     # P0-2: propagate the full decision surface — previously
                     # contradictions/gaps/rationale were dropped here, so
                     # verification always received empty lists downstream.
                     "contradictions_found": list(
                         getattr(decision, "contradictions_found", None) or []
                     ),
-                    "information_gaps": list(
-                        getattr(decision, "information_gaps", None) or []
-                    ),
-                    "reasoning_chain": str(
-                        getattr(decision, "reasoning_chain", "") or ""
-                    )[:2000],
+                    "information_gaps": list(getattr(decision, "information_gaps", None) or []),
+                    "reasoning_chain": str(getattr(decision, "reasoning_chain", "") or "")[:2000],
                     "llm_usage": usage,
                     "llm_tokens": call_tokens,
                     "llm_cost": call_cost,
@@ -1774,6 +1831,133 @@ def overlay_evidence_budget(limits: Any, profile: Any) -> Any:
             ),
         )
     return limits
+
+
+def _symbol_evidence_packets(
+    *,
+    tenant_id: Any,
+    investigation_id: Any,
+    symbols: list[Any],
+    symbol_name: str,
+    now: Any | None = None,
+) -> list[Any]:
+    """Convert gateway symbol metadata into bankable discovery evidence.
+
+    Phase 0.2: the gateway deliberately returns symbol results in
+    ``provider_metadata`` with ``items=[]``. Callers that only read
+    ``items`` therefore bank nothing (FIND_SYMBOL/TRACE_LOGIC were silent
+    no-ops). Each symbol becomes a SOURCE_CODE row pinned to the location
+    the provider actually observed, flagged ``discovery_only`` because the
+    local provider cannot pin to a caller-supplied revision.
+    """
+    import hashlib as _hashlib
+
+    from investigation_agent_platform.domain.evidence.models import (
+        Evidence,
+        EvidenceType,
+    )
+    from investigation_agent_platform.domain.provenance.models import (
+        EvidenceFreshness,
+        EvidenceProvenance,
+        QueryFingerprint,
+        SourceLocation,
+    )
+
+    observed_at = now or datetime.now(UTC)
+    packets: list[Any] = []
+    for raw in (symbols or [])[:50]:
+        if not isinstance(raw, dict):
+            continue
+        location = raw.get("location") or {}
+        if not isinstance(location, dict):
+            continue
+        file_path = str(location.get("file_path", "") or "").strip()
+        try:
+            line_number = int(location.get("line_number") or 0)
+        except (TypeError, ValueError):
+            line_number = 0
+        name = str(raw.get("name", "") or symbol_name or "?")[:256]
+        kind = str(raw.get("kind", "") or "symbol")[:64]
+        snippet = str(location.get("snippet") or raw.get("signature") or "")[:4000]
+        revision = str(location.get("revision", "") or "") or None
+        revision_supported = bool(location.get("revision_supported", False))
+        fingerprint = _hashlib.sha256(
+            f"symbol:{tenant_id}:{investigation_id}:{name}:{file_path}:{line_number}".encode()
+        ).hexdigest()[:64]
+        packets.append(
+            Evidence(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                evidence_type=EvidenceType.SOURCE_CODE,
+                provider="code-intelligence",
+                source=f"code://{file_path or '?'}#L{line_number or 0}",
+                title=f"Symbol: {name} ({kind})",
+                summary=(
+                    f"Definition candidate '{name}' ({kind}) at "
+                    f"{file_path or 'unknown file'}"
+                    f"{':' + str(line_number) if line_number else ''}."
+                ),
+                content_snippet=snippet,
+                attributes={
+                    "symbol_name": name,
+                    "symbol_kind": kind,
+                    "discovery_only": True,
+                    "revision_supported": revision_supported,
+                },
+                observed_at=observed_at,
+                retrieved_at=observed_at,
+                provenance=EvidenceProvenance(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    provider_type="code-intelligence",
+                    requested_provider_id="treesitter-local",
+                    actual_provider_id="treesitter-local",
+                    source_system="symbol-index",
+                    retrieval_timestamp=observed_at,
+                    query_fingerprint=QueryFingerprint(
+                        provider_type="code-intelligence",
+                        operation="find_symbol",
+                        normalized_query_hash=_hashlib.sha256(
+                            str(symbol_name).encode()
+                        ).hexdigest(),
+                    ),
+                    source_location=SourceLocation(
+                        system="Code",
+                        identifier=file_path or name,
+                        file_path=file_path or None,
+                        line_start=line_number or None,
+                        line_end=line_number or None,
+                        revision=revision,
+                    ),
+                ),
+                freshness=EvidenceFreshness(observed_at=observed_at, retrieved_at=observed_at),
+                fingerprint=fingerprint,
+            )
+        )
+    return packets
+
+
+def _frame_file_matches(frame_file: Any, hit_file: Any) -> bool:
+    """True when a search hit plausibly belongs to a stack frame's file.
+
+    Phase 0.3: previously any hit with a file+revision was accepted, so a
+    frame could be written onto a different file. A frame with no file hint
+    accepts any hit; a frame with a path requires a suffix match, a frame
+    with only a basename requires an equal basename.
+    """
+    frame = str(frame_file or "").replace("\\", "/").strip().strip("/")
+    hit = str(hit_file or "").replace("\\", "/").strip().strip("/")
+    if not frame:
+        return bool(hit)
+    if not hit:
+        return False
+    if frame == hit:
+        return True
+    if "/" in frame:
+        return hit.endswith("/" + frame) or hit == frame
+    return hit.rsplit("/", 1)[-1] == frame
+
+
 def _stack_fingerprint(
     tenant_id: Any, investigation_id: Any, index: int, file_path: Any, line_no: int
 ) -> str:
@@ -1812,8 +1996,10 @@ async def _fuse_journey_findings(
     try:
         found, _ = await finding_repo.list_findings(tenant_id, investigation_id, limit=50)
         observations = [
-            f for f in (found or [])
-            if str(getattr(getattr(f, "finding_type", ""), "value", getattr(f, "finding_type", ""))) == "OBSERVATION"
+            f
+            for f in (found or [])
+            if str(getattr(getattr(f, "finding_type", ""), "value", getattr(f, "finding_type", "")))
+            == "OBSERVATION"
         ]
     except Exception:
         return
@@ -1825,7 +2011,13 @@ async def _fuse_journey_findings(
             rows = await evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
             for row in rows or []:
                 try:
-                    etype = str(getattr(getattr(row, "evidence_type", ""), "value", getattr(row, "evidence_type", "")))
+                    etype = str(
+                        getattr(
+                            getattr(row, "evidence_type", ""),
+                            "value",
+                            getattr(row, "evidence_type", ""),
+                        )
+                    )
                 except Exception:
                     continue
                 if etype == str(EvidenceType.JOURNEY.value):
@@ -1864,9 +2056,7 @@ async def _fuse_journey_findings(
             related_hypothesis_ids=related[:50],
             confidence=min(
                 0.95,
-                max(
-                    [float(getattr(f, "confidence", 0.0) or 0.0) for f in observations] or [0.0]
-                ),
+                max([float(getattr(f, "confidence", 0.0) or 0.0) for f in observations] or [0.0]),
             ),
         )
         await finding_repo.save_finding_record(tenant_id, fused)
@@ -1887,9 +2077,28 @@ def _shape_search_keywords(raw: Any) -> list[str]:
 
         stopwords = frozenset(
             {
-                "what", "where", "when", "which", "does", "doing", "have",
-                "has", "had", "with", "from", "that", "this", "these",
-                "those", "there", "their", "about", "show", "implementation", "slices", "lack",
+                "what",
+                "where",
+                "when",
+                "which",
+                "does",
+                "doing",
+                "have",
+                "has",
+                "had",
+                "with",
+                "from",
+                "that",
+                "this",
+                "these",
+                "those",
+                "there",
+                "their",
+                "about",
+                "show",
+                "implementation",
+                "slices",
+                "lack",
             }
         )
         flat: list[str] = []
@@ -1920,7 +2129,8 @@ def _shape_search_keywords(raw: Any) -> list[str]:
             return []
 
 
-async def fallback_call_graph_to_search(    *,
+async def fallback_call_graph_to_search(
+    *,
     gateway: Any,
     tenant_id: str,
     investigation_id: Any,
@@ -2014,6 +2224,18 @@ async def execute_action_activity(
         proposed_hypotheses: list[str] = [
             str(h) for h in (data.get("hypotheses", []) or []) if str(h).strip()
         ]
+        # Phase 2.1: typed claims keyed by normalized statement. A claim whose
+        # statement is absent from hypotheses_evaluated is still persisted.
+        proposed_claims: dict[str, dict[str, Any]] = {}
+        for raw_claim in (data.get("claims", []) or [])[:20]:
+            if not isinstance(raw_claim, dict):
+                continue
+            claim_text = str(raw_claim.get("statement", "") or "").strip()[:2048]
+            if not claim_text:
+                continue
+            proposed_claims[claim_text] = raw_claim
+            if claim_text not in proposed_hypotheses:
+                proposed_hypotheses.append(claim_text)
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -2420,9 +2642,7 @@ async def execute_action_activity(
             # exemplar row per group (same member IDs verbatim, separate
             # table). Fail-open: exemplar failures never break raw banking.
             try:
-                await _persist_log_exemplars(
-                    ctx, tenant_id, investigation_id, banked
-                )
+                await _persist_log_exemplars(ctx, tenant_id, investigation_id, banked)
             except Exception as exc:
                 logger.warning(
                     "Log exemplar persist skipped; raw banking stands",
@@ -2514,6 +2734,18 @@ async def execute_action_activity(
                 outcome_detail["status"] = "DEGRADED"
                 outcome_detail["miss_reason"] = "code_path_not_found"
                 return 0
+            # Phase 0.4: label the read mode. A path-only read returns the
+            # bounded file head, which is discovery — it cannot support a
+            # definition claim ("X is implemented in Y"). Only an explicit
+            # line range is a decisive-window read.
+            read_mode = (
+                "range" if (req.start_line is not None or req.end_line is not None) else "path_only"
+            )
+            merged_attributes = dict(getattr(evidence, "attributes", None) or {})
+            merged_attributes["read_mode"] = read_mode
+            if read_mode == "path_only":
+                merged_attributes["discovery_only"] = True
+            evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
             outcome_detail["evidence_ids"] = [str(evidence.evidence_id)]
@@ -2571,9 +2803,7 @@ async def execute_action_activity(
                 except Exception:
                     return []
 
-            async def _run_template(
-                template_id: str, binds: dict[str, Any]
-            ) -> list[Any]:
+            async def _run_template(template_id: str, binds: dict[str, Any]) -> list[Any]:
                 try:
                     qres = await gateway.get_application_state(
                         tenant_id,
@@ -2609,9 +2839,7 @@ async def execute_action_activity(
                     return []
 
             collected: list[Any] = []
-            anchor_rows = await _run_template(
-                "auto_session_anchor", {"session_id": session_id}
-            )
+            anchor_rows = await _run_template("auto_session_anchor", {"session_id": session_id})
             if not anchor_rows:
                 outcome_detail["status"] = "DEGRADED"
                 outcome_detail["miss_reason"] = "session_anchor_empty"
@@ -2620,9 +2848,7 @@ async def execute_action_activity(
             frontier: list[tuple[str, Any]] = []
             try:
                 if profile_repo is not None and application_id:
-                    profile = await profile_repo.get_by_application_id(
-                        tenant_id, application_id
-                    )
+                    profile = await profile_repo.get_by_application_id(tenant_id, application_id)
                     index = profile.query_template_index() if profile else {}
                 else:
                     index = {}
@@ -2660,9 +2886,7 @@ async def execute_action_activity(
                 next_frontier: list[tuple[str, Any]] = []
                 for parent_value, _ in frontier[:20]:
                     for template_name in template_names[:5]:
-                        rows = await _run_template(
-                            str(template_name), {"parent_key": parent_value}
-                        )
+                        rows = await _run_template(str(template_name), {"parent_key": parent_value})
                         collected.extend(rows)
                         try:
                             for item in rows:
@@ -2734,7 +2958,9 @@ async def execute_action_activity(
                     embedder=None,
                 )
                 hits, _cursor = await service.search(
-                    tenant_id, query, application_id=str(application_id or "") or None,
+                    tenant_id,
+                    query,
+                    application_id=str(application_id or "") or None,
                     limit=10,
                 )
             except Exception as exc:
@@ -2806,10 +3032,10 @@ async def execute_action_activity(
                                     revision=revision or "unknown",
                                 ),
                             ),
-                            freshness=EvidenceFreshness(
-                                observed_at=now, retrieved_at=now
-                            ),
-                            fingerprint=f"refdoc-{tenant_id}-{investigation_id}-{document_path}"[:128],
+                            freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                            fingerprint=f"refdoc-{tenant_id}-{investigation_id}-{document_path}"[
+                                :128
+                            ],
                         )
                     )
                 except Exception:
@@ -2880,9 +3106,7 @@ async def execute_action_activity(
             service_keys: list[tuple[str, str, str]] = []
             try:
                 if profile_repo is not None and application_id:
-                    profile = await profile_repo.get_by_application_id(
-                        tenant_id, application_id
-                    )
+                    profile = await profile_repo.get_by_application_id(tenant_id, application_id)
                     for svc in getattr(profile, "services", []) or []:
                         telemetry = getattr(svc, "telemetry", None)
                         service_keys.append(
@@ -2961,8 +3185,11 @@ async def execute_action_activity(
                                         tracking_value = str(found)
                     if not service_value:
                         for service_candidate in (
-                            "service.name", "service_name", "service",
-                            "labels.service", "serviceName",
+                            "service.name",
+                            "service_name",
+                            "service",
+                            "labels.service",
+                            "serviceName",
                         ):
                             found = _nested_get(record, service_candidate)
                             if found:
@@ -2970,8 +3197,12 @@ async def execute_action_activity(
                                 break
                     if not tracking_value:
                         for fallback in (
-                            "trackingId", "tracking_id", "transactionId",
-                            "transaction_id", "trace.id", "traceId",
+                            "trackingId",
+                            "tracking_id",
+                            "transactionId",
+                            "transaction_id",
+                            "trace.id",
+                            "traceId",
                         ):
                             found = _nested_get(record, fallback)
                             if found:
@@ -3170,6 +3401,7 @@ async def execute_action_activity(
             from investigation_agent_platform.domain.common.exceptions import (
                 ExecutionError,
                 ProviderNotConfiguredError,
+                UnsupportedCapabilityError,
             )
 
             try:
@@ -3193,6 +3425,24 @@ async def execute_action_activity(
                 qres = await method(
                     tenant_id, investigation_id, application_id or "example-app", req
                 )
+            except UnsupportedCapabilityError as exc:
+                # The provider cannot honor a required revision. This is
+                # unproven, not absent — surface it distinctly so the loop
+                # never reads "capability gap" as "no such symbol".
+                logger.warning(
+                    "%s capability unsupported; degrading",
+                    action_label,
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event=f"{action_label} unsupported capability",
+                        error=str(exc),
+                    ),
+                )
+                outcome_detail["status"] = "DEGRADED"
+                outcome_detail["miss_reason"] = "unsupported_capability"
+                outcome_detail["capability"] = getattr(exc, "capability", None)
+                return 0
             except (ProviderNotConfiguredError, ExecutionError) as exc:
                 logger.warning(
                     "%s degrades to empty",
@@ -3239,6 +3489,11 @@ async def execute_action_activity(
                     language=parameters.get("language"),
                     path_prefix=parameters.get("path_prefix"),
                     limit=min(int(parameters.get("limit", 20)), 100),
+                    # Fail-closed opt-in: when the caller requires the
+                    # provider to honor a pinned revision, an incapable
+                    # provider raises UNSUPPORTED_CAPABILITY instead of
+                    # silently returning HEAD rows. Default stays discovery.
+                    require_revision=bool(parameters.get("require_revision", False)),
                 )
 
             return await _handle_code_navigation(
@@ -3255,11 +3510,33 @@ async def execute_action_activity(
                     repository=application_id or "example-app",
                     revision=str(parameters.get("revision", "HEAD")),
                     symbol_name=str(parameters.get("symbol_name", "")),
+                    require_revision=bool(parameters.get("require_revision", False)),
                 )
 
-            return await _handle_code_navigation(
-                "FIND_SYMBOL", "code_provider_not_configured", _build, "find_symbol"
+            def _summarize(qres: Any) -> list[Any]:
+                # Phase 0.2: gateway returns symbols in metadata with
+                # items=[]; bank typed discovery packets so the symbol
+                # reaches reasoning instead of vanishing.
+                meta = getattr(qres, "provider_metadata", None) or {}
+                symbols = meta.get("symbols", []) or []
+                outcome_detail["_symbol_count"] = len(symbols)
+                return _symbol_evidence_packets(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    symbols=symbols,
+                    symbol_name=str(parameters.get("symbol_name", "")),
+                )
+
+            banked_count = await _handle_code_navigation(
+                "FIND_SYMBOL",
+                "code_provider_not_configured",
+                _build,
+                "find_symbol",
+                summarize=_summarize,
             )
+            if banked_count == 0:
+                outcome_detail.pop("_symbol_count", None)
+            return banked_count
 
         async def _handle_walk_stack() -> int:
             """D2: resolve stack frames to ordered EXCEPTION_PATH evidence.
@@ -3267,8 +3544,10 @@ async def execute_action_activity(
             For each frame (max 10): search the function name, take the
             first hit carrying file+revision provenance, and bank one
             frame-ordered row (frame file/line preferred, hit fallback).
-            Frames resolving nowhere are counted in the miss detail, not
-            failed. Zero resolutions degrades with miss_reason.
+            Frames resolving nowhere are banked as explicit unresolved
+            rows (no file/line/revision, never a synthetic location) and
+            counted in the miss detail, not failed. Zero resolutions
+            degrades with miss_reason.
             """
             from investigation_agent_platform.domain.evidence.models import (
                 Evidence,
@@ -3303,6 +3582,74 @@ async def execute_action_activity(
             resolved = 0
             unresolved = 0
             banked_rows: list[Any] = []
+
+            def _unresolved_frame_row(
+                frame_index: int,
+                func_name: str,
+                file_hint_value: str,
+                reason: str,
+            ) -> Any:
+                """Explicit unresolved frame — never a synthetic location.
+
+                The row carries no file_path/line/revision provenance, so
+                `_cited_location_evidence` excludes it by construction. It
+                exists so the reasoner sees *which* frame failed and why,
+                instead of a silent count in miss_reason.
+                """
+                return Evidence(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    evidence_type=EvidenceType.EXCEPTION_PATH,
+                    provider="code-intelligence",
+                    source=f"stack://frame-{frame_index}/unresolved",
+                    title=f"Frame {frame_index}: unresolved ({reason})",
+                    summary=(
+                        f"Stack frame {frame_index} "
+                        f"({func_name or file_hint_value or 'unknown'}) "
+                        f"could not be resolved: {reason}."
+                    ),
+                    content_snippet="",
+                    attributes={
+                        "unresolved": True,
+                        "reason": reason,
+                        "frame_index": frame_index,
+                        "frame_file": file_hint_value,
+                        "frame_function": func_name,
+                    },
+                    observed_at=now,
+                    retrieved_at=now,
+                    provenance=EvidenceProvenance(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        provider_type="code-intelligence",
+                        requested_provider_id="treesitter-local",
+                        actual_provider_id="treesitter-local",
+                        source_system="stack-walk",
+                        retrieval_timestamp=now,
+                        query_fingerprint=QueryFingerprint(
+                            provider_type="code-intelligence",
+                            operation="walk_stack",
+                            normalized_query_hash="unresolved",
+                        ),
+                        source_location=SourceLocation(
+                            system="git",
+                            identifier=f"frame-{frame_index}-unresolved",
+                            file_path=None,
+                            line_start=None,
+                            line_end=None,
+                            revision=None,
+                        ),
+                    ),
+                    freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                    fingerprint=_stack_fingerprint(
+                        tenant_id,
+                        investigation_id,
+                        frame_index,
+                        f"unresolved:{reason}:{file_hint_value}",
+                        0,
+                    ),
+                )
+
             for index, frame in enumerate(frames):
                 try:
                     func = str(frame.get("function", "") or "").strip()
@@ -3313,6 +3660,9 @@ async def execute_action_activity(
                         frame_line = None
                     query = func or file_hint
                     if not query:
+                        banked_rows.append(
+                            _unresolved_frame_row(index, func, file_hint, "missing_query")
+                        )
                         unresolved += 1
                         continue
                     qres = await gateway.search_code(
@@ -3324,6 +3674,11 @@ async def execute_action_activity(
                             revision=str(parameters.get("revision", "HEAD")),
                             query=query,
                             limit=3,
+                            # Deliberately discovery: this search only finds
+                            # candidate files for the frame hint. The pin
+                            # comes from the range-read confirm below, so a
+                            # strict require_revision here would only turn
+                            # resolvable frames into unresolved rows.
                         ),
                     )
                 except Exception as exc:
@@ -3336,26 +3691,96 @@ async def execute_action_activity(
                             error=str(exc),
                         ),
                     )
+                    banked_rows.append(
+                        _unresolved_frame_row(
+                            index,
+                            str(frame.get("function", "") or "").strip()
+                            if isinstance(frame, dict)
+                            else "",
+                            str(frame.get("file", "") or "").strip()
+                            if isinstance(frame, dict)
+                            else "",
+                            "frame_search_failed",
+                        )
+                    )
                     unresolved += 1
                     continue
+                # Phase 0.3: a frame may only be banked when its file
+                # actually matches the frame's file hint AND a range read
+                # at the frame line succeeds (proving the line exists and
+                # capturing the real revision). Never synthesize a location
+                # from a mismatched hit.
                 hit = None
                 for candidate in qres.items or []:
                     try:
-                        provenance = getattr(candidate, "provenance", None)
-                        location = getattr(provenance, "source_location", None)
-                        if getattr(location, "file_path", None) and getattr(
-                            location, "revision", None
-                        ):
+                        location = getattr(
+                            getattr(candidate, "provenance", None),
+                            "source_location",
+                            None,
+                        )
+                        hit_file = str(getattr(location, "file_path", "") or "")
+                        if hit_file and _frame_file_matches(file_hint, hit_file):
                             hit = candidate
                             break
                     except Exception:
                         continue
                 if hit is None:
+                    banked_rows.append(
+                        _unresolved_frame_row(index, func, file_hint, "no_file_match")
+                    )
                     unresolved += 1
                     continue
                 try:
+                    from investigation_agent_platform.domain.evidence.requests import (
+                        SourceRequest,
+                    )
+
                     hit_location = hit.provenance.source_location
-                    line_no = frame_line or getattr(hit_location, "line_start", None)
+                    file_path = str(getattr(hit_location, "file_path", "") or "")
+                    if not file_path:
+                        banked_rows.append(
+                            _unresolved_frame_row(index, func, file_hint, "missing_file")
+                        )
+                        unresolved += 1
+                        continue
+                    try:
+                        anchor_line = int(frame_line or getattr(hit_location, "line_start", 0) or 0)
+                    except (TypeError, ValueError):
+                        anchor_line = 0
+                    if anchor_line < 1:
+                        banked_rows.append(
+                            _unresolved_frame_row(index, func, file_hint, "missing_line")
+                        )
+                        unresolved += 1
+                        continue
+                    frame_read = await gateway.get_source(
+                        tenant_id,
+                        investigation_id,
+                        application_id or "example-app",
+                        SourceRequest(
+                            repository=application_id or "example-app",
+                            file_path=file_path,
+                            revision=str(parameters.get("revision", "HEAD")),
+                            start_line=anchor_line,
+                            end_line=anchor_line,
+                        ),
+                    )
+                    read_location = getattr(
+                        getattr(frame_read, "provenance", None),
+                        "source_location",
+                        None,
+                    )
+                    confirmed_line = getattr(read_location, "line_start", None)
+                    if confirmed_line != anchor_line:
+                        # The requested line was clamped (past EOF), so the
+                        # frame does not resolve to that line. Bank it as
+                        # unresolved instead of fabricating a location.
+                        banked_rows.append(
+                            _unresolved_frame_row(index, func, file_hint, "line_not_confirmed")
+                        )
+                        unresolved += 1
+                        continue
+                    banked_rows.append(frame_read)
                     banked_rows.append(
                         Evidence(
                             tenant_id=tenant_id,
@@ -3364,18 +3789,16 @@ async def execute_action_activity(
                             provider="code-intelligence",
                             source=f"stack://frame-{index}",
                             title=(
-                                f"Frame {index}: {func or file_hint} "
-                                f"({hit_location.file_path}"
-                                f"{':' + str(line_no) if line_no else ''})"
+                                f"Frame {index}: {func or file_hint} ({file_path}:{anchor_line})"
                             ),
                             summary=(
                                 f"Stack frame {index} ({error_class or 'error'}) "
-                                f"resolves to {hit_location.file_path} "
-                                f"revision {hit_location.revision}."
+                                f"resolves to {file_path}:{anchor_line} "
+                                f"revision {getattr(read_location, 'revision', None)}."
                             ),
-                            content_snippet=str(
-                                getattr(hit, "content_snippet", "") or ""
-                            )[:2000],
+                            content_snippet=str(getattr(frame_read, "content_snippet", "") or "")[
+                                :2000
+                            ],
                             observed_at=now,
                             retrieved_at=now,
                             provenance=EvidenceProvenance(
@@ -3390,25 +3813,35 @@ async def execute_action_activity(
                                     provider_type="code-intelligence",
                                     operation="walk_stack",
                                     normalized_query_hash=str(
-                                        getattr(hit.provenance.query_fingerprint, "normalized_query_hash", "")
+                                        getattr(
+                                            getattr(hit, "provenance", None),
+                                            "query_fingerprint",
+                                            None,
+                                        )
+                                        and getattr(
+                                            hit.provenance.query_fingerprint,
+                                            "normalized_query_hash",
+                                            "",
+                                        )
                                         or ""
                                     ),
                                 ),
                                 source_location=SourceLocation(
                                     system="git",
                                     identifier=f"frame-{index}",
-                                    file_path=hit_location.file_path,
-                                    line_start=line_no,
-                                    line_end=line_no,
-                                    revision=hit_location.revision,
+                                    file_path=file_path,
+                                    line_start=anchor_line,
+                                    line_end=anchor_line,
+                                    revision=getattr(read_location, "revision", None),
                                 ),
                             ),
-                            freshness=EvidenceFreshness(
-                                observed_at=now, retrieved_at=now
-                            ),
+                            freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
                             fingerprint=_stack_fingerprint(
-                                tenant_id, investigation_id, index,
-                                hit_location.file_path, line_no or 0,
+                                tenant_id,
+                                investigation_id,
+                                index,
+                                file_path,
+                                anchor_line,
                             ),
                         )
                     )
@@ -3423,12 +3856,15 @@ async def execute_action_activity(
                             error=str(exc),
                         ),
                     )
+                    banked_rows.append(
+                        _unresolved_frame_row(index, func, file_hint, "row_build_failed")
+                    )
                     unresolved += 1
                     continue
             banked = _bank(banked_rows)
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            if not banked:
+            if resolved == 0:
                 outcome_detail["status"] = "DEGRADED"
                 outcome_detail["miss_reason"] = "walk_stack_no_resolution"
             else:
@@ -3481,9 +3917,14 @@ async def execute_action_activity(
                         repository=application_id or "example-app",
                         revision=str(parameters.get("revision", "HEAD")),
                         symbol_name=symbol,
+                        require_revision=bool(parameters.get("require_revision", False)),
                     ),
                 )
             except Exception as exc:
+                from investigation_agent_platform.domain.common.exceptions import (
+                    UnsupportedCapabilityError,
+                )
+
                 logger.warning(
                     "TRACE_LOGIC symbol lookup failed; degrading",
                     extra=_log_extra(
@@ -3494,21 +3935,44 @@ async def execute_action_activity(
                     ),
                 )
                 outcome_detail["status"] = "DEGRADED"
-                outcome_detail["miss_reason"] = "trace_logic_symbol_miss"
+                # A pinned revision the provider cannot honor is unproven,
+                # not absent — keep it distinct from a genuine symbol miss.
+                if isinstance(exc, UnsupportedCapabilityError):
+                    outcome_detail["miss_reason"] = "unsupported_capability"
+                    outcome_detail["capability"] = getattr(exc, "capability", None)
+                else:
+                    outcome_detail["miss_reason"] = "trace_logic_symbol_miss"
                 return 0
-            banked_rows: list[Any] = []
+            # Phase 0.2/0.4: symbols arrive in provider_metadata (not
+            # items); convert to discovery packets, then read a window
+            # around each definition so predicate lines are anchored to
+            # absolute line numbers and the read is a real range read.
+            symbol_meta = getattr(symbol_rows, "provider_metadata", None) or {}
+            definitions = _symbol_evidence_packets(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                symbols=symbol_meta.get("symbols", []) or [],
+                symbol_name=symbol,
+            )
+            outcome_detail["_symbol_count"] = len(definitions)
+            banked_rows: list[Any] = list(definitions)
             predicate_lines: list[str] = []
-            for hit in list(getattr(symbol_rows, "items", []) or [])[:3]:
+            for packet in definitions[:3]:
                 try:
                     from investigation_agent_platform.domain.evidence.requests import (
                         SourceRequest,
                     )
 
-                    provenance = getattr(hit, "provenance", None)
-                    location = getattr(provenance, "source_location", None)
+                    location = getattr(packet.provenance, "source_location", None)
                     file_path = str(getattr(location, "file_path", "") or "")
                     if not file_path:
                         continue
+                    try:
+                        anchor_line = int(getattr(location, "line_start", 0) or 0)
+                    except (TypeError, ValueError):
+                        anchor_line = 0
+                    window_start = max(1, anchor_line - 120) if anchor_line else None
+                    window_end = anchor_line + 120 if anchor_line else None
                     code = await gateway.get_source(
                         tenant_id,
                         investigation_id,
@@ -3517,20 +3981,24 @@ async def execute_action_activity(
                             repository=application_id or "example-app",
                             file_path=file_path,
                             revision=str(parameters.get("revision", "HEAD")),
+                            start_line=window_start,
+                            end_line=window_end,
                         ),
                     )
                     banked_rows.append(code)
                     if attributes:
                         lowered_attrs = [a.lower() for a in attributes]
-                        for lineno, line in enumerate(
-                            str(getattr(code, "content_snippet", "") or "").splitlines(),
-                            start=1,
+                        base_line = window_start or 1
+                        for offset, line in enumerate(
+                            str(getattr(code, "content_snippet", "") or "").splitlines()
                         ):
                             lowered = line.lower()
-                            if _re.search(r"\b(if|else|switch|case|when|elif|match)\b", lowered) and any(
-                                attr in lowered for attr in lowered_attrs
-                            ):
-                                predicate_lines.append(f"{file_path}:{lineno}: {line.strip()[:160]}")
+                            if _re.search(
+                                r"\b(if|else|switch|case|when|elif|match)\b", lowered
+                            ) and any(attr in lowered for attr in lowered_attrs):
+                                predicate_lines.append(
+                                    f"{file_path}:{base_line + offset}: {line.strip()[:160]}"
+                                )
                                 if len(predicate_lines) >= 20:
                                     break
                 except Exception:
@@ -3558,13 +4026,14 @@ async def execute_action_activity(
                     symbol=str(parameters.get("symbol", "")),
                     direction=str(parameters.get("direction", "BOTH")),
                     depth=min(int(parameters.get("depth", 2)), 5),
+                    require_revision=bool(parameters.get("require_revision", False)),
                 )
 
             def _summarize(qres: Any) -> list[Any]:
                 # P1-2: gateway returns call nodes in metadata with items=[]
                 # — bank one CALL_GRAPH summary so the result reaches
                 # reasoning instead of vanishing like CORRELATE used to.
-                meta = (getattr(qres, "provider_metadata", None) or {})
+                meta = getattr(qres, "provider_metadata", None) or {}
                 callers = meta.get("callers", []) or []
                 callees = meta.get("callees", []) or []
                 outcome_detail["_graph_callers"] = len(callers)
@@ -3608,6 +4077,10 @@ async def execute_action_activity(
                             f"{len(callees)} callee(s)."
                         ),
                         content_snippet="\n".join(lines)[:4000],
+                        attributes={
+                            "discovery_only": True,
+                            "revision_supported": False,
+                        },
                         observed_at=now,
                         retrieved_at=now,
                         provenance=EvidenceProvenance(
@@ -3673,6 +4146,7 @@ async def execute_action_activity(
                 )
                 return banked_count + extra
             return banked_count
+
         async def _handle_get_code_history() -> int:
             from investigation_agent_platform.domain.evidence.requests import (
                 CodeHistoryRequest,
@@ -3772,8 +4246,7 @@ async def execute_action_activity(
                 req = ApiProbeRequest(
                     endpoint_id=str(parameters.get("endpoint_id", "")),
                     path_params={
-                        str(k): str(v)
-                        for k, v in (parameters.get("path_params", {}) or {}).items()
+                        str(k): str(v) for k, v in (parameters.get("path_params", {}) or {}).items()
                     },
                     query_params={
                         str(k): str(v)
@@ -3830,9 +4303,7 @@ async def execute_action_activity(
                         try:
                             import json as _json
 
-                            body_text = str(
-                                getattr(item, "content_snippet", "") or ""
-                            )
+                            body_text = str(getattr(item, "content_snippet", "") or "")
                             actual = _json.loads(body_text)
                         except Exception:
                             continue
@@ -3841,9 +4312,7 @@ async def execute_action_activity(
                                 shape_divergence_evidence(
                                     tenant_id=tenant_id,
                                     investigation_id=investigation_id,
-                                    source_ref=str(
-                                        getattr(item, "evidence_id", "") or ""
-                                    ),
+                                    source_ref=str(getattr(item, "evidence_id", "") or ""),
                                     endpoint=str(parameters.get("endpoint_id", "") or ""),
                                     divergence=div,
                                 )
@@ -3872,7 +4341,12 @@ async def execute_action_activity(
             if hypothesis_repo is None:
                 return 0
             from investigation_agent_platform.domain.hypothesis.models import (
+                AssessmentStrength,
+                AssessmentType,
+                ClaimKind,
+                ClaimTarget,
                 Hypothesis,
+                HypothesisEvidenceAssessment,
             )
 
             try:
@@ -3906,9 +4380,7 @@ async def execute_action_activity(
             try:
                 raw_ids = parameters.get("supporting_evidence_ids", []) or []
                 if isinstance(raw_ids, list) and evidence_repo is not None:
-                    rows = await evidence_repo.find_by_investigation_id(
-                        tenant_id, investigation_id
-                    )
+                    rows = await evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
                     known_ids = {getattr(e, "evidence_id", None) for e in (rows or [])}
                     for raw in raw_ids[:20]:
                         try:
@@ -3919,6 +4391,17 @@ async def execute_action_activity(
                             cited.append(cid)
             except Exception:
                 cited = []
+            known_evidence_ids: set[Any] = set()
+            if proposed_claims and evidence_repo is not None:
+                try:
+                    _claim_rows = await evidence_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                    known_evidence_ids = {
+                        getattr(e, "evidence_id", None) for e in (_claim_rows or [])
+                    }
+                except Exception:
+                    known_evidence_ids = set()
             for text in proposed_hypotheses[:20]:
                 if saved >= allowed:
                     break
@@ -3926,16 +4409,57 @@ async def execute_action_activity(
                 if not statement or statement in known:
                     continue
                 known.add(statement)
+                # Phase 2.1: a typed claim carries its OWN evidence binding;
+                # only statements without one inherit the batch-wide list.
+                hypothesis_id = uuid4()
+                claim_cited = list(cited)
+                assessments: list[Any] = []
+                typed = proposed_claims.get(statement)
+                if typed is not None:
+                    claim_cited = []
+                    for raw in (typed.get("evidence_ids", []) or [])[:20]:
+                        try:
+                            cid = UUID(str(raw))
+                        except (ValueError, TypeError, AttributeError):
+                            continue
+                        if cid in known_evidence_ids and cid not in claim_cited:
+                            claim_cited.append(cid)
+                    try:
+                        kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
+                        raw_target = typed.get("target")
+                        target = (
+                            ClaimTarget.model_validate(raw_target)
+                            if isinstance(raw_target, dict)
+                            else None
+                        )
+                        assessments = [
+                            HypothesisEvidenceAssessment(
+                                hypothesis_id=hypothesis_id,
+                                evidence_id=cid,
+                                assessment=AssessmentType.SUPPORTS,
+                                strength=AssessmentStrength.MODERATE,
+                                reason=f"cited by {kind.value} claim"[:1024],
+                                claim_kind=kind,
+                                claim_target=target,
+                            )
+                            for cid in claim_cited
+                        ]
+                    except Exception:
+                        # Malformed typing never blocks persistence; the
+                        # claim stays untyped and verifies by inference.
+                        assessments = []
                 try:
                     await hypothesis_repo.save(
                         tenant_id,
                         Hypothesis(
+                            id=hypothesis_id,
                             tenant_id=tenant_id,
                             investigation_id=investigation_id,
                             title=statement[:256],
                             description=statement[:4096],
                             statement=statement,
-                            supporting_evidence_ids=list(cited),
+                            supporting_evidence_ids=claim_cited,
+                            assessments=assessments,
                         ),
                         investigation_id,
                     )
@@ -3955,10 +4479,7 @@ async def execute_action_activity(
             # hypothesis. Steps whose evidence does not resolve to this
             # investigation are dropped; the rest attach to the hypothesis so
             # verification can require a real causal chain.
-            if (
-                resolved_action_type == ActionType.VERIFY_HYPOTHESIS
-                and hypothesis_repo is not None
-            ):
+            if resolved_action_type == ActionType.VERIFY_HYPOTHESIS and hypothesis_repo is not None:
                 try:
                     from investigation_agent_platform.domain.hypothesis.models import (
                         HypothesisCausalStep,
@@ -3976,9 +4497,7 @@ async def execute_action_activity(
                             if evidence_repo is not None
                             else []
                         )
-                        known_ids = {
-                            getattr(e, "evidence_id", None) for e in (rows or [])
-                        }
+                        known_ids = {getattr(e, "evidence_id", None) for e in (rows or [])}
                         steps: list[HypothesisCausalStep] = []
                         for raw in raw_steps[:10]:
                             if not isinstance(raw, dict):
@@ -4002,22 +4521,16 @@ async def execute_action_activity(
                                 )
                             )
                         if steps:
-                            target = await hypothesis_repo.get_by_id(
-                                tenant_id, target_id
-                            )
+                            target = await hypothesis_repo.get_by_id(tenant_id, target_id)
                             if target is not None and str(
                                 getattr(target, "investigation_id", "")
                             ) == str(investigation_id):
-                                updated = target.model_copy(
-                                    update={"causal_steps": steps}
-                                )
+                                updated = target.model_copy(update={"causal_steps": steps})
                                 if updated.status == HypothesisStatus.PROPOSED:
                                     updated = updated.transition_status(
                                         HypothesisStatus.UNDER_INVESTIGATION
                                     )
-                                await hypothesis_repo.save(
-                                    tenant_id, updated, investigation_id
-                                )
+                                await hypothesis_repo.save(tenant_id, updated, investigation_id)
                 except Exception as exc:
                     logger.warning(
                         "causal step attachment failed; continuing",
@@ -4344,7 +4857,14 @@ async def verify_root_cause_activity(
         policy = _select_verification_policy(data.get("triage_route", ""))
         if verifier_mode == "legacy":
             hypothesis = hypotheses[0]
-            result = engine.evaluate_hypothesis(hypothesis, evidence_items, [], [], policy)
+            result = engine.evaluate_hypothesis(
+                hypothesis,
+                evidence_items,
+                [],
+                [],
+                policy,
+                sibling_hypotheses=list(hypotheses[1:]),
+            )
             verified = result.status.value == "VERIFIED"
         else:
             bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
@@ -4354,9 +4874,7 @@ async def verify_root_cause_activity(
             # sibling (statement-grounded inclusion — same file, proven
             # provenance; concession/contradiction gates still apply).
             try:
-                _bound_ids = {
-                    getattr(e, "evidence_id", None) for e in bound
-                }
+                _bound_ids = {getattr(e, "evidence_id", None) for e in bound}
                 for _extra in VerificationEngine.statement_range_reads(
                     str(getattr(candidate, "statement", "") or ""),
                     list(evidence_by_id.values()),
@@ -4369,9 +4887,7 @@ async def verify_root_cause_activity(
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
-            location_result = engine.validate_location_claim(
-                candidate, bound, contradictions
-            )
+            location_result = engine.validate_location_claim(candidate, bound, contradictions)
             location_answered = location_result is not None and not refuting
             if location_answered:
                 result = location_result
@@ -4381,9 +4897,7 @@ async def verify_root_cause_activity(
             doc_answered = False
             if not location_answered:
                 try:
-                    doc_result = engine.validate_doc_claim(
-                        candidate, bound, contradictions
-                    )
+                    doc_result = engine.validate_doc_claim(candidate, bound, contradictions)
                     doc_answered = doc_result is not None and not refuting
                     if doc_answered:
                         result = doc_result
@@ -4416,9 +4930,7 @@ async def verify_root_cause_activity(
             state_answered = False
             if not location_answered and not doc_answered:
                 try:
-                    state_result = engine.validate_state_claim(
-                        candidate, bound, contradictions
-                    )
+                    state_result = engine.validate_state_claim(candidate, bound, contradictions)
                     state_answered = state_result is not None and not refuting
                     logger.info(
                         "state answer decision",
@@ -4428,10 +4940,18 @@ async def verify_root_cause_activity(
                             event="state answer decision",
                             hypothesis_id=str(candidate.id),
                             bound_count=len(bound),
-                            bound_types=sorted({
-                                str(getattr(getattr(e, "evidence_type", ""), "value", getattr(e, "evidence_type", "")))
-                                for e in bound
-                            }),
+                            bound_types=sorted(
+                                {
+                                    str(
+                                        getattr(
+                                            getattr(e, "evidence_type", ""),
+                                            "value",
+                                            getattr(e, "evidence_type", ""),
+                                        )
+                                    )
+                                    for e in bound
+                                }
+                            ),
                             validated=state_result is not None,
                         ),
                     )
@@ -4452,24 +4972,27 @@ async def verify_root_cause_activity(
                     pass
             if not location_answered and not doc_answered and not state_answered:
                 causal_chain = [
-                CausalRelationship(
-                    cause=s.cause,
-                    effect=s.effect,
-                    mechanism=s.mechanism,
-                    confidence=0.7,
-                    evidence_ids=[
-                        e for e in (s.evidence_ids or []) if e in evidence_by_id
-                    ],
-                )
-                for s in (getattr(candidate, "causal_steps", []) or [])
-            ]
+                    CausalRelationship(
+                        cause=s.cause,
+                        effect=s.effect,
+                        mechanism=s.mechanism,
+                        confidence=0.7,
+                        evidence_ids=[e for e in (s.evidence_ids or []) if e in evidence_by_id],
+                    )
+                    for s in (getattr(candidate, "causal_steps", []) or [])
+                ]
             causal_chain = [c for c in causal_chain if c.evidence_ids]
             blockers: list[str] = []
             if not bound:
                 blockers.append("no bound supporting evidence")
             if refuting:
                 blockers.append(f"{len(refuting)} refuting evidence item(s) bound")
-            if not causal_chain and not location_answered and not doc_answered and not state_answered:
+            if (
+                not causal_chain
+                and not location_answered
+                and not doc_answered
+                and not state_answered
+            ):
                 blockers.append("no validated causal chain")
             if blockers:
                 from investigation_agent_platform.application.investigation.verification import (
@@ -4491,14 +5014,27 @@ async def verify_root_cause_activity(
                     ),
                 )
             elif not location_answered and not doc_answered and not state_answered:
+                _candidate_id = getattr(candidate, "id", None)
                 result = engine.evaluate_hypothesis(
-                    candidate, bound, contradictions, causal_chain, policy
+                    candidate,
+                    bound,
+                    contradictions,
+                    causal_chain,
+                    policy,
+                    sibling_hypotheses=[
+                        h for h in (hypotheses or []) if getattr(h, "id", None) != _candidate_id
+                    ],
                 )
             # Shadow telemetry: always compute the legacy answer alongside
             # and log divergence while the new path is authoritative.
             try:
                 legacy = engine.evaluate_hypothesis(
-                    hypotheses[0], evidence_items, [], [], policy
+                    hypotheses[0],
+                    evidence_items,
+                    [],
+                    [],
+                    policy,
+                    sibling_hypotheses=list(hypotheses[1:]),
                 )
                 if legacy.status.value != result.status.value:
                     logger.warning(
@@ -4672,9 +5208,7 @@ async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
                                 tenant_id, investigation_id
                             )
                             if isinstance(prior, dict):
-                                carried_tokens = max(
-                                    0, int(prior.get("llm_tokens_used", 0) or 0)
-                                )
+                                carried_tokens = max(0, int(prior.get("llm_tokens_used", 0) or 0))
                                 carried_cost = max(
                                     0.0,
                                     float(prior.get("llm_cost_usd", 0.0) or 0.0),
@@ -4683,9 +5217,7 @@ async def checkpoint_activity(params: CheckpointInput) -> GenericActivityResult:
                             pass
                         if isinstance(usage_totals, dict) and usage_totals:
                             try:
-                                carried_tokens = max(
-                                    0, int(usage_totals.get("llm_tokens", 0) or 0)
-                                )
+                                carried_tokens = max(0, int(usage_totals.get("llm_tokens", 0) or 0))
                                 carried_cost = max(
                                     0.0, float(usage_totals.get("llm_cost", 0.0) or 0.0)
                                 )
@@ -4916,9 +5448,7 @@ async def _transition_via_path(
                 TimelineEventType,
             )
 
-            existing = await timeline_repo.find_by_investigation_id(
-                tenant_id, inv.id
-            )
+            existing = await timeline_repo.find_by_investigation_id(tenant_id, inv.id)
             seq = len(existing or [])
             from_value = getattr(from_status, "value", str(from_status))
             to_value = getattr(to_status, "value", str(to_status))
@@ -5226,9 +5756,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 status=status,
                 root_cause=None,
                 supporting_evidence_ids=[],
-                supporting_hypothesis_ids=(
-                    [hypothesis_id] if hypothesis_id is not None else []
-                ),
+                supporting_hypothesis_ids=([hypothesis_id] if hypothesis_id is not None else []),
                 contradicting_evidence_ids=[],
                 confidence=0.0,
                 limitations=[str(l)[:500] for l in limitations][:20],
@@ -5269,7 +5797,12 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         # P0-4 rollback: pre-P0-3 semantics (first hypothesis, whole corpus,
         # no causal requirement, best-effort persistence).
         verification = engine.evaluate_hypothesis(
-            hypotheses[0], evidence_items, [], [], policy
+            hypotheses[0],
+            evidence_items,
+            [],
+            [],
+            policy,
+            sibling_hypotheses=list(hypotheses[1:]),
         )
         gate = ConclusionGate()
         gate_policy = policy.model_copy(update={"require_causal_relationship": False})
@@ -5338,9 +5871,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
     # Tranche B: same statement-matched range-read inclusion as verify.
     try:
-        _bound_ids = {
-            getattr(e, "evidence_id", None) for e in bound
-        }
+        _bound_ids = {getattr(e, "evidence_id", None) for e in bound}
         for _extra in VerificationEngine.statement_range_reads(
             str(getattr(candidate, "statement", "") or ""),
             list(evidence_by_id.values()),
@@ -5370,9 +5901,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     doc_answered = False
     doc_verification = None
     try:
-        doc_verification = VerificationEngine().validate_doc_claim(
-            candidate, bound, contradictions
-        )
+        doc_verification = VerificationEngine().validate_doc_claim(candidate, bound, contradictions)
         doc_answered = doc_verification is not None and not refuting
     except Exception:
         pass
@@ -5387,7 +5916,11 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             state_answered = state_verification is not None and not refuting
         except Exception:
             pass
-    if not bound or refuting or (not causal_chain and not location_answered and not doc_answered and not state_answered):
+    if (
+        not bound
+        or refuting
+        or (not causal_chain and not location_answered and not doc_answered and not state_answered)
+    ):
         reasons = []
         if not bound:
             reasons.append("no bound supporting evidence")
@@ -5395,9 +5928,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
         if not causal_chain and not location_answered and not doc_answered and not state_answered:
             reasons.append("no validated causal chain")
-        await _persist_abstention(
-            "refuted" if refuting else "insufficient", reasons, candidate.id
-        )
+        await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
         return InvestigationStatus.COMPLETED
     if location_answered:
         verification = location_verification
@@ -5406,8 +5937,16 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     elif state_answered and state_verification is not None:
         verification = state_verification
     if not location_answered and not doc_answered and not state_answered:
+        _gate_candidate_id = getattr(candidate, "id", None)
         verification = engine.evaluate_hypothesis(
-            candidate, bound, contradictions, causal_chain, policy
+            candidate,
+            bound,
+            contradictions,
+            causal_chain,
+            policy,
+            sibling_hypotheses=[
+                h for h in (hypotheses or []) if getattr(h, "id", None) != _gate_candidate_id
+            ],
         )
     gate = ConclusionGate()
     decision = await gate.evaluate(
@@ -5462,7 +6001,9 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     finding = Finding(
         tenant_id=tenant_id,
         investigation_id=investigation_id,
-        finding_type=FindingType.OBSERVATION if (location_answered or doc_answered or state_answered) else FindingType.ROOT_CAUSE,
+        finding_type=FindingType.OBSERVATION
+        if (location_answered or doc_answered or state_answered)
+        else FindingType.ROOT_CAUSE,
         title=hyp.title,
         statement=hyp.statement,
         evidence_ids=supporting_ids,
@@ -5500,29 +6041,77 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             try:
                 if _other is candidate:
                     continue
-                _statement = str(getattr(_other, 'statement', '') or '').strip()
+                _statement = str(getattr(_other, "statement", "") or "").strip()
                 if not _statement:
                     continue
                 _status = str(
-                    getattr(getattr(_other, 'status', ''), 'value', getattr(_other, 'status', ''))
+                    getattr(getattr(_other, "status", ""), "value", getattr(_other, "status", ""))
                 )
-                if _status in ('REJECTED', 'CONTRADICTED'):
+                if _status in ("REJECTED", "CONTRADICTED"):
                     continue
-                _alternatives.append(f'{_status}: {_statement}'[:500])
+                _alternatives.append(f"{_status}: {_statement}"[:500])
                 if len(_alternatives) >= 3:
                     break
             except Exception:
                 continue
     except Exception:
         _alternatives = []
+    # Phase 2.4: the published conclusion must map to its citations.
+    # Material sentences that map to no cited claim or evidence row demote
+    # the conclusion to likely (never silently established), and the typed
+    # limitations plus the single next check persist on the conclusion.
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine as _VerificationEngine,
+    )
+
+    _unmapped: list[str] = []
+    try:
+        _causal_texts = [
+            f"{getattr(c, 'cause', '')} {getattr(c, 'mechanism', '')} {getattr(c, 'effect', '')}"
+            for c in (causal_chain or [])
+        ]
+        _unmapped = _VerificationEngine.map_conclusion_sentences(
+            str(getattr(hyp, "statement", "") or ""), list(bound or []), _causal_texts
+        )
+        verification = _VerificationEngine.apply_conclusion_mapping(verification, _unmapped)
+    except Exception:
+        _unmapped = []
+    _untested_rivals: list[str] = []
+    try:
+        _untested_rivals = _VerificationEngine.untested_rival_statements(
+            candidate, list(hypotheses or [])
+        )
+    except Exception:
+        _untested_rivals = []
+    _verification_limitations: list[str] = []
+    try:
+        _verification_limitations = [
+            f"{getattr(getattr(lim, 'code', ''), 'value', getattr(lim, 'code', ''))}: {getattr(lim, 'detail', '')}"[
+                :500
+            ]
+            for lim in (getattr(verification, "limitations", None) or [])
+        ][:20]
+    except Exception:
+        _verification_limitations = []
+    _next_check: str | None = None
+    try:
+        _next_check = _VerificationEngine.next_check_for(
+            getattr(verification, "limitations", None) or [],
+            _untested_rivals,
+            _unmapped,
+        )
+    except Exception:
+        _next_check = None
     conclusion = InvestigationConclusion(
         tenant_id=tenant_id,
         investigation_id=investigation_id,
+        limitations=_verification_limitations,
+        next_check=_next_check,
         status=ConclusionStatus.ANSWERED
         if (location_answered or doc_answered)
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
-            if getattr(verification, 'tier', 'established') == 'likely'
+            if getattr(verification, "tier", "established") == "likely"
             else (
                 ConclusionStatus.ROOT_CAUSE_ESTABLISHED
                 if verification.status == VerificationStatus.VERIFIED
@@ -5536,11 +6125,12 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         confidence=verification.confidence.overall_confidence,
         # D5: in-band conclusions publish best-reason/against-evidence
         # with the provisional marker; established stays clean.
-        best_reason=str(getattr(verification, 'best_reason', '') or '')[:2000],
+        best_reason=str(getattr(verification, "best_reason", "") or "")[:2000],
         against_evidence=[
-            str(item)[:300] for item in list(getattr(verification, 'against_evidence', []) or [])[:20]
+            str(item)[:300]
+            for item in list(getattr(verification, "against_evidence", []) or [])[:20]
         ],
-        provisional=getattr(verification, 'tier', 'established') == 'likely',
+        provisional=getattr(verification, "tier", "established") == "likely",
         ranked_alternatives=_alternatives,
     )
     await finding_repo.save_conclusion(tenant_id, conclusion)
@@ -5695,8 +6285,7 @@ async def conclude_investigation_activity(
                                     )
                                     target = InvestigationStatus.COMPLETED
                                     conclude_reason = (
-                                        "Workflow concluded with COMPLETED "
-                                        "(INSUFFICIENT_EVIDENCE)"
+                                        "Workflow concluded with COMPLETED (INSUFFICIENT_EVIDENCE)"
                                     )
                                 except Exception as exc:
                                     logger.warning(
@@ -6110,7 +6699,14 @@ def _shape_refdoc_query(text: Any) -> str:
             parts = [p for p in lowered.split("-") if p]
             if any(p in _REFDOC_QUERY_STOPWORDS for p in parts):
                 continue
-            if "-" in token and len(token) >= 4 or token.isupper() and len(token) >= 2 or len(token) >= 5 and lowered not in _REFDOC_QUERY_STOPWORDS:
+            if (
+                "-" in token
+                and len(token) >= 4
+                or token.isupper()
+                and len(token) >= 2
+                or len(token) >= 5
+                and lowered not in _REFDOC_QUERY_STOPWORDS
+            ):
                 tokens.append(token)
             if len(tokens) >= 8:
                 break
@@ -6194,9 +6790,7 @@ async def retrieve_knowledge_activity(
     trouble: an empty context degrades the investigation to unassisted
     reasoning rather than failing it.
     """
-    data = _coerced_data(
-        RetrieveKnowledgeInput, params, activity="retrieve_knowledge_activity"
-    )
+    data = _coerced_data(RetrieveKnowledgeInput, params, activity="retrieve_knowledge_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     inv_id_probe = str(data.get("investigation_id", ""))
     logger.info(
@@ -6308,6 +6902,7 @@ async def _caller_fingerprints_for(ctx: Any, tenant_id: str, investigation_id: U
             fingerprints.append(fingerprint)
     return fingerprints
 
+
 async def _application_id_for(ctx: Any, tenant_id: str, investigation_id: UUID) -> str:
     inv_repo: Any = getattr(ctx, "investigation_repo", None)
     if inv_repo is not None:
@@ -6349,9 +6944,7 @@ async def capture_knowledge_activity(
 
     Runs after conclusion. Capture failures never fail the investigation.
     """
-    data = _coerced_data(
-        CaptureKnowledgeInput, params, activity="capture_knowledge_activity"
-    )
+    data = _coerced_data(CaptureKnowledgeInput, params, activity="capture_knowledge_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     inv_id_probe = str(data.get("investigation_id", ""))
     logger.info(
@@ -6556,9 +7149,7 @@ async def collect_snapshots_activity(
     a transient Neo4j hiccup on one repository must not fail the whole
     scheduled pass (the workflow retries this activity per repository).
     """
-    data = _coerced_data(
-        CollectSnapshotsInput, params, activity="collect_snapshots_activity"
-    )
+    data = _coerced_data(CollectSnapshotsInput, params, activity="collect_snapshots_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     logger.info(
         "collect_snapshots_activity started",
@@ -7687,9 +8278,7 @@ async def update_reindex_job_activity(
         BackgroundJobStatus,
     )
 
-    data = _coerced_data(
-        UpdateReindexJobInput, params, activity="update_reindex_job_activity"
-    )
+    data = _coerced_data(UpdateReindexJobInput, params, activity="update_reindex_job_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     logger.info(
         "update_reindex_job_activity started",
@@ -7839,9 +8428,7 @@ async def load_batch_records_activity(
 ) -> GenericActivityResult:
     # TO_DO-011: not idempotency-wired — read-only cursor load; no writes.
     """Load PENDING batch records from a dispatch cursor (Part 11.9)."""
-    data = _coerced_data(
-        LoadBatchRecordsInput, params, activity="load_batch_records_activity"
-    )
+    data = _coerced_data(LoadBatchRecordsInput, params, activity="load_batch_records_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     logger.info(
         "load_batch_records_activity started",
@@ -7915,9 +8502,7 @@ async def mark_batch_records_activity(
     """Bulk-mark records DISPATCHED/RUNNING with child workflow ids."""
     from investigation_agent_platform.domain.intake.batch import BatchRecordStatus
 
-    data = _coerced_data(
-        MarkBatchRecordsInput, params, activity="mark_batch_records_activity"
-    )
+    data = _coerced_data(MarkBatchRecordsInput, params, activity="mark_batch_records_activity")
     tenant_id_probe = str(data.get("tenant_id", ""))
     logger.info(
         "mark_batch_records_activity started",
@@ -8454,15 +9039,11 @@ async def project_topology_activity(
     """
     import os
 
-    data = _coerced_data(
-        ProjectTopologyInput, params, activity="project_topology_activity"
-    )
+    data = _coerced_data(ProjectTopologyInput, params, activity="project_topology_activity")
     tenant_id = str(data.get("tenant_id", ""))
     repository_id = str(data.get("repository_id", ""))
     if not tenant_id or not repository_id:
-        return GenericActivityResult(
-            success=False, error="tenant_id and repository_id required"
-        )
+        return GenericActivityResult(success=False, error="tenant_id and repository_id required")
 
     def _skip(reason: str) -> GenericActivityResult:
         logger.info(
@@ -8484,9 +9065,7 @@ async def project_topology_activity(
 
     from pathlib import Path
 
-    base = Path(
-        os.environ.get("IAP_CODE_REPO_BASE", "") or "data/code-repos"
-    ).resolve()
+    base = Path(os.environ.get("IAP_CODE_REPO_BASE", "") or "data/code-repos").resolve()
     requested = str(data.get("checkout", "") or "")
     candidates: list[Path] = []
     if requested:
@@ -8543,9 +9122,7 @@ async def project_topology_activity(
             build_payload_for_repo,
         )
 
-        application_id = str(
-            data.get("application_id", "") or f"{tenant_id}-{repository_id}"
-        )
+        application_id = str(data.get("application_id", "") or f"{tenant_id}-{repository_id}")
         payload, truncated = await build_payload_for_repo(
             candidate, tenant_id, application_id, repository_id, revision
         )
@@ -8562,9 +9139,7 @@ async def project_topology_activity(
             pass
         holder = await SharedNeo4jDriver.from_env().connect()
         try:
-            adapter = CogneeTopologyAdapter(
-                enabled=True, dataset_salt=salt, neo4j_driver=holder
-            )
+            adapter = CogneeTopologyAdapter(enabled=True, dataset_salt=salt, neo4j_driver=holder)
             result = await adapter.project_snapshot(payload, ownership_path=ownership_path)
         finally:
             await holder.close()

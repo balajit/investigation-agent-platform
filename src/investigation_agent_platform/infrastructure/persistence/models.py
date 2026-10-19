@@ -454,6 +454,8 @@ class InvestigationConclusionORM(Base):
     against_evidence: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     provisional: Mapped[bool] = mapped_column(nullable=False, default=False)
     ranked_alternatives: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # Phase 2.4: re-verify directive (NULL = established-clean / legacy).
+    next_check: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

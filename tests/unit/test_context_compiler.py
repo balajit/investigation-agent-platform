@@ -91,11 +91,13 @@ def test_source_code_body_reaches_compiled_context():
 
 
 def test_long_code_body_truncated_with_disclosure():
-    body = "x = 1\n" * 600  # 3600 chars: fits Evidence cap, exceeds excerpt cap
+    body = "x = 1\n" * 680  # 4080 chars: fits Evidence cap (4096), exceeds packet cap (4000)
     ctx = compile_reasoning_context(_state([_evidence(snippet=body, etype=EvidenceType.SOURCE_CODE)]))
     excerpt = ctx["evidence_excerpts"][0]
     assert excerpt["content_truncated"] is True
-    assert len(excerpt["content"]) <= 1500
+    assert len(excerpt["content"]) <= 4000
+    assert excerpt["next_window"] is not None
+    assert excerpt["next_window"]["start_line"] > 1
 
 
 def test_long_summary_flagged_truncated():

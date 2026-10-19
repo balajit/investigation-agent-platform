@@ -739,7 +739,14 @@ class TestBuildIntakeSeed:
         )
 
         seed = build_intake_seed(error_class="E", failing_symbol="f")
-        assert seed == {"error_class": "E", "failing_symbol": "f"}
+        # Phase 0.5: target identity is always present and defaults to
+        # UNPINNED — an absent repository/revision is never a silent HEAD.
+        assert seed == {
+            "error_class": "E",
+            "failing_symbol": "f",
+            "repository": "UNPINNED",
+            "revision": "UNPINNED",
+        }
 
 
 class TestStackFrameParsers:

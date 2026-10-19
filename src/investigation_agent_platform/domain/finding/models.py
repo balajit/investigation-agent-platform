@@ -87,6 +87,10 @@ class InvestigationConclusion(BaseModel):
     # F: ranked alternatives (runner-up hypothesis statements with status)
     # so partial answers survive instead of evaporating with abstention.
     ranked_alternatives: list[str] = Field(default_factory=list, max_length=10)
+    # Phase 2.4: the single re-verify directive that would promote this
+    # conclusion (test the untested rival, cite the uncited sentence,
+    # corroborate with another provider). None when established clean.
+    next_check: str | None = Field(default=None, max_length=1024)
     # 020: verifier provenance. None = legacy/pre-marker historical row.
     verifier_version: str | None = Field(default=None, max_length=16)
 
