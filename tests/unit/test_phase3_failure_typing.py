@@ -539,3 +539,121 @@ class TestRateLimited:
         decision = await coord.reason("tenant-a", InvestigationState(investigation=inv))
         assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
         assert "rate_limited" in decision.metadata["reason"]
+
+
+def _retry_state(exc=None, attempt=1):
+    return SimpleNamespace(
+        attempt_number=attempt,
+        outcome=SimpleNamespace(exception=lambda: exc),
+    )
+
+
+class TestRetryAfterWait:
+    def test_hint_honored_up_to_cap(self) -> None:
+        from investigation_agent_platform.application.evidence.gateway import (
+            MAX_RETRY_AFTER_WAIT,
+            _wait_with_retry_after,
+        )
+        from investigation_agent_platform.domain.common.exceptions import (
+            RateLimitException,
+        )
+
+        assert MAX_RETRY_AFTER_WAIT == 15.0
+        assert (
+            _wait_with_retry_after(
+                _retry_state(RateLimitException("t", retry_after=120.0))
+            )
+            == 15.0
+        )
+        assert (
+            _wait_with_retry_after(_retry_state(RateLimitException("t", retry_after=5.0)))
+            == 5.0
+        )
+
+    def test_no_hint_falls_back_to_exponential(self) -> None:
+        from investigation_agent_platform.application.evidence.gateway import (
+            _wait_with_retry_after,
+        )
+        from investigation_agent_platform.domain.common.exceptions import (
+            ProviderTimeoutException,
+        )
+
+        assert _wait_with_retry_after(_retry_state(ProviderTimeoutException("t"))) == 2.0
+        assert _wait_with_retry_after(_retry_state(None)) == 2.0
+
+    def test_garbage_hint_ignored(self) -> None:
+        from investigation_agent_platform.application.evidence.gateway import (
+            _wait_with_retry_after,
+        )
+        from investigation_agent_platform.domain.common.exceptions import (
+            RateLimitException,
+        )
+
+        exc = RateLimitException("t")
+        exc.retry_after = "soon"
+        assert _wait_with_retry_after(_retry_state(exc)) == 2.0
+
+    def test_adapters_honor_hint(self) -> None:
+        from investigation_agent_platform.domain.common.exceptions import (
+            RateLimitException,
+        )
+        from investigation_agent_platform.infrastructure.reasoning.anthropic_adapter import (
+            _wait_with_retry_after as anthropic_wait,
+        )
+        from investigation_agent_platform.infrastructure.reasoning.openai_adapter import (
+            _wait_with_retry_after as openai_wait,
+        )
+
+        for wait in (anthropic_wait, openai_wait):
+            assert wait(_retry_state(RateLimitException("t", retry_after=60.0))) == 15.0
+            assert wait(_retry_state(ValueError("bug"))) == 2.0
+
+
+class TestCallEdgePackets:
+    @pytest.mark.asyncio
+    async def test_edges_bank_with_file_line_provenance(self) -> None:
+        from investigation_agent_platform.domain.evidence.models import EvidenceType
+
+        async def _find_call_graph(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                items=[],
+                total_count=2,
+                provider_metadata={
+                    "callers": [
+                        {
+                            "caller_symbol": "CheckoutController",
+                            "callee_symbol": "reserve",
+                            "location": {
+                                "file_path": "src/CheckoutController.java",
+                                "line_number": 88,
+                                "revision": "abc123",
+                                "revision_supported": True,
+                            },
+                        },
+                        {
+                            "caller_symbol": "Ghost",
+                            "callee_symbol": "reserve",
+                            "location": {},
+                        },
+                    ],
+                    "callees": [],
+                },
+            )
+
+        _, saved = _ctx_with(SimpleNamespace(find_call_graph=_find_call_graph))
+        result = await execute_action_activity(
+            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
+        )
+        # Summary + one edge packet (the location-less edge is skipped).
+        assert result.data["items_count"] == 2
+        edges = [
+            e for e in saved if e.evidence_type == EvidenceType.CALL_GRAPH
+            and e.attributes.get("caller_symbol") == "CheckoutController"
+        ]
+        assert len(edges) == 1
+        loc = edges[0].provenance.source_location
+        assert loc.file_path == "src/CheckoutController.java"
+        assert loc.line_start == 88 and loc.line_end == 88
+        assert loc.revision == "abc123"
+        assert edges[0].attributes["discovery_only"] is True
+        assert edges[0].attributes["callee_symbol"] == "reserve"

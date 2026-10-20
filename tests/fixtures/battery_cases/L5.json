@@ -1,0 +1,11 @@
+{
+  "id": "L5",
+  "symptom": "How does a null orderType affect order filtering? Which default applies and where?",
+  "context": "Tranche B L5: multi-hop synthesis across the null-default chain.",
+  "live": true,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "values",
+    "expect_values": ["STANDARD", "orderType", "LegacyCodeMapper"]
+  }
+}

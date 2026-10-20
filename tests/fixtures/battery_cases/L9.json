@@ -1,0 +1,14 @@
+{
+  "id": "L9",
+  "symptom": "Which OrderServiceImpl.isEligible handles a null orderType?",
+  "context": "Duplicate symbol across files with an untested rival: the location exemption applies — ANSWERED stands without RIVAL_UNTESTED demotion. Offline-only: live disambiguation is not deterministic.",
+  "live": false,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "definition",
+    "cited_path": "OrderServiceImpl.java",
+    "expect_symbol": "isEligible",
+    "duplicate_symbol": "OrderServiceImpl",
+    "rival_untested_exempt": true
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "L3",
+  "symptom": "What changed in OrderServiceImpl.java recently?",
+  "context": "Tranche B L3: commit history for the service implementation.",
+  "live": true,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "history",
+    "cited_path": "OrderServiceImpl.java"
+  }
+}

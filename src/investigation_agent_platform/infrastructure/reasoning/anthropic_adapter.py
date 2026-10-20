@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -85,6 +86,30 @@ def _translate_rate_limit(exc: BaseException, provider: str) -> BaseException:
     )
 
 
+# Upper bound for honoring Retry-After (see gateway module for rationale:
+# activity-side waits are replay-safe; the cap protects the 60s budget).
+MAX_RETRY_AFTER_WAIT = 15.0
+
+
+def _wait_with_retry_after(retry_state: Any) -> float:
+    """Tenacity wait honoring first-party Retry-After hints."""
+    base = wait_exponential(multiplier=1, min=2, max=10)(retry_state)
+    try:
+        outcome = getattr(retry_state, "outcome", None)
+        exc = outcome.exception() if outcome is not None else None
+        hint = float(getattr(exc, "retry_after", None) or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        hint = 0.0
+    except Exception:
+        hint = 0.0
+    if hint <= 0:
+        return base
+    try:
+        return min(max(float(base), hint), MAX_RETRY_AFTER_WAIT)
+    except (TypeError, ValueError):
+        return base
+
+
 def _is_retryable_llm_error(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None)
     if status is None:
@@ -148,7 +173,7 @@ class AnthropicGateway(LLMGateway):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_llm_error),
         reraise=True,
     )

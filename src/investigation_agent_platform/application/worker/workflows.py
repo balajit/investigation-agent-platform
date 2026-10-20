@@ -483,6 +483,174 @@ def _description_keywords(description: str | None, limit: int = 6) -> list[str]:
         return []
 
 
+_FLOOR_TERMINAL_ACTIONS = frozenset({"FORMULATE_HYPOTHESIS", "VERIFY_HYPOTHESIS", "CONCLUDE"})
+_FLOOR_MIN_EVIDENCE = 3
+
+
+def _callsite_target(
+    reason_data: dict[str, Any] | None,
+    action_history: list[dict[str, Any]] | None,
+    forced_count: int,
+) -> dict[str, Any] | None:
+    """GET_CODE for a claimed caller file never successfully read, or None.
+
+    Fires when a CALL_EDGE claim names a target file_path that no
+    evidence-banking GET_CODE has covered yet — the call-site proof the
+    verifier demands (L2 died twice with caller names but no call-site
+    row). Reads the target's line window when the claim supplies one.
+    Bounded (max 2 per run); pure. Content-free by design: row contents
+    are unavailable at workflow scope, so file identity + history
+    coverage decide.
+    """
+    try:
+        if int(forced_count or 0) >= 2:
+            return None
+        claims = (reason_data or {}).get("claims") or []
+        if not isinstance(claims, list):
+            return None
+        read_files: set[str] = set()
+        for entry in action_history or []:
+            try:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("action", "") or "").upper() != "GET_CODE":
+                    continue
+                if int(entry.get("evidence_added", 0) or 0) <= 0:
+                    continue
+                params = entry.get("parameters") or {}
+                path = str(params.get("file_path", "") or "").strip()
+                if path:
+                    read_files.add(path.replace("\\", "/").strip().strip("/"))
+            except (TypeError, ValueError):
+                continue
+        for raw_claim in claims:
+            try:
+                if not isinstance(raw_claim, dict):
+                    continue
+                kind = raw_claim.get("claim_kind", "")
+                kind_value = str(
+                    getattr(kind, "value", kind) or ""
+                ).strip().upper()
+                if kind_value != "CALL_EDGE":
+                    continue
+                target = raw_claim.get("target") or {}
+                if not isinstance(target, dict):
+                    continue
+                file_path = str(target.get("file_path", "") or "").strip()
+                if not file_path:
+                    continue
+                normalized = file_path.replace("\\", "/").strip().strip("/")
+                if normalized in read_files:
+                    continue
+                call_params: dict[str, Any] = {"file_path": file_path}
+                try:
+                    # ClaimTarget serializes the window as line_start/line_end.
+                    start_raw = target.get("line_start", target.get("start_line"))
+                    end_raw = target.get("line_end", target.get("end_line"))
+                    start = int(start_raw or 0) or None
+                    end = int(end_raw or 0) or None
+                except (TypeError, ValueError):
+                    start, end = None, None
+                if start and start >= 1:
+                    call_params["start_line"] = start
+                    if end and end >= start:
+                        call_params["end_line"] = end
+                return {"next_action": "GET_CODE", "action_parameters": call_params}
+            except Exception:
+                continue
+        return None
+    except Exception:
+        return None
+
+def _explore_floor_target(
+    reason_data: dict[str, Any] | None,
+    evidence_banked_total: int,
+    triage_route: str | None,
+    description: str | None,
+    seed: dict[str, Any] | None,
+    forced_count: int,
+) -> dict[str, Any] | None:
+    """Discriminating gather action before thin terminal proposals, or None.
+
+    Fires when the model proposes a committal action (formulate/verify/
+    conclude) with fewer than 3 banked rows on a code-shaped incident.
+    L1#2 died after a single path-only read: the absence branch it took
+    can never verify, so the loop must read first instead of letting the
+    run commit to a one-row theory. Bounded (max 2 per run); pure.
+    """
+    try:
+        data_action = str((reason_data or {}).get("next_action", "") or "").upper()
+        if data_action not in _FLOOR_TERMINAL_ACTIONS:
+            return None
+        if int(forced_count or 0) >= 2:
+            return None
+        try:
+            if int(evidence_banked_total or 0) >= _FLOOR_MIN_EVIDENCE:
+                return None
+        except (TypeError, ValueError):
+            return None
+        seed = seed or {}
+        frames = seed.get("frames") or []
+        code_shaped = (
+            str(triage_route or "").upper() == "BUG"
+            or bool(frames)
+            or bool(str(seed.get("failing_symbol", "") or "").strip())
+            or bool(str(seed.get("caller_symbol", "") or "").strip())
+        )
+        if not code_shaped:
+            try:
+                text = f" {(description or '').lower()} "
+                code_shaped = bool(
+                    re.search(r"[a-z0-9_.\-/]*\.[a-z]{1,10}", text)
+                    and re.search(r"[a-z]+", text)
+                ) and (
+                    "file" in text or "implement" in text or "defin" in text
+                    or "symbol" in text or "code" in text or "call" in text
+                )
+            except Exception:
+                code_shaped = False
+        if not code_shaped:
+            return None
+        haystacks = [str(description or "")]
+        try:
+            for key in ("top_frame_file", "failing_symbol", "caller_symbol"):
+                value = str(seed.get(key, "") or "").strip()
+                if value:
+                    haystacks.append(value)
+        except Exception:
+            pass
+        for text in haystacks:
+            try:
+                for match in re.finditer(_REREAD_PATH_TOKEN_RE, text):
+                    token = match.group(0).strip().strip(".,;:)]}'\"").lstrip("./")
+                    if "/" in token and len(token) >= 3:
+                        return {
+                            "next_action": "GET_CODE",
+                            "action_parameters": {"file_path": token},
+                        }
+            except Exception:
+                continue
+        for key in ("failing_symbol", "caller_symbol"):
+            try:
+                symbol = str(seed.get(key, "") or "").strip()
+                if symbol:
+                    return {
+                        "next_action": "FIND_SYMBOL",
+                        "action_parameters": {"symbol_name": symbol},
+                    }
+            except Exception:
+                continue
+        keywords = _description_keywords(description)
+        if not keywords:
+            return None
+        return {
+            "next_action": "SEARCH_CODE",
+            "action_parameters": {"query": " ".join(keywords[:3])},
+        }
+    except Exception:
+        return None
+
+
 def _should_force_replan(
     description: str | None,
     reason_data: dict | None,
@@ -1060,6 +1228,8 @@ class RunInvestigationWorkflow:
         forced_walk_stack_count = 0
         forced_replan_count = 0
         forced_synthesis_count = 0
+        forced_floor_count = 0
+        forced_callsite_count = 0
         overconfident_turns = 0
         # D3: triage route computed once at iteration 0 from the complaint
         # + intake seed; guides the reasoner, never decides alone.
@@ -1162,21 +1332,42 @@ class RunInvestigationWorkflow:
                 _reason_data["next_action"] = "WALK_STACK"
                 _reason_data["action_parameters"] = _walk_params
                 _reason_data["forced_walk_stack"] = True
+            # Evidence floor — a committal proposal (formulate/verify/
+            # conclude) on fewer than 3 banked rows for a code-shaped
+            # incident gathers first instead of committing to a thin
+            # theory. Skipped once explicit frames already forced.
+            if not _reason_data.get("forced_walk_stack"):
+                _floor = _explore_floor_target(
+                    _reason_data,
+                    evidence_banked_total,
+                    triage_route,
+                    input_data.description,
+                    knowledge_seed,
+                    forced_floor_count,
+                )
+                if _floor:
+                    forced_floor_count += 1
+                    _reason_data = dict(_reason_data)
+                    _reason_data["next_action"] = _floor["next_action"]
+                    _reason_data["action_parameters"] = _floor["action_parameters"]
+                    _reason_data["forced_floor"] = True
             if _should_force_formulate(
                 iteration,
                 formulated_count,
                 _reason_data.get("hypotheses_evaluated"),
                 evidence_banked_total,
                 forced_formulate_count,
-            ) and not _reason_data.get("forced_walk_stack"):
+            ) and not _reason_data.get("forced_walk_stack") and not _reason_data.get("forced_floor"):
                 forced_formulate_count += 1
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
                 _reason_data["forced_formulate"] = True
             # T2-4: synthesis forcing — rich multi-action corpus with
             # nothing committed gets FORMULATE (same override as G8).
-            if not _reason_data.get("forced_walk_stack") and not _reason_data.get(
-                "forced_formulate"
+            if (
+                not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_formulate")
+                and not _reason_data.get("forced_floor")
             ):
                 if _should_force_synthesis(
                     action_history,
@@ -1192,8 +1383,10 @@ class RunInvestigationWorkflow:
             # P0-2: re-read forcing — definition claim heading to VERIFY
             # without a range-read gets the read first (G3 floor would
             # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.
-            if not _reason_data.get("forced_formulate") and not _reason_data.get(
-                "forced_walk_stack"
+            if (
+                not _reason_data.get("forced_formulate")
+                and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_floor")
             ):
                 _reread_path = _reread_target(
                     _reason_data, action_history, forced_reread_count
@@ -1204,12 +1397,31 @@ class RunInvestigationWorkflow:
                     _reason_data["next_action"] = "GET_CODE"
                     _reason_data["action_parameters"] = {"file_path": _reread_path}
                     _reason_data["forced_reread"] = True
+            # Call-site forcing — a CALL_EDGE claim naming an unread caller
+            # file reads it before the loop can conclude on a graph summary
+            # alone. Skipped when an earlier read-forcing rule already fired.
+            if not _reason_data.get("forced_formulate") and not _reason_data.get(
+                "forced_walk_stack"
+            ) and not _reason_data.get("forced_floor") and not _reason_data.get(
+                "forced_reread"
+            ):
+                _callsite = _callsite_target(
+                    _reason_data, action_history, forced_callsite_count
+                )
+                if _callsite:
+                    forced_callsite_count += 1
+                    _reason_data = dict(_reason_data)
+                    _reason_data["next_action"] = _callsite["next_action"]
+                    _reason_data["action_parameters"] = _callsite["action_parameters"]
+                    _reason_data["forced_callsite"] = True
             # B-4: log-first forcing — service-error complaints gather logs
             # before code/state. Skipped when G8/G3/D2 already forced.
             if (
                 not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_callsite")
             ):
                 _log_params = _should_force_log_search(
                     input_data.description,
@@ -1231,6 +1443,8 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_log_search")
                 and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_callsite")
             ):
                 _replan = _should_force_replan(
                     input_data.description,
@@ -1338,6 +1552,8 @@ class RunInvestigationWorkflow:
                         "forced_log_search": bool(_reason_data.get("forced_log_search", False)),
                         "forced_walk_stack": bool(_reason_data.get("forced_walk_stack", False)),
                         "forced_replan": bool(_reason_data.get("forced_replan", False)),
+                        "forced_floor": bool(_reason_data.get("forced_floor", False)),
+                        "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
                     }
                 )
                 # G8: track synthesis state for the forcing rule.

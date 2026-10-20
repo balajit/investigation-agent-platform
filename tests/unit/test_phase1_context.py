@@ -282,6 +282,15 @@ class TestVisibleEnvelope:
 
 
 class TestPromptSections:
+    def test_reasoner_request_pins_low_temperature(self):
+        from investigation_agent_platform.application.investigation.reasoning import (
+            REASONING_TEMPERATURE,
+        )
+
+        assert REASONING_TEMPERATURE == 0.1
+        request = _capture()
+        assert request.temperature == 0.1
+
     def test_sections_are_named_and_versioned(self):
         prompt = build_system_prompt()
         assert prompt.startswith("INVESTIGATION REASONER v3-claim-grounded-011")

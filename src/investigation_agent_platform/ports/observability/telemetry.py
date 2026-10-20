@@ -71,3 +71,36 @@ class ObservabilityPort(Protocol):
     ) -> None: ...
 
     def record_metric(self, metric_name: str, value: float, tags: dict[str, str]) -> None: ...
+
+    # Phase 4.2: code-grounding proof-chain counters. Label vocabularies are
+    # closed by construction (action names, outcome statuses, miss reasons,
+    # claim kinds, limitation codes, booleans) — high-cardinality values
+    # (file paths, line ranges, revision SHAs) never appear as labels; they
+    # belong in structured event fields. All methods are fire-and-forget:
+    # adapters must never raise into an investigation.
+
+    def record_code_action(
+        self, context: SpanContext, action: str, outcome: str, miss_reason: str
+    ) -> None: ...
+
+    def record_symbol_empty(self, context: SpanContext, tool: str) -> None: ...
+
+    def record_verification(
+        self, context: SpanContext, claim_kind: str, status: str, limitation: str
+    ) -> None: ...
+
+    def record_conclusion_limitation(self, context: SpanContext, kind: str) -> None: ...
+
+    def record_replay_mismatch(self, context: SpanContext) -> None: ...
+
+    def record_code_packets(
+        self, context: SpanContext, included: int, truncated: int, dropped: int
+    ) -> None: ...
+
+    def record_location_answer(self, context: SpanContext, has_untested_rival: bool) -> None: ...
+
+    def record_revision_check(
+        self, context: SpanContext, operation: str, match: bool
+    ) -> None: ...
+
+    def record_claim(self, context: SpanContext, source: str) -> None: ...

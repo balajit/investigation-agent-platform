@@ -1,0 +1,12 @@
+{
+  "id": "L4",
+  "symptom": "I looked in service/src/main/java/com/sample/orders/filter/SampleOrderfilter.java and it does not exist — where is it really?",
+  "context": "Tranche B L4: typo path (lowercase f) must correct.",
+  "live": true,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "definition",
+    "cited_path": "SampleOrderFilter.java",
+    "expect_symbol": "SampleOrderFilter"
+  }
+}

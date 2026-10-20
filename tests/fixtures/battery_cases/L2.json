@@ -1,0 +1,12 @@
+{
+  "id": "L2",
+  "symptom": "What calls the order service handler?",
+  "context": "Tranche B L2: caller enumeration for OrderServiceHandler.",
+  "live": true,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "callers",
+    "callee": "OrderServiceHandler",
+    "expect_any": ["OrderQualifyHelper", "OrderServiceRestProxy"]
+  }
+}

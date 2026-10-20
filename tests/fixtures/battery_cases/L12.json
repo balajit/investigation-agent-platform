@@ -1,0 +1,12 @@
+{
+  "id": "L12",
+  "symptom": "Why was no audit row written for the refund?",
+  "context": "Absence answers require a scoped empty-search proof plus the write path — never an empty result alone. Offline-only.",
+  "live": false,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "absence",
+    "absent_subject": "audit",
+    "scope": "audit_log/order-9"
+  }
+}

@@ -408,6 +408,94 @@ def classify_provider_failure(
     raise exc
 
 
+_KNOWN_LIMITATION_CODES = frozenset(
+    {
+        "RIVAL_UNTESTED",
+        "SINGLE_PROVIDER",
+        "CONCLUSION_UNMAPPED",
+        "RELATION_UNDEMONSTRATED",
+    }
+)
+
+
+def _emit_telemetry(
+    ctx: Any, tenant_id: Any, investigation_id: Any, method: str, *args: Any
+) -> None:
+    """Fire-and-forget proof-chain counter (Phase 4.2). Never raises.
+
+    Label vocabularies are closed by the port contract — high-cardinality
+    values (paths, ranges, SHAs) never reach labels. A missing or broken
+    observability port degrades to nothing: metrics must never fail an
+    investigation.
+    """
+    try:
+        obs = getattr(ctx, "observability", None)
+        if obs is None:
+            return
+        from investigation_agent_platform.ports.observability.telemetry import (
+            SpanContext,
+        )
+
+        sctx = SpanContext(
+            tenant_id=str(tenant_id or ""), investigation_id=UUID(str(investigation_id))
+        )
+        handler = getattr(obs, method, None)
+        if not callable(handler):
+            return
+        handler(sctx, *args)
+    except Exception:
+        pass
+
+
+def _limitation_kind(text: Any) -> str:
+    """Closed-vocabulary kind for a "CODE: detail" limitation string."""
+    try:
+        code = str(text or "").split(":", 1)[0].strip().upper()
+        return code if code in _KNOWN_LIMITATION_CODES else "other"
+    except Exception:
+        return "other"
+
+
+def _emit_verify_telemetry(
+    ctx: Any,
+    tenant_id: Any,
+    investigation_id: Any,
+    candidate: Any,
+    result: Any,
+    siblings: list[Any] | None,
+) -> None:
+    """Verification decision + location-exemption counters (Phase 4.2)."""
+    try:
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        kind = VerificationEngine.effective_claim_kind(candidate)
+        kind_label = str(getattr(kind, "value", kind) or "") if kind is not None else "unspecified"
+        status = getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
+        limitations = list(getattr(result, "limitations", None) or [])
+        first = "none"
+        if limitations:
+            code = getattr(limitations[0], "code", "")
+            first = str(getattr(code, "value", code) or "") or "none"
+        _emit_telemetry(
+            ctx,
+            tenant_id,
+            investigation_id,
+            "record_verification",
+            kind_label or "unspecified",
+            str(status or "unknown"),
+            first,
+        )
+        if bool(getattr(result, "location_validated", False)):
+            untested = VerificationEngine.untested_rival_statements(candidate, siblings)
+            _emit_telemetry(
+                ctx, tenant_id, investigation_id, "record_location_answer", bool(untested)
+            )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Wave 2 shared helpers (TO_DO-007/011/012/013/016): telemetry extras,
 # strict input coercion, idempotency wiring, actor threading, domain graph.
@@ -2069,6 +2157,112 @@ def _symbol_evidence_packets(
     return packets
 
 
+def _absence_proof_row(
+    *,
+    tenant_id: Any,
+    investigation_id: Any,
+    evidence_type: Any,
+    provider: str,
+    operation: str,
+    scope: str,
+    now: Any | None = None,
+) -> Any:
+    """Bankable scoped empty-search proof (Phase 2 item 3).
+
+    An empty result alone never proves absence — but an empty result over
+    a stated, complete scope does, when paired with the code path that
+    would have produced the fact. This row carries the scope and the zero
+    count the verifier's absence gate requires. Fingerprint is
+    deterministic per investigation+scope, so repeated identical searches
+    re-save idempotently (the repo dedupes on tenant+fingerprint) instead
+    of flooding evidence. discovery_only: a no-match is direction for
+    further reads, never a definition.
+    """
+    import hashlib as _hashlib
+
+    from investigation_agent_platform.domain.evidence.models import (
+        Evidence,
+    )
+    from investigation_agent_platform.domain.provenance.models import (
+        EvidenceFreshness,
+        EvidenceProvenance,
+        QueryFingerprint,
+        SourceLocation,
+    )
+
+    observed_at = now or datetime.now(UTC)
+    fingerprint = _hashlib.sha256(
+        f"absence:{tenant_id}:{investigation_id}:{scope}".encode()
+    ).hexdigest()[:64]
+    return Evidence(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        evidence_type=evidence_type,
+        provider=provider,
+        source=f"absence://{scope[:256]}",
+        title=f"No matches in scope: {scope[:160]}",
+        summary=f"Scoped search over {scope} returned zero matches.",
+        content_snippet=f"No matches in scope: {scope}",
+        attributes={
+            "search_scope": scope,
+            "match_count": 0,
+            "discovery_only": True,
+        },
+        observed_at=observed_at,
+        retrieved_at=observed_at,
+        provenance=EvidenceProvenance(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            provider_type="search",
+            requested_provider_id=provider,
+            actual_provider_id=provider,
+            source_system="absence-proof",
+            retrieval_timestamp=observed_at,
+            query_fingerprint=QueryFingerprint(
+                provider_type="search",
+                operation=operation,
+                normalized_query_hash=_hashlib.sha256(scope.encode()).hexdigest(),
+            ),
+            source_location=SourceLocation(
+                system="search",
+                identifier=f"absence:{scope[:256]}",
+            ),
+        ),
+        freshness=EvidenceFreshness(observed_at=observed_at, retrieved_at=observed_at),
+        fingerprint=fingerprint,
+    )
+
+
+def _code_absence_scope(action_label: str, req: Any) -> str:
+    """Human-readable search scope for a code-intelligence request (pure).
+
+    Empty when the request carries no searchable subject — an absence
+    proof over an empty query would be meaningless.
+    """
+    try:
+        repo = str(getattr(req, "repository", "") or "").strip()
+        rev = str(getattr(req, "revision", "") or "").strip() or "HEAD"
+        if action_label == "SEARCH_CODE":
+            query = str(getattr(req, "query", "") or "").strip()
+            prefix = str(getattr(req, "path_prefix", "") or "").strip() or "/"
+            if not query:
+                return ""
+            return f"{repo}@{rev}:{prefix}:query={query}"[:512]
+        if action_label == "FIND_SYMBOL":
+            symbol = str(getattr(req, "symbol_name", "") or "").strip()
+            return f"{repo}@{rev}:symbol={symbol}"[:512] if symbol else ""
+        if action_label == "FIND_CALL_GRAPH":
+            symbol = str(getattr(req, "symbol", "") or "").strip()
+            direction = str(getattr(req, "direction", "") or "BOTH")
+            return f"{repo}@{rev}:callgraph={symbol}:{direction}"[:512] if symbol else ""
+        if action_label == "GET_CODE_HISTORY":
+            path = str(getattr(req, "file_path", "") or "").strip()
+            return f"{repo}:history={path}"[:512] if path else ""
+    except Exception:
+        pass
+    return ""
+
+
 def _frame_file_matches(frame_file: Any, hit_file: Any) -> bool:
     """True when a search hit plausibly belongs to a stack frame's file.
 
@@ -2356,16 +2550,19 @@ async def execute_action_activity(
         proposed_hypotheses: list[str] = [
             str(h) for h in (data.get("hypotheses", []) or []) if str(h).strip()
         ]
-        # Phase 2.1: typed claims keyed by normalized statement. A claim whose
-        # statement is absent from hypotheses_evaluated is still persisted.
-        proposed_claims: dict[str, dict[str, Any]] = {}
+        # Phase 2.1: typed claims keyed by (normalized statement, kind).
+        # A claim whose statement is absent from hypotheses_evaluated is
+        # still persisted. Same statement with different kinds stays
+        # distinct — keying by statement alone collapsed rivals.
+        proposed_claims: dict[tuple[str, str], dict[str, Any]] = {}
         for raw_claim in (data.get("claims", []) or [])[:20]:
             if not isinstance(raw_claim, dict):
                 continue
             claim_text = str(raw_claim.get("statement", "") or "").strip()[:2048]
             if not claim_text:
                 continue
-            proposed_claims[claim_text] = raw_claim
+            claim_kind_key = str(raw_claim.get("claim_kind") or "CAUSAL").strip().upper()
+            proposed_claims[(claim_text, claim_kind_key)] = raw_claim
             if claim_text not in proposed_hypotheses:
                 proposed_hypotheses.append(claim_text)
         if not tenant_id or not inv_id_str:
@@ -2442,6 +2639,11 @@ async def execute_action_activity(
                 and not _replayed_data.get("budget_exceeded")
             ):
                 _replayed_data["idempotency_replay_legacy"] = True
+                # Phase 4.2: a legacy row's outcome shape is unknown, so a
+                # match cannot be proven — count it as a mismatch.
+                _emit_telemetry(
+                    ctx, tenant_id, investigation_id, "record_replay_mismatch"
+                )
             return GenericActivityResult(
                 success=bool(_replayed.get("success", True)),
                 data=_replayed_data,
@@ -2751,6 +2953,37 @@ async def execute_action_activity(
             banked = _bank(qres.items)
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            if not banked and evidence_repo is not None:
+                # Phase 2 item 3: an empty state query banks a scoped
+                # no-match proof (same contract as code navigation above).
+                try:
+                    from investigation_agent_platform.domain.evidence.models import (
+                        EvidenceType as _EvidenceType,
+                    )
+
+                    _params = getattr(req, "parameters", None) or {}
+                    _scope_items = ",".join(
+                        f"{k}={v}"
+                        for k, v in sorted((str(k), str(v)) for k, v in dict(_params).items())
+                    )
+                    _state_scope = (
+                        f"{getattr(req, 'environment', '')}:"
+                        f"{getattr(req, 'template_id', '')}:{_scope_items}"
+                    )[:512]
+                    await evidence_repo.save(
+                        tenant_id,
+                        _absence_proof_row(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            evidence_type=_EvidenceType.DATABASE_STATE,
+                            provider="state-provider",
+                            operation="query_state",
+                            scope=_state_scope,
+                        ),
+                        investigation_id,
+                    )
+                except Exception:
+                    pass
             return _record_outcome(banked)
 
         async def _handle_search_logs() -> int:
@@ -2932,6 +3165,26 @@ async def execute_action_activity(
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
             outcome_detail["evidence_ids"] = [str(evidence.evidence_id)]
+            # Phase 4.2: revision pin check. An unpinned read (HEAD/empty)
+            # asserts nothing, so it vacuously matches; a pinned read must
+            # carry the requested SHA in provenance.
+            try:
+                _requested = str(getattr(req, "revision", "") or "")
+                _actual_location = getattr(
+                    getattr(evidence, "provenance", None), "source_location", None
+                )
+                _actual = str(getattr(_actual_location, "revision", "") or "")
+                _pinned = _requested not in ("", "HEAD", "UNPINNED")
+                _emit_telemetry(
+                    ctx,
+                    tenant_id,
+                    investigation_id,
+                    "record_revision_check",
+                    "GET_CODE",
+                    (not _pinned) or (_actual == _requested),
+                )
+            except Exception:
+                pass
             return 1
 
         async def _handle_walk_session_graph() -> int:
@@ -3681,6 +3934,37 @@ async def execute_action_activity(
                     )
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
+            if not banked and evidence_repo is not None:
+                # Phase 2 item 3: a well-formed query with zero matches banks
+                # a scoped no-match proof for future absence claims. Saved
+                # directly (never counted in the outcome), so replan-on-
+                # empties still fires and the row stays citable via repo
+                # scan. Fingerprint dedupes repeats idempotently.
+                try:
+                    from investigation_agent_platform.domain.evidence.models import (
+                        EvidenceType as _EvidenceType,
+                    )
+
+                    _absence_scope = _code_absence_scope(action_label, req)
+                    if _absence_scope:
+                        await evidence_repo.save(
+                            tenant_id,
+                            _absence_proof_row(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                evidence_type=(
+                                    _EvidenceType.COMMIT_HISTORY
+                                    if gateway_method == "get_code_history"
+                                    else _EvidenceType.SOURCE_CODE
+                                ),
+                                provider="code-intelligence",
+                                operation=action_label.lower(),
+                                scope=_absence_scope,
+                            ),
+                            investigation_id,
+                        )
+                except Exception:
+                    pass
             return _record_outcome(banked)
 
         async def _handle_search_code() -> int:
@@ -3727,6 +4011,10 @@ async def execute_action_activity(
                 meta = getattr(qres, "provider_metadata", None) or {}
                 symbols = meta.get("symbols", []) or []
                 outcome_detail["_symbol_count"] = len(symbols)
+                if not symbols:
+                    _emit_telemetry(
+                        ctx, tenant_id, investigation_id, "record_symbol_empty", "FIND_SYMBOL"
+                    )
                 return _symbol_evidence_packets(
                     tenant_id=tenant_id,
                     investigation_id=investigation_id,
@@ -4160,6 +4448,10 @@ async def execute_action_activity(
                 symbol_name=symbol,
             )
             outcome_detail["_symbol_count"] = len(definitions)
+            if not definitions:
+                _emit_telemetry(
+                    ctx, tenant_id, investigation_id, "record_symbol_empty", "TRACE_LOGIC"
+                )
             banked_rows: list[Any] = list(definitions)
             predicate_lines: list[str] = []
             for packet in definitions[:3]:
@@ -4269,8 +4561,7 @@ async def execute_action_activity(
                 fp = _hashlib.sha256(
                     f"callgraph:{tenant_id}:{symbol}:{len(callers)}:{len(callees)}".encode()
                 ).hexdigest()
-                return [
-                    Evidence(
+                summary_row = Evidence(
                         tenant_id=tenant_id,
                         investigation_id=investigation_id,
                         evidence_type=EvidenceType.CALL_GRAPH,
@@ -4309,7 +4600,91 @@ async def execute_action_activity(
                         freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
                         fingerprint=f"callgraph-{fp[:32]}",
                     )
-                ]
+                # Per-edge packets: the nodes already carry file/line
+                # provenance — bank each edge with it instead of leaving
+                # only the location-less summary. Edges stay discovery_only
+                # (a graph edge is not a shown call site) but now give the
+                # model and the call-site forcing rule concrete files.
+                edge_rows: list[Any] = []
+                for edge in (callers + callees)[:10]:
+                    try:
+                        if not isinstance(edge, dict):
+                            continue
+                        loc = edge.get("location") or {}
+                        if not isinstance(loc, dict):
+                            continue
+                        file_path = str(loc.get("file_path", "") or "").strip()
+                        if not file_path:
+                            continue
+                        try:
+                            edge_line = int(loc.get("line_number") or 0) or None
+                        except (TypeError, ValueError):
+                            edge_line = None
+                        caller = str(edge.get("caller_symbol", "") or "?")[:256]
+                        callee = str(edge.get("callee_symbol", "") or "?")[:256]
+                        edge_fp = _hashlib.sha256(
+                            f"calledge:{tenant_id}:{investigation_id}:{caller}:"
+                            f"{callee}:{file_path}:{edge_line or 0}".encode()
+                        ).hexdigest()[:64]
+                        edge_rows.append(
+                            Evidence(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                evidence_type=EvidenceType.CALL_GRAPH,
+                                provider="code-intelligence",
+                                source=f"callgraph://{caller}->{callee}",
+                                title=f"Call edge: {caller} -> {callee}",
+                                summary=(
+                                    f"'{caller}' calls '{callee}' "
+                                    f"({file_path}"
+                                    f"{':' + str(edge_line) if edge_line else ''})."
+                                ),
+                                content_snippet=(
+                                    f"{caller} -> {callee} "
+                                    f"({file_path}"
+                                    f"{':' + str(edge_line) if edge_line else ''})"
+                                )[:2000],
+                                attributes={
+                                    "discovery_only": True,
+                                    "revision_supported": bool(
+                                        loc.get("revision_supported", False)
+                                    ),
+                                    "caller_symbol": caller,
+                                    "callee_symbol": callee,
+                                },
+                                observed_at=now,
+                                retrieved_at=now,
+                                provenance=EvidenceProvenance(
+                                    tenant_id=tenant_id,
+                                    investigation_id=investigation_id,
+                                    provider_type="code-intelligence",
+                                    requested_provider_id="treesitter-local",
+                                    actual_provider_id="treesitter-local",
+                                    source_system="call-graph",
+                                    retrieval_timestamp=now,
+                                    query_fingerprint=QueryFingerprint(
+                                        provider_type="code-intelligence",
+                                        operation="find_call_graph",
+                                        normalized_query_hash=edge_fp[:32],
+                                    ),
+                                    source_location=SourceLocation(
+                                        system="call-graph",
+                                        identifier=f"{caller}->{callee}",
+                                        file_path=file_path,
+                                        line_start=edge_line,
+                                        line_end=edge_line,
+                                        revision=str(loc.get("revision", "") or "") or None,
+                                    ),
+                                ),
+                                freshness=EvidenceFreshness(
+                                    observed_at=now, retrieved_at=now
+                                ),
+                                fingerprint=edge_fp,
+                            )
+                        )
+                    except Exception:
+                        continue
+                return [summary_row] + edge_rows
 
             banked_count = await _handle_code_navigation(
                 "FIND_CALL_GRAPH",
@@ -4614,14 +4989,22 @@ async def execute_action_activity(
                 if not statement or statement in known:
                     continue
                 known.add(statement)
-                # Phase 2.1: a typed claim carries its OWN evidence binding;
+                # Phase 2.1: typed claims carry their OWN evidence binding;
                 # only statements without one inherit the batch-wide list.
+                # Same statement with several kinds persists each kind's
+                # binding as its own assessment.
                 hypothesis_id = uuid4()
                 claim_cited = list(cited)
                 assessments: list[Any] = []
-                typed = proposed_claims.get(statement)
-                if typed is not None:
+                typed_list = [
+                    raw for (text, _kind), raw in proposed_claims.items() if text == statement
+                ]
+                if typed_list:
+                    # A typed claim carries ONLY its own binding — the
+                    # batch-wide list is dropped, never merged.
                     claim_cited = []
+                for typed in typed_list:
+                    typed_cited: list[Any] = []
                     for raw in (typed.get("evidence_ids", []) or [])[:20]:
                         try:
                             cid = UUID(str(raw))
@@ -4629,6 +5012,7 @@ async def execute_action_activity(
                             continue
                         if cid in known_evidence_ids and cid not in claim_cited:
                             claim_cited.append(cid)
+                            typed_cited.append(cid)
                     try:
                         kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
                         raw_target = typed.get("target")
@@ -4637,7 +5021,7 @@ async def execute_action_activity(
                             if isinstance(raw_target, dict)
                             else None
                         )
-                        assessments = [
+                        assessments.extend(
                             HypothesisEvidenceAssessment(
                                 hypothesis_id=hypothesis_id,
                                 evidence_id=cid,
@@ -4647,12 +5031,12 @@ async def execute_action_activity(
                                 claim_kind=kind,
                                 claim_target=target,
                             )
-                            for cid in claim_cited
-                        ]
+                            for cid in typed_cited
+                        )
                     except Exception:
                         # Malformed typing never blocks persistence; the
                         # claim stays untyped and verifies by inference.
-                        assessments = []
+                        continue
                 try:
                     await hypothesis_repo.save(
                         tenant_id,
@@ -4817,6 +5201,18 @@ async def execute_action_activity(
                     for s in (outcome_detail.get("sources") or [])
                     if isinstance(s, dict)
                 ][:10],
+            )
+            # Phase 4.2: proof-chain counter (additive, fail-open). The
+            # miss_reason breakdown is what lets dashboards separate
+            # provider failure from no-match.
+            _emit_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                "record_code_action",
+                str(getattr(resolved_action_type, "value", resolved_action_type)),
+                _outcome_status,
+                str(outcome_detail.get("miss_reason") or "none"),
             )
             # Operational telemetry: action type + result counts only (values
             # ride as extra keys per TO_DO-007/019; lazy %-style message).
@@ -5079,6 +5475,15 @@ async def verify_root_cause_activity(
                 sibling_hypotheses=list(hypotheses[1:]),
             )
             verified = result.status.value == "VERIFIED"
+            # Phase 4.2: legacy-mode decisions are observed too.
+            _emit_verify_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                hypothesis,
+                result,
+                list(hypotheses[1:]),
+            )
         else:
             bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
             refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
@@ -5238,6 +5643,19 @@ async def verify_root_cause_activity(
                         h for h in (hypotheses or []) if getattr(h, "id", None) != _candidate_id
                     ],
                 )
+            # Phase 4.2: verification decision + location-exemption counters.
+            _emit_verify_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                candidate,
+                result,
+                [
+                    h
+                    for h in (hypotheses or [])
+                    if getattr(h, "id", None) != getattr(candidate, "id", None)
+                ],
+            )
             # Shadow telemetry: always compute the legacy answer alongside
             # and log divergence while the new path is authoritative.
             try:
@@ -5981,6 +6399,13 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 ),
             ),
         )
+        # Phase 4.2: abstention volume with limitations (closed kind).
+        try:
+            _emit_telemetry(
+                ctx, tenant_id, investigation_id, "record_conclusion_limitation", "abstention"
+            )
+        except Exception:
+            pass
 
     def _ranked_alternative_statements() -> list[str]:
         try:
@@ -6318,6 +6743,27 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         )
     except Exception:
         _next_check = None
+    # Phase 4.2: conclusion limitation kinds + location-exemption state.
+    # Additive and fail-open; publication never waits on metrics.
+    try:
+        for _lim_text in _verification_limitations:
+            _emit_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                "record_conclusion_limitation",
+                _limitation_kind(_lim_text),
+            )
+        if location_answered:
+            _emit_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                "record_location_answer",
+                bool(_untested_rivals),
+            )
+    except Exception:
+        pass
     conclusion = InvestigationConclusion(
         tenant_id=tenant_id,
         investigation_id=investigation_id,
@@ -6508,6 +6954,17 @@ async def conclude_investigation_activity(
                                             next_check=_epistemic_check,
                                         ),
                                     )
+                                    # Phase 4.2: abstention volume counter.
+                                    try:
+                                        _emit_telemetry(
+                                            ctx,
+                                            tenant_id,
+                                            investigation_id,
+                                            "record_conclusion_limitation",
+                                            "abstention",
+                                        )
+                                    except Exception:
+                                        pass
                                     target = InvestigationStatus.COMPLETED
                                     conclude_reason = (
                                         "Workflow concluded with COMPLETED (INSUFFICIENT_EVIDENCE)"

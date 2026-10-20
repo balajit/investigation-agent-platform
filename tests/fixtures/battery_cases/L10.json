@@ -1,0 +1,13 @@
+{
+  "id": "L10",
+  "symptom": "Where is SampleOrderFilter implemented at revision abc123?",
+  "context": "HEAD search hit mixed with pinned reads must fail: every supporting code row must carry the incident revision. Offline-only: the sample checkout has a single commit.",
+  "live": false,
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "definition",
+    "cited_path": "SampleOrderFilter.java",
+    "expect_symbol": "SampleOrderFilter",
+    "incident_revision": "abc123"
+  }
+}

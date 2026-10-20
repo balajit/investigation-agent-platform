@@ -1,0 +1,10 @@
+{
+  "id": "L11",
+  "symptom": "Where is SampleOrderFilter implemented? (code index timed out during the run)",
+  "context": "Failure rows in the corpus must never support a conclusion: honest abstention with failures uncited. Offline-only.",
+  "live": false,
+  "expect": {
+    "status": "ABSTAIN",
+    "claim": "no_failure_citation"
+  }
+}

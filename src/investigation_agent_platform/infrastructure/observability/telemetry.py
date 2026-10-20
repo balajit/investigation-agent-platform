@@ -57,6 +57,39 @@ class OpenTelemetryObservabilityAdapter(ObservabilityPort):
         self._llm_cost_histogram = self._meter.create_histogram(
             "agent.llm.cost", unit="usd", description="Estimated LLM cost"
         )
+        # Phase 4.2: code-grounding proof-chain counters. All labels are
+        # closed vocabularies — never file paths, line ranges, or SHAs.
+        self._code_action_counter = self._meter.create_counter(
+            "code.action.executions", unit="1", description="Code actions by outcome"
+        )
+        self._symbol_empty_counter = self._meter.create_counter(
+            "code.symbol.empty", unit="1", description="Symbol lookups banking nothing"
+        )
+        self._verification_counter = self._meter.create_counter(
+            "verification.decisions", unit="1", description="Verification by kind/status"
+        )
+        self._conclusion_limitation_counter = self._meter.create_counter(
+            "conclusion.limitations", unit="1", description="Conclusion limitations by kind"
+        )
+        self._replay_mismatch_counter = self._meter.create_counter(
+            "replay.outcome.mismatch",
+            unit="1",
+            description="Idempotency replays with unknown outcome shape",
+        )
+        self._code_packet_counter = self._meter.create_counter(
+            "prompt.code_packets", unit="1", description="Code packets by disposition"
+        )
+        self._location_answer_counter = self._meter.create_counter(
+            "verification.location_answers",
+            unit="1",
+            description="Location answers by rival state",
+        )
+        self._revision_check_counter = self._meter.create_counter(
+            "code.revision.checks", unit="1", description="Revision pin checks by match"
+        )
+        self._claim_counter = self._meter.create_counter(
+            "reasoning.claims", unit="1", description="Decision claims by source"
+        )
 
     def record_tool_execution(
         self,
@@ -113,6 +146,98 @@ class OpenTelemetryObservabilityAdapter(ObservabilityPort):
         if not self._enabled:
             return
         self._meter.create_counter(metric_name, unit="1").add(value, tags)
+
+    @staticmethod
+    def _str(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:128] if text else "none"
+
+    def record_code_action(
+        self, context: SpanContext, action: str, outcome: str, miss_reason: str
+    ) -> None:
+        if not self._enabled:
+            return
+        self._code_action_counter.add(
+            1,
+            {
+                "action": self._str(action) or "unknown",
+                "outcome": self._str(outcome) or "unknown",
+                "miss_reason": self._str(miss_reason),
+            },
+        )
+
+    def record_symbol_empty(self, context: SpanContext, tool: str) -> None:
+        if not self._enabled:
+            return
+        self._symbol_empty_counter.add(1, {"tool": self._str(tool) or "unknown"})
+
+    def record_verification(
+        self, context: SpanContext, claim_kind: str, status: str, limitation: str
+    ) -> None:
+        if not self._enabled:
+            return
+        self._verification_counter.add(
+            1,
+            {
+                "claim_kind": self._str(claim_kind),
+                "status": self._str(status) or "unknown",
+                "limitation": self._str(limitation),
+            },
+        )
+
+    def record_conclusion_limitation(self, context: SpanContext, kind: str) -> None:
+        if not self._enabled:
+            return
+        self._conclusion_limitation_counter.add(1, {"kind": self._str(kind)})
+
+    def record_replay_mismatch(self, context: SpanContext) -> None:
+        if not self._enabled:
+            return
+        self._replay_mismatch_counter.add(1, {})
+
+    def record_code_packets(
+        self, context: SpanContext, included: int, truncated: int, dropped: int
+    ) -> None:
+        if not self._enabled:
+            return
+        for disposition, count in (
+            ("included", included),
+            ("truncated", truncated),
+            ("dropped", dropped),
+        ):
+            try:
+                total = int(count or 0)
+            except (TypeError, ValueError):
+                continue
+            if total > 0:
+                self._code_packet_counter.add(total, {"disposition": disposition})
+
+    def record_location_answer(self, context: SpanContext, has_untested_rival: bool) -> None:
+        if not self._enabled:
+            return
+        self._location_answer_counter.add(
+            1, {"has_untested_rival": "true" if has_untested_rival else "false"}
+        )
+
+    def record_revision_check(
+        self, context: SpanContext, operation: str, match: bool
+    ) -> None:
+        if not self._enabled:
+            return
+        self._revision_check_counter.add(
+            1,
+            {
+                "operation": self._str(operation) or "unknown",
+                "match": "true" if match else "false",
+            },
+        )
+
+    def record_claim(self, context: SpanContext, source: str) -> None:
+        if not self._enabled:
+            return
+        if source not in ("model", "auto"):
+            return
+        self._claim_counter.add(1, {"source": source})
 
 
 __all__ = ["ObservabilityPort", "OpenTelemetryObservabilityAdapter"]

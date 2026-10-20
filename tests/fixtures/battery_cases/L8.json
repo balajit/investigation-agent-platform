@@ -1,0 +1,9 @@
+{
+  "id": "L8",
+  "symptom": "Where is the quantum module?",
+  "context": "Tranche B L8: unanswerable — must abstain honestly.",
+  "live": true,
+  "expect": {
+    "status": "ABSTAIN"
+  }
+}

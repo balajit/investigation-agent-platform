@@ -440,3 +440,141 @@ def test_loop_telemetry_carries_overconfident_turns():
         4,
     )
     assert merged["overconfident_turns"] == 3
+
+
+def _floor(**overrides):
+    from investigation_agent_platform.application.worker.workflows import (
+        _explore_floor_target,
+    )
+
+    params = {
+        "reason_data": {"next_action": "VERIFY_HYPOTHESIS", "action_parameters": {}},
+        "evidence_banked_total": 1,
+        "triage_route": "BUG",
+        "description": "Where is SampleOrderFilter implemented?",
+        "seed": {"failing_symbol": "SampleOrderFilter"},
+        "forced_count": 0,
+    }
+    params.update(overrides)
+    return _explore_floor_target(
+        params["reason_data"],
+        params["evidence_banked_total"],
+        params["triage_route"],
+        params["description"],
+        params["seed"],
+        params["forced_count"],
+    )
+
+
+def test_floor_forces_read_on_thin_terminal_proposal():
+    hit = _floor()
+    assert hit is not None
+    assert hit["next_action"] == "FIND_SYMBOL"
+    assert hit["action_parameters"]["symbol_name"] == "SampleOrderFilter"
+
+
+def test_floor_reads_named_path_first():
+    hit = _floor(
+        description="Read src/svc/handler.py around the retry branch",
+        seed={"frames": [{"file": "src/svc/handler.py"}]},
+    )
+    assert hit is not None
+    assert hit["next_action"] == "GET_CODE"
+    assert hit["action_parameters"]["file_path"] == "src/svc/handler.py"
+
+
+def test_floor_prefers_path_over_symbol():
+    hit = _floor(description="Who calls the handler?")
+    assert hit is not None
+    assert hit["next_action"] == "FIND_SYMBOL"
+    assert hit["action_parameters"]["symbol_name"] == "SampleOrderFilter"
+
+
+def test_floor_passes_at_or_above_threshold():
+    assert _floor(evidence_banked_total=3) is None
+    assert _floor(evidence_banked_total=9) is None
+
+
+def test_floor_ignores_gathering_proposals():
+    assert (
+        _floor(reason_data={"next_action": "SEARCH_CODE", "action_parameters": {}})
+        is None
+    )
+
+
+def test_floor_ignores_non_code_incidents():
+    assert (
+        _floor(triage_route="DATA", description="Why is revenue down?", seed={}) is None
+    )
+
+
+def test_floor_respects_cap():
+    assert _floor(forced_count=2) is None
+
+
+def test_floor_keyword_fallback():
+    hit = _floor(description="Checkout latency spikes at midnight", seed={},
+                 triage_route="BUG")
+    assert hit is not None
+    assert hit["next_action"] == "SEARCH_CODE"
+    assert hit["action_parameters"]["query"]
+
+
+def _callsite(reason_data, history=None, count=0):
+    from investigation_agent_platform.application.worker.workflows import (
+        _callsite_target,
+    )
+
+    return _callsite_target(reason_data, history or [], count)
+
+
+def _edge_claim(symbol="reserve", counterpart="checkout", file_path="src/Checkout.java"):
+    return {
+        "statement": f"{counterpart} calls {symbol}",
+        "claim_kind": "CALL_EDGE",
+        "evidence_ids": [],
+        "target": {"symbol": symbol, "counterpart": counterpart, "file_path": file_path},
+    }
+
+
+def test_callsite_forces_unread_caller_file():
+    hit = _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]})
+    assert hit is not None
+    assert hit["next_action"] == "GET_CODE"
+    assert hit["action_parameters"]["file_path"] == "src/Checkout.java"
+
+
+def test_callsite_passes_read_caller_file():
+    history = [
+        {"action": "GET_CODE", "evidence_added": 2,
+         "parameters": {"file_path": "src/Checkout.java"}},
+    ]
+    assert _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, history) is None
+
+
+def test_callsite_ignores_non_edge_claims():
+    claims = [dict(_edge_claim(), claim_kind="DEFINITION")]
+    assert _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": claims}) is None
+
+
+def test_callsite_needs_target_file():
+    claims = [dict(_edge_claim(), target={"symbol": "reserve"})]
+    assert _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": claims}) is None
+
+
+def test_callsite_respects_cap():
+    assert (
+        _callsite(
+            {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, [], 2
+        )
+        is None
+    )
+
+
+def test_callsite_passes_target_window():
+    claim = _edge_claim()
+    claim["target"] = dict(claim["target"], line_start=88, line_end=104)
+    hit = _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]})
+    assert hit is not None
+    assert hit["action_parameters"]["start_line"] == 88
+    assert hit["action_parameters"]["end_line"] == 104

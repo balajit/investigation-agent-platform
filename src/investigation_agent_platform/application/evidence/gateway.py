@@ -63,6 +63,40 @@ def _is_retryable_gateway_failure(exc: BaseException) -> bool:
     return bool(getattr(exc, "retryable", False))
 
 
+# Upper bound for honoring a server Retry-After hint (seconds). Gateway
+# calls run inside 60s activities with a 30s call timeout: an uncapped
+# hint (throttled providers may ask for minutes) would blow the activity
+# budget and turn every throttle into a Temporal timeout. All waits run
+# activity-side, so sleeping is replay-safe (activities re-execute;
+# only workflow code faces determinism constraints).
+MAX_RETRY_AFTER_WAIT = 15.0
+
+
+def _wait_with_retry_after(retry_state: Any) -> float:
+    """Tenacity wait honoring first-party Retry-After hints (close-out).
+
+    Exponential base preserves existing behavior; a trusted retry_after
+    on the failing exception (RateLimitException only — never sniffed
+    text) extends the wait up to the cap. Unknown shapes fall back to
+    the base wait; nothing here ever raises.
+    """
+    base = wait_exponential(multiplier=1, min=2, max=10)(retry_state)
+    try:
+        outcome = getattr(retry_state, "outcome", None)
+        exc = outcome.exception() if outcome is not None else None
+        hint = float(getattr(exc, "retry_after", None) or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        hint = 0.0
+    except Exception:
+        hint = 0.0
+    if hint <= 0:
+        return base
+    try:
+        return min(max(float(base), hint), MAX_RETRY_AFTER_WAIT)
+    except (TypeError, ValueError):
+        return base
+
+
 # P0-3: platform log rows embed investigation/workflow IDs
 # (wf-investigation-<uuid>). A row naming a DIFFERENT investigation than the
 # one being run is cross-run leakage, never evidence — drop it. Rows naming
@@ -217,70 +251,79 @@ def _resolve_fanout_concurrency(explicit: int | None) -> int | None:
 
 
 class EvidenceDeduplicator:
-    """Fingerprint-based deduplicator scoped per tenant.
+    """Fingerprint-based deduplicator scoped per investigation.
 
-    Keeps in-memory fingerprint history and can optionally consult an
-    ``EvidenceRepository`` for persistence-backed checks.  Fingerprints
-    are deterministic (see ``domain/evidence/models.py`` and provider
-    implementations for elastic/oracle/git).
+    Keys are (tenant, investigation, fingerprint): evidence rows are
+    investigation-scoped (citations resolve per investigation), so a row
+    banked by one investigation must never suppress the identical row in
+    another. The pre-Phase-4 tenant-only key did exactly that — a repeat
+    query in a later investigation returned zero rows, which the loop
+    read as absence. Within one investigation, repeats still dedupe.
+    History is insertion-ordered and capped; there is deliberately no
+    persistence-backed check: crash-retry re-banking is owned by action
+    idempotency (which replays cached responses without re-executing),
+    and any cross-investigation suppression corrupts citations.
+    Fingerprints are deterministic (see ``domain/evidence/models.py``
+    and provider implementations for elastic/oracle/git).
     """
 
+    # Upper bound on remembered keys: a long-lived gateway otherwise
+    # grows without limit across investigations.
+    MAX_REMEMBERED = 20_000
+
     def __init__(self, evidence_repository: Any | None = None) -> None:
-        self._seen: set[tuple[str, str]] = set()
+        self._seen: dict[tuple[str, str, str], None] = {}
         self._evidence_repository = evidence_repository
 
-    def _is_seen(self, tenant_id: str, fingerprint: str) -> bool:
-        return (tenant_id, fingerprint) in self._seen
+    @staticmethod
+    def _key(tenant_id: Any, investigation_id: Any, fingerprint: str) -> tuple[str, str, str]:
+        return (str(tenant_id or ""), str(investigation_id or ""), str(fingerprint or ""))
 
-    def _mark_seen(self, tenant_id: str, fingerprint: str) -> None:
-        self._seen.add((tenant_id, fingerprint))
+    def _is_seen(self, tenant_id: Any, investigation_id: Any, fingerprint: str) -> bool:
+        return self._key(tenant_id, investigation_id, fingerprint) in self._seen
 
-    async def _exists_in_store(self, tenant_id: str, fingerprint: str) -> bool:
-        """Check persistence store for fingerprint collision if repository supports it."""
-        repo = self._evidence_repository
-        if repo is None:
-            return False
-        # Prefer explicit fingerprint lookup if repository exposes it
-        check = getattr(repo, "exists_by_fingerprint", None)
-        if callable(check):
-            result = check(tenant_id, fingerprint)
-            if asyncio.iscoroutine(result):
-                return bool(await result)
-            return bool(result)
-        # Fallback: scan in-memory store (used by InMemoryEvidenceRepository)
-        by_fp = getattr(repo, "_by_fingerprint", None)
-        if isinstance(by_fp, dict):
-            return (tenant_id, fingerprint) in by_fp
-        return False
+    def _mark_seen(self, tenant_id: Any, investigation_id: Any, fingerprint: str) -> None:
+        key = self._key(tenant_id, investigation_id, fingerprint)
+        if key not in self._seen:
+            self._seen[key] = None
+            while len(self._seen) > self.MAX_REMEMBERED:
+                self._seen.pop(next(iter(self._seen)))
 
     @traced("gateway", component="deduplicator", extra_from=_dedupe_extra)
-    async def deduplicate(self, tenant_id: str, items: list[Evidence]) -> list[Evidence]:
+    async def deduplicate(
+        self,
+        tenant_id: str,
+        items: list[Evidence],
+        investigation_id: Any | None = None,
+    ) -> list[Evidence]:
         deduped: list[Evidence] = []
         seen_batch: set[str] = set()
         for item in items:
             if item.fingerprint in seen_batch:
                 continue
-            if self._is_seen(tenant_id, item.fingerprint):
-                continue
-            if await self._exists_in_store(tenant_id, item.fingerprint):
-                self._mark_seen(tenant_id, item.fingerprint)
+            if self._is_seen(tenant_id, investigation_id, item.fingerprint):
                 continue
             seen_batch.add(item.fingerprint)
-            self._mark_seen(tenant_id, item.fingerprint)
+            self._mark_seen(tenant_id, investigation_id, item.fingerprint)
             deduped.append(item)
         return deduped
 
-    def deduplicate_sync(self, tenant_id: str, items: list[Evidence]) -> list[Evidence]:
+    def deduplicate_sync(
+        self,
+        tenant_id: str,
+        items: list[Evidence],
+        investigation_id: Any | None = None,
+    ) -> list[Evidence]:
         """Synchronous variant for contexts without repository I/O."""
         deduped: list[Evidence] = []
         seen_batch: set[str] = set()
         for item in items:
             if item.fingerprint in seen_batch:
                 continue
-            if self._is_seen(tenant_id, item.fingerprint):
+            if self._is_seen(tenant_id, investigation_id, item.fingerprint):
                 continue
             seen_batch.add(item.fingerprint)
-            self._mark_seen(tenant_id, item.fingerprint)
+            self._mark_seen(tenant_id, investigation_id, item.fingerprint)
             deduped.append(item)
         return deduped
 class AsyncEvidenceGateway(EvidenceGatewayProtocol):
@@ -425,7 +468,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -465,7 +508,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             sanitized_items = [
                 await self._sanitizer.sanitize_evidence(tenant_id, item) for item in result.items
             ]
-            deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+            deduped = await self._deduplicator.deduplicate(
+                tenant_id, sanitized_items, investigation_id
+            )
 
             if not deduped:
                 # Generic file-log fallback: when the default deployment has
@@ -494,7 +539,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                             for item in fallback_result.items
                         ]
                         deduped = await self._deduplicator.deduplicate(
-                            tenant_id, fallback_items
+                            tenant_id, fallback_items, investigation_id
                         )
                         if deduped:
                             result = fallback_result
@@ -546,7 +591,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -586,7 +631,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             sanitized_items = [
                 await self._sanitizer.sanitize_evidence(tenant_id, item) for item in result.items
             ]
-            deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+            deduped = await self._deduplicator.deduplicate(
+                tenant_id, sanitized_items, investigation_id
+            )
             # R2: fan out across every other tenant-authorized MCP state
             # provider concurrently (an app with Oracle + Postgres gets both
             # interrogated, not just the resolved primary). Per-source
@@ -725,7 +772,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 # P3-2: dedup ONLY the fan-out extras — re-running dedup over
                 # the already-marked primary items would drop everything.
                 deduped_extra = await self._deduplicator.deduplicate(
-                    tenant_id, sanitized_extra
+                    tenant_id, sanitized_extra, investigation_id
                 )
                 deduped = list(deduped) + list(deduped_extra)
             # D4: template assertions evaluated in code over parsed row
@@ -830,7 +877,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -876,12 +923,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             sanitized_items = [
                 await self._sanitizer.sanitize_evidence(tenant_id, e) for e in raw_items
             ]
-            deduped = await self._deduplicator.deduplicate(tenant_id, sanitized_items)
+            deduped = await self._deduplicator.deduplicate(
+                tenant_id, sanitized_items, investigation_id
+            )
             return EvidenceQueryResult(items=deduped, total_count=len(deduped))
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -925,7 +974,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -963,7 +1012,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -1067,7 +1116,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )
@@ -1100,7 +1149,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 timeout=self._timeout_seconds,
             )
             sanitized = [await self._sanitizer.sanitize_evidence(tenant_id, item) for item in items]
-            deduped = await self._deduplicator.deduplicate(tenant_id, sanitized)
+            deduped = await self._deduplicator.deduplicate(tenant_id, sanitized, investigation_id)
             return EvidenceQueryResult(items=deduped, total_count=len(deduped))
 
     @traced("gateway", extra_from=_gateway_extra)
@@ -1136,7 +1185,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, investigation_id, application_id, result
             )
             sanitized = await self._sanitizer.sanitize_evidence(tenant_id, item)
-            deduped = await self._deduplicator.deduplicate(tenant_id, [sanitized])
+            deduped = await self._deduplicator.deduplicate(tenant_id, [sanitized], investigation_id)
             return EvidenceQueryResult(items=deduped, total_count=len(deduped))
 
     @staticmethod
@@ -1204,7 +1253,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception(_is_retryable_gateway_failure),
         reraise=True,
     )

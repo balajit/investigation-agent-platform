@@ -35,3 +35,4 @@ secrets/
 # environment variables or a secret manager (AWS Secrets Manager, OpenBao).
 .env.*
 !.env.example
+reports/

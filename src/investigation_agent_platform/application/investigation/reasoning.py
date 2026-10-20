@@ -54,6 +54,13 @@ def _decision_extra(decision: Any) -> dict[str, Any]:
 
 REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-011"
 
+# Reasoner sampling temperature (Phase 4 battery readout). First-turn
+# branch dominance at the 0.7 default produced opposite verdicts on
+# identical symptoms; 0.1 keeps a sliver of hypothesis diversity without
+# the sampling noise. Scoped to the reasoner request only — embeddings,
+# probes, and every other LLM consumer keep the configured default.
+REASONING_TEMPERATURE = 0.1
+
 # Versioned, independently testable prompt sections. Capability authority is
 # stated exactly once; every other section refers back to it. Keeping the
 # sections separate stops the "one 145-line string" drift where duplicate
@@ -362,6 +369,61 @@ class ReasoningCoordinator(InvestigationReasoner):
             metadata={"status": "REASONING_UNAVAILABLE", "reason": reason},
         )
 
+    def _ensure_claim_coverage(self, decision: Any, tenant_id: str, state: Any) -> Any:
+        """Type every evaluated hypothesis (Phase 2 item 1).
+
+        Statements without a model-supplied claim become explicit CAUSAL
+        claims with empty evidence binding instead of untyped rows that
+        bypass kind gating through the inference fallback. CAUSAL still
+        faces per-step grounding at VERIFY time, so nothing verifies for
+        free. The model/auto split is emitted for compliance measurement:
+        a high auto rate means prompt work, never blocking.
+        """
+        try:
+            from investigation_agent_platform.domain.hypothesis.models import ClaimKind
+            from investigation_agent_platform.ports.reasoning.reasoner import DecisionClaim
+
+            hyps = [
+                str(h or "").strip()
+                for h in (getattr(decision, "hypotheses_evaluated", None) or [])
+            ]
+            existing = {
+                str(getattr(c, "statement", "") or "").strip()
+                for c in (getattr(decision, "claims", None) or [])
+            }
+            auto = [
+                DecisionClaim(statement=h, claim_kind=ClaimKind.CAUSAL)
+                for h in hyps
+                if h and h not in existing
+            ]
+        except Exception:
+            return decision
+        try:
+            obs = getattr(self, "_observability", None)
+            if obs is not None:
+                from investigation_agent_platform.ports.observability.telemetry import (
+                    SpanContext,
+                )
+
+                sctx = SpanContext(
+                    tenant_id=str(tenant_id),
+                    investigation_id=state.investigation.id,
+                )
+                for _ in list(getattr(decision, "claims", None) or []):
+                    obs.record_claim(sctx, "model")
+                for _ in auto:
+                    obs.record_claim(sctx, "auto")
+        except Exception:
+            pass
+        if not auto:
+            return decision
+        try:
+            return decision.model_copy(
+                update={"claims": list(getattr(decision, "claims", None) or []) + auto}
+            )
+        except Exception:
+            return decision
+
     @traced(
         "reason",
         component="coordinator",
@@ -436,6 +498,32 @@ class ReasoningCoordinator(InvestigationReasoner):
         )
 
         compiled_context = compile_reasoning_context(state)
+        # Phase 4.2: packet disposition for the budget dashboard. Included
+        # vs truncated vs dropped partitions the visible excerpts; dropped
+        # counts input rows that never became excerpts.
+        try:
+            _obs = getattr(self, "_observability", None)
+            if _obs is not None:
+                _excerpts = (compiled_context or {}).get("evidence_excerpts") or []
+                _truncated = sum(
+                    1 for e in _excerpts if isinstance(e, dict) and e.get("content_truncated")
+                )
+                _pool = max(len(getattr(state, "evidence", None) or []), len(_excerpts))
+                from investigation_agent_platform.ports.observability.telemetry import (
+                    SpanContext,
+                )
+
+                _obs.record_code_packets(
+                    SpanContext(
+                        tenant_id=str(tenant_id),
+                        investigation_id=state.investigation.id,
+                    ),
+                    included=len(_excerpts) - _truncated,
+                    truncated=_truncated,
+                    dropped=max(0, _pool - len(_excerpts)),
+                )
+        except Exception:
+            pass
         visible_ids = _visible_evidence_ids(compiled_context)
         facts_block = {
             "investigation_id": str(state.investigation.id),
@@ -589,6 +677,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 system_prompt=build_system_prompt(),
                 response_schema=schema,
                 envelope=envelope,
+                temperature=REASONING_TEMPERATURE,
             )
             resp = await gateway.complete(tenant_id, req)
         except Exception as exc:
@@ -635,6 +724,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 extra={"tenant_id": tenant_id, "error": str(exc)},
             )
             return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
+        decision = self._ensure_claim_coverage(decision, tenant_id, state)
         # Token accounting: surface this call's usage on the decision so
         # the worker can accumulate per-investigation spend (budget
         # ledger) without a second telemetry channel.
