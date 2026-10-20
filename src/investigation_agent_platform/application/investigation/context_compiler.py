@@ -327,6 +327,11 @@ def _code_packet(
         "read_mode": mode,
         "discovery_only": discovery,
         "symbol_spans": _symbol_spans(e, start_line),
+        "code_fact_resolution": (
+            attrs.get("code_fact_resolution")
+            if isinstance(attrs, dict) and isinstance(attrs.get("code_fact_resolution"), dict)
+            else None
+        ),
         "next_window": next_window,
         "claim_priority": 0 if bound else (1 if mode == "range" else 2),
     }

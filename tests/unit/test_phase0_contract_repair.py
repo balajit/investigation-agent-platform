@@ -415,6 +415,43 @@ class TestReadMode:
         assert saved[0].attributes["read_mode"] == "range"
         assert "discovery_only" not in saved[0].attributes
 
+    @pytest.mark.asyncio
+    async def test_java_field_request_attaches_deterministic_resolution(self) -> None:
+        async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            evidence = _code_evidence(
+                file_path=req.file_path,
+                line_start=req.start_line or 1,
+                line_end=req.end_line or 3,
+            )
+            return evidence.model_copy(
+                update={
+                    "content_snippet": (
+                        "10| class TransactionProcessor {\n11|   private int retryCount = 3;\n12| }"
+                    )
+                }
+            )
+
+        _, saved = _ctx_with(SimpleNamespace(get_source=_get_source))
+        result = await execute_action_activity(
+            _input(
+                "GET_CODE",
+                {
+                    "file_path": "src/TransactionProcessor.java",
+                    "start_line": 10,
+                    "end_line": 12,
+                    "field_name": "retryCount",
+                    "declaring_type": "TransactionProcessor",
+                },
+            )
+        )
+        fact = saved[0].attributes["code_fact_resolution"]
+        assert fact["status"] == "RESOLVED"
+        assert fact["resolved_value"] == "3"
+        assert fact["revision"] == "abc123"
+        assert result.data["code_fact_resolution"]["source_evidence_ids"] == [
+            str(saved[0].evidence_id)
+        ]
+
     def test_has_range_read_rejects_path_only_citation(self) -> None:
         path_only = _code_evidence(
             file_path="OfferSvc.java",

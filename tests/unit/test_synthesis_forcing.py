@@ -8,6 +8,7 @@ holds unevaluated hypotheses against banked evidence.
 
 from investigation_agent_platform.application.worker.workflows import (
     _should_force_formulate,
+    _source_value_target,
 )
 
 
@@ -41,6 +42,51 @@ def test_no_force_before_two_turns_elapsed():
     assert _should_force_formulate(1, 0, ["h1"], 9, 0) is False
 
 
+def test_source_value_claim_forces_exact_java_range_read():
+    reason = {
+        "next_action": "VERIFY_HYPOTHESIS",
+        "claims": [
+            {
+                "claim_kind": "DEFINITION",
+                "value_semantics": "EXPLICIT_INITIALIZER",
+                "target": {
+                    "symbol": "retryCount",
+                    "declaring_type": "TransactionProcessor",
+                    "file_path": "src/TransactionProcessor.java",
+                    "revision": "abc123",
+                },
+            }
+        ],
+    }
+    assert _source_value_target(reason, [], 0) == {
+        "file_path": "src/TransactionProcessor.java",
+        "field_name": "retryCount",
+        "declaring_type": "TransactionProcessor",
+        "revision": "abc123",
+        "start_line": 1,
+        "end_line": 2000,
+    }
+
+
+def test_source_value_forcing_is_bounded_and_only_for_java():
+    claim = {
+        "claim_kind": "DEFINITION",
+        "value_semantics": "LANGUAGE_DEFAULT",
+        "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.py"},
+    }
+    assert (
+        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0) is None
+    )
+    java_claim = {
+        **claim,
+        "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.java"},
+    }
+    assert (
+        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [java_claim]}, [], 2)
+        is None
+    )
+
+
 def test_no_force_after_cap_reached():
     assert _should_force_formulate(9, 0, ["h1"], 9, 2) is False
 
@@ -52,17 +98,13 @@ def test_reread_forces_get_code_for_definition_without_range_read():
 
     reason_data = {
         "next_action": "VERIFY_HYPOTHESIS",
-        "hypotheses_evaluated": [
-            "The execute action is implemented in src/worker/activities.py"
-        ],
+        "hypotheses_evaluated": ["The execute action is implemented in src/worker/activities.py"],
     }
     history = [
         {"action": "SEARCH_CODE", "evidence_added": 4},
         {"action": "SEARCH_LOGS", "evidence_added": 10},
     ]
-    assert (
-        _reread_target(reason_data, history, 0) == "src/worker/activities.py"
-    )
+    assert _reread_target(reason_data, history, 0) == "src/worker/activities.py"
 
 
 def test_reread_skipped_when_range_read_already_banked():
@@ -128,9 +170,7 @@ def test_log_force_skips_non_error_get_code_and_capped():
     err = {"next_action": "SEARCH_CODE", "action_parameters": {"query": "errors"}}
     assert _should_force_log_search(desc, err, [], 2) is None
     assert (
-        _should_force_log_search(
-            desc, err, [{"action": "SEARCH_LOGS", "evidence_added": 5}], 0
-        )
+        _should_force_log_search(desc, err, [{"action": "SEARCH_LOGS", "evidence_added": 5}], 0)
         is None
     )
     derived = _should_force_log_search(
@@ -146,19 +186,29 @@ def test_reason_summary_carries_forced_and_outcome():
 
     # Raw decision shape (pre-execution) renders the old shape.
     plain = _reason_summary(
-        {"next_action": "SEARCH_CODE", "conclusion_readiness": 0.0,
-         "hypotheses_evaluated": [], "observations": ["o"]}
+        {
+            "next_action": "SEARCH_CODE",
+            "conclusion_readiness": 0.0,
+            "hypotheses_evaluated": [],
+            "observations": ["o"],
+        }
     )
     assert "action=SEARCH_CODE" in plain
     assert "forced=" not in plain
     assert "outcome=" not in plain
     # Enriched entry shape: dispatched action wins, forced + outcome shown.
     enriched = _reason_summary(
-        {"next_action": "SEARCH_CODE", "conclusion_readiness": 0.25,
-         "hypotheses_evaluated": ["h"], "observations": [],
-         "action": "FORMULATE_HYPOTHESIS", "forced_formulate": True,
-         "outcome_status": "SUCCEEDED", "evidence_added": 2,
-         "miss_reason": None}
+        {
+            "next_action": "SEARCH_CODE",
+            "conclusion_readiness": 0.25,
+            "hypotheses_evaluated": ["h"],
+            "observations": [],
+            "action": "FORMULATE_HYPOTHESIS",
+            "forced_formulate": True,
+            "outcome_status": "SUCCEEDED",
+            "evidence_added": 2,
+            "miss_reason": None,
+        }
     )
     assert "action=FORMULATE_HYPOTHESIS" in enriched
     assert "forced=[formulate]" in enriched
@@ -175,9 +225,15 @@ def test_derive_loop_telemetry_merges_counters_and_counts():
     assert _derive_loop_telemetry(None, {}, 0) is None
     assert _derive_loop_telemetry({}, {}, 0) is None
     merged = _derive_loop_telemetry(
-        {"llm_tokens_total": 5224, "llm_cost_total": 0.01,
-         "formulated_count": 1, "forced_formulate_count": 1,
-         "iterations": 6, "junk": "dropped", "flag": True},
+        {
+            "llm_tokens_total": 5224,
+            "llm_cost_total": 0.01,
+            "formulated_count": 1,
+            "forced_formulate_count": 1,
+            "iterations": 6,
+            "junk": "dropped",
+            "flag": True,
+        },
         {"hypotheses_formulated": 2, "hypotheses_bound": 1, "hypotheses_verified": 0},
         11,
     )
@@ -186,6 +242,7 @@ def test_derive_loop_telemetry_merges_counters_and_counts():
     assert merged["hypotheses_bound"] == 1
     assert merged["evidence_banked_repo"] == 11
     assert "junk" not in merged and "flag" not in merged
+
     # Stamp helper mirrors _stamp_failure onto metadata.
     class _Inv:
         def __init__(self, metadata):
@@ -209,14 +266,19 @@ def test_reason_summary_tolerates_merged_entry_counts():
     # Exact live shape that raised TypeError: entry int counts shadow
     # decision lists after the call-site merge.
     decision = {
-        "next_action": "SEARCH_CODE", "conclusion_readiness": 0.0,
-        "hypotheses_evaluated": [], "observations": ["o"],
+        "next_action": "SEARCH_CODE",
+        "conclusion_readiness": 0.0,
+        "hypotheses_evaluated": [],
+        "observations": ["o"],
         "action_parameters": {"query": "x"},
     }
     entry = {
-        "action": "SEARCH_CODE", "readiness": 0.0,
-        "hypotheses": 0, "observations": 1,
-        "outcome_status": "SUCCEEDED", "evidence_added": 3,
+        "action": "SEARCH_CODE",
+        "readiness": 0.0,
+        "hypotheses": 0,
+        "observations": 1,
+        "outcome_status": "SUCCEEDED",
+        "evidence_added": 3,
     }
     summary = _reason_summary({**decision, **entry})
     assert "action=SEARCH_CODE" in summary
@@ -306,10 +368,13 @@ def test_classify_failure_routes():
     assert _classify_failure("FileNotFoundError application.yml", {}) == "CONFIG"
     assert _classify_failure("NPE in pricing", {"expected": {"a": 1}}) == "DATA"
     assert _classify_failure("offers are wrong, locationType missing", {}) == "DATA"
-    assert _classify_failure(
-        "NPE in validate",
-        {"frames": [{"file": "x.py"}], "error_class": "NullPointerException"},
-    ) == "BUG"
+    assert (
+        _classify_failure(
+            "NPE in validate",
+            {"frames": [{"file": "x.py"}], "error_class": "NullPointerException"},
+        )
+        == "BUG"
+    )
     assert _classify_failure("Where is the widget defined?", {}) == "UNKNOWN"
     assert _classify_failure(None, None) == "UNKNOWN"
 
@@ -353,18 +418,17 @@ def test_force_replan_redirects_repeated_empties():
         {"action": "SEARCH_CODE", "evidence_added": 4},
     ]
     assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, rich, 0) is None
-    assert _should_force_replan(
-        "errors here", {"next_action": "QUERY_STATE"}, history, 0
-    ) is None
-    assert _should_force_replan(
-        "errors here", {"next_action": "SEARCH_CODE"}, history, 2
-    ) is None
-    assert _should_force_replan(
-        "errors here",
-        {"next_action": "SEARCH_CODE"},
-        [{"action": "SEARCH_CODE", "evidence_added": 0}],
-        0,
-    ) is None
+    assert _should_force_replan("errors here", {"next_action": "QUERY_STATE"}, history, 0) is None
+    assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, history, 2) is None
+    assert (
+        _should_force_replan(
+            "errors here",
+            {"next_action": "SEARCH_CODE"},
+            [{"action": "SEARCH_CODE", "evidence_added": 0}],
+            0,
+        )
+        is None
+    )
     assert _should_force_replan(None, None, None, 0) is None
 
 
@@ -411,20 +475,21 @@ def test_force_synthesis_on_rich_unformulated_corpus():
         {"action": "SEARCH_CODE", "evidence_added": 4},
         {"action": "SEARCH_CODE", "evidence_added": 0},
     ]
-    assert (
-        _should_force_synthesis(
-            history, 14, 0, 0, {"next_action": "SEARCH_CODE"}
-        )
-        is True
-    )
+    assert _should_force_synthesis(history, 14, 0, 0, {"next_action": "SEARCH_CODE"}) is True
     # Formulated already / capped / thin corpus / single action / terminal proposal.
     assert _should_force_synthesis(history, 14, 1, 0, {"next_action": "SEARCH_CODE"}) is False
     assert _should_force_synthesis(history, 14, 0, 2, {"next_action": "SEARCH_CODE"}) is False
     assert _should_force_synthesis(history, 5, 0, 0, {"next_action": "SEARCH_CODE"}) is False
-    assert _should_force_synthesis(
-        [{"action": "SEARCH_CODE", "evidence_added": 9}], 9, 0, 0,
-        {"next_action": "SEARCH_CODE"},
-    ) is False
+    assert (
+        _should_force_synthesis(
+            [{"action": "SEARCH_CODE", "evidence_added": 9}],
+            9,
+            0,
+            0,
+            {"next_action": "SEARCH_CODE"},
+        )
+        is False
+    )
     assert _should_force_synthesis(history, 14, 0, 0, {"next_action": "VERIFY_HYPOTHESIS"}) is False
     assert _should_force_synthesis(None, 0, 0, 0, None) is False
 
@@ -496,16 +561,11 @@ def test_floor_passes_at_or_above_threshold():
 
 
 def test_floor_ignores_gathering_proposals():
-    assert (
-        _floor(reason_data={"next_action": "SEARCH_CODE", "action_parameters": {}})
-        is None
-    )
+    assert _floor(reason_data={"next_action": "SEARCH_CODE", "action_parameters": {}}) is None
 
 
 def test_floor_ignores_non_code_incidents():
-    assert (
-        _floor(triage_route="DATA", description="Why is revenue down?", seed={}) is None
-    )
+    assert _floor(triage_route="DATA", description="Why is revenue down?", seed={}) is None
 
 
 def test_floor_respects_cap():
@@ -513,8 +573,7 @@ def test_floor_respects_cap():
 
 
 def test_floor_keyword_fallback():
-    hit = _floor(description="Checkout latency spikes at midnight", seed={},
-                 triage_route="BUG")
+    hit = _floor(description="Checkout latency spikes at midnight", seed={}, triage_route="BUG")
     assert hit is not None
     assert hit["next_action"] == "SEARCH_CODE"
     assert hit["action_parameters"]["query"]
@@ -546,10 +605,15 @@ def test_callsite_forces_unread_caller_file():
 
 def test_callsite_passes_read_caller_file():
     history = [
-        {"action": "GET_CODE", "evidence_added": 2,
-         "parameters": {"file_path": "src/Checkout.java"}},
+        {
+            "action": "GET_CODE",
+            "evidence_added": 2,
+            "parameters": {"file_path": "src/Checkout.java"},
+        },
     ]
-    assert _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, history) is None
+    assert (
+        _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, history) is None
+    )
 
 
 def test_callsite_ignores_non_edge_claims():
@@ -563,12 +627,7 @@ def test_callsite_needs_target_file():
 
 
 def test_callsite_respects_cap():
-    assert (
-        _callsite(
-            {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, [], 2
-        )
-        is None
-    )
+    assert _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, [], 2) is None
 
 
 def test_callsite_passes_target_window():

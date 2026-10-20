@@ -7,6 +7,11 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from investigation_agent_platform.domain.code.models import (
+    CodeFactResolution,
+    CodeFactStatus,
+    CodeValueSemantics,
+)
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.hypothesis.models import (
     ClaimKind,
@@ -144,9 +149,7 @@ def select_verifiable_candidate(
     return eligible[0] if eligible else None
 
 
-def _prefer_discriminating(
-    first_match: Any, eligible: list, evidence_by_id: dict
-) -> Any:
+def _prefer_discriminating(first_match: Any, eligible: list, evidence_by_id: dict) -> Any:
     """Prefer the resolvable candidate with the most unique support (E2).
 
     Counts supporting IDs (resolvable) that no other eligible candidate
@@ -296,6 +299,7 @@ class VerificationResult(BaseModel):
     # #65: state-answer validation parallel to doc_validated (banked
     # DATABASE_STATE rows answer value questions without causal machinery).
     state_validated: bool = False
+    code_value_validated: bool = False
     # D5: publish tier for VERIFIED results — "established" (at/above the
     # established floor) or "likely" (in-band). Conclude maps likely to
     # ROOT_CAUSE_LIKELY with best-reason/against-evidence attached.
@@ -420,6 +424,211 @@ class VerificationEngine:
             return False
 
     @staticmethod
+    def claims_field_value(statement: str) -> bool:
+        """Conservative detector for natural-language field-value claims."""
+        lowered = f" {(statement or '').lower()} "
+        if any(
+            phrase in lowered
+            for phrase in (
+                "default value",
+                "initializer is",
+                "initializes to",
+                "initialized to",
+                "initial value",
+                "field value",
+                "value of field",
+                "value of the field",
+                "field defaults to",
+                "defaults to",
+                "default is",
+            )
+        ):
+            return True
+        return (
+            re.search(
+                r"\b(?:default(?:s)? to|initialized to|initializes to|assigned to|set to|equals?|is)\s+"
+                r"(?:['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)\b",
+                lowered,
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _resolution_from_evidence(evidence_items: list[Any]) -> CodeFactResolution | None:
+        """Load only well-formed analyzer output attached to source evidence."""
+        for item in evidence_items or []:
+            attrs = getattr(item, "attributes", None) or {}
+            if not isinstance(attrs, dict):
+                continue
+            raw = attrs.get("code_fact_resolution")
+            if not isinstance(raw, dict):
+                continue
+            try:
+                resolution = CodeFactResolution.model_validate(raw)
+            except Exception:
+                continue
+            if resolution.status == CodeFactStatus.RESOLVED:
+                return resolution
+        return None
+
+    @staticmethod
+    def code_value_proof(hypothesis: Any, evidence_items: list[Any]) -> tuple[bool, str]:
+        """Require analyzer output and exact claim/evidence provenance match."""
+        resolution = VerificationEngine._resolution_from_evidence(evidence_items)
+        if resolution is None:
+            return (False, "no resolved CodeFactResolution is bound to the cited evidence")
+        semantics = str(
+            getattr(hypothesis, "claim_value_semantics", None)
+            or getattr(getattr(hypothesis, "claim_target", None), "value_semantics", None)
+            or ""
+        ).upper()
+        claimed_value = getattr(hypothesis, "claimed_value", None) or getattr(
+            getattr(hypothesis, "claim_target", None), "claimed_value", None
+        )
+        target = getattr(hypothesis, "claim_target", None)
+        if semantics not in {
+            CodeValueSemantics.EXPLICIT_INITIALIZER.value,
+            CodeValueSemantics.LANGUAGE_DEFAULT.value,
+        }:
+            return (False, "value claim does not declare supported source-value semantics")
+        if claimed_value is None:
+            return (False, "value claim has no structured claimed_value")
+        if semantics != resolution.value_semantics.value:
+            return (False, "claim semantics do not match the resolved source fact")
+        if str(claimed_value) != str(resolution.resolved_value):
+            return (
+                False,
+                f"claimed value {claimed_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
+            )
+        statement_value = VerificationEngine._claimed_literal_from_statement(
+            str(getattr(hypothesis, "statement", "") or "")
+        )
+        if statement_value is not None and statement_value != str(resolution.resolved_value):
+            return (
+                False,
+                f"statement value {statement_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
+            )
+        if target is None or str(getattr(target, "symbol", "") or "") != resolution.field_name:
+            return (False, "claim target does not identify the resolved field")
+        if (
+            getattr(target, "declaring_type", None)
+            and str(target.declaring_type) != resolution.declaring_type
+        ):
+            return (False, "claim declaring type does not match the resolved field")
+        bound_ids = {
+            str(value) for value in (getattr(hypothesis, "supporting_evidence_ids", None) or [])
+        }
+        if not bound_ids.intersection(str(eid) for eid in resolution.source_evidence_ids):
+            return (False, "resolution source evidence is not bound to the claim")
+        if getattr(target, "file_path", None) and not VerificationEngine._paths_match(
+            str(target.file_path), str(resolution.declaration_location.file_path or "")
+        ):
+            return (False, "claim path does not match the resolved field declaration")
+        matched_evidence = []
+        expected_ids = {str(eid) for eid in resolution.source_evidence_ids}
+        for item in evidence_items or []:
+            if str(getattr(item, "evidence_id", "")) not in expected_ids:
+                continue
+            loc = getattr(
+                getattr(getattr(item, "provenance", None), "source_location", None),
+                "revision",
+                None,
+            )
+            if str(loc or "") != resolution.revision:
+                continue
+            if not VerificationEngine._paths_match(
+                str(resolution.declaration_location.file_path or ""),
+                VerificationEngine._item_file(item),
+            ):
+                continue
+            matched_evidence.append(item)
+        if not matched_evidence:
+            return (
+                False,
+                "resolution has no matching cited evidence at the same revision and path",
+            )
+        if not any(VerificationEngine._is_range_read(item) for item in matched_evidence):
+            return (False, "resolved field has no matching source range read")
+        range_evidence = next(
+            (item for item in matched_evidence if VerificationEngine._is_range_read(item)),
+            None,
+        )
+        declared_range = VerificationEngine._item_window(range_evidence) if range_evidence else None
+        declaration_start = resolution.declaration_location.line_start
+        declaration_end = resolution.declaration_location.line_end
+        target_line = getattr(target, "line_start", None)
+        if declared_range is None or not (
+            declaration_start is not None
+            and declaration_end is not None
+            and declared_range[0] <= declaration_start
+            and declaration_end <= declared_range[1]
+        ):
+            return (False, "source read window does not contain the resolved declaration")
+        if target_line is not None and not (declared_range[0] <= target_line <= declared_range[1]):
+            return (False, "source read window does not contain the claimed target line")
+        return (True, "")
+
+    @staticmethod
+    def _claimed_literal_from_statement(statement: str) -> str | None:
+        match = re.search(
+            r"(?i)(?:default\s+value|initial\s+value|field\s+value|value\s+of\s+(?:the\s+)?field|"
+            r"initializer|initializes?\s+to|initialized\s+to|defaults?\s+to|assigned\s+to)"
+            r"\s*(?:is|of|to|=)?\s*(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)",
+            statement or "",
+        )
+        if match is None:
+            return None
+        value = match.group(1).strip()
+        if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+            return value[1:-1]
+        return value
+
+    def validate_code_value_claim(
+        self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
+    ) -> VerificationResult | None:
+        """Verify a typed field value against trusted analyzer output."""
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        if not self.claims_field_value(statement) or self.concedes_claim(statement):
+            return None
+        if any(
+            getattr(c, "resolution_status", "") == "UNRESOLVED"
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
+            in {"HIGH", "CRITICAL"}
+            for c in (contradictions or [])
+        ):
+            return None
+        ok, reason = self.code_value_proof(hypothesis, evidence_items)
+        resolution = self._resolution_from_evidence(evidence_items)
+        if not ok or resolution is None:
+            return None
+        ids = [
+            item.evidence_id
+            for item in evidence_items
+            if str(getattr(item, "evidence_id", ""))
+            in {str(value) for value in resolution.source_evidence_ids}
+        ]
+        confidence = InvestigationConfidence(
+            coverage_score=1.0,
+            reliability_score=1.0,
+            causal_score=0.5,
+            contradiction_penalty=0.0,
+        )
+        return VerificationResult(
+            hypothesis_id=hypothesis.id,
+            status=VerificationStatus.VERIFIED,
+            corroborating_evidence_ids=ids,
+            explanation=(
+                f"Source value {resolution.resolved_value!r} validated as "
+                f"{resolution.value_semantics.value} for {resolution.declaring_type}."
+            ),
+            confidence=confidence,
+            location_validated=True,
+            code_value_validated=True,
+        )
+
+    @staticmethod
     def _item_window(item: Any) -> tuple[int, int] | None:
         """Actual (start_line, end_line) recorded in provenance, else None."""
         location = getattr(getattr(item, "provenance", None), "source_location", None)
@@ -460,9 +669,7 @@ class VerificationEngine:
             attributes = getattr(item, "attributes", None) or {}
             if not isinstance(attributes, dict):
                 attributes = {}
-            if attributes.get("read_mode") == "path_only" or attributes.get(
-                "discovery_only"
-            ):
+            if attributes.get("read_mode") == "path_only" or attributes.get("discovery_only"):
                 return False
             return VerificationEngine._item_window(item) is not None
         except Exception:
@@ -534,9 +741,7 @@ class VerificationEngine:
         for name in candidates:
             if not name:
                 continue
-            if re.search(
-                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text or ""
-            ):
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text or ""):
                 return True
         return False
 
@@ -552,13 +757,15 @@ class VerificationEngine:
             if sep in callee:
                 names.add(callee.rsplit(sep, 1)[-1])
         for raw in (snippet or "").splitlines():
-            line = raw.split("| ", 1)[1] if "| " in raw and raw.split("|", 1)[0].strip().isdigit() else raw
+            line = (
+                raw.split("| ", 1)[1]
+                if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
+                else raw
+            )
             for name in names:
                 if not name:
                     continue
-                for match in re.finditer(
-                    rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", line
-                ):
+                for match in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", line):
                     if VerificationEngine._DECLARATION_PREFIX.search(line[: match.start()]):
                         continue
                     return True
@@ -572,9 +779,7 @@ class VerificationEngine:
         m = re.search(rf"callers?\s+of\s+{ident}", text, re.IGNORECASE)
         if m:
             return (m.group(1), None)
-        m = re.search(
-            rf"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", text, re.IGNORECASE
-        )
+        m = re.search(rf"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", text, re.IGNORECASE)
         if m:
             return (m.group(1), m.group(2))
         return (None, None)
@@ -586,7 +791,10 @@ class VerificationEngine:
         """A real range read whose window contains the defined symbol."""
         reads = [i for i in evidence_items or [] if VerificationEngine._is_range_read(i)]
         if not reads:
-            return (False, "no range read with recorded start/end lines (a path-only or head read is discovery)")
+            return (
+                False,
+                "no range read with recorded start/end lines (a path-only or head read is discovery)",
+            )
         if target is not None and target.file_path:
             reads = [
                 i
@@ -640,12 +848,13 @@ class VerificationEngine:
         shown = [
             i
             for i in rows
-            if VerificationEngine._call_shown(
-                callee, str(getattr(i, "content_snippet", "") or "")
-            )
+            if VerificationEngine._call_shown(callee, str(getattr(i, "content_snippet", "") or ""))
         ]
         if not shown:
-            return (False, f"no cited row shows a call to '{callee}' (a search hit or graph row that does not show the call is not a call site)")
+            return (
+                False,
+                f"no cited row shows a call to '{callee}' (a search hit or graph row that does not show the call is not a call site)",
+            )
         if caller:
             shown = [
                 i
@@ -653,9 +862,7 @@ class VerificationEngine:
                 if VerificationEngine._symbol_in_text(
                     caller, str(getattr(i, "content_snippet", "") or "")
                 )
-                or VerificationEngine._symbol_in_text(
-                    caller, VerificationEngine._item_file(i)
-                )
+                or VerificationEngine._symbol_in_text(caller, VerificationEngine._item_file(i))
             ]
             if not shown:
                 return (False, f"call to '{callee}' is shown but not from '{caller}'")
@@ -691,9 +898,7 @@ class VerificationEngine:
             return False
 
     @staticmethod
-    def absence_proof(
-        evidence_items: list[Any], target: ClaimTarget | None
-    ) -> tuple[bool, str]:
+    def absence_proof(evidence_items: list[Any], target: ClaimTarget | None) -> tuple[bool, str]:
         """Scoped empty search: states its scope and records zero matches.
 
         Accepted proof shape (produced by typed no-match outcomes): an
@@ -712,7 +917,10 @@ class VerificationEngine:
                 continue
             if proof_scope.lower() == scope.lower() or scope.lower() in proof_scope.lower():
                 return (True, "")
-        return (False, f"no scoped empty-search evidence covers '{scope}'; an empty result alone is not proof of absence")
+        return (
+            False,
+            f"no scoped empty-search evidence covers '{scope}'; an empty result alone is not proof of absence",
+        )
 
     def check_claim_kind(
         self, hypothesis: Any, evidence_items: list[Any]
@@ -738,10 +946,7 @@ class VerificationEngine:
         """Location/listing claim eligible for the answer path (never causal)."""
         try:
             lowered = f" {(statement or '').lower()} "
-            patterns = (
-                VerificationEngine.DEFINITION_PATTERNS
-                + VerificationEngine.LISTING_PATTERNS
-            )
+            patterns = VerificationEngine.DEFINITION_PATTERNS + VerificationEngine.LISTING_PATTERNS
             return any(pattern in lowered for pattern in patterns)
         except Exception:
             return False
@@ -850,17 +1055,40 @@ class VerificationEngine:
     )
     _SUBJECT_STOPWORDS = frozenset(
         {
-            "the", "a", "an", "this", "that", "these", "those",
-            "module", "file", "code", "class", "function", "method",
-            "service", "correct", "actual",
+            "the",
+            "a",
+            "an",
+            "this",
+            "that",
+            "these",
+            "those",
+            "module",
+            "file",
+            "code",
+            "class",
+            "function",
+            "method",
+            "service",
+            "correct",
+            "actual",
             # Verb-family and claim scaffolding: structural words, never
             # subjects. Without these, "defined" in "X is defined in ..."
             # grounds against any row containing the word, defeating the
             # substitution check (quantum-module fabrication cited a file
             # whose rows mention "defined").
-            "defined", "implemented", "declared", "located", "found",
-            "lives", "history", "commits", "called", "does",
-            "exist", "exists", "not",
+            "defined",
+            "implemented",
+            "declared",
+            "located",
+            "found",
+            "lives",
+            "history",
+            "commits",
+            "called",
+            "does",
+            "exist",
+            "exists",
+            "not",
         }
     )
 
@@ -1002,9 +1230,7 @@ class VerificationEngine:
                 for w in _re.split(r"[^a-z0-9]+", corpus)
                 if len(w) >= 3
             }
-            return any(
-                VerificationEngine._stem_token(c) in corpus_stems for c in candidates
-            )
+            return any(VerificationEngine._stem_token(c) in corpus_stems for c in candidates)
         except Exception:
             return False
 
@@ -1022,11 +1248,7 @@ class VerificationEngine:
             second = str(second or "").strip().strip("/").lstrip("./")
             if not first or not second:
                 return False
-            return (
-                first == second
-                or first.endswith("/" + second)
-                or second.endswith("/" + first)
-            )
+            return first == second or first.endswith("/" + second) or second.endswith("/" + first)
         except Exception:
             return False
 
@@ -1083,7 +1305,9 @@ class VerificationEngine:
         cited = []
         for item in evidence_items or []:
             etype = str(
-                getattr(getattr(item, "evidence_type", ""), "value", getattr(item, "evidence_type", ""))
+                getattr(
+                    getattr(item, "evidence_type", ""), "value", getattr(item, "evidence_type", "")
+                )
                 or ""
             ).upper()
             if etype not in VerificationEngine.LISTING_EVIDENCE_TYPES:
@@ -1112,6 +1336,11 @@ class VerificationEngine:
         independent citation, cap 0.95), labeled as such in the explanation.
         """
         statement = str(getattr(hypothesis, "statement", "") or "")
+        # Value assertions are authorized in evaluate_hypothesis only after
+        # the structured resolution/value proof succeeds. This method remains
+        # a location/listing proof and must never independently certify a value.
+        if VerificationEngine.claims_field_value(statement):
+            return None
         # Phase 2.2: a typed behavior/absence/causal claim is never a
         # location answer, whatever its phrasing ("found in" inside a
         # behavior claim must not take the citations-only fast path).
@@ -1140,7 +1369,9 @@ class VerificationEngine:
             c
             for c in (contradictions or [])
             if getattr(c, "resolution_status", "") == "UNRESOLVED"
-            and str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))).upper()
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
             in ("HIGH", "CRITICAL")
         ]
         if unresolved:
@@ -1168,6 +1399,7 @@ class VerificationEngine:
             )
         except Exception:
             _path_grounded = False
+
         # T1-2: subject grounding helper shared below.
         def _cited_texts() -> list:
             texts = []
@@ -1201,9 +1433,9 @@ class VerificationEngine:
                     return None
             except Exception:
                 pass
-        if VerificationEngine.claims_definition(statement) and not VerificationEngine.has_range_read(
-            cited
-        ):
+        if VerificationEngine.claims_definition(
+            statement
+        ) and not VerificationEngine.has_range_read(cited):
             return None
         providers = {str(getattr(e, "provider", "unknown")) for e in cited}
         # Scoring for location answers: coverage is binary (the location is
@@ -1262,7 +1494,9 @@ class VerificationEngine:
             c
             for c in (contradictions or [])
             if getattr(c, "resolution_status", "") == "UNRESOLVED"
-            and str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))).upper()
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
             in ("HIGH", "CRITICAL")
         ]
         if unresolved:
@@ -1271,7 +1505,11 @@ class VerificationEngine:
         for item in evidence_items or []:
             try:
                 etype = str(
-                    getattr(getattr(item, "evidence_type", ""), "value", getattr(item, "evidence_type", ""))
+                    getattr(
+                        getattr(item, "evidence_type", ""),
+                        "value",
+                        getattr(item, "evidence_type", ""),
+                    )
                     or ""
                 ).upper()
                 if etype != "DOCUMENTATION":
@@ -1316,6 +1554,7 @@ class VerificationEngine:
             confidence=confidence,
             doc_validated=True,
         )
+
     @traced("reason", require_scope=False, extra_from=_verification_extra)
     def validate_state_claim(
         self,
@@ -1339,7 +1578,9 @@ class VerificationEngine:
             c
             for c in (contradictions or [])
             if getattr(c, "resolution_status", "") == "UNRESOLVED"
-            and str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))).upper()
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
             in ("HIGH", "CRITICAL")
         ]
         if unresolved:
@@ -1348,7 +1589,11 @@ class VerificationEngine:
         for item in evidence_items or []:
             try:
                 etype = str(
-                    getattr(getattr(item, "evidence_type", ""), "value", getattr(item, "evidence_type", ""))
+                    getattr(
+                        getattr(item, "evidence_type", ""),
+                        "value",
+                        getattr(item, "evidence_type", ""),
+                    )
                     or ""
                 ).upper()
                 if etype != "DATABASE_STATE":
@@ -1639,7 +1884,9 @@ class VerificationEngine:
                 r
                 for r in rows
                 if str(
-                    getattr(getattr(r, "evidence_type", ""), "value", getattr(r, "evidence_type", ""))
+                    getattr(
+                        getattr(r, "evidence_type", ""), "value", getattr(r, "evidence_type", "")
+                    )
                     or ""
                 ).upper()
                 in VerificationEngine._STEP_GROUNDING_TYPES
@@ -1686,9 +1933,7 @@ class VerificationEngine:
             demonstrated = False
             for row in rows:
                 try:
-                    row_stems = VerificationEngine._text_stems(
-                        VerificationEngine._row_text(row)
-                    )
+                    row_stems = VerificationEngine._text_stems(VerificationEngine._row_text(row))
                 except Exception:
                     continue
                 hits = sum(1 for stems in fields if stems & row_stems)
@@ -1721,19 +1966,27 @@ class VerificationEngine:
         return texts, paths
 
     @staticmethod
-    def sentence_mapped(
-        sentence: str, value_texts: list[Any], file_paths: list[Any]
-    ) -> bool:
+    def sentence_mapped(sentence: str, value_texts: list[Any], file_paths: list[Any]) -> bool:
         """One conclusion sentence maps to a cited path, a grounded subject,
         or a distinctive value in the bound rows — else it is prose."""
         text = (sentence or "").strip()
         if not text:
             return True
         try:
+            # A file citation maps a location, not a value. For source-value
+            # claims require a distinctive literal to occur in the bound text.
+            if VerificationEngine.claims_field_value(text):
+                corpus_text = " ".join(str(t or "") for t in value_texts).lower()
+                values = re.findall(
+                    r"(?i)(?:=\s*|defaults?\s+to\s+|initialized?\s+to\s+)"
+                    r"(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fdl])?|true|false|null)",
+                    text,
+                )
+                if values:
+                    return all(value.lower().strip("'\"") in corpus_text for value in values)
+                return False
             for path in VerificationEngine._statement_paths(text):
-                if any(
-                    VerificationEngine._paths_match(path, str(fp)) for fp in file_paths
-                ):
+                if any(VerificationEngine._paths_match(path, str(fp)) for fp in file_paths):
                     return True
             subjects = VerificationEngine._claim_subject_tokens(
                 text, VerificationEngine._CAUSAL_SPLIT_VERBS
@@ -1840,7 +2093,9 @@ class VerificationEngine:
         if "NO_RUNTIME_OBSERVATION" in codes:
             return "Observe the behavior at runtime (log, trace, state, or probe), then re-verify."
         if "CONCLUSION_UNMAPPED" in codes and sentences:
-            return f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
+            return (
+                f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
+            )
         if "CONCLUSION_UNMAPPED" in codes:
             return "Cite evidence for each conclusion sentence, then re-verify."
         if "SINGLE_PROVIDER" in codes:
@@ -1865,8 +2120,7 @@ class VerificationEngine:
             lowered = [t.lower() for t in texts]
             if any("all hypotheses rejected or contradicted" in t for t in lowered):
                 return (
-                    "Formulate a hypothesis consistent with the refuting evidence, "
-                    "then re-verify."
+                    "Formulate a hypothesis consistent with the refuting evidence, then re-verify."
                 )
             refuting = next(
                 (
@@ -1882,14 +2136,10 @@ class VerificationEngine:
                 return "Resolve the refuting evidence, then re-verify."
             if any(t == "no bound supporting evidence" for t in lowered):
                 return (
-                    "Cite and bind supporting evidence to the candidate hypothesis, "
-                    "then re-verify."
+                    "Cite and bind supporting evidence to the candidate hypothesis, then re-verify."
                 )
             if any(t == "no validated causal chain" for t in lowered):
-                return (
-                    "Bind a causal chain with cited evidence for each link, "
-                    "then re-verify."
-                )
+                return "Bind a causal chain with cited evidence for each link, then re-verify."
             return f"Resolve '{texts[0][:300]}', then re-verify."
         except Exception:
             return None
@@ -1920,6 +2170,25 @@ class VerificationEngine:
                     "language); abstention-shaped claims never verify."
                 ),
                 confidence=confidence,
+            )
+        if VerificationEngine.claims_field_value(getattr(hypothesis, "statement", "")):
+            value_result = self.validate_code_value_claim(
+                hypothesis, evidence_items, contradictions
+            )
+            if value_result is not None:
+                return value_result
+            _value_ok, value_reason = self.code_value_proof(hypothesis, evidence_items)
+            return VerificationResult(
+                hypothesis_id=hypothesis.id,
+                status=VerificationStatus.INCONCLUSIVE,
+                corroborating_evidence_ids=[],
+                explanation=f"Code value claim is not established: {value_reason}.",
+                confidence=InvestigationConfidence(
+                    coverage_score=0.0,
+                    reliability_score=0.0,
+                    causal_score=0.0,
+                    contradiction_penalty=0.0,
+                ),
             )
         kind_gate = self.check_claim_kind(hypothesis, evidence_items)
         behavior_likely_only = False
@@ -1999,10 +2268,7 @@ class VerificationEngine:
                 hypothesis_id=hypothesis.id,
                 status=VerificationStatus.INCONCLUSIVE,
                 corroborating_evidence_ids=[],
-                explanation=(
-                    "Causal claim not grounded in cited evidence: "
-                    f"{step_reason}."
-                ),
+                explanation=(f"Causal claim not grounded in cited evidence: {step_reason}."),
                 confidence=InvestigationConfidence(
                     coverage_score=0.3,
                     reliability_score=0.5,
@@ -2105,10 +2371,8 @@ class VerificationEngine:
                 limitations.extend(rival_limits)
                 if demote:
                     tier = "likely"
-                relation_ok, relation_reason = (
-                    VerificationEngine.causal_relation_demonstrated(
-                        causal_chain, evidence_items
-                    )
+                relation_ok, relation_reason = VerificationEngine.causal_relation_demonstrated(
+                    causal_chain, evidence_items
                 )
                 if not relation_ok:
                     limitations.append(
@@ -2211,6 +2475,7 @@ class ConclusionGate:
         location_validated: bool = False,
         doc_validated: bool = False,
         state_validated: bool = False,
+        code_value_validated: bool = False,
     ) -> ConclusionGateDecision:
         blockers: list[str] = []
         if verification.status != VerificationStatus.VERIFIED:
@@ -2230,7 +2495,14 @@ class ConclusionGate:
             blockers.append(
                 f"{len(blocking_contradictions)} unresolved HIGH/CRITICAL contradiction(s)"
             )
-        if policy.require_causal_relationship and not causal_chain and not location_validated and not doc_validated and not state_validated:
+        if (
+            policy.require_causal_relationship
+            and not causal_chain
+            and not location_validated
+            and not doc_validated
+            and not state_validated
+            and not code_value_validated
+        ):
             # G1: location answers have no causal chain by nature — the
             # location validation (cited code with provenance) stands in.
             # T1-1: same for validated doc answers. #65: same for validated

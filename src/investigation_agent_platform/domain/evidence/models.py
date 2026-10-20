@@ -151,6 +151,18 @@ class Evidence(BaseModel):
 
     @model_validator(mode="after")
     def validate_redaction_and_payload_invariants(self) -> "Evidence":
+        fact = (
+            self.attributes.get("code_fact_resolution")
+            if isinstance(self.attributes, dict)
+            else None
+        )
+        if fact is not None:
+            from investigation_agent_platform.domain.code.models import CodeFactResolution
+
+            try:
+                CodeFactResolution.model_validate(fact)
+            except Exception as exc:
+                raise ValueError("code_fact_resolution has an invalid shape") from exc
         if self.is_redacted and not self.redaction_manifest:
             raise ValueError("is_redacted is True but redaction_manifest is empty.")
         if len(self.content_snippet) >= 4096 and not (

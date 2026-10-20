@@ -2,9 +2,12 @@
 """Domain models for code symbol AST analysis and structural representations."""
 
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+
+from investigation_agent_platform.domain.provenance.models import SourceLocation
 
 
 class SymbolType(StrEnum):
@@ -17,6 +20,59 @@ class SymbolType(StrEnum):
     FIELD = "FIELD"
     CONSTRUCTOR = "CONSTRUCTOR"
     ENUM = "ENUM"
+
+
+class CodeFactStatus(StrEnum):
+    RESOLVED = "RESOLVED"
+    PARTIAL = "PARTIAL"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class CodeValueSemantics(StrEnum):
+    EXPLICIT_INITIALIZER = "EXPLICIT_INITIALIZER"
+    LANGUAGE_DEFAULT = "LANGUAGE_DEFAULT"
+    POST_CONSTRUCTION = "POST_CONSTRUCTION"
+    LATER_MUTABLE = "LATER_MUTABLE"
+    RUNTIME_EFFECTIVE = "RUNTIME_EFFECTIVE"
+
+
+class CodeFactResolution(BaseModel):
+    """Ephemeral result of deterministic source-level field analysis.
+
+    This model is carried with existing evidence; it is not a persistence
+    aggregate. A resolved value describes the named semantics only, never an
+    arbitrary later/runtime-effective field value.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: CodeFactStatus
+    repository: str = Field(..., min_length=1, max_length=256)
+    revision: str | None = Field(default=None, max_length=128)
+    declaring_type: str = Field(..., min_length=1, max_length=512)
+    field_name: str = Field(..., min_length=1, max_length=256)
+    field_type: str = Field(..., min_length=1, max_length=256)
+    field_category: Literal["INSTANCE_FIELD", "STATIC_FIELD"]
+    value_semantics: CodeValueSemantics
+    raw_initializer: str | None = Field(default=None, max_length=512)
+    resolved_value: str | None = Field(default=None, max_length=512)
+    source_evidence_ids: tuple[UUID, ...] = ()
+    declaration_location: SourceLocation
+    limitation_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> "CodeFactResolution":
+        if self.status == CodeFactStatus.RESOLVED and self.resolved_value is None:
+            raise ValueError("resolved code facts require a resolved_value")
+        if self.status == CodeFactStatus.RESOLVED and (
+            not self.revision
+            or not self.declaration_location.file_path
+            or not self.declaration_location.revision
+        ):
+            raise ValueError(
+                "resolved code facts require source path and immutable revision provenance"
+            )
+        return self
 
 
 class CodeSymbol(BaseModel):

@@ -72,7 +72,14 @@ class TestPhase1:
 
     def test_endpoints_symbols_ok(self):
         assert len(ingest_symbols([{"repo": "r", "sha": "s", "path": "p", "name": "Foo"}])) == 1
-        assert len(ingest_endpoints([{"repo": "r", "sha": "s", "path": "p", "method": "GET", "route": "/x"}])) == 1
+        assert (
+            len(
+                ingest_endpoints(
+                    [{"repo": "r", "sha": "s", "path": "p", "method": "GET", "route": "/x"}]
+                )
+            )
+            == 1
+        )
 
     def test_dedup_key_and_generated(self):
         key, ch = content_dedup_key("r", "s", "stage1", b"a\n")
@@ -139,14 +146,24 @@ class TestPhase3:
     def test_capture_reinforce_recall_sweep(self):
         store = AssociationStore()
         sig = symptom_signature("timeout on checkout", "product", "TimeoutError")
-        rec = store.capture(AssociationRecord(tenant_id="n-a", symptom_signature=sig, hub_entity="product", root_cause_statement="missing index", fix_locations=("db/schema.sql",)))
+        rec = store.capture(
+            AssociationRecord(
+                tenant_id="n-a",
+                symptom_signature=sig,
+                hub_entity="product",
+                root_cause_statement="missing index",
+                fix_locations=("db/schema.sql",),
+            )
+        )
         assert rec.weight == 1.0
         w = store.reinforce("n-a", sig, "product", verified=True)
         assert w > 1.0
         assert store.recall("n-a", sig)[0].hub_entity == "product"
         packet = jump_start_packet(store.recall("n-a", sig))
         assert packet["ranked"][0]["hub"] == "product"
-        fact = bank_mid_loop_fact("Index missing on product table.", "product", "lacks", "index", {"evidence_id": "e1"})
+        fact = bank_mid_loop_fact(
+            "Index missing on product table.", "product", "lacks", "index", {"evidence_id": "e1"}
+        )
         assert fact["triple"]["predicate"] == "lacks"
         store.reinforce("n-a", sig, "product", verified=False)
         store.reinforce("n-a", sig, "product", verified=False)
@@ -159,7 +176,10 @@ class TestPhase3:
 
 class TestPhase4:
     def test_mismatch_top_signal(self):
-        standing = assemble_standing_profile({"account_id": "a1", "segment": "smb", "lifecycle": "active"}, [{"offer": "base", "catalog": "cat", "hub": "base_offer"}])
+        standing = assemble_standing_profile(
+            {"account_id": "a1", "segment": "smb", "lifecycle": "active"},
+            [{"offer": "base", "catalog": "cat", "hub": "base_offer"}],
+        )
         fused = fuse_trail([{"id": "1", "ts": "t1"}], [{"id": "2", "ts": "t2", "offer": "premium"}])
         mapped = map_to_hubs(fused, {"premium": "product", "base": "base_offer"})
         findings = mismatch_detector(standing, mapped)
@@ -187,7 +207,10 @@ class TestPhase5:
         diff = env_asymmetric_diff(edges, edges[:2])
         assert diff["only_in_prod"] == []
         assert diff["only_in_dev"]
-        sp = platform_single_point([{"src": "a", "dst": "config-server"}, {"src": "b", "dst": "config-server"}], ["config-server"])
+        sp = platform_single_point(
+            [{"src": "a", "dst": "config-server"}, {"src": "b", "dst": "config-server"}],
+            ["config-server"],
+        )
         assert sp[0]["count"] == 2
 
 
@@ -202,8 +225,12 @@ class TestPhase6:
         assert m1["partial"] is False
 
     def test_merge_keeps_same_src_edges(self):
-        shards = [[{"repo": "r", "sha": "s", "src": "svc-a", "dst": "lib", "kind": "calls"},
-                   {"repo": "r", "sha": "s", "src": "svc-a", "dst": "db", "kind": "calls"}]]
+        shards = [
+            [
+                {"repo": "r", "sha": "s", "src": "svc-a", "dst": "lib", "kind": "calls"},
+                {"repo": "r", "sha": "s", "src": "svc-a", "dst": "db", "kind": "calls"},
+            ]
+        ]
         m = merge_shards(shards, stage="s1")
         assert m["count"] == 2
         assert m["partial"] is False
@@ -233,7 +260,18 @@ class TestQuestionShape:
         assert classify_question_shape("What changed in OrderServiceImpl.java recently?") == "code"
         assert classify_question_shape("Which domain hub holds order eligibility?") == "code"
 
+    def test_source_field_default_questions_are_code_shaped(self):
+        assert classify_question_shape("What is the default value of retryCount?") == "code"
+        assert classify_question_shape("What is the field initializer for retryCount?") == "code"
+        assert classify_question_shape("What value is assigned during initialization?") == "code"
+
+    def test_runtime_value_questions_are_not_forced_to_source_only(self):
+        assert classify_question_shape("What is retryCount at runtime in production?") != "code"
+
     def test_state_log_unknown(self):
         assert classify_question_shape("What Oracle database version backs the store?") == "state"
-        assert classify_question_shape("NullPointerException: orderType is null, stack trace attached") == "log"
+        assert (
+            classify_question_shape("NullPointerException: orderType is null, stack trace attached")
+            == "log"
+        )
         assert classify_question_shape("Where is the quantum module?") in ("code", "unknown")

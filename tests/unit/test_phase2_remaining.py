@@ -102,6 +102,40 @@ class TestClaimKeying:
         # Typed claims replace the batch list — never merged with it.
         assert sorted(saved_hyps[0].supporting_evidence_ids) == sorted([e1, e2])
 
+    @pytest.mark.asyncio
+    async def test_value_claim_semantics_round_trip_into_assessment(self) -> None:
+        evidence_id = uuid4()
+        saved_hyps = []
+
+        async def _save_hyp(tenant_id, hyp, investigation_id):  # type: ignore[no-untyped-def]
+            saved_hyps.append(hyp)
+
+        hyp_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]), save=_save_hyp
+        )
+        _ctx_with(
+            SimpleNamespace(),
+            evidence_rows=[SimpleNamespace(evidence_id=evidence_id)],
+            hyp_repo=hyp_repo,
+        )
+        statement = "retryCount default value is 3"
+        action_input = _input("FORMULATE_HYPOTHESIS", {})
+        action_input.hypotheses = [statement]
+        action_input.claims = [
+            {
+                "statement": statement,
+                "claim_kind": "DEFINITION",
+                "evidence_ids": [str(evidence_id)],
+                "target": {"symbol": "retryCount"},
+                "value_semantics": "EXPLICIT_INITIALIZER",
+                "claimed_value": "3",
+            }
+        ]
+        await execute_action_activity(action_input)
+        assessment = saved_hyps[0].assessments[0]
+        assert assessment.value_semantics == "EXPLICIT_INITIALIZER"
+        assert assessment.claimed_value == "3"
+
 
 class TestAbsenceProducer:
     @pytest.mark.asyncio
@@ -143,10 +177,7 @@ class TestAbsenceProducer:
         assert len(saved) == 1
         assert first_result.data["items_count"] == 0
         assert second_result.data["items_count"] == 0
-        assert (
-            second_result.data["action_outcome"]
-            == first_result.data["action_outcome"]
-        )
+        assert second_result.data["action_outcome"] == first_result.data["action_outcome"]
 
     def test_absence_fingerprint_deterministic_per_scope(self) -> None:
         from investigation_agent_platform.application.worker.activities import (
@@ -228,9 +259,7 @@ class TestAbsenceGate:
         )
         from investigation_agent_platform.domain.hypothesis.models import ClaimTarget
 
-        ok, _ = VerificationEngine.absence_proof(
-            [], ClaimTarget(scope="audit_log/order-9")
-        )
+        ok, _ = VerificationEngine.absence_proof([], ClaimTarget(scope="audit_log/order-9"))
         assert ok is False
 
 

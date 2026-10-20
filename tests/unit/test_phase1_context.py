@@ -158,6 +158,46 @@ class TestCodePackets:
         assert packet["window"]["why"] == "discovery"
         assert "decisive_branch" not in packet["content"]
 
+    def test_code_fact_resolution_is_exposed_with_its_source_packet(self):
+        ev = _range_read(10, 12)
+        location = ev.provenance.source_location.model_copy(
+            update={
+                "file_path": "src/TransactionProcessor.java",
+                "identifier": "repo/src/TransactionProcessor.java",
+            }
+        )
+        ev = ev.model_copy(
+            update={"provenance": ev.provenance.model_copy(update={"source_location": location})}
+        )
+        resolution = {
+            "status": "RESOLVED",
+            "repository": "repo",
+            "revision": "abc123",
+            "declaring_type": "TransactionProcessor",
+            "field_name": "retryCount",
+            "field_type": "int",
+            "field_category": "INSTANCE_FIELD",
+            "value_semantics": "EXPLICIT_INITIALIZER",
+            "raw_initializer": "3",
+            "resolved_value": "3",
+            "source_evidence_ids": [str(ev.evidence_id)],
+            "declaration_location": {
+                "system": "Git",
+                "identifier": "repo/src/TransactionProcessor.java",
+                "file_path": "src/TransactionProcessor.java",
+                "line_start": 10,
+                "line_end": 12,
+                "revision": "abc123",
+            },
+            "limitation_codes": [],
+        }
+        ev = ev.model_copy(
+            update={"attributes": {"read_mode": "range", "code_fact_resolution": resolution}}
+        )
+        packet = compile_reasoning_context(_state([ev]))["evidence_excerpts"][0]
+        assert packet["code_fact_resolution"]["resolved_value"] == "3"
+        assert packet["code_fact_resolution"]["source_evidence_ids"] == [str(ev.evidence_id)]
+
     def test_truncated_packet_discloses_next_window(self):
         lines = [f"{n}| {'y' * 20}" for n in range(100, 260)]
         ev = _ev(
@@ -331,7 +371,6 @@ class TestPromptSections:
         assert "evidence_records" not in build_system_prompt()
 
 
-
 class TestHydrationSelection:
     def test_cited_and_code_rows_survive_the_cap(self):
         old = datetime.now(UTC) - timedelta(days=2)
@@ -340,9 +379,7 @@ class TestHydrationSelection:
         code = _range_read(1, 5)
         object.__setattr__(code, "retrieved_at", old)
         logs = [_ev(summary=f"l{i}") for i in range(300)]
-        hyp = SimpleNamespace(
-            supporting_evidence_ids=[cited.evidence_id], refuting_evidence_ids=[]
-        )
+        hyp = SimpleNamespace(supporting_evidence_ids=[cited.evidence_id], refuting_evidence_ids=[])
         out = select_reasoning_evidence([*logs, cited, code], [hyp], limit=200)
         ids = {e.evidence_id for e in out}
         assert len(out) == 200

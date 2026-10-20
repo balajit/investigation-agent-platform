@@ -31,6 +31,8 @@ class SqlAlchemyEvidenceRepository:
 
     @staticmethod
     def _to_orm(evidence: Evidence, investigation_id: UUID | None = None) -> EvidenceORM:
+        # The serialized payload preserves additive, ephemeral analysis
+        # metadata (such as code_fact_resolution) across Temporal turns.
         return EvidenceORM(
             investigation_id=investigation_id,
             tenant_id=evidence.tenant_id,
@@ -241,9 +243,7 @@ class SqlAlchemyEvidenceRepository:
                         continue  # defensive; counted via rowcount
                     holder_inv, holder_key = holder
                     if investigation_id is not None and holder_inv != investigation_id:
-                        etype = getattr(
-                            evidence.evidence_type, "value", evidence.evidence_type
-                        )
+                        etype = getattr(evidence.evidence_type, "value", evidence.evidence_type)
                         if str(etype) in REFERENCE_LIFECYCLE_TYPES:
                             shared += 1
                             interests.append(
@@ -255,9 +255,7 @@ class SqlAlchemyEvidenceRepository:
                             )
                 if interests:
                     istmt = (
-                        insert(EvidenceBankInterestORM)
-                        .values(interests)
-                        .on_conflict_do_nothing()
+                        insert(EvidenceBankInterestORM).values(interests).on_conflict_do_nothing()
                     )
                     await session.execute(istmt)
                 await session.commit()

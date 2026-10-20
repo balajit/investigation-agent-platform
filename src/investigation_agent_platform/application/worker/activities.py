@@ -307,9 +307,7 @@ def _application_failure_from_exc(exc: BaseException) -> ApplicationFailure:
     return ApplicationFailure(str(exc), type=exc.__class__.__name__, non_retryable=True)
 
 
-def classify_provider_failure(
-    exc: BaseException, absent_label: str
-) -> tuple[str, str, bool]:
+def classify_provider_failure(exc: BaseException, absent_label: str) -> tuple[str, str, bool]:
     """(miss_reason, outcome_status, blocking) for a provider failure (Phase 3.1).
 
     Precedence: explicit exception type, then auth-signal message patterns,
@@ -360,10 +358,7 @@ def classify_provider_failure(
         text = str(exc).lower()
     except Exception:
         text = ""
-    if any(
-        signal in text
-        for signal in ("timed out", "timeout", "deadline exceeded", "timedout")
-    ):
+    if any(signal in text for signal in ("timed out", "timeout", "deadline exceeded", "timedout")):
         return ("timeout", "DEGRADED", False)
     if any(
         signal in text
@@ -1776,8 +1771,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             _unavailable_reason = str(_decision_meta.get("reason", "") or "").strip()
             if (
                 str(_decision_meta.get("status", "") or "") == "REASONING_UNAVAILABLE"
-                or str(getattr(decision, "reasoning_chain", "") or "")
-                == "REASONING_UNAVAILABLE"
+                or str(getattr(decision, "reasoning_chain", "") or "") == "REASONING_UNAVAILABLE"
             ):
                 logger.warning(
                     "reason_activity reasoning unavailable; propagating typed failure",
@@ -2634,16 +2628,13 @@ async def execute_action_activity(
             # outcome. The workflow records an empty outcome (identical to
             # live pre-fix behavior) while operators can distinguish replay
             # age. Budget rows are current-shape (keyed on budget_exceeded).
-            if (
-                _replayed_data.get("action_outcome") is None
-                and not _replayed_data.get("budget_exceeded")
+            if _replayed_data.get("action_outcome") is None and not _replayed_data.get(
+                "budget_exceeded"
             ):
                 _replayed_data["idempotency_replay_legacy"] = True
                 # Phase 4.2: a legacy row's outcome shape is unknown, so a
                 # match cannot be proven — count it as a mismatch.
-                _emit_telemetry(
-                    ctx, tenant_id, investigation_id, "record_replay_mismatch"
-                )
+                _emit_telemetry(ctx, tenant_id, investigation_id, "record_replay_mismatch")
             return GenericActivityResult(
                 success=bool(_replayed.get("success", True)),
                 data=_replayed_data,
@@ -3161,6 +3152,19 @@ async def execute_action_activity(
             merged_attributes["read_mode"] = read_mode
             if read_mode == "path_only":
                 merged_attributes["discovery_only"] = True
+            fact_field = str(parameters.get("field_name", "") or "").strip()
+            if fact_field:
+                from investigation_agent_platform.application.analysis.java_field_facts import (
+                    resolve_java_field_fact,
+                )
+
+                resolution = resolve_java_field_fact(
+                    evidence,
+                    fact_field,
+                    declaring_type=(str(parameters.get("declaring_type") or "").strip() or None),
+                )
+                merged_attributes["code_fact_resolution"] = resolution.model_dump(mode="json")
+                outcome_detail["code_fact_resolution"] = resolution.model_dump(mode="json")
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
@@ -3897,9 +3901,7 @@ async def execute_action_activity(
                 # retries exhaust), auth blocks, and unavailability surface
                 # distinctly — a timeout is transient, an expired credential
                 # blocks the run, and none of them is "provider absent".
-                miss_reason, outcome_status, _blocking = classify_provider_failure(
-                    exc, miss_label
-                )
+                miss_reason, outcome_status, _blocking = classify_provider_failure(exc, miss_label)
                 outcome_detail["status"] = outcome_status
                 outcome_detail["miss_reason"] = miss_reason
                 if isinstance(exc, RateLimitException):
@@ -4536,9 +4538,9 @@ async def execute_action_activity(
                 outcome_detail["_graph_callers"] = len(callers)
                 outcome_detail["_graph_callees"] = len(callees)
                 graph_edges: list[dict] = []
-                for role, node in (
-                    [("caller", c) for c in callers] + [("callee", c) for c in callees]
-                ):
+                for role, node in [("caller", c) for c in callers] + [
+                    ("callee", c) for c in callees
+                ]:
                     try:
                         if not isinstance(node, dict):
                             continue
@@ -4588,44 +4590,44 @@ async def execute_action_activity(
                     f"callgraph:{tenant_id}:{symbol}:{len(callers)}:{len(callees)}".encode()
                 ).hexdigest()
                 summary_row = Evidence(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    evidence_type=EvidenceType.CALL_GRAPH,
+                    provider="code-intelligence",
+                    source=f"callgraph://{symbol}",
+                    title=f"Call graph: {symbol} ({len(callers)} callers, {len(callees)} callees)",
+                    summary=(
+                        f"Call graph for '{symbol}': {len(callers)} caller(s), "
+                        f"{len(callees)} callee(s)."
+                    ),
+                    content_snippet="\n".join(lines)[:4000],
+                    attributes={
+                        "discovery_only": True,
+                        "revision_supported": False,
+                    },
+                    observed_at=now,
+                    retrieved_at=now,
+                    provenance=EvidenceProvenance(
                         tenant_id=tenant_id,
                         investigation_id=investigation_id,
-                        evidence_type=EvidenceType.CALL_GRAPH,
-                        provider="code-intelligence",
-                        source=f"callgraph://{symbol}",
-                        title=f"Call graph: {symbol} ({len(callers)} callers, {len(callees)} callees)",
-                        summary=(
-                            f"Call graph for '{symbol}': {len(callers)} caller(s), "
-                            f"{len(callees)} callee(s)."
-                        ),
-                        content_snippet="\n".join(lines)[:4000],
-                        attributes={
-                            "discovery_only": True,
-                            "revision_supported": False,
-                        },
-                        observed_at=now,
-                        retrieved_at=now,
-                        provenance=EvidenceProvenance(
-                            tenant_id=tenant_id,
-                            investigation_id=investigation_id,
+                        provider_type="code-intelligence",
+                        requested_provider_id="treesitter-local",
+                        actual_provider_id="treesitter-local",
+                        source_system="call-graph",
+                        retrieval_timestamp=now,
+                        query_fingerprint=QueryFingerprint(
                             provider_type="code-intelligence",
-                            requested_provider_id="treesitter-local",
-                            actual_provider_id="treesitter-local",
-                            source_system="call-graph",
-                            retrieval_timestamp=now,
-                            query_fingerprint=QueryFingerprint(
-                                provider_type="code-intelligence",
-                                operation="find_call_graph",
-                                normalized_query_hash=fp[:32],
-                            ),
-                            source_location=SourceLocation(
-                                system="call-graph",
-                                identifier=symbol,
-                            ),
+                            operation="find_call_graph",
+                            normalized_query_hash=fp[:32],
                         ),
-                        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
-                        fingerprint=f"callgraph-{fp[:32]}",
-                    )
+                        source_location=SourceLocation(
+                            system="call-graph",
+                            identifier=symbol,
+                        ),
+                    ),
+                    freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                    fingerprint=f"callgraph-{fp[:32]}",
+                )
                 # Per-edge packets: the nodes already carry file/line
                 # provenance — bank each edge with it instead of leaving
                 # only the location-less summary. Edges stay discovery_only
@@ -4702,9 +4704,7 @@ async def execute_action_activity(
                                         revision=str(loc.get("revision", "") or "") or None,
                                     ),
                                 ),
-                                freshness=EvidenceFreshness(
-                                    observed_at=now, retrieved_at=now
-                                ),
+                                freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
                                 fingerprint=edge_fp,
                             )
                         )
@@ -4758,18 +4758,14 @@ async def execute_action_activity(
             # read; failures keep the graph results regardless.
             try:
                 _edges = [
-                    e for e in (outcome_detail.pop("_graph_edges", []) or [])
-                    if isinstance(e, dict)
+                    e for e in (outcome_detail.pop("_graph_edges", []) or []) if isinstance(e, dict)
                 ]
-                _callers_first = sorted(
-                    _edges, key=lambda e: 0 if e.get("role") == "caller" else 1
-                )
+                _callers_first = sorted(_edges, key=lambda e: 0 if e.get("role") == "caller" else 1)
                 _target = next(
                     (
                         e
                         for e in _callers_first
-                        if str(e.get("file") or "").strip()
-                        and isinstance(e.get("line"), int)
+                        if str(e.get("file") or "").strip() and isinstance(e.get("line"), int)
                     ),
                     None,
                 )
@@ -5047,17 +5043,22 @@ async def execute_action_activity(
                             cited.append(cid)
             except Exception:
                 cited = []
-            known_evidence_ids: set[Any] = set()
-            if proposed_claims and evidence_repo is not None:
-                try:
-                    _claim_rows = await evidence_repo.find_by_investigation_id(
+            known_evidence_rows: dict[UUID, Any] = {}
+            try:
+                if evidence_repo is not None:
+                    _known_rows = await evidence_repo.find_by_investigation_id(
                         tenant_id, investigation_id
                     )
-                    known_evidence_ids = {
-                        getattr(e, "evidence_id", None) for e in (_claim_rows or [])
+                    known_evidence_rows = {
+                        getattr(row, "evidence_id", None): row
+                        for row in (_known_rows or [])
+                        if getattr(row, "evidence_id", None) is not None
                     }
-                except Exception:
-                    known_evidence_ids = set()
+            except Exception:
+                known_evidence_rows = {}
+            known_evidence_ids: set[Any] = set()
+            if proposed_claims and evidence_repo is not None:
+                known_evidence_ids = set(known_evidence_rows)
             for text in proposed_hypotheses[:20]:
                 if saved >= allowed:
                     break
@@ -5106,9 +5107,86 @@ async def execute_action_activity(
                                 reason=f"cited by {kind.value} claim"[:1024],
                                 claim_kind=kind,
                                 claim_target=target,
+                                value_semantics=(
+                                    str(
+                                        typed.get("value_semantics")
+                                        or (
+                                            (raw_target or {}).get("value_semantics")
+                                            if isinstance(raw_target, dict)
+                                            else ""
+                                        )
+                                    )[:64]
+                                    or None
+                                ),
+                                claimed_value=(
+                                    str(
+                                        typed.get("claimed_value")
+                                        or (
+                                            (raw_target or {}).get("claimed_value")
+                                            if isinstance(raw_target, dict)
+                                            else ""
+                                        )
+                                    )[:512]
+                                    or None
+                                ),
                             )
                             for cid in typed_cited
                         )
+                        if kind == ClaimKind.DEFINITION:
+                            raw_resolution = next(
+                                (
+                                    (
+                                        getattr(known_evidence_rows.get(cid), "attributes", {})
+                                        or {}
+                                    ).get("code_fact_resolution")
+                                    for cid in typed_cited
+                                    if isinstance(
+                                        (
+                                            getattr(known_evidence_rows.get(cid), "attributes", {})
+                                            or {}
+                                        ),
+                                        dict,
+                                    )
+                                    and (
+                                        getattr(known_evidence_rows.get(cid), "attributes", {})
+                                        or {}
+                                    ).get("code_fact_resolution")
+                                    is not None
+                                ),
+                                None,
+                            )
+                            if raw_resolution is not None:
+                                try:
+                                    from investigation_agent_platform.domain.code.models import (
+                                        CodeFactResolution,
+                                        CodeFactStatus,
+                                    )
+
+                                    resolution = CodeFactResolution.model_validate(raw_resolution)
+                                    if resolution.status == CodeFactStatus.RESOLVED:
+                                        typed_value = (
+                                            typed.get("claimed_value")
+                                            or (raw_target or {}).get("claimed_value")
+                                            if isinstance(raw_target, dict)
+                                            else typed.get("claimed_value")
+                                        )
+                                        typed_semantics = (
+                                            typed.get("value_semantics")
+                                            or (raw_target or {}).get("value_semantics")
+                                            if isinstance(raw_target, dict)
+                                            else typed.get("value_semantics")
+                                        )
+                                        if (
+                                            typed_value is not None
+                                            and str(typed_value) == str(resolution.resolved_value)
+                                            and str(typed_semantics or "").upper()
+                                            == resolution.value_semantics.value
+                                        ):
+                                            claim_cited.extend(
+                                                cid for cid in typed_cited if cid not in claim_cited
+                                            )
+                                except Exception:
+                                    pass
                     except Exception:
                         # Malformed typing never blocks persistence; the
                         # claim stays untyped and verifies by inference.
@@ -5352,6 +5430,7 @@ async def execute_action_activity(
                     "data": {
                         "status": result_status,
                         "items_count": items_count,
+                        "code_fact_resolution": outcome_detail.get("code_fact_resolution"),
                         # Phase 3.2: the stored response must equal the live
                         # return below — a replayed action without the outcome
                         # would silently change the next-turn history.
@@ -5377,6 +5456,7 @@ async def execute_action_activity(
             data={
                 "status": result_status,
                 "items_count": items_count,
+                "code_fact_resolution": outcome_detail.get("code_fact_resolution"),
                 "action_outcome": action_outcome.model_dump(mode="json"),
             },
         )
@@ -5578,18 +5658,28 @@ async def verify_root_cause_activity(
                         bound.append(_extra)
             except Exception:
                 pass
+            code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
+            code_value_claim = VerificationEngine.claims_field_value(
+                str(getattr(candidate, "statement", "") or "")
+            )
+            code_value_answered = code_value_result is not None and not refuting
+            if code_value_answered:
+                result = code_value_result
+                causal_chain = []
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
             location_result = engine.validate_location_claim(candidate, bound, contradictions)
-            location_answered = location_result is not None and not refuting
+            location_answered = (
+                location_result is not None and not refuting and not code_value_claim
+            )
             if location_answered:
                 result = location_result
                 causal_chain = []
             # T1-1: doc-answer fast path (mirrors location). Skipped under
             # legacy verifier mode like the location path.
             doc_answered = False
-            if not location_answered:
+            if not location_answered and not code_value_answered and not code_value_claim:
                 try:
                     doc_result = engine.validate_doc_claim(candidate, bound, contradictions)
                     doc_answered = doc_result is not None and not refuting
@@ -5622,7 +5712,12 @@ async def verify_root_cause_activity(
             # #65: state-answer fast path (mirrors doc). Banked DATABASE_STATE
             # rows answer value questions without causal machinery.
             state_answered = False
-            if not location_answered and not doc_answered:
+            if (
+                not location_answered
+                and not code_value_answered
+                and not doc_answered
+                and not code_value_claim
+            ):
                 try:
                     state_result = engine.validate_state_claim(candidate, bound, contradictions)
                     state_answered = state_result is not None and not refuting
@@ -5664,7 +5759,13 @@ async def verify_root_cause_activity(
                         )
                 except Exception:
                     pass
-            if not location_answered and not doc_answered and not state_answered:
+            if (
+                not location_answered
+                and not code_value_answered
+                and not doc_answered
+                and not state_answered
+                and not code_value_claim
+            ):
                 causal_chain = [
                     CausalRelationship(
                         cause=s.cause,
@@ -5681,11 +5782,17 @@ async def verify_root_cause_activity(
                 blockers.append("no bound supporting evidence")
             if refuting:
                 blockers.append(f"{len(refuting)} refuting evidence item(s) bound")
+            if code_value_claim and not code_value_answered:
+                blockers.append("code value claim lacks a matching deterministic resolution")
+            if code_value_answered:
+                blockers.clear()
             if (
                 not causal_chain
                 and not location_answered
+                and not code_value_answered
                 and not doc_answered
                 and not state_answered
+                and not code_value_claim
             ):
                 blockers.append("no validated causal chain")
             if blockers:
@@ -5707,7 +5814,15 @@ async def verify_root_cause_activity(
                         contradiction_penalty=0.0,
                     ),
                 )
-            elif not location_answered and not doc_answered and not state_answered:
+            elif code_value_answered:
+                result = code_value_result
+                causal_chain = []
+            elif (
+                not code_value_claim
+                and not location_answered
+                and not doc_answered
+                and not state_answered
+            ):
                 _candidate_id = getattr(candidate, "id", None)
                 result = engine.evaluate_hypothesis(
                     candidate,
@@ -5794,6 +5909,7 @@ async def verify_root_cause_activity(
                 "confidence": result.confidence.overall_confidence,
                 "hypothesis_id": str(result.hypothesis_id),
                 "answer_mode": bool(getattr(result, "location_validated", False)),
+                "code_value_validated": bool(getattr(result, "code_value_validated", False)),
             },
         )
     except ApplicationFailure:
@@ -6610,10 +6726,25 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     ]
     causal_chain = [c for c in causal_chain if c.evidence_ids]
     # G1: location-answer fast path (mirrors verify_root_cause_activity).
+    _verify_engine = VerificationEngine()
+    code_value_verification = _verify_engine.validate_code_value_claim(
+        candidate, bound, contradictions
+    )
+    code_value_claim = VerificationEngine.claims_field_value(
+        str(getattr(candidate, "statement", "") or "")
+    )
+    code_value_answered = code_value_verification is not None and not refuting
+    if code_value_claim and not code_value_answered:
+        await _persist_abstention(
+            "refuted" if refuting else "insufficient",
+            ["code value claim lacks a matching deterministic resolution"],
+            candidate.id,
+        )
+        return InvestigationStatus.COMPLETED
     location_verification = VerificationEngine().validate_location_claim(
         candidate, bound, contradictions
     )
-    location_answered = location_verification is not None and not refuting
+    location_answered = location_verification is not None and not refuting and not code_value_claim
     # T1-1: doc validation up front so the abstention check below sees it.
     doc_answered = False
     doc_verification = None
@@ -6625,7 +6756,12 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     # #65: state validation up front, same abstention visibility.
     state_answered = False
     state_verification = None
-    if not location_answered and not doc_answered:
+    if (
+        not location_answered
+        and not code_value_answered
+        and not doc_answered
+        and not code_value_claim
+    ):
         try:
             state_verification = VerificationEngine().validate_state_claim(
                 candidate, bound, contradictions
@@ -6636,24 +6772,46 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     if (
         not bound
         or refuting
-        or (not causal_chain and not location_answered and not doc_answered and not state_answered)
+        or (
+            not causal_chain
+            and not location_answered
+            and not code_value_answered
+            and not doc_answered
+            and not state_answered
+        )
     ):
         reasons = []
         if not bound:
             reasons.append("no bound supporting evidence")
         if refuting:
             reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
-        if not causal_chain and not location_answered and not doc_answered and not state_answered:
+        if (
+            not causal_chain
+            and not location_answered
+            and not code_value_answered
+            and not doc_answered
+            and not state_answered
+        ):
             reasons.append("no validated causal chain")
+        if code_value_claim and not code_value_answered:
+            reasons.append("code value claim lacks a matching deterministic resolution")
         await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
         return InvestigationStatus.COMPLETED
     if location_answered:
         verification = location_verification
+    elif code_value_answered:
+        verification = code_value_verification
     elif doc_answered and doc_verification is not None:
         verification = doc_verification
     elif state_answered and state_verification is not None:
         verification = state_verification
-    if not location_answered and not doc_answered and not state_answered:
+    if (
+        not location_answered
+        and not code_value_answered
+        and not doc_answered
+        and not state_answered
+        and not code_value_claim
+    ):
         _gate_candidate_id = getattr(candidate, "id", None)
         verification = engine.evaluate_hypothesis(
             candidate,
@@ -6675,6 +6833,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         bound,
         policy,
         location_validated=location_answered,
+        code_value_validated=code_value_answered,
         doc_validated=doc_answered,
         state_validated=state_answered,
     )
@@ -6719,7 +6878,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         tenant_id=tenant_id,
         investigation_id=investigation_id,
         finding_type=FindingType.OBSERVATION
-        if (location_answered or doc_answered or state_answered)
+        if (location_answered or code_value_answered or doc_answered or state_answered)
         else FindingType.ROOT_CAUSE,
         title=hyp.title,
         statement=hyp.statement,
@@ -6846,7 +7005,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         limitations=_verification_limitations,
         next_check=_next_check,
         status=ConclusionStatus.ANSWERED
-        if (location_answered or doc_answered)
+        if (location_answered or code_value_answered or doc_answered)
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
             if getattr(verification, "tier", "established") == "likely"

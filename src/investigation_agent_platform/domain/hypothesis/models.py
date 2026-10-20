@@ -65,6 +65,9 @@ class ClaimTarget(BaseModel):
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     scope: str | None = Field(default=None, max_length=512)
+    declaring_type: str | None = Field(default=None, max_length=512)
+    value_semantics: str | None = Field(default=None, max_length=64)
+    claimed_value: str | None = Field(default=None, max_length=512)
 
 
 class HypothesisEvidenceAssessment(BaseModel):
@@ -84,6 +87,8 @@ class HypothesisEvidenceAssessment(BaseModel):
     reason: str = Field(..., max_length=1024)
     claim_kind: ClaimKind | None = None
     claim_target: ClaimTarget | None = None
+    value_semantics: str | None = Field(default=None, max_length=64)
+    claimed_value: str | None = Field(default=None, max_length=512)
 
 
 class HypothesisCausalStep(BaseModel):
@@ -137,6 +142,20 @@ class Hypothesis(BaseModel):
         for asm in self.assessments:
             if asm.claim_target is not None:
                 return asm.claim_target
+        return None
+
+    @property
+    def claim_value_semantics(self) -> str | None:
+        for asm in self.assessments:
+            if asm.value_semantics:
+                return asm.value_semantics
+        return None
+
+    @property
+    def claimed_value(self) -> str | None:
+        for asm in self.assessments:
+            if asm.claimed_value is not None:
+                return asm.claimed_value
         return None
 
     @model_validator(mode="after")

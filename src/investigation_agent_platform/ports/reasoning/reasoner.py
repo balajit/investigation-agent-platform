@@ -26,6 +26,8 @@ class DecisionClaim(BaseModel):
     claim_kind: ClaimKind = ClaimKind.CAUSAL
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
     target: ClaimTarget | None = None
+    value_semantics: str | None = Field(default=None, max_length=64)
+    claimed_value: str | None = Field(default=None, max_length=512)
 
 
 class InvestigationDecision(BaseModel):

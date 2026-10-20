@@ -163,6 +163,26 @@ class InvestigationActionValidator:
                 )
             if len(file_path) > 1024:
                 raise SecurityPolicyViolationException("file_path exceeds maximum length")
+            field_name = params.get("field_name")
+            if field_name is not None and (
+                not isinstance(field_name, str) or not field_name.strip() or len(field_name) > 256
+            ):
+                raise SecurityPolicyViolationException(
+                    "field_name must be a bounded non-empty string"
+                )
+            declaring_type = params.get("declaring_type")
+            if declaring_type is not None and (
+                not isinstance(declaring_type, str)
+                or not declaring_type.strip()
+                or len(declaring_type) > 512
+            ):
+                raise SecurityPolicyViolationException(
+                    "declaring_type must be a bounded non-empty string"
+                )
+            for key in ("start_line", "end_line"):
+                value = params.get(key)
+                if value is not None and (not isinstance(value, int) or value < 1):
+                    raise SecurityPolicyViolationException(f"{key} must be a positive integer")
             # Budget: max source files
             if current_evidence_count >= limits.max_source_files:
                 raise SecurityPolicyViolationException("Maximum source files budget exceeded")
@@ -219,9 +239,7 @@ class InvestigationActionValidator:
             session_id = params.get("session_id", "")
             tracking_id = params.get("tracking_id", "")
             if not isinstance(session_id, str) or not isinstance(tracking_id, str):
-                raise SecurityPolicyViolationException(
-                    "TRACE_JOURNEY identifiers must be strings"
-                )
+                raise SecurityPolicyViolationException("TRACE_JOURNEY identifiers must be strings")
             if not session_id.strip() and not tracking_id.strip():
                 raise SecurityPolicyViolationException(
                     "TRACE_JOURNEY requires session_id or tracking_id"

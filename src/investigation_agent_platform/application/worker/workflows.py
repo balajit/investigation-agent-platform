@@ -136,7 +136,13 @@ def _reason_summary(reason_data: dict[str, Any]) -> str:
     # as-is (None), so pre-execution summaries keep their old shape.
     forced_bits: list[str] = []
     if isinstance(reason_data, dict):
-        for key in ("forced_formulate", "forced_reread", "forced_log_search", "forced_walk_stack", "forced_replan"):
+        for key in (
+            "forced_formulate",
+            "forced_reread",
+            "forced_log_search",
+            "forced_walk_stack",
+            "forced_replan",
+        ):
             if reason_data.get(key):
                 forced_bits.append(key.removeprefix("forced_"))
     forced = f" forced=[{','.join(forced_bits)}]" if forced_bits else ""
@@ -160,9 +166,7 @@ def _reason_summary(reason_data: dict[str, Any]) -> str:
     _hyps_raw: Any = None
     _obs_raw: Any = None
     if isinstance(reason_data, dict):
-        action = str(
-            reason_data.get("action", reason_data.get("next_action", "?")) or "?"
-        )
+        action = str(reason_data.get("action", reason_data.get("next_action", "?")) or "?")
         _hyps_raw = reason_data.get("hypotheses_evaluated")
         _obs_raw = reason_data.get("observations")
     # C-1: merged history entries carry INT counts where decisions carry
@@ -424,9 +428,7 @@ def _investigation_plan(triage_route: str, intake_seed: dict | None) -> list[str
         return list(_ROUTE_PLANS["UNKNOWN"])
 
 
-def _classify_failure(
-    description: str | None, intake_seed: dict | None
-) -> str:
+def _classify_failure(description: str | None, intake_seed: dict | None) -> str:
     """Triage route for a failure: TRANSIENT/CONFIG/DATA/BUG/UNKNOWN.
 
     Precedence: explicit golden pair → DATA; error-class transient
@@ -461,9 +463,28 @@ def _classify_failure(
 _REPLAN_ALTERNATIVES = ("SEARCH_LOGS", "SEARCH_CODE")
 _REPLAN_STOPWORDS = frozenset(
     {
-        "what", "where", "when", "which", "does", "doing", "have", "has",
-        "had", "with", "from", "that", "this", "these", "those", "there",
-        "their", "about", "show", "recent", "service", "services",
+        "what",
+        "where",
+        "when",
+        "which",
+        "does",
+        "doing",
+        "have",
+        "has",
+        "had",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "there",
+        "their",
+        "about",
+        "show",
+        "recent",
+        "service",
+        "services",
     }
 )
 
@@ -528,13 +549,38 @@ def _callsite_target(
                 if not isinstance(raw_claim, dict):
                     continue
                 kind = raw_claim.get("claim_kind", "")
-                kind_value = str(
-                    getattr(kind, "value", kind) or ""
-                ).strip().upper()
-                if kind_value != "CALL_EDGE":
-                    continue
+                kind_value = str(getattr(kind, "value", kind) or "").strip().upper()
                 target = raw_claim.get("target") or {}
                 if not isinstance(target, dict):
+                    continue
+                value_semantics = str(raw_claim.get("value_semantics") or "").upper()
+                if kind_value == "DEFINITION" and value_semantics in {
+                    "EXPLICIT_INITIALIZER",
+                    "LANGUAGE_DEFAULT",
+                }:
+                    field_name = str(target.get("symbol", "") or "").strip()
+                    file_path = str(target.get("file_path", "") or "").strip()
+                    if not field_name or not file_path:
+                        continue
+                    normalized = file_path.replace("\\", "/").strip().strip("/")
+                    if normalized in read_files:
+                        continue
+                    start_raw = target.get("line_start", target.get("start_line"))
+                    try:
+                        start = int(start_raw or 0) or None
+                    except (TypeError, ValueError):
+                        start = None
+                    params: dict[str, Any] = {"file_path": file_path, "field_name": field_name}
+                    if target.get("declaring_type"):
+                        params["declaring_type"] = str(target["declaring_type"])
+                    revision = str(target.get("revision", "") or "").strip()
+                    if revision:
+                        params["revision"] = revision
+                    if start and start >= 1:
+                        params["start_line"] = start
+                        params["end_line"] = max(start, int(target.get("line_end") or start))
+                    return {"next_action": "GET_CODE", "action_parameters": params}
+                if kind_value != "CALL_EDGE":
                     continue
                 file_path = str(target.get("file_path", "") or "").strip()
                 if not file_path:
@@ -561,6 +607,65 @@ def _callsite_target(
         return None
     except Exception:
         return None
+
+
+def _source_value_target(
+    reason_data: dict | None,
+    action_history: list | None,
+    forced_count: int,
+) -> dict[str, Any] | None:
+    """Request exact Java source before accepting a field-value claim."""
+    try:
+        if int(forced_count or 0) >= 2:
+            return None
+        data = reason_data or {}
+        if str(data.get("next_action", "")).upper() != "VERIFY_HYPOTHESIS":
+            return None
+        for claim in data.get("claims", []) or []:
+            if not isinstance(claim, dict):
+                continue
+            if str(claim.get("claim_kind", "")).upper() != "DEFINITION":
+                continue
+            if str(claim.get("value_semantics", "")).upper() not in {
+                "EXPLICIT_INITIALIZER",
+                "LANGUAGE_DEFAULT",
+            }:
+                continue
+            target = claim.get("target") or {}
+            if not isinstance(target, dict):
+                continue
+            field_name = str(target.get("symbol", "") or "").strip()
+            file_path = str(target.get("file_path", "") or "").strip()
+            if not field_name or not file_path or not file_path.lower().endswith(".java"):
+                continue
+            if any(
+                isinstance(action, dict)
+                and str(action.get("action", "")).upper() == "GET_CODE"
+                and int(action.get("evidence_added", 0) or 0) > 0
+                and str((action.get("parameters") or {}).get("file_path", "")).strip() == file_path
+                and str((action.get("parameters") or {}).get("field_name", "")).strip()
+                == field_name
+                for action in (action_history or [])
+            ):
+                continue
+            params: dict[str, Any] = {"file_path": file_path, "field_name": field_name}
+            for target_key, param_key in (
+                ("declaring_type", "declaring_type"),
+                ("revision", "revision"),
+            ):
+                if target.get(target_key):
+                    params[param_key] = str(target[target_key])
+            # Parse from the file head so the class declaration/braces and
+            # field's declaration context are present. The provider caps the
+            # actual returned bytes/lines and marks truncation; the analyzer
+            # fails closed if that bounded window is incomplete.
+            params["start_line"] = 1
+            params["end_line"] = 2000
+            return params
+        return None
+    except Exception:
+        return None
+
 
 def _explore_floor_target(
     reason_data: dict[str, Any] | None,
@@ -601,11 +706,14 @@ def _explore_floor_target(
             try:
                 text = f" {(description or '').lower()} "
                 code_shaped = bool(
-                    re.search(r"[a-z0-9_.\-/]*\.[a-z]{1,10}", text)
-                    and re.search(r"[a-z]+", text)
+                    re.search(r"[a-z0-9_.\-/]*\.[a-z]{1,10}", text) and re.search(r"[a-z]+", text)
                 ) and (
-                    "file" in text or "implement" in text or "defin" in text
-                    or "symbol" in text or "code" in text or "call" in text
+                    "file" in text
+                    or "implement" in text
+                    or "defin" in text
+                    or "symbol" in text
+                    or "code" in text
+                    or "call" in text
                 )
             except Exception:
                 code_shaped = False
@@ -693,9 +801,7 @@ def _should_force_replan(
             pass
         if data_action != actions[0]:
             return None
-        alternative = next(
-            (a for a in _REPLAN_ALTERNATIVES if a != actions[0]), None
-        )
+        alternative = next((a for a in _REPLAN_ALTERNATIVES if a != actions[0]), None)
         if alternative is None:
             return None
         keywords = _description_keywords(description)
@@ -759,7 +865,8 @@ def _should_force_synthesis(
         return False
 
 
-def _should_force_log_search(    description: str | None,
+def _should_force_log_search(
+    description: str | None,
     reason_data: dict | None,
     action_history: list | None,
     forced_count: int,
@@ -835,11 +942,7 @@ def _reread_target(
                 text = item.get("statement") or item.get("text") or ""
                 statements.append(str(text))
         lowered = [f" {s.lower()} " for s in statements]
-        if not any(
-            pattern in text
-            for text in lowered
-            for pattern in _REREAD_DEFINITION_PATTERNS
-        ):
+        if not any(pattern in text for text in lowered for pattern in _REREAD_DEFINITION_PATTERNS):
             return None
         for entry in action_history or []:
             try:
@@ -871,9 +974,7 @@ def _caused_by_idempotency_wedge(exc: BaseException) -> bool:
         while cause is not None and seen < 5:
             if getattr(cause, "type", "") == "IdempotencyRequestInProgress":
                 return True
-            cause = getattr(cause, "__cause__", None) or getattr(
-                cause, "__context__", None
-            )
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
             if not isinstance(cause, BaseException):
                 return False
             seen += 1
@@ -892,10 +993,7 @@ def _is_auth_blocked(exec_data: Any) -> bool:
     """
     try:
         outcome = (exec_data or {}).get("action_outcome") or {}
-        return (
-            outcome.get("status") == "BLOCKED"
-            and outcome.get("miss_reason") == "auth_failed"
-        )
+        return outcome.get("status") == "BLOCKED" and outcome.get("miss_reason") == "auth_failed"
     except Exception:
         return False
 
@@ -1032,9 +1130,7 @@ class RunInvestigationWorkflow:
                 error=f"workflow_error:{type(exc).__name__}",
             )
 
-    async def _run_inner(
-        self, input_data: RunInvestigationInput
-    ) -> RunInvestigationResult:
+    async def _run_inner(self, input_data: RunInvestigationInput) -> RunInvestigationResult:
         retry_policy = RetryPolicy(
             maximum_attempts=3,
             non_retryable_error_types=[
@@ -1224,6 +1320,7 @@ class RunInvestigationWorkflow:
         evidence_banked_total = 0
         forced_formulate_count = 0
         forced_reread_count = 0
+        forced_value_read_count = 0
         forced_log_search_count = 0
         forced_walk_stack_count = 0
         forced_replan_count = 0
@@ -1314,13 +1411,20 @@ class RunInvestigationWorkflow:
             if reason_res.data.get("reasoning_unavailable"):
                 _ru_reason = str(reason_res.data.get("reason", "") or "")[:200]
                 last_error = (
-                    f"reasoning_unavailable:{_ru_reason}"
-                    if _ru_reason
-                    else "reasoning_unavailable"
+                    f"reasoning_unavailable:{_ru_reason}" if _ru_reason else "reasoning_unavailable"
                 )
                 break
             # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
+            _value_target = _source_value_target(
+                _reason_data, action_history, forced_value_read_count
+            )
+            if _value_target is not None:
+                forced_value_read_count += 1
+                _reason_data = dict(_reason_data)
+                _reason_data["next_action"] = "GET_CODE"
+                _reason_data["action_parameters"] = _value_target
+                _reason_data["forced_source_value_read"] = True
             # D2: stack-walk forcing first — explicit intake frames outrank
             # every other gathering rule.
             _walk_params = _should_force_walk_stack(
@@ -1351,13 +1455,18 @@ class RunInvestigationWorkflow:
                     _reason_data["next_action"] = _floor["next_action"]
                     _reason_data["action_parameters"] = _floor["action_parameters"]
                     _reason_data["forced_floor"] = True
-            if _should_force_formulate(
-                iteration,
-                formulated_count,
-                _reason_data.get("hypotheses_evaluated"),
-                evidence_banked_total,
-                forced_formulate_count,
-            ) and not _reason_data.get("forced_walk_stack") and not _reason_data.get("forced_floor"):
+            if (
+                not _reason_data.get("forced_source_value_read")
+                and _should_force_formulate(
+                    iteration,
+                    formulated_count,
+                    _reason_data.get("hypotheses_evaluated"),
+                    evidence_banked_total,
+                    forced_formulate_count,
+                )
+                and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_floor")
+            ):
                 forced_formulate_count += 1
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
@@ -1368,6 +1477,7 @@ class RunInvestigationWorkflow:
                 not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_source_value_read")
             ):
                 if _should_force_synthesis(
                     action_history,
@@ -1387,10 +1497,9 @@ class RunInvestigationWorkflow:
                 not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_source_value_read")
             ):
-                _reread_path = _reread_target(
-                    _reason_data, action_history, forced_reread_count
-                )
+                _reread_path = _reread_target(_reason_data, action_history, forced_reread_count)
                 if _reread_path:
                     forced_reread_count += 1
                     _reason_data = dict(_reason_data)
@@ -1400,14 +1509,14 @@ class RunInvestigationWorkflow:
             # Call-site forcing — a CALL_EDGE claim naming an unread caller
             # file reads it before the loop can conclude on a graph summary
             # alone. Skipped when an earlier read-forcing rule already fired.
-            if not _reason_data.get("forced_formulate") and not _reason_data.get(
-                "forced_walk_stack"
-            ) and not _reason_data.get("forced_floor") and not _reason_data.get(
-                "forced_reread"
+            if (
+                not _reason_data.get("forced_formulate")
+                and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_reread")
+                and not _reason_data.get("forced_source_value_read")
             ):
-                _callsite = _callsite_target(
-                    _reason_data, action_history, forced_callsite_count
-                )
+                _callsite = _callsite_target(_reason_data, action_history, forced_callsite_count)
                 if _callsite:
                     forced_callsite_count += 1
                     _reason_data = dict(_reason_data)
@@ -1499,7 +1608,11 @@ class RunInvestigationWorkflow:
                         action=_dispatched_action,
                         parameters=dict(_reason_data.get("action_parameters", {})),
                         hypotheses=list(_reason_data.get("hypotheses_evaluated", []) or []),
-                        claims=list(_reason_data.get("claims", []) or []),
+                        claims=[
+                            {**claim, "evidence_ids": list(claim.get("evidence_ids", []) or [])}
+                            for claim in (_reason_data.get("claims", []) or [])
+                            if isinstance(claim, dict)
+                        ],
                     ),
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=retry_policy,
@@ -1513,9 +1626,7 @@ class RunInvestigationWorkflow:
                 # wedge type; anything else re-raises.
                 if not _caused_by_idempotency_wedge(exc):
                     raise
-                execute_res = _degraded_empty_result(
-                    _dispatched_action, "idempotency_owner_busy"
-                )
+                execute_res = _degraded_empty_result(_dispatched_action, "idempotency_owner_busy")
 
             input_state = await _maybe_handle_input_required(execute_res.data, "INVESTIGATING")
             if input_state == "cancelled":
@@ -1537,13 +1648,9 @@ class RunInvestigationWorkflow:
                 _params = dict(reason_res.data.get("action_parameters", {}) or {})
                 action_history[-1].update(
                     {
-                        "parameters": {
-                            k: str(v)[:200] for k, v in _params.items()
-                        },
+                        "parameters": {k: str(v)[:200] for k, v in _params.items()},
                         "outcome_status": _outcome.get("status"),
-                        "items_count": _outcome.get(
-                            "item_count", _exec_data.get("items_count", 0)
-                        ),
+                        "items_count": _outcome.get("item_count", _exec_data.get("items_count", 0)),
                         "evidence_added": len(_outcome.get("evidence_ids", []) or []),
                         "miss_reason": _outcome.get("miss_reason"),
                         "sources": _outcome.get("sources", []),
@@ -1605,8 +1712,12 @@ class RunInvestigationWorkflow:
             _decision_summary = _reason_summary(
                 {**(reason_res.data or {}), **(action_history[-1] if action_history else {})}
             )
-            await _transition("CORRELATING", f"Iteration {iteration} correlating ({_decision_summary})")
-            await _transition("HYPOTHESIZING", f"Iteration {iteration} hypothesizing ({_decision_summary})")
+            await _transition(
+                "CORRELATING", f"Iteration {iteration} correlating ({_decision_summary})"
+            )
+            await _transition(
+                "HYPOTHESIZING", f"Iteration {iteration} hypothesizing ({_decision_summary})"
+            )
             await _transition("VERIFYING", f"Iteration {iteration} verifying ({_decision_summary})")
 
             # Verify root cause (VerificationEngine).
@@ -2503,9 +2614,7 @@ class TopologyProjectionWorkflow:
     """
 
     @workflow.run
-    async def run(
-        self, input_data: TopologyProjectionInput
-    ) -> TopologyProjectionResult:
+    async def run(self, input_data: TopologyProjectionInput) -> TopologyProjectionResult:
         retry_policy = RetryPolicy(maximum_attempts=3)
         output = await workflow.execute_activity(
             project_topology_activity,

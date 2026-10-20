@@ -241,8 +241,9 @@ class TestDefinitionClaimRequiresRangeRead:
                 query_fingerprint=QueryFingerprint(
                     provider_type="test", operation=operation, normalized_query_hash="h"
                 ),
-                source_location=SourceLocation(system="test", identifier="x",
-                                               line_start=line_start, line_end=line_end),
+                source_location=SourceLocation(
+                    system="test", identifier="x", line_start=line_start, line_end=line_end
+                ),
             ),
             freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
             fingerprint=f"fp-{uuid4()}",
@@ -320,8 +321,14 @@ def _code_evidence(operation="GET_SOURCE", with_location=True, etype=None):
     iid = uuid4()
     now = datetime.now(UTC)
     location = (
-        SourceLocation(system="git", identifier="x", file_path="src/a.py",
-                       line_start=10, line_end=20, revision="abc123")
+        SourceLocation(
+            system="git",
+            identifier="x",
+            file_path="src/a.py",
+            line_start=10,
+            line_end=20,
+            revision="abc123",
+        )
         if with_location
         else SourceLocation(system="git", identifier="x")
     )
@@ -385,8 +392,12 @@ class TestLocationAnswerPath:
                 "provenance": widget_row.provenance.model_copy(
                     update={
                         "source_location": SourceLocation(
-                            system="git", identifier="x", file_path="src/widgets.py",
-                            line_start=10, line_end=20, revision="abc123",
+                            system="git",
+                            identifier="x",
+                            file_path="src/widgets.py",
+                            line_start=10,
+                            line_end=20,
+                            revision="abc123",
                         )
                     }
                 )
@@ -428,6 +439,163 @@ class TestLocationAnswerPath:
         assert result is not None
         assert result.status == VerificationStatus.VERIFIED
 
+
+class TestCodeValueClaimRequiresResolution:
+    def _resolution_evidence(self):
+        from investigation_agent_platform.domain.provenance.models import SourceLocation
+
+        ev = _code_evidence("GET_SOURCE").model_copy(
+            update={"content_snippet": "10| private int retryCount = 3;"}
+        )
+        location = SourceLocation(
+            system="Git",
+            identifier="repo/src/TransactionProcessor.java",
+            file_path="src/TransactionProcessor.java",
+            line_start=10,
+            line_end=10,
+            revision="abc123",
+        )
+        resolution = {
+            "status": "RESOLVED",
+            "repository": "repo",
+            "revision": "abc123",
+            "declaring_type": "TransactionProcessor",
+            "field_name": "retryCount",
+            "field_type": "int",
+            "field_category": "INSTANCE_FIELD",
+            "value_semantics": "EXPLICIT_INITIALIZER",
+            "raw_initializer": "3",
+            "resolved_value": "3",
+            "source_evidence_ids": [str(ev.evidence_id)],
+            "declaration_location": location.model_dump(mode="json"),
+            "limitation_codes": [],
+        }
+        attrs = {"read_mode": "range", "code_fact_resolution": resolution}
+        return ev.model_copy(
+            update={
+                "attributes": attrs,
+                "provenance": ev.provenance.model_copy(update={"source_location": location}),
+            }
+        )
+
+    def _hypothesis(self, value, evidence_id, semantics="EXPLICIT_INITIALIZER"):
+        from uuid import uuid4
+
+        from investigation_agent_platform.domain.hypothesis.models import (
+            AssessmentStrength,
+            AssessmentType,
+            ClaimKind,
+            ClaimTarget,
+            Hypothesis,
+            HypothesisEvidenceAssessment,
+        )
+
+        hypothesis_id = uuid4()
+        target = ClaimTarget(
+            symbol="retryCount",
+            file_path="src/TransactionProcessor.java",
+            line_start=10,
+            value_semantics=semantics,
+            claimed_value=str(value),
+        )
+        assessment = HypothesisEvidenceAssessment(
+            hypothesis_id=hypothesis_id,
+            evidence_id=evidence_id,
+            assessment=AssessmentType.SUPPORTS,
+            strength=AssessmentStrength.STRONG,
+            reason="structured source value claim",
+            claim_kind=ClaimKind.DEFINITION,
+            claim_target=target,
+            value_semantics=semantics,
+            claimed_value=str(value),
+        )
+        return Hypothesis(
+            id=hypothesis_id,
+            tenant_id="t",
+            investigation_id=uuid4(),
+            title="retryCount initializer",
+            description="retryCount initializer",
+            statement=f"retryCount default value is {value}",
+            supporting_evidence_ids=[evidence_id],
+            assessments=[assessment],
+        )
+
+    def test_value_claim_without_resolution_is_inconclusive(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+            VerificationStatus,
+        )
+
+        ev = _code_evidence("GET_SOURCE").model_copy(
+            update={
+                "content_snippet": "10| private int retryCount = 3;",
+                "attributes": {"read_mode": "range"},
+            }
+        )
+        result = VerificationEngine().evaluate_hypothesis(
+            self._hypothesis("999", ev.evidence_id), [ev], [], [], RootCauseVerificationPolicy()
+        )
+        assert result.status == VerificationStatus.INCONCLUSIVE
+        assert "no resolved CodeFactResolution" in result.explanation
+
+    def test_malformed_resolution_is_not_trusted(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        ev = _code_evidence("GET_SOURCE").model_copy(
+            update={
+                "content_snippet": "10| private int retryCount = 3;",
+                "attributes": {
+                    "read_mode": "range",
+                    "code_fact_resolution": {"resolved_value": "999"},
+                },
+            }
+        )
+        hyp = self._hypothesis("999", ev.evidence_id)
+        assert VerificationEngine().code_value_proof(hyp, [ev])[0] is False
+
+    def test_correct_value_passes_and_conflicting_value_is_inconclusive(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+            VerificationStatus,
+        )
+
+        ev = self._resolution_evidence()
+        engine = VerificationEngine()
+        correct = engine.evaluate_hypothesis(
+            self._hypothesis("3", ev.evidence_id), [ev], [], [], RootCauseVerificationPolicy()
+        )
+        incorrect = engine.evaluate_hypothesis(
+            self._hypothesis("999", ev.evidence_id), [ev], [], [], RootCauseVerificationPolicy()
+        )
+        assert correct.status == VerificationStatus.VERIFIED
+        assert incorrect.status == VerificationStatus.INCONCLUSIVE
+        assert "conflicts with resolved source value" in incorrect.explanation
+
+    def test_location_fast_path_does_not_verify_value_assertion(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        ev = self._resolution_evidence()
+        assert (
+            VerificationEngine().validate_location_claim(
+                self._hypothesis("999", ev.evidence_id), [ev], []
+            )
+            is None
+        )
+
+    def test_wrong_numeric_value_does_not_map_by_path_alone(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        ev = self._resolution_evidence()
+        texts, paths = VerificationEngine._bound_corpus([ev])
+        statement = "retryCount default value is 999 in src/TransactionProcessor.java"
+        assert VerificationEngine.sentence_mapped(statement, texts, paths) is False
+
     def test_non_location_claim_returns_none(self):
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
@@ -435,7 +603,9 @@ class TestLocationAnswerPath:
 
         engine = VerificationEngine()
         assert (
-            engine.validate_location_claim(_loc_hyp("Pool exhaustion causes latency"), [_code_evidence()], [])
+            engine.validate_location_claim(
+                _loc_hyp("Pool exhaustion causes latency"), [_code_evidence()], []
+            )
             is None
         )
 
@@ -483,8 +653,14 @@ class TestLocationAnswerPath:
             gate = ConclusionGate()
             policy = RootCauseVerificationPolicy()
             approved = await gate.evaluate(
-                "t", uuid4(), result, [], [], [_code_evidence("GET_SOURCE")],
-                policy, location_validated=True,
+                "t",
+                uuid4(),
+                result,
+                [],
+                [],
+                [_code_evidence("GET_SOURCE")],
+                policy,
+                location_validated=True,
             )
             denied = await gate.evaluate(
                 "t", uuid4(), result, [], [], [_code_evidence("GET_SOURCE")], policy
@@ -502,8 +678,12 @@ def _code_evidence_at_path(file_path, operation="SEARCH_CODE"):
 
     ev = _code_evidence(operation)
     loc = SourceLocation(
-        system="git", identifier="x", file_path=file_path,
-        line_start=10, line_end=20, revision="abc123",
+        system="git",
+        identifier="x",
+        file_path=file_path,
+        line_start=10,
+        line_end=20,
+        revision="abc123",
     )
     prov = ev.provenance.model_copy(update={"source_location": loc})
     return ev.model_copy(update={"provenance": prov})
@@ -572,9 +752,7 @@ class TestCorrectedPathClaims:
         engine = VerificationEngine()
         assert (
             engine.validate_location_claim(
-                _loc_hyp(
-                    "Could not determine the right file; it might be src/a.py."
-                ),
+                _loc_hyp("Could not determine the right file; it might be src/a.py."),
                 [_code_evidence()],
                 [],
             )
@@ -588,10 +766,7 @@ class TestCorrectedPathClaims:
 
         paths = VerificationEngine._statement_paths(self.G9_STATEMENT)
         assert self.CORRECTED in paths
-        assert (
-            "src/investigation_agent_platform/application/worker/activites.py"
-            in paths
-        )
+        assert "src/investigation_agent_platform/application/worker/activites.py" in paths
         # Bare words and versions never match (slash required).
         assert VerificationEngine._statement_paths("Pool exhaustion v1.2 causes latency") == []
 
@@ -766,9 +941,7 @@ class TestStatementRangeReads:
         assert result_without is None
         extra = VerificationEngine.statement_range_reads(statement, [search_row, read_row])
         assert [e.evidence_id for e in extra] == [read_row.evidence_id]
-        result_with = engine.validate_location_claim(
-            _loc_hyp(statement), [search_row] + extra, []
-        )
+        result_with = engine.validate_location_claim(_loc_hyp(statement), [search_row] + extra, [])
         assert result_with is not None
         assert result_with.location_validated is True
 
@@ -801,9 +974,12 @@ class TestPublishBand:
         rows = [_code_evidence("GET_SOURCE") for _ in range(3)]
         rows[0] = rows[0].model_copy(update={"provider": "alpha"})
         rows[1] = rows[1].model_copy(update={"provider": "beta"})
-        rows[2] = rows[2].model_copy(update={
-            "provider": "beta", "evidence_type": EvidenceType.CALL_GRAPH,
-        })
+        rows[2] = rows[2].model_copy(
+            update={
+                "provider": "beta",
+                "evidence_type": EvidenceType.CALL_GRAPH,
+            }
+        )
         return rows
 
     def test_in_band_verifies_as_likely_with_reasons(self):
@@ -814,20 +990,30 @@ class TestPublishBand:
 
         engine = VerificationEngine()
         hyp = _loc_hyp("Pool saturation causes checkout latency")
-        hyp = hyp.model_copy(update={"causal_steps": ["s1"]}) if hasattr(hyp, "causal_steps") else hyp
+        hyp = (
+            hyp.model_copy(update={"causal_steps": ["s1"]}) if hasattr(hyp, "causal_steps") else hyp
+        )
         rows = self._multi_evidence()
         from investigation_agent_platform.application.investigation.verification import (
             CausalRelationship,
             RootCauseVerificationPolicy,
         )
 
-        chain = [CausalRelationship(
-            cause="pool saturation", effect="checkout latency",
-            mechanism="exhausted connections queue", confidence=0.7,
-            evidence_ids=[r.evidence_id for r in rows[:2]],
-        )]
+        chain = [
+            CausalRelationship(
+                cause="pool saturation",
+                effect="checkout latency",
+                mechanism="exhausted connections queue",
+                confidence=0.7,
+                evidence_ids=[r.evidence_id for r in rows[:2]],
+            )
+        ]
         result = engine.evaluate_hypothesis(
-            hyp, rows, [], chain, RootCauseVerificationPolicy.runtime(),
+            hyp,
+            rows,
+            [],
+            chain,
+            RootCauseVerificationPolicy.runtime(),
         )
         assert result.status == VerificationStatus.VERIFIED
         assert result.tier == "likely"
@@ -851,34 +1037,48 @@ class TestClaimSubjectGrounding:
             VerificationEngine,
         )
 
-        assert VerificationEngine.claim_subject_grounded(
-            "The quantum module is implemented as CustomDeserializerModule in src/cache/CustomDeserializerModule.java",
-            ["src/cache/CustomDeserializerModule.java",
-             "Code match CustomDeserializerModule in CustomDeserializerModule.java:10"],
-        ) is False
+        assert (
+            VerificationEngine.claim_subject_grounded(
+                "The quantum module is implemented as CustomDeserializerModule in src/cache/CustomDeserializerModule.java",
+                [
+                    "src/cache/CustomDeserializerModule.java",
+                    "Code match CustomDeserializerModule in CustomDeserializerModule.java:10",
+                ],
+            )
+            is False
+        )
 
     def test_legit_subjects_grounded(self):
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
         )
 
-        assert VerificationEngine.claim_subject_grounded(
-            "SampleOrderFilter is implemented in src/filters/SampleOrderFilter.java",
-            ["src/filters/SampleOrderFilter.java", "class SampleOrderFilter"],
-        ) is True
-        assert VerificationEngine.claim_subject_grounded(
-            "The execute action activity is implemented in src/worker/activities.py",
-            ["src/worker/activities.py", "async def execute_action_activity"],
-        ) is True
+        assert (
+            VerificationEngine.claim_subject_grounded(
+                "SampleOrderFilter is implemented in src/filters/SampleOrderFilter.java",
+                ["src/filters/SampleOrderFilter.java", "class SampleOrderFilter"],
+            )
+            is True
+        )
+        assert (
+            VerificationEngine.claim_subject_grounded(
+                "The execute action activity is implemented in src/worker/activities.py",
+                ["src/worker/activities.py", "async def execute_action_activity"],
+            )
+            is True
+        )
 
     def test_listing_shape_skips_grounding(self):
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
         )
 
-        assert VerificationEngine.claim_subject_grounded(
-            "The callers of f are g and h", ["unrelated text"]
-        ) is True
+        assert (
+            VerificationEngine.claim_subject_grounded(
+                "The callers of f are g and h", ["unrelated text"]
+            )
+            is True
+        )
         assert VerificationEngine.claim_subject_grounded("anything", []) is True
 
 
@@ -890,8 +1090,12 @@ class TestDocAnswerPath:
         ev = ev.model_copy(update={"evidence_type": EvidenceType.DOCUMENTATION})
         from investigation_agent_platform.domain.provenance.models import SourceLocation
 
-        loc = SourceLocation(system="reference-docs", identifier=path, file_path=path, revision=revision)
-        return ev.model_copy(update={"provenance": ev.provenance.model_copy(update={"source_location": loc})})
+        loc = SourceLocation(
+            system="reference-docs", identifier=path, file_path=path, revision=revision
+        )
+        return ev.model_copy(
+            update={"provenance": ev.provenance.model_copy(update={"source_location": loc})}
+        )
 
     def test_doc_claim_naming_cited_doc_validates(self):
         from investigation_agent_platform.application.investigation.verification import (
@@ -937,11 +1141,16 @@ class TestSubjectStopwords:
 
         # "defined" appears in the cited row, but it is scaffolding, not
         # the subject — the foreign subject "quantum" must still reject.
-        assert VerificationEngine.claim_subject_grounded(
-            "The quantum module is defined in src/cache/CustomDeserializerModule.java",
-            ["src/cache/CustomDeserializerModule.java",
-             "Code match defined in CustomDeserializerModule.java:10"],
-        ) is False
+        assert (
+            VerificationEngine.claim_subject_grounded(
+                "The quantum module is defined in src/cache/CustomDeserializerModule.java",
+                [
+                    "src/cache/CustomDeserializerModule.java",
+                    "Code match defined in CustomDeserializerModule.java:10",
+                ],
+            )
+            is False
+        )
         tokens = VerificationEngine._claim_subject_tokens(
             "The quantum module is defined in src/cache/CustomDeserializerModule.java"
         )
@@ -962,14 +1171,22 @@ class TestDefinitionRequiresSubjectToo:
         ev = _code_evidence("GET_SOURCE")
         from investigation_agent_platform.domain.provenance.models import SourceLocation
 
-        ev = ev.model_copy(update={
-            "provenance": ev.provenance.model_copy(update={
-                "source_location": SourceLocation(
-                    system="git", identifier="x",
-                    file_path="src/cache/CustomDeserializerModule.java",
-                    line_start=1, line_end=5, revision="abc123"),
-            }),
-        })
+        ev = ev.model_copy(
+            update={
+                "provenance": ev.provenance.model_copy(
+                    update={
+                        "source_location": SourceLocation(
+                            system="git",
+                            identifier="x",
+                            file_path="src/cache/CustomDeserializerModule.java",
+                            line_start=1,
+                            line_end=5,
+                            revision="abc123",
+                        ),
+                    }
+                ),
+            }
+        )
         assert engine.validate_location_claim(hyp, [ev], []) is None
 
     def test_definition_with_grounded_subject_passes(self):
@@ -983,15 +1200,23 @@ class TestDefinitionRequiresSubjectToo:
         ev = _code_evidence("GET_SOURCE")
         from investigation_agent_platform.domain.provenance.models import SourceLocation
 
-        ev = ev.model_copy(update={
-            "summary": "class SampleOrderFilter filters sample orders",
-            "provenance": ev.provenance.model_copy(update={
-                "source_location": SourceLocation(
-                    system="git", identifier="x",
-                    file_path="src/filters/SampleOrderFilter.java",
-                    line_start=1, line_end=5, revision="abc123"),
-            }),
-        })
+        ev = ev.model_copy(
+            update={
+                "summary": "class SampleOrderFilter filters sample orders",
+                "provenance": ev.provenance.model_copy(
+                    update={
+                        "source_location": SourceLocation(
+                            system="git",
+                            identifier="x",
+                            file_path="src/filters/SampleOrderFilter.java",
+                            line_start=1,
+                            line_end=5,
+                            revision="abc123",
+                        ),
+                    }
+                ),
+            }
+        )
         result = engine.validate_location_claim(hyp, [ev], [])
         assert result is not None
         assert result.status == VerificationStatus.VERIFIED
@@ -1053,16 +1278,24 @@ class TestStateAnswerPath:
             corroborating_evidence_ids=[],
             explanation="state answer",
             confidence=InvestigationConfidence(
-                coverage_score=1.0, reliability_score=1.0,
-                causal_score=0.5, contradiction_penalty=0.0,
+                coverage_score=1.0,
+                reliability_score=1.0,
+                causal_score=0.5,
+                contradiction_penalty=0.0,
             ),
             state_validated=True,
         )
 
         async def _run():
             return await ConclusionGate().evaluate(
-                "t", uuid4(), vr, [], [], [self._state_evidence()],
-                RootCauseVerificationPolicy(), state_validated=True,
+                "t",
+                uuid4(),
+                vr,
+                [],
+                [],
+                [self._state_evidence()],
+                RootCauseVerificationPolicy(),
+                state_validated=True,
             )
 
         assert asyncio.run(_run()).approved is True
@@ -1084,12 +1317,20 @@ class TestStateValueGrounding:
             VerificationEngine,
         )
 
-        assert VerificationEngine._state_value_grounded(
-            "The sample orders database runs Oracle Database 19c",
-            ["BANNER: Oracle Database 19c Enterprise Edition"],
-        ) is True
-        assert VerificationEngine._state_value_grounded(
-            "The sample orders database runs Oracle Database 21c",
-            ["BANNER: Oracle Database 19c Enterprise Edition"],
-        ) is False
-        assert VerificationEngine._state_value_grounded("nothing distinctive here ok", ["x"]) is False
+        assert (
+            VerificationEngine._state_value_grounded(
+                "The sample orders database runs Oracle Database 19c",
+                ["BANNER: Oracle Database 19c Enterprise Edition"],
+            )
+            is True
+        )
+        assert (
+            VerificationEngine._state_value_grounded(
+                "The sample orders database runs Oracle Database 21c",
+                ["BANNER: Oracle Database 19c Enterprise Edition"],
+            )
+            is False
+        )
+        assert (
+            VerificationEngine._state_value_grounded("nothing distinctive here ok", ["x"]) is False
+        )
