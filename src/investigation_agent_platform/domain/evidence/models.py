@@ -151,11 +151,8 @@ class Evidence(BaseModel):
 
     @model_validator(mode="after")
     def validate_redaction_and_payload_invariants(self) -> "Evidence":
-        fact = (
-            self.attributes.get("code_fact_resolution")
-            if isinstance(self.attributes, dict)
-            else None
-        )
+        attrs = self.attributes if isinstance(self.attributes, dict) else {}
+        fact = attrs.get("code_fact_resolution")
         if fact is not None:
             from investigation_agent_platform.domain.code.models import CodeFactResolution
 
@@ -163,6 +160,22 @@ class Evidence(BaseModel):
                 CodeFactResolution.model_validate(fact)
             except Exception as exc:
                 raise ValueError("code_fact_resolution has an invalid shape") from exc
+        fact_v2 = attrs.get("code_fact_resolution_v2")
+        if fact_v2 is not None:
+            from investigation_agent_platform.domain.code.models import CodeFactResolutionV2
+
+            try:
+                CodeFactResolutionV2.model_validate(fact_v2)
+            except Exception as exc:
+                raise ValueError("code_fact_resolution_v2 has an invalid shape") from exc
+        if fact is not None and fact_v2 is not None:
+            from investigation_agent_platform.domain.code.models import (
+                detect_dual_resolution_conflict,
+            )
+
+            conflict = detect_dual_resolution_conflict(fact, fact_v2)
+            if conflict is not None:
+                raise ValueError(f"conflicting dual code-fact payloads: {conflict}")
         if self.is_redacted and not self.redaction_manifest:
             raise ValueError("is_redacted is True but redaction_manifest is empty.")
         if len(self.content_snippet) >= 4096 and not (

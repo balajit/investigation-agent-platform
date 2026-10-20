@@ -149,6 +149,41 @@ def _visible_evidence_ids(compiled: dict[str, Any]) -> list[str]:
     return out
 
 
+def fuzzy_orientation_block(orientation: Any | None) -> dict[str, Any] | None:
+    """D4: serialize a FuzzyOrientation hint for reason context (pure).
+
+    Accepts the frozen model or an equivalent mapping; returns a bounded
+    plain-dict block or None. The block carries no evidence_ids by
+    construction — orientation steers which deterministic reads fire next and
+    can never be cited, banked, or concluded from.
+    """
+    if orientation is None:
+        return None
+    try:
+        if hasattr(orientation, "model_dump"):
+            data = orientation.model_dump(mode="json")
+        elif isinstance(orientation, dict):
+            data = dict(orientation)
+        else:
+            return None
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    try:
+        return {
+            "type": "fuzzy_orientation",
+            "unverified": bool(data.get("unverified", True)),
+            "miss": str(data.get("miss", "") or "")[:64],
+            "suggested_symbols": [
+                str(s) for s in (data.get("suggested_symbols") or []) if str(s)
+            ][:10],
+            "steering_note": str(data.get("steering_note", "") or "")[:512],
+        }
+    except Exception:
+        return None
+
+
 class ReasoningContext(BaseModel):
     investigation_id: UUID
     problem_description: str
@@ -437,6 +472,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         recent_actions: list[dict[str, Any]] | None = None,
         orientation_notes: list[dict[str, Any]] | None = None,
         hub_orientation: dict[str, Any] | list[dict[str, Any]] | None = None,
+        fuzzy_orientation: Any | None = None,
     ) -> InvestigationDecision:
         investigation_id = str(getattr(getattr(state, "investigation", None), "id", ""))
         logger.info(
@@ -451,7 +487,8 @@ class ReasoningCoordinator(InvestigationReasoner):
         )
         try:
             decision = await self._reason_inner(
-                tenant_id, state, recent_actions, orientation_notes, hub_orientation
+                tenant_id, state, recent_actions, orientation_notes, hub_orientation,
+                fuzzy_orientation,
             )
         except Exception:
             logger.exception(
@@ -485,6 +522,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         recent_actions: list[dict[str, Any]] | None = None,
         orientation_notes: list[dict[str, Any]] | None = None,
         hub_orientation: dict[str, Any] | list[dict[str, Any]] | None = None,
+        fuzzy_orientation: Any | None = None,
     ) -> InvestigationDecision:
         # F-048: structured instruction/data separation — evidence travels as
         # typed records in a dedicated envelope field, never concatenated
@@ -600,6 +638,18 @@ class ReasoningCoordinator(InvestigationReasoner):
             facts_block["hub_orientation"] = hub_block
         elif isinstance(hub_block, list):
             facts_block["hub_orientation"] = [n for n in hub_block if isinstance(n, dict)][:5]
+        # D4 fuzzy orientation: non-citable steering hint from the structural
+        # fallback (verified IDs as read targets, never evidence). Direction
+        # only, like hub orientation: claims sourced here must still be
+        # verified against code/log/state evidence before VERIFY_HYPOTHESIS,
+        # and the validator rejects orientation-only support outright.
+        fuzzy_block = fuzzy_orientation_block(
+            fuzzy_orientation
+            if fuzzy_orientation is not None
+            else getattr(state, "fuzzy_orientation", None)
+        )
+        if fuzzy_block is not None:
+            facts_block["fuzzy_orientation"] = fuzzy_block
         # Misrouting fix: question-shape signal scopes datasource choice.
         # Code-shaped questions with empty evidence used to drift into
         # QUERY_STATE (Oracle banner rows for a code-location question) via

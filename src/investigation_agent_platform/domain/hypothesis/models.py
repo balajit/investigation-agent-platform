@@ -7,6 +7,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investigation_agent_platform.domain.code.models import JavaFactCategory
+
 
 class HypothesisStatus(StrEnum):
     PROPOSED = "PROPOSED"
@@ -68,6 +70,7 @@ class ClaimTarget(BaseModel):
     declaring_type: str | None = Field(default=None, max_length=512)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
+    fact_category: JavaFactCategory | None = Field(default=None)
 
 
 class HypothesisEvidenceAssessment(BaseModel):
@@ -89,6 +92,7 @@ class HypothesisEvidenceAssessment(BaseModel):
     claim_target: ClaimTarget | None = None
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
+    fact_category: JavaFactCategory | None = Field(default=None)
 
 
 class HypothesisCausalStep(BaseModel):
@@ -156,6 +160,21 @@ class Hypothesis(BaseModel):
         for asm in self.assessments:
             if asm.claimed_value is not None:
                 return asm.claimed_value
+        return None
+
+    @property
+    def fact_category(self) -> JavaFactCategory | None:
+        """Typed Java fact category (None for legacy/untyped rows).
+
+        Legacy rows without a category keep legacy proof paths only; they
+        never gain a new Java proof rule by default.
+        """
+        for asm in self.assessments:
+            if asm.fact_category is not None:
+                return asm.fact_category
+            target = asm.claim_target
+            if target is not None and target.fact_category is not None:
+                return target.fact_category
         return None
 
     @model_validator(mode="after")

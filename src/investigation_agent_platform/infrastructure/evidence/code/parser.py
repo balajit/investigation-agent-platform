@@ -13,6 +13,27 @@ tracer = trace.get_tracer(__name__)
 MAX_AST_DEPTH = 100
 MAX_CODE_SIZE_BYTES = 524_288  # 512 KB limit for parsing
 
+#: Adapter marker recorded as ``parser_version`` when the caller does not
+#: supply a precise version (cf. ``_parser_version`` in
+#: ``infrastructure/topology/payload.py`` for the pinned package version).
+PARSER_VERSION = "tree-sitter-parser"
+
+#: Tree-sitter grammar node types emitted by :meth:`TreeSitterParser.parse_symbols`
+#: mapped to the canonical :class:`SymbolType` vocabulary. Unmapped grammar
+#: kinds have no ``SymbolType`` counterpart and are skipped by
+#: :func:`to_domain_symbol` (they cannot be identified deterministically).
+GRAMMAR_KIND_TO_SYMBOL_TYPE: dict[str, str] = {
+    "method_declaration": "METHOD",
+    "method_definition": "METHOD",
+    "function_definition": "FUNCTION",
+    "async_function_definition": "FUNCTION",
+    "function_declaration": "FUNCTION",
+    "function_declarator": "FUNCTION",
+    "class_declaration": "CLASS",
+    "class_definition": "CLASS",
+    "interface_declaration": "INTERFACE",
+}
+
 
 class CodeSymbol(BaseModel):
     """Structured code symbol extracted from AST parsing."""
@@ -141,3 +162,63 @@ class TreeSitterParser:
                 parent_stack.pop()
 
         return symbols
+
+
+def to_domain_symbol(
+    sym: CodeSymbol,
+    *,
+    tenant_id: str,
+    repository_id: str,
+    repository: str,
+    file_path: str,
+    revision: str,
+    qualified_name: str | None = None,
+    symbol_type: str | None = None,
+    parent_node_id: Any | None = None,
+    parser_version: str = PARSER_VERSION,
+) -> Any:
+    """Convert one lightweight parser DTO into a deterministic domain ``CodeSymbol``.
+
+    This is the Step 2 migration path: wherever the caller can supply full
+    identity (tenant, repository, revision, file path), the domain symbol
+    carries a UUIDv5 ``node_id`` via ``CodeSymbol.create`` instead of a
+    random ID. Callers without identity context (live-checkout scans) keep
+    using :meth:`TreeSitterParser.parse_symbols` output directly — that path
+    is unchanged and nothing breaks.
+
+    ``symbol_type`` accepts a ``SymbolType`` value or a tree-sitter grammar
+    kind from :data:`GRAMMAR_KIND_TO_SYMBOL_TYPE`. Unmapped grammar kinds
+    raise ``ValueError`` so callers skip them with a diagnostic (mirroring
+    ``build_payload_for_repo``), never guessed. ``parent_node_id`` must be a
+    resolved UUID; the parser DTO's name-only ``parent_symbol`` cannot become
+    an identity and is superseded by the qualified name.
+    """
+    from investigation_agent_platform.domain.code.models import CodeSymbol as DomainCodeSymbol
+
+    kind = symbol_type if symbol_type is not None else sym.symbol_type
+    mapped = GRAMMAR_KIND_TO_SYMBOL_TYPE.get(kind, kind)
+    qualified = (
+        qualified_name
+        if qualified_name is not None
+        else (f"{sym.parent_symbol}.{sym.name}" if sym.parent_symbol else sym.name)
+    )
+    try:
+        return DomainCodeSymbol.create(
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            name=sym.name,
+            qualified_name=qualified,
+            symbol_type=mapped,  # type: ignore[arg-type]
+            repository=repository,
+            file_path=file_path,
+            line_start=sym.start_line,
+            line_end=sym.end_line,
+            signature=sym.signature,
+            revision=revision,
+            start_column=sym.start_column,
+            end_column=sym.end_column,
+            parent_node_id=parent_node_id,
+            parser_version=parser_version,
+        )
+    except Exception as exc:
+        raise ValueError(f"cannot map parser symbol {sym.name!r} (kind={kind!r}): {exc}") from exc

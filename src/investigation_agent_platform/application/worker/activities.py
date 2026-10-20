@@ -3165,6 +3165,20 @@ async def execute_action_activity(
                 )
                 merged_attributes["code_fact_resolution"] = resolution.model_dump(mode="json")
                 outcome_detail["code_fact_resolution"] = resolution.model_dump(mode="json")
+                try:
+                    from investigation_agent_platform.domain.code.models import (
+                        emit_dual_resolution_attributes,
+                    )
+
+                    dual = emit_dual_resolution_attributes(resolution)
+                    merged_attributes["code_fact_resolution_v2"] = dual[
+                        "code_fact_resolution_v2"
+                    ]
+                    outcome_detail["code_fact_resolution_v2"] = dual[
+                        "code_fact_resolution_v2"
+                    ]
+                except Exception:
+                    pass
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)

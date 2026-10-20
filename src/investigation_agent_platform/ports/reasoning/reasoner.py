@@ -5,6 +5,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from investigation_agent_platform.domain.code.models import JavaFactCategory
 from investigation_agent_platform.domain.hypothesis.models import ClaimKind, ClaimTarget
 from investigation_agent_platform.domain.investigation.models import (
     InvestigationAction,
@@ -26,6 +27,7 @@ class DecisionClaim(BaseModel):
     claim_kind: ClaimKind = ClaimKind.CAUSAL
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
     target: ClaimTarget | None = None
+    fact_category: JavaFactCategory | None = None
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
 

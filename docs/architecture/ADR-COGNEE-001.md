@@ -1,7 +1,8 @@
 # ADR-COGNEE-001: Cognee as Projection-Only Graph Store
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-10-20 — proposal record appended; decision unchanged)
 - **Date:** 2026-10-17
+- **Amendment:** 2026-10-20
 - **Deciders:** Chief Architect (IAP)
 - **Scope:** Static code analysis recall (code understanding for investigations)
 
@@ -61,8 +62,45 @@ Concretely:
 - A battery PARTIAL/FAIL is shown fixable *only* by semantic recall.
 - New item tracked in `docs/IAP_Arch_Eng_Recommendations.log`.
 
+## Proposal record (2026-10-20, `tmp/GEMINI_THOUGHTS_COGNEE.md`)
+
+A later external review proposed layering Cognee over the validated topology as a
+semantic discovery and reasoning engine, with an adapter plus a verify-and-enforce
+gateway. Each item was dispositioned below so future readers need not re-litigate
+the proposal. The decision above is unchanged: only the ADOPT rows are live, and
+the fallback design in `docs/IAP-Cognee-integration-design.md` stays behind
+`IAP_COGNEE_ENABLED` until the update gate in that doc passes.
+
+| # | Proposal item | Verdict | Reason |
+| --- | --- | --- | --- |
+| P1 | Adapter translates validated `ASTTopologyPayload` into Cognee `DataPoint`s; Cognee acts as semantic enrichment over our ground truth | ADOPT | Already the Part 8 shape (`map_payload_to_points` → `add_data_points(graph_only=True)`). Ground-truth-first ordering preserved. |
+| P2 | Verify-and-enforce gateway: fuzzy output is an untrusted hint, structural truth has veto, verified nodes re-looked-up before reasoning | ADOPT | Compatible with the evidence gateway; adopted as structural-first-with-fuzzy-fallback (see below), never fuzzy-first for claims. |
+| P3 | `metadata` identity/index fields on the projection class | ADOPT, adapter-only | `TopologySymbolPoint.metadata` carries `identity_fields`/`index_fields`. Never on domain models. |
+| P4 | Domain models (`CodeSymbol`, `ASTNodeIdentity`) inherit Cognee `DataPoint` | DECLINE | Would pull the `cognee` dependency and vector-indexing behavior into the domain, break deterministic UUIDv5 identity, and kill the dependency-free test mirror. The adapter owns all `DataPoint` subclasses. |
+| P5 | `cognify()` / `cognee.add()` on AST payloads; LLM-derived `CodeFlow` with `flow_entry` / `flow_stage` / `flow_route` edges | DECLINE | Falsified by the spike: `add()` normalizes toward text extraction, `cognify()` runs LLM graph extraction over deterministic structure, the `chunker=` seam is document-route only for code, and enola yields generic nodes. No consumer exists for LLM-derived flows; `ROUTE` / `MESSAGE_HANDLER` plus trace-corroborated hops cover the proven cases. |
+| P6 | Vectors/embeddings over AST nodes by default | DECLINE until benchmarked | Pilot is `graph_only=True` by design (zero embed spend). Enabling vectors is a cost, latency, and cross-tenant-leakage decision gated by the benchmark in `docs/IAP-Cognee-integration-design.md`. |
+| P7 | Agent calls `cognee.search()` directly, including `*_COMPLETION` types | DECLINE | Bypasses authorization, sanitization, provenance, and persistence; LLM-written strings must never become evidence. Reads stay behind `RETRIEVAL_ONLY_SEARCH_TYPES` with `ALLOW_COMPLETION=false`. |
+| P8 | `CodeSymbol` / `CodeFlow` / Modules / Services-Routes-Storage auto-extraction as the code model | DECLINE as extraction source | Our tree-sitter walk plus `TopologyNodeType` remains the extraction authority. Cognee stores projections; it does not parse. |
+
+## Fuzzy placement decision (2026-10-20)
+
+Two orderings were considered for the gateway. **Adopted: structural-first with
+fuzzy fallback.** Deterministic recall (symbol lookup, callers/callees, ownership,
+history) runs first; only defined miss classes (zero exact hits, ambiguous
+overload/symbol, concept-location question shape with no symbol anchor) escalate
+to a retrieval-only Cognee lookup inside the evidence gateway, whose candidates
+are re-verified against `ASTTopologyPayload`/Neo4j before enriching anything.
+Fuzzy-first (query Cognee, then verify) is permitted only as orientation — a
+labeled, non-citable hint in the style of `hub_orientation` — because the `CYPHER`
+search type itself routes NL through an LLM interpreter, invoking an LLM before
+any structural truth exists. In all cases fuzzy output is never banked as
+`Evidence` rows. Rationale and miss taxonomy live in
+`docs/IAP-Cognee-integration-design.md`.
+
 ## References
 
 - Spike: `scripts/cognee_spike.py` (ingest/probe/leakage, tree-sitter chunker)
 - Ledger: Cognee spike verdict entry, 2026-10-17 session
+- Proposal reviewed: `tmp/GEMINI_THOUGHTS_COGNEE.md` (2026-10-20 session; uncommitted working-tree note, not a committed contract)
+- Follow-up designs: `docs/IAP-Source-Code-model-enhancement.md`, `docs/IAP-Cognee-integration-design.md`
 - Related: architecture §10 (R1/R2/R4), §13 (compression), §15 (sharing)

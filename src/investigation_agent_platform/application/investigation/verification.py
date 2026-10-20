@@ -8,9 +8,13 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from investigation_agent_platform.domain.code.models import (
+    CODE_FACT_RESOLUTION_V2_KEY,
     CodeFactResolution,
+    CodeFactResolutionV2,
     CodeFactStatus,
     CodeValueSemantics,
+    JavaFactCategory,
+    detect_dual_resolution_conflict,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.hypothesis.models import (
@@ -341,6 +345,84 @@ def _gate_extra(decision: Any) -> dict[str, Any]:
         return {}
 
 
+from dataclasses import dataclass
+from typing import Literal as _Literal
+
+
+@dataclass(frozen=True)
+class CategoryProofRule:
+    """Per-category proof policy (Java D7).
+
+    required_evidence_families names the evidence families that must be present;
+    source_only_verifiable False means source evidence alone can never verify;
+    max_verdict caps the final tier (possible effects and call targets cap at
+    LIKELY; runtime/causal never verify from source alone).
+    """
+
+    required_evidence_families: frozenset[str]
+    requires_immutable_source_or_observation_identity: bool
+    requires_exact_scope_match: bool
+    requires_source_window_for_each_location: bool
+    requires_structured_fact_match: bool
+    source_only_verifiable: bool
+    max_verdict: _Literal["INSUFFICIENT", "LIKELY", "VERIFIED"]
+
+
+_VERIFIED_SOURCE = {
+    "requires_immutable_source_or_observation_identity": True,
+    "requires_exact_scope_match": True,
+    "requires_source_window_for_each_location": True,
+    "requires_structured_fact_match": True,
+    "source_only_verifiable": True,
+    "max_verdict": "VERIFIED",
+}
+_LIKELY_SOURCE = {**_VERIFIED_SOURCE, "max_verdict": "LIKELY"}
+
+CATEGORY_PROOF_RULES: dict[JavaFactCategory, CategoryProofRule] = {
+    JavaFactCategory.DECLARATION_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE"}), **_VERIFIED_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.SOURCE_VALUE_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_VERIFIED_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.LANGUAGE_SEMANTIC_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "LANGUAGE_RULE_VERSION", "ANALYZER_RESOLUTION"}),
+        **_VERIFIED_SOURCE,  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.CONTROL_FLOW_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.DATA_FLOW_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.CALL_TARGET_FACT: CategoryProofRule(
+        frozenset({"CALL_SITE_RANGE", "TARGET_DECLARATION_RANGE", "ANALYZER_RESOLUTION"}),
+        **_LIKELY_SOURCE,  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.POSSIBLE_EFFECT_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.CONFIGURATION_FACT: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "CONFIGURATION_SOURCE"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+    ),
+    JavaFactCategory.RUNTIME_OBSERVATION_FACT: CategoryProofRule(
+        frozenset({"RUNTIME_OBSERVATION"}), True, True, False, True, False, "LIKELY"
+    ),
+    JavaFactCategory.CAUSAL_CLAIM: CategoryProofRule(
+        frozenset({"SOURCE_RANGE", "RUNTIME_OBSERVATION", "CAUSAL_STEP_BINDINGS"}),
+        True, True, True, True, False, "LIKELY",
+    ),
+}
+
+
+def category_proof_rule(category: JavaFactCategory) -> CategoryProofRule | None:
+    """Return the proof policy for a known category, else None (fail closed)."""
+    try:
+        return CATEGORY_PROOF_RULES.get(category)
+    except Exception:
+        return None
+
+
 class VerificationEngine:
     """Evaluates hypothesis validity against root cause policy requirements.
 
@@ -425,7 +507,12 @@ class VerificationEngine:
 
     @staticmethod
     def claims_field_value(statement: str) -> bool:
-        """Conservative detector for natural-language field-value claims."""
+        """Routing aid only: does prose look like a field-value claim?
+
+        Never supplies a structured target, category, or value. Callers must
+        read ClaimTarget/HypothesisEvidenceAssessment/DecisionClaim fields for
+        the typed claim; prose detection only routes to the proof dispatch.
+        """
         lowered = f" {(statement or '').lower()} "
         if any(
             phrase in lowered
@@ -452,6 +539,164 @@ class VerificationEngine:
             )
             is not None
         )
+
+    @staticmethod
+    def claims_java_fact(statement: str) -> bool:
+        """Routing aid only: generalize claims_field_value without inference.
+
+        Same prose signal as claims_field_value today (no new resolvers in
+        Phase 1). Must not supply a structured target, category, or value;
+        typed fields on the claim carry those. Unknown phrasing fails closed
+        downstream in java_fact_proof.
+        """
+        try:
+            return VerificationEngine.claims_field_value(statement)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _fact_category_of(hypothesis: Any) -> JavaFactCategory | None:
+        """Typed fact_category carried by the claim, else None (legacy/untyped).
+
+        Reads hypothesis.fact_category, then claim_target.fact_category, then
+        the first assessment carrying one. Never infers from ClaimKind or prose.
+        Unknown strings fail closed (return None so only legacy paths apply).
+        """
+        for source in (
+            getattr(hypothesis, "fact_category", None),
+            getattr(getattr(hypothesis, "claim_target", None), "fact_category", None),
+            getattr(getattr(hypothesis, "target", None), "fact_category", None),
+        ):
+            if source is None:
+                continue
+            try:
+                return source if isinstance(source, JavaFactCategory) else JavaFactCategory(source)
+            except ValueError:
+                return None
+        try:
+            assessments = getattr(hypothesis, "assessments", None) or []
+        except Exception:
+            assessments = []
+        for asm in assessments:
+            for source in (
+                getattr(asm, "fact_category", None),
+                getattr(getattr(asm, "claim_target", None), "fact_category", None),
+            ):
+                if source is None:
+                    continue
+                try:
+                    return (
+                        source
+                        if isinstance(source, JavaFactCategory)
+                        else JavaFactCategory(source)
+                    )
+                except ValueError:
+                    return None
+        return None
+
+    @staticmethod
+    def _v2_any_from_evidence(evidence_items: list[Any]) -> CodeFactResolutionV2 | None:
+        """First well-formed v2 payload regardless of status (for PARTIAL wiring)."""
+        for item in evidence_items or []:
+            attrs = getattr(item, "attributes", None) or {}
+            if not isinstance(attrs, dict):
+                continue
+            raw = attrs.get(CODE_FACT_RESOLUTION_V2_KEY)
+            if not isinstance(raw, dict):
+                continue
+            try:
+                return CodeFactResolutionV2.model_validate(raw)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _v2_resolution_from_evidence(evidence_items: list[Any]) -> CodeFactResolutionV2 | None:
+        """Load only well-formed RESOLVED v2 analyzer output."""
+        resolution = VerificationEngine._v2_any_from_evidence(evidence_items)
+        if resolution is not None and resolution.status == CodeFactStatus.RESOLVED:
+            return resolution
+        return None
+
+    @staticmethod
+    def _dual_conflict_reason(evidence_items: list[Any]) -> str | None:
+        """Conflict reason when an item banks disagreeing dual keys, else None."""
+        for item in evidence_items or []:
+            attrs = getattr(item, "attributes", None) or {}
+            if not isinstance(attrs, dict):
+                continue
+            legacy_raw = attrs.get("code_fact_resolution")
+            v2_raw = attrs.get(CODE_FACT_RESOLUTION_V2_KEY)
+            if isinstance(legacy_raw, dict) and isinstance(v2_raw, dict):
+                reason = detect_dual_resolution_conflict(legacy_raw, v2_raw)
+                if reason is not None:
+                    return reason
+        return None
+
+    @staticmethod
+    def _node_ids_match(hypothesis: Any, resolution: Any) -> tuple[bool, str]:
+        """Optional verifier match (Model D5): when both sides carry node_id, match."""
+        resolution_node = getattr(resolution, "node_id", None)
+        if resolution_node is None:
+            return (True, "")
+        candidates: list[Any] = [
+            getattr(hypothesis, "node_id", None),
+            getattr(getattr(hypothesis, "claim_target", None), "node_id", None),
+            getattr(getattr(hypothesis, "target", None), "node_id", None),
+        ]
+        try:
+            for asm in getattr(hypothesis, "assessments", None) or []:
+                candidates.append(getattr(asm, "node_id", None))
+        except Exception:
+            pass
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                if str(candidate) != str(resolution_node):
+                    return (False, "claim node_id does not match the resolved symbol node_id")
+            except Exception:
+                continue
+            return (True, "")
+        return (True, "")
+
+    @staticmethod
+    def _java_evidence_families(
+        evidence_items: list[Any], resolution: CodeFactResolutionV2 | None
+    ) -> set[str]:
+        """Evidence families present for the category proof table."""
+        families: set[str] = set()
+        for item in evidence_items or []:
+            try:
+                if VerificationEngine._is_range_read(item) and VerificationEngine._item_type(
+                    item
+                ) in {"SOURCE_CODE", "EXCEPTION_PATH"}:
+                    families.add("SOURCE_RANGE")
+                    families.add("CALL_SITE_RANGE")
+                    families.add("TARGET_DECLARATION_RANGE")
+                if VerificationEngine._item_type(item) in VerificationEngine.RUNTIME_EVIDENCE_TYPES:
+                    families.add("RUNTIME_OBSERVATION")
+                attrs = getattr(item, "attributes", None) or {}
+                if isinstance(attrs, dict):
+                    if isinstance(attrs.get(CODE_FACT_RESOLUTION_V2_KEY), dict):
+                        try:
+                            CodeFactResolutionV2.model_validate(
+                                attrs.get(CODE_FACT_RESOLUTION_V2_KEY)
+                            )
+                            families.add("ANALYZER_RESOLUTION")
+                        except Exception:
+                            pass
+                    if attrs.get("search_scope") is not None:
+                        families.add("CAUSAL_STEP_BINDINGS")
+                    if attrs.get("configuration_source") or attrs.get("config_source"):
+                        families.add("CONFIGURATION_SOURCE")
+            except Exception:
+                continue
+        if resolution is not None and resolution.language_version:
+            families.add("LANGUAGE_RULE_VERSION")
+        if resolution is not None and resolution.runtime_source_identity:
+            families.add("RUNTIME_OBSERVATION")
+        return families
 
     @staticmethod
     def _resolution_from_evidence(evidence_items: list[Any]) -> CodeFactResolution | None:
@@ -566,7 +811,188 @@ class VerificationEngine:
             return (False, "source read window does not contain the resolved declaration")
         if target_line is not None and not (declared_range[0] <= target_line <= declared_range[1]):
             return (False, "source read window does not contain the claimed target line")
+        node_ok, node_reason = VerificationEngine._node_ids_match(hypothesis, resolution)
+        if not node_ok:
+            return (False, node_reason)
         return (True, "")
+
+    @staticmethod
+    def java_fact_proof(hypothesis: Any, evidence_items: list[Any]) -> tuple[bool, str]:
+        """Per-category proof dispatch (Java D7).
+
+        Each category declares required provenance, permissible statuses,
+        comparison operator, and abstention conditions. PARTIAL/UNRESOLVED are
+        never verifying; RUNTIME_OBSERVATION_FACT/CAUSAL_CLAIM never verify
+        from source evidence alone; unknown categories fail closed.
+        """
+        conflict = VerificationEngine._dual_conflict_reason(evidence_items)
+        if conflict is not None:
+            return (False, f"conflicting dual code-fact payloads: {conflict}")
+        category = VerificationEngine._fact_category_of(hypothesis)
+        if category is None:
+            return (False, "claim carries no typed fact_category; legacy proof paths only")
+        try:
+            rule = category_proof_rule(category)
+        except Exception:
+            rule = None
+        if rule is None:
+            return (False, f"unknown fact category {category!r}: fail closed")
+        v2_any = VerificationEngine._v2_any_from_evidence(evidence_items)
+        if v2_any is not None and v2_any.status != CodeFactStatus.RESOLVED:
+            codes = ",".join(v2_any.limitation_codes) or "untyped_partial"
+            return (False, f"resolution is {v2_any.status.value}: {codes}")
+        resolution = VerificationEngine._v2_resolution_from_evidence(evidence_items)
+        if resolution is None:
+            if v2_any is None:
+                return (False, "no resolved CodeFactResolutionV2 is bound to the cited evidence")
+            return (False, f"resolution is {v2_any.status.value}: non-verifying status")
+        if resolution.fact_category != category:
+            return (False, "claim category does not match the resolved fact category")
+        families = VerificationEngine._java_evidence_families(evidence_items, resolution)
+        missing = set(rule.required_evidence_families) - families
+        if missing:
+            return (
+                False,
+                f"missing required evidence families: {sorted(missing)}",
+            )
+        if not rule.source_only_verifiable:
+            has_runtime = "RUNTIME_OBSERVATION" in families
+            if not has_runtime:
+                return (
+                    False,
+                    f"{category.value} is never source-verifiable without runtime evidence",
+                )
+            if category == JavaFactCategory.CAUSAL_CLAIM:
+                return (False, "causal claims require per-step bound evidence; never analyzer-verified")
+        if rule.requires_immutable_source_or_observation_identity:
+            if category == JavaFactCategory.RUNTIME_OBSERVATION_FACT:
+                if not resolution.runtime_source_identity or resolution.runtime_observed_at is None:
+                    return (False, "runtime observation lacks source identity/time")
+            else:
+                if (
+                    not resolution.revision
+                    or resolution.revision in {"HEAD", "UNPINNED"}
+                    or resolution.declaration_location is None
+                    or not resolution.declaration_location.file_path
+                    or not resolution.declaration_location.revision
+                ):
+                    return (False, "resolution lacks immutable source provenance")
+        bound_ids = {
+            str(value) for value in (getattr(hypothesis, "supporting_evidence_ids", None) or [])
+        }
+        if bound_ids and not bound_ids.intersection(
+            str(eid) for eid in resolution.source_evidence_ids
+        ):
+            return (False, "resolution source evidence is not bound to the claim")
+        if rule.requires_source_window_for_each_location and resolution.declaration_location is not None:
+            matched = []
+            expected_ids = {str(eid) for eid in resolution.source_evidence_ids}
+            for item in evidence_items or []:
+                if expected_ids and str(getattr(item, "evidence_id", "")) not in expected_ids:
+                    continue
+                loc = getattr(
+                    getattr(getattr(item, "provenance", None), "source_location", None),
+                    "revision",
+                    None,
+                )
+                if str(loc or "") != (resolution.revision or ""):
+                    continue
+                if not VerificationEngine._paths_match(
+                    str(resolution.declaration_location.file_path or ""),
+                    VerificationEngine._item_file(item),
+                ):
+                    continue
+                matched.append(item)
+            if not matched:
+                return (
+                    False,
+                    "resolution has no matching cited evidence at the same revision and path",
+                )
+            if not any(VerificationEngine._is_range_read(item) for item in matched):
+                return (False, "resolved fact has no matching source range read")
+            windowed = [i for i in matched if VerificationEngine._is_range_read(i)]
+            contained = False
+            for item in windowed:
+                window = VerificationEngine._item_window(item)
+                if window is None:
+                    continue
+                start = resolution.declaration_location.line_start
+                end = resolution.declaration_location.line_end
+                if start is not None and end is not None and window[0] <= start and end <= window[1]:
+                    contained = True
+                    break
+            if not contained:
+                return (False, "source read window does not contain the resolved declaration")
+        if category in {
+            JavaFactCategory.SOURCE_VALUE_FACT,
+            JavaFactCategory.LANGUAGE_SEMANTIC_FACT,
+            JavaFactCategory.DECLARATION_FACT,
+        }:
+            claimed_value = getattr(hypothesis, "claimed_value", None) or getattr(
+                getattr(hypothesis, "claim_target", None), "claimed_value", None
+            )
+            target = getattr(hypothesis, "claim_target", None) or getattr(
+                hypothesis, "target", None
+            )
+            if category == JavaFactCategory.SOURCE_VALUE_FACT:
+                if claimed_value is not None and str(claimed_value) != str(
+                    resolution.resolved_value
+                ):
+                    return (
+                        False,
+                        f"claimed value {claimed_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
+                    )
+                subject = (
+                    str(getattr(target, "symbol", "") or "")
+                    or str(getattr(target, "subject_identity", "") or "")
+                )
+                expected_subjects = {
+                    str(resolution.subject_identity or ""),
+                    str(resolution.field_name or ""),
+                    f"{resolution.declaring_type}.{resolution.field_name}"
+                    if resolution.declaring_type and resolution.field_name
+                    else "",
+                }
+                if subject and subject not in expected_subjects:
+                    return (False, "claim target does not identify the resolved subject")
+        node_ok, node_reason = VerificationEngine._node_ids_match(hypothesis, resolution)
+        if not node_ok:
+            return (False, node_reason)
+        return (True, "")
+
+    @staticmethod
+    def _java_partial_limitation(
+        resolution: CodeFactResolutionV2 | None, reason: str
+    ) -> VerificationLimitation:
+        """Map PARTIAL/UNRESOLVED to a typed limitation (existing code set).
+
+        Runtime-shaped abstentions map to NO_RUNTIME_OBSERVATION so next_check
+        names the runtime observation; all other partials map to
+        RELATION_UNDEMONSTRATED so the existing rival > relation > unmapped >
+        provider priority in next_check_for applies unchanged.
+        """
+        lowered = f" {(reason or '').lower()} "
+        codes_text = ",".join(resolution.limitation_codes) if resolution is not None else ""
+        if resolution is not None and resolution.fact_category in {
+            JavaFactCategory.RUNTIME_OBSERVATION_FACT,
+            JavaFactCategory.CAUSAL_CLAIM,
+        }:
+            return VerificationLimitation(
+                code=LimitationCode.NO_RUNTIME_OBSERVATION,
+                detail=(
+                    f"Java {resolution.fact_category.value} abstained ({codes_text or reason}); "
+                    "runtime observation required."
+                )[:500],
+            )
+        if "runtime" in lowered or "runtime" in codes_text.lower():
+            return VerificationLimitation(
+                code=LimitationCode.NO_RUNTIME_OBSERVATION,
+                detail=(f"Java fact abstained ({codes_text or reason}); runtime evidence required.")[:500],
+            )
+        return VerificationLimitation(
+            code=LimitationCode.RELATION_UNDEMONSTRATED,
+            detail=(f"Java fact non-verifying ({codes_text or reason}).")[:500],
+        )
 
     @staticmethod
     def _claimed_literal_from_statement(statement: str) -> str | None:
@@ -626,6 +1052,105 @@ class VerificationEngine:
             confidence=confidence,
             location_validated=True,
             code_value_validated=True,
+        )
+
+    def validate_java_fact_claim(
+        self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
+    ) -> VerificationResult | None:
+        """Generalization of validate_code_value_claim (Java Phase 1, D7/D8).
+
+        Typed fact_category claims use java_fact_proof with verdict ceilings;
+        legacy claims without a category return None so only existing proof
+        paths apply. PARTIAL/UNRESOLVED map to typed limitations (existing
+        LimitationCode set) so next_check_for priority applies unchanged.
+        Possible effects and call targets cap at LIKELY; runtime/causal never
+        verify from source alone; unknown categories fail closed.
+        """
+        category = self._fact_category_of(hypothesis)
+        if category is None:
+            return None
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        if self.concedes_claim(statement):
+            return None
+        if any(
+            getattr(c, "resolution_status", "") == "UNRESOLVED"
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
+            in {"HIGH", "CRITICAL"}
+            for c in (contradictions or [])
+        ):
+            return None
+        v2_any = self._v2_any_from_evidence(evidence_items)
+        ok, reason = self.java_fact_proof(hypothesis, evidence_items)
+        if not ok:
+            return None
+        resolution = self._v2_resolution_from_evidence(evidence_items)
+        if resolution is None or v2_any is None:
+            return None
+        rule = category_proof_rule(category)
+        tier: str = "established"
+        try:
+            if rule is not None and rule.max_verdict == "LIKELY":
+                tier = "likely"
+        except Exception:
+            tier = "likely"
+        ids = [
+            item.evidence_id
+            for item in evidence_items
+            if str(getattr(item, "evidence_id", ""))
+            in {str(value) for value in resolution.source_evidence_ids}
+        ]
+        confidence = InvestigationConfidence(
+            coverage_score=1.0,
+            reliability_score=1.0,
+            causal_score=0.5,
+            contradiction_penalty=0.0,
+        )
+        return VerificationResult(
+            hypothesis_id=hypothesis.id,
+            status=VerificationStatus.VERIFIED,
+            corroborating_evidence_ids=ids,
+            explanation=(
+                f"Java {category.value} validated "
+                f"({resolution.value_semantics.value}) for "
+                f"{resolution.subject_identity or resolution.field_name}."
+            ),
+            confidence=confidence,
+            location_validated=True,
+            code_value_validated=True,
+            tier=tier,
+        )
+
+    def java_partial_result(
+        self, hypothesis: Any, evidence_items: list[Any]
+    ) -> VerificationResult | None:
+        """INCONCLUSIVE with typed limitation for PARTIAL/UNRESOLVED v2 rows."""
+        if self._fact_category_of(hypothesis) is None:
+            return None
+        v2_any = self._v2_any_from_evidence(evidence_items)
+        if v2_any is None or v2_any.status == CodeFactStatus.RESOLVED:
+            return None
+        ok, reason = self.java_fact_proof(hypothesis, evidence_items)
+        if ok:
+            return None
+        limitation = self._java_partial_limitation(v2_any, reason)
+        try:
+            hypothesis_id = hypothesis.id
+        except Exception:
+            return None
+        return VerificationResult(
+            hypothesis_id=hypothesis_id,
+            status=VerificationStatus.INCONCLUSIVE,
+            corroborating_evidence_ids=[],
+            explanation=f"Java fact not established: {reason}.",
+            confidence=InvestigationConfidence(
+                coverage_score=0.0,
+                reliability_score=0.0,
+                causal_score=0.0,
+                contradiction_penalty=0.0,
+            ),
+            limitations=[limitation],
         )
 
     @staticmethod
@@ -1831,6 +2356,73 @@ class VerificationEngine:
         return by_id
 
     @staticmethod
+    def cites_only_orientation(
+        hypothesis: Any,
+        evidence_items: list[Any],
+        causal_chain: list[Any] | None = None,
+    ) -> tuple[bool, str]:
+        """D4 enforcement: support tracing only to fuzzy orientation never verifies.
+
+        Collects every cited ID (supporting lists, assessments, causal steps)
+        and returns True only when at least one cited row is orientation-traced
+        and no cited row is real (orientation-untraced, known) evidence.
+        Unknown IDs alone are left to the unknown-citation gates — this gate
+        fires on the orientation marker, never on docs, prose, or absence.
+        """
+        from investigation_agent_platform.application.evidence.code_recall import (
+            is_orientation_traced_evidence,
+        )
+
+        cited: list[str] = []
+        try:
+            for ids in (
+                getattr(hypothesis, "supporting_evidence_ids", None) or [],
+            ):
+                for raw in ids:
+                    text = str(raw or "")
+                    if text and text not in cited:
+                        cited.append(text)
+            for asm in getattr(hypothesis, "assessments", None) or []:
+                raw = getattr(asm, "evidence_id", None)
+                text = str(raw or "")
+                if text and text not in cited:
+                    cited.append(text)
+            steps = causal_chain
+            if steps is None:
+                try:
+                    steps = getattr(hypothesis, "causal_steps", None) or []
+                except Exception:
+                    steps = []
+            for step in steps or []:
+                for raw in getattr(step, "evidence_ids", None) or []:
+                    text = str(raw or "")
+                    if text and text not in cited:
+                        cited.append(text)
+        except Exception:
+            return (False, "")
+        if not cited:
+            return (False, "")
+        by_id = VerificationEngine._evidence_by_id(evidence_items)
+        saw_orientation = False
+        for candidate in cited:
+            row = by_id.get(candidate)
+            if row is None:
+                continue
+            try:
+                if is_orientation_traced_evidence(row):
+                    saw_orientation = True
+                else:
+                    return (False, "")
+            except Exception:
+                return (False, "")
+        if saw_orientation:
+            return (
+                True,
+                "claim cites only fuzzy-orientation support, never code/runtime evidence",
+            )
+        return (False, "")
+
+    @staticmethod
     def _row_text(item: Any) -> str:
         parts = []
         for field in ("title", "summary", "content_snippet", "source"):
@@ -1864,6 +2456,10 @@ class VerificationEngine:
         low-confidence VERIFIED. Relation demonstration is a separate,
         demoting check below.
         """
+        from investigation_agent_platform.application.evidence.code_recall import (
+            is_orientation_traced_evidence,
+        )
+
         if not causal_chain:
             return (True, "")
         by_id = VerificationEngine._evidence_by_id(evidence_items)
@@ -1890,6 +2486,9 @@ class VerificationEngine:
                     or ""
                 ).upper()
                 in VerificationEngine._STEP_GROUNDING_TYPES
+                # D4: orientation-traced rows never ground, whatever type
+                # they carry — the marker means "steering hint, not proof".
+                and not is_orientation_traced_evidence(r)
             ]
             if not grounded:
                 return (
@@ -2171,7 +2770,57 @@ class VerificationEngine:
                 ),
                 confidence=confidence,
             )
-        if VerificationEngine.claims_field_value(getattr(hypothesis, "statement", "")):
+        # D4 enforcement: a claim whose only support traces to fuzzy
+        # orientation never verifies — orientation steers deterministic reads,
+        # it is never proof. Runs before every kind-specific path so no claim
+        # shape can slip past on an untyped or docs-routed proof.
+        orientation_only, orientation_reason = VerificationEngine.cites_only_orientation(
+            hypothesis, evidence_items, causal_chain
+        )
+        if orientation_only:
+            return VerificationResult(
+                hypothesis_id=hypothesis.id,
+                status=VerificationStatus.INCONCLUSIVE,
+                corroborating_evidence_ids=[],
+                explanation=(
+                    "Orientation-only claim cannot verify: "
+                    f"{orientation_reason}. Fuzzy orientation steers "
+                    "deterministic reads; cite the range-read evidence those "
+                    "reads bank, never the hint."
+                ),
+                confidence=InvestigationConfidence(
+                    coverage_score=0.0,
+                    reliability_score=0.0,
+                    causal_score=0.0,
+                    contradiction_penalty=0.0,
+                ),
+            )
+        if VerificationEngine.claims_field_value(
+            getattr(hypothesis, "statement", "")
+        ) or VerificationEngine._fact_category_of(hypothesis) is not None:
+            java_category = VerificationEngine._fact_category_of(hypothesis)
+            if java_category is not None:
+                java_result = self.validate_java_fact_claim(
+                    hypothesis, evidence_items, contradictions
+                )
+                if java_result is not None:
+                    return java_result
+                partial_result = self.java_partial_result(hypothesis, evidence_items)
+                if partial_result is not None:
+                    return partial_result
+                _java_ok, java_reason = self.java_fact_proof(hypothesis, evidence_items)
+                return VerificationResult(
+                    hypothesis_id=hypothesis.id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=f"Java fact claim is not established: {java_reason}.",
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                )
             value_result = self.validate_code_value_claim(
                 hypothesis, evidence_items, contradictions
             )

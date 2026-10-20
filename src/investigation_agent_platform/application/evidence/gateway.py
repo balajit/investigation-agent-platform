@@ -10,10 +10,19 @@ from uuid import UUID
 from opentelemetry import trace
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from investigation_agent_platform.application.evidence.code_recall import (
+    FALLBACK_RUN_CAP,
+    CodeRecallMiss,
+    build_fuzzy_orientation,
+    classify_code_recall_miss,
+    fuzzy_fallback_candidates,
+    verify_fuzzy_candidates,
+)
 from investigation_agent_platform.domain.common.exceptions import (
     ExecutionError,
     ProviderNotConfiguredError,
     SecurityPolicyViolationException,
+    TopologyAmbiguousMatchError,
     UnsupportedCapabilityError,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence
@@ -250,6 +259,21 @@ def _resolve_fanout_concurrency(explicit: int | None) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _cognee_fallback_enabled() -> bool:
+    """Step-4 gate: fuzzy fallback runs only under explicit opt-in.
+
+    ``IAP_COGNEE_ENABLED`` defaults to off; the flag-off path through
+    ``find_symbol`` is byte-identical to the pre-fallback behavior (same
+    envelope, same raise contract, no new telemetry).
+    """
+    return (os.environ.get("IAP_COGNEE_ENABLED", "false") or "").strip().lower() == "true"
+
+
+# Bound on remembered per-investigation fallback-run counters: the gateway is
+# long-lived, so run-budget tracking is capped like the deduplicator's memory.
+_FUZZY_RUN_TRACKING_MAX = 5_000
+
+
 class EvidenceDeduplicator:
     """Fingerprint-based deduplicator scoped per investigation.
 
@@ -351,6 +375,17 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         # <= 0) = unbounded (one task per candidate); 1 restores the legacy
         # serial loop. Env override `IAP_MCP_FANOUT_CONCURRENCY` wins when set.
         fanout_concurrency: int | None = None,
+        # Step-4 fuzzy-fallback seams (all optional; all default to today's
+        # behavior). `fuzzy_search_fn` is an injected retrieval-only search
+        # callable `(query_text, search_type, dataset) -> rows` so the wiring
+        # is unit-testable without the `cognee` package.
+        # `fuzzy_authority_fn` resolves the revision-pinned authority index
+        # `(tenant_id, repository_id, revision) -> mapping`; `fuzzy_dataset_fn`
+        # resolves the salted dataset `(tenant_id, repository_id, revision)`.
+        # With the flag off (or any seam missing) the fallback never runs.
+        fuzzy_search_fn: Any | None = None,
+        fuzzy_authority_fn: Any | None = None,
+        fuzzy_dataset_fn: Any | None = None,
     ) -> None:
         if sanitizer is None:
             raise ValueError(
@@ -382,6 +417,13 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self._failure_attribution_service = failure_attribution_service
         self._profile_repo = profile_repo
         self._fanout_concurrency = _resolve_fanout_concurrency(fanout_concurrency)
+        self._fuzzy_search_fn = fuzzy_search_fn
+        self._fuzzy_authority_fn = fuzzy_authority_fn
+        self._fuzzy_dataset_fn = fuzzy_dataset_fn
+        # Per-investigation fallback-run counters for the D5 per-run budget
+        # (FALLBACK_RUN_CAP): incremented each time the fallback actually
+        # searches, never on the flag-off path.
+        self._fuzzy_runs_used: dict[str, int] = {}
 
     async def _effective_profile(
         self, provider: Any, tenant_id: str, application_id: str
@@ -955,22 +997,287 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             self._require_revision_capability(provider, request.revision, request.require_revision)
-            symbols = await asyncio.wait_for(
-                provider.find_symbol(
+            try:
+                symbols = await asyncio.wait_for(
+                    provider.find_symbol(
+                        tenant_id,
+                        request.symbol_name,
+                        profile,
+                        investigation_id=investigation_id,
+                        revision=request.revision,
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+            except TopologyAmbiguousMatchError as exc:
+                # Resolver-layer overload abstention maps to AMBIGUOUS_OVERLOAD
+                # at this call site. The classifier intentionally never emits
+                # it (it only sees shape-level classes), so the mapping lives
+                # here, next to the abstaining call.
+                return await self._find_symbol_fuzzy_fallback(
                     tenant_id,
-                    request.symbol_name,
-                    profile,
-                    investigation_id=investigation_id,
-                    revision=request.revision,
-                ),
-                timeout=self._timeout_seconds,
+                    investigation_id,
+                    application_id,
+                    request,
+                    CodeRecallMiss.AMBIGUOUS_OVERLOAD,
+                    symbols=[],
+                    abstention=exc,
+                )
+            if symbols:
+                return EvidenceQueryResult(
+                    items=[],
+                    total_count=len(symbols),
+                    provider_metadata={"symbols": [s.model_dump() for s in symbols]},
+                )
+            miss = classify_code_recall_miss(
+                "code", 0, 0, request.symbol_name or ""
             )
-            # Symbols are metadata; sanitize not applicable but ensure no raw source leak — return via sanitized envelope
-            return EvidenceQueryResult(
-                items=[],
-                total_count=len(symbols),
-                provider_metadata={"symbols": [s.model_dump() for s in symbols]},
+            return await self._find_symbol_fuzzy_fallback(
+                tenant_id,
+                investigation_id,
+                application_id,
+                request,
+                miss,
+                symbols=[],
+                abstention=None,
             )
+
+    def _emit_code_recall_metric(
+        self, metric_name: str, value: float, tags: dict[str, str]
+    ) -> None:
+        """D5 counter emission through the existing telemetry hook.
+
+        Fire-and-forget: adapters must never raise into an investigation, and
+        a missing telemetry port skips silently. Label vocabularies stay
+        closed (miss classes, search-type names) — symbols, paths, and
+        revisions never appear as labels.
+        """
+        try:
+            telemetry = self._telemetry
+            if telemetry is None:
+                return
+            record = getattr(telemetry, "record_metric", None)
+            if not callable(record):
+                return
+            record(metric_name, float(value), dict(tags))
+        except Exception:
+            logger.debug(
+                "code-recall metric emission failed",
+                extra={"metric": metric_name},
+            )
+
+    async def _resolve_fuzzy_repository_id(
+        self, tenant_id: str, application_id: str, request: SymbolRequest
+    ) -> str | None:
+        """Best-effort repository identity for fallback scoping (never raises)."""
+        try:
+            registry = self._repository_registry
+            resolve = getattr(registry, "resolve_for_application", None)
+            if callable(resolve):
+                identity = await resolve(tenant_id, application_id)
+                repository_id = getattr(identity, "repository_id", None)
+                if repository_id:
+                    return str(repository_id)
+        except Exception:
+            pass
+        fallback = str(getattr(request, "repository", "") or "").strip()
+        return fallback or None
+
+    def _resolve_fuzzy_dataset(
+        self, tenant_id: str, repository_id: str, revision: str
+    ) -> str | None:
+        """Salted dataset for fallback scoping, or None when unresolvable."""
+        try:
+            if self._fuzzy_dataset_fn is not None:
+                dataset = self._fuzzy_dataset_fn(tenant_id, repository_id, revision)
+                return str(dataset) if dataset else None
+            from investigation_agent_platform.infrastructure.topology.cognee_adapter import (
+                derive_dataset_id,
+            )
+
+            salt = os.environ.get("IAP_COGNEE_DATASET_SALT", "")
+            return derive_dataset_id(tenant_id, repository_id, revision, salt)
+        except Exception:
+            return None
+
+    async def _resolve_fuzzy_authority(
+        self, tenant_id: str, repository_id: str, revision: str
+    ) -> dict[str, Any]:
+        """Revision-pinned authority index for re-verification (never raises)."""
+        try:
+            fn = self._fuzzy_authority_fn
+            if fn is None:
+                return {}
+            result = fn(tenant_id, repository_id, revision)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return dict(result or {})
+        except Exception:
+            return {}
+
+    def _track_fuzzy_run(self, run_key: str) -> int:
+        """Per-investigation fallback-run usage for the D5 per-run budget.
+
+        Returns the runs already used (before this attempt). The tracking map
+        is bounded; eviction drops the oldest keys first.
+        """
+        used = self._fuzzy_runs_used.get(run_key, 0)
+        self._fuzzy_runs_used[run_key] = used + 1
+        while len(self._fuzzy_runs_used) > _FUZZY_RUN_TRACKING_MAX:
+            self._fuzzy_runs_used.pop(next(iter(self._fuzzy_runs_used)))
+        return used
+
+    @staticmethod
+    def _deterministic_symbol_result(
+        symbols: list[Any], miss: CodeRecallMiss | None = None
+    ) -> EvidenceQueryResult:
+        """Today's find_symbol envelope, optionally annotated with the miss."""
+        metadata: dict[str, Any] = {"symbols": [s.model_dump() for s in symbols]}
+        if miss is not None:
+            metadata["code_recall_miss"] = miss.value
+        return EvidenceQueryResult(
+            items=[],
+            total_count=len(symbols),
+            provider_metadata=metadata,
+        )
+
+    async def _find_symbol_fuzzy_fallback(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        request: SymbolRequest,
+        miss: CodeRecallMiss,
+        symbols: list[Any],
+        abstention: TopologyAmbiguousMatchError | None,
+    ) -> EvidenceQueryResult:
+        """Step-4 wiring: miss → capped fallback → verification → targets.
+
+        Strictly behind ``IAP_COGNEE_ENABLED``: the flag-off path returns the
+        deterministic envelope (or re-raises the resolver abstention) with no
+        new side effects. The flag-on path without search seams degrades to
+        the deterministic envelope annotated with the miss class. Fuzzy output
+        is never banked as Evidence rows: ``items`` stays empty and only
+        verified IDs surface, as range-read targets plus a non-citable
+        orientation hint in metadata.
+        """
+        if miss is CodeRecallMiss.NO_MISS or not _cognee_fallback_enabled():
+            if abstention is not None:
+                raise abstention
+            return self._deterministic_symbol_result(symbols)
+        miss_tag = {"miss": miss.value}
+        self._emit_code_recall_metric("iap.code_recall.miss", 1.0, miss_tag)
+        search_fn = self._fuzzy_search_fn
+        if search_fn is None:
+            if abstention is not None:
+                raise abstention
+            return self._deterministic_symbol_result(symbols, miss)
+        repository_id = await self._resolve_fuzzy_repository_id(
+            tenant_id, application_id, request
+        )
+        revision = str(getattr(request, "revision", "") or "") or "HEAD"
+        dataset = (
+            self._resolve_fuzzy_dataset(tenant_id, repository_id, revision)
+            if repository_id
+            else None
+        )
+        if not repository_id or not dataset:
+            if abstention is not None:
+                raise abstention
+            return self._deterministic_symbol_result(symbols, miss)
+        run_key = f"{tenant_id}:{investigation_id}"
+        run_used = self._fuzzy_runs_used.get(run_key, 0)
+        if run_used >= FALLBACK_RUN_CAP:
+            # Telescoping budget: the per-run cap gates the per-call cap.
+            # Exhaustion is a normal counted outcome, never an error.
+            self._emit_code_recall_metric(
+                "iap.code_recall.fallback.run_budget_exhausted", 1.0, miss_tag
+            )
+            if abstention is not None:
+                raise abstention
+            return self._deterministic_symbol_result(symbols, miss)
+        outcome = await fuzzy_fallback_candidates(
+            query_text=request.symbol_name,
+            dataset=dataset,
+            run_used=run_used,
+            search_fn=search_fn,
+        )
+        self._track_fuzzy_run(run_key)
+        self._emit_code_recall_metric(
+            "iap.code_recall.fallback.search_types_used",
+            float(len(outcome.search_types_used)),
+            {**miss_tag, "search_types": ",".join(outcome.search_types_used) or "none"},
+        )
+        self._emit_code_recall_metric(
+            "iap.code_recall.fallback.candidates_seen",
+            float(outcome.candidates_seen),
+            miss_tag,
+        )
+        authority = await self._resolve_fuzzy_authority(
+            tenant_id, repository_id, revision
+        )
+        kept, discarded = verify_fuzzy_candidates(
+            outcome.candidate_ids, authority, tenant_id, repository_id, revision
+        )
+        self._emit_code_recall_metric(
+            "iap.code_recall.fallback.verified_kept", float(len(kept)), miss_tag
+        )
+        self._emit_code_recall_metric(
+            "iap.code_recall.fallback.discarded", float(discarded), miss_tag
+        )
+        # Only IDs crossed the verification boundary: targets and orientation
+        # symbols are read off the authority index, never off fuzzy payloads
+        # (scores, snippets, summaries were dropped with the raw rows).
+        verified_nodes: list[Any] = []
+        targets: list[dict[str, Any]] = []
+        for node_id in kept:
+            node = authority.get(str(node_id))
+            if node is None:
+                continue
+            verified_nodes.append(node)
+            try:
+                file_path = getattr(node, "file_path", None)
+                if isinstance(node, dict):
+                    file_path = node.get("file_path", file_path)
+                target: dict[str, Any] = {"node_id": str(node_id)}
+                if file_path:
+                    target["file_path"] = str(file_path)
+                for line_key in ("start_line", "end_line"):
+                    line_value = getattr(node, line_key, None)
+                    if isinstance(node, dict) and line_key in node:
+                        line_value = node.get(line_key)
+                    if line_value is not None:
+                        target[line_key] = int(line_value)
+                qualified = getattr(node, "qualified_name", None)
+                if isinstance(node, dict):
+                    qualified = node.get("qualified_name", qualified)
+                if qualified:
+                    target["qualified_name"] = str(qualified)
+                targets.append(target)
+            except (TypeError, ValueError):
+                continue
+        orientation = build_fuzzy_orientation(
+            miss,
+            verified_nodes,
+            steering_note=(
+                f"Fuzzy fallback ({miss.value}) verified {len(kept)} of "
+                f"{outcome.candidates_seen} candidate(s) against the topology "
+                f"authority; unverified steering only — fire deterministic "
+                f"range reads for the targets and cite those reads, never "
+                f"this hint."
+            ),
+        )
+        return EvidenceQueryResult(
+            items=[],
+            total_count=0,
+            provider_metadata={
+                "symbols": [],
+                "code_recall_miss": miss.value,
+                "fuzzy_verified_targets": targets,
+                "fuzzy_orientation": orientation.model_dump(mode="json"),
+                "fuzzy_search_types_used": list(outcome.search_types_used),
+                "fuzzy_candidates_seen": outcome.candidates_seen,
+            },
+        )
 
     @retry(
         stop=stop_after_attempt(3),
