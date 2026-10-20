@@ -448,7 +448,7 @@ class TestCachedPrimary:
 
         live_battery.api = _fake_api
         try:
-            out = live_battery._cached_primary("b", "t", "deadbeef")
+            out, note = live_battery._cached_primary("b", "t", "deadbeef")
         finally:
             import importlib
 
@@ -469,7 +469,9 @@ class TestCachedPrimary:
 
         live_battery.api = _fake_api
         try:
-            assert live_battery._cached_primary("b", "t", "deadbeef") is None
+            out, note = live_battery._cached_primary("b", "t", "deadbeef")
+            assert out is None
+            assert "fresh" in note
         finally:
             import importlib
 

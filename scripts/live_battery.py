@@ -124,9 +124,9 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
         # conclusion was served instead of re-running): follow the cached
         # primary and grade THAT answer rather than failing the run for
         # not running. Anything else stays not-startable FAIL.
-        primary = _cached_primary(api_base, tenant, iid)
-        if primary is not None:
-            pid, concl, findings, evidence, hyps = primary
+        followed, follow_note = _cached_primary(api_base, tenant, iid)
+        if followed is not None:
+            pid, concl, findings, evidence, hyps = followed
             verdict, detail = score_supported(case, concl, findings, evidence, hyps)
             rec.update(verdict=verdict, detail=f"served cached from {pid[:8]}: {detail}")
             rec.update(diagnose(concl, findings, evidence, hyps))
@@ -134,6 +134,7 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
             rec["cached_from"] = pid
             return rec
         rec.update(status=status, verdict="FAIL", detail=f"not startable ({status})")
+        rec["follow_note"] = follow_note
         return rec
     _, conclusion = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}/conclusion")
     _, findings = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}/findings")
@@ -284,34 +285,46 @@ async def _analyze_one(conn, iid: str) -> dict:
 
 
 def _cached_primary(api_base, tenant, iid):
-    """(primary_id, conclusion, findings, evidence, hyps) or None.
+    """(primary_id, conclusion, findings, evidence, hyps, note) or (None, note).
 
     A CANCELLED investigation whose disposition served a re-verified
     cached conclusion names the primary as 'duplicate of <uuid>'.
-    Returns None for any other shape — the run stays not-startable FAIL.
+    The note names the specific bail reason — a silent None caused an
+    undiagnosable miss in production. Fetches retry once on transport
+    failure (conclusion GETs must not die on a blip after the
+    investigation did all the work).
     """
+    def _get(path, tries=2):
+        last = None
+        for _ in range(tries):
+            try:
+                return api(api_base, tenant, "GET", path)
+            except Exception as exc:
+                last = exc
+        raise last
+
     try:
-        _, det = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}")
+        _, det = _get(f"/api/v1/investigations/{iid}")
         meta = ((det.get("investigation") or {}).get("metadata")) or {}
         disp = meta.get("disposition") or {}
         if disp.get("action") != "serve_cached":
-            return None
+            return None, f"disposition={disp.get('action')}"
         match = re.search(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
             str(disp.get("reason", "")),
         )
         if not match:
-            return None
+            return None, "no primary uuid in reason"
         pid = match.group(0)
-        _, conclusion = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/conclusion")
-        _, findings = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/findings")
-        _, evidence = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/evidence?limit=100")
-        _, hyps = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/hypotheses")
+        _, conclusion = _get(f"/api/v1/investigations/{pid}/conclusion")
+        _, findings = _get(f"/api/v1/investigations/{pid}/findings")
+        _, evidence = _get(f"/api/v1/investigations/{pid}/evidence?limit=100")
+        _, hyps = _get(f"/api/v1/investigations/{pid}/hypotheses")
         if not (conclusion.get("conclusion") or {}).get("status"):
-            return None
-        return pid, conclusion.get("conclusion") or {}, findings, evidence, hyps
-    except Exception:
-        return None
+            return None, "primary conclusion missing"
+        return (pid, conclusion.get("conclusion") or {}, findings, evidence, hyps), ""
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {str(exc)[:160]}"
 
 
 def poll(api_base, tenant, iid, timeout):
@@ -424,6 +437,8 @@ def build_report(meta, records):
             lines.append(f"- UNRESOLVABLE CITATIONS: {r['unresolvable_citations']}")
         if r.get("failure"):
             lines.append(f"- failure: {r['failure']}")
+        if r.get("follow_note"):
+            lines.append(f"- follow_note: {r['follow_note']}")
         db = r.get("db")
         if db:
             lines.append(f"- db: duration_s={db.get('duration_s_db', '?')} "
