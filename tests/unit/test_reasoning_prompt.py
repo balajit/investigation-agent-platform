@@ -78,7 +78,7 @@ def _system_prompt_for(problem):
 
 
 def test_prompt_version_bumped_for_g1():
-    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-011"
+    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-012"
 
 
 def test_explicit_path_short_circuits_to_get_code_first():
@@ -115,6 +115,19 @@ def test_definition_hypothesis_requires_get_code_first():
 def test_cite_range_read_not_search_match():
     prompt = _system_prompt_for("where is something defined")
     assert "cite the range-read evidence ID" in prompt
+
+
+def test_caller_enumeration_requires_one_claim_per_caller():
+    prompt = _system_prompt_for("what calls the order service handler")
+    assert "one CALL_EDGE claim per caller" in prompt
+    assert "single-caller answer to a caller-enumeration question is incomplete" in prompt
+
+
+def test_method_return_questions_route_to_method_name_resolution():
+    prompt = _system_prompt_for("which default applies when orderType is null")
+    assert '"method_name": "normalize"' in prompt
+    assert "SOURCE_VALUE_FACT" in prompt
+    assert "GUARDED_RETURN_LITERAL" in prompt
 
 
 def test_application_context_includes_allowed_capabilities():

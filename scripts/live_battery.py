@@ -106,7 +106,32 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
         if st == 409:
             _, inv = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}")
             status = (inv.get("investigation") or {}).get("status", "?")
+            if status == "CANCELLED":
+                # Same cached-serve follow as the post-poll CANCELLED path:
+                # a serve_cached create is already CANCELLED here, so start
+                # 409s without the run ever polling. Grade the primary.
+                followed, follow_note = _cached_primary(api_base, tenant, iid)
+                if followed is not None:
+                    pid, concl, findings, evidence, hyps = followed
+                    verdict, detail = score_supported(case, concl, findings, evidence, hyps)
+                    rec.update(
+                        verdict=verdict,
+                        detail=f"served cached from {pid[:8]}: {detail}",
+                    )
+                    rec.update(diagnose(concl, findings, evidence, hyps))
+                    rec["duration_s"] = round(time.time() - t0, 1)
+                    rec["cached_from"] = pid
+                    return rec
+                rec.update(
+                    status=status,
+                    verdict="FAIL",
+                    detail=f"not startable ({status}; {follow_note})",
+                )
+                rec["follow_note"] = follow_note
+                rec["duration_s"] = round(time.time() - t0, 1)
+                return rec
             rec.update(status=status, verdict="FAIL", detail=f"not startable ({status})")
+            rec["duration_s"] = round(time.time() - t0, 1)
             return rec
         inv = poll(api_base, tenant, iid, timeout)
     except TimeoutError as exc:
@@ -288,11 +313,11 @@ def _cached_primary(api_base, tenant, iid):
     """(primary_id, conclusion, findings, evidence, hyps, note) or (None, note).
 
     A CANCELLED investigation whose disposition served a re-verified
-    cached conclusion names the primary as 'duplicate of <uuid>'.
-    The note names the specific bail reason — a silent None caused an
-    undiagnosable miss in production. Fetches retry once on transport
-    failure (conclusion GETs must not die on a blip after the
-    investigation did all the work).
+    cached conclusion names the primary in ``primary_target_id``
+    (``to_metadata``) with a human ``reason`` ("... duplicate of <uuid>").
+    Prefer the structured field; fall back to the reason-text regex for
+    older rows. Fetches retry once on transport failure (conclusion GETs
+    must not die on a blip after the investigation did all the work).
     """
     def _get(path, tries=2):
         last = None
@@ -309,13 +334,18 @@ def _cached_primary(api_base, tenant, iid):
         disp = meta.get("disposition") or {}
         if disp.get("action") != "serve_cached":
             return None, f"disposition={disp.get('action')}"
-        match = re.search(
+        pid = disp.get("primary_target_id") or ""
+        if not re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-            str(disp.get("reason", "")),
-        )
-        if not match:
-            return None, "no primary uuid in reason"
-        pid = match.group(0)
+            str(pid),
+        ):
+            match = re.search(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                str(disp.get("reason", "")),
+            )
+            if not match:
+                return None, "no primary uuid in reason"
+            pid = match.group(0)
         _, conclusion = _get(f"/api/v1/investigations/{pid}/conclusion")
         _, findings = _get(f"/api/v1/investigations/{pid}/findings")
         _, evidence = _get(f"/api/v1/investigations/{pid}/evidence?limit=100")
@@ -439,6 +469,8 @@ def build_report(meta, records):
             lines.append(f"- failure: {r['failure']}")
         if r.get("follow_note"):
             lines.append(f"- follow_note: {r['follow_note']}")
+        if r.get("cached_from"):
+            lines.append(f"- cached_from: {r['cached_from']}")
         db = r.get("db")
         if db:
             lines.append(f"- db: duration_s={db.get('duration_s_db', '?')} "

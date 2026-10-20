@@ -2449,6 +2449,35 @@ def _shape_search_keywords(raw: Any) -> list[str]:
             return []
 
 
+def _caller_chain_targets(edges: list[dict], limit: int = 5) -> list[dict]:
+    """Caller-role graph edges worth an automatic call-site read.
+
+    Callers first, one target per distinct file (a second edge in the
+    same file shares the ±40-line window), bounded so a hub symbol
+    cannot flood the turn. Module-level for unit testability. L2
+    Helper-drop fix: the chaining step previously read only the first
+    edge, so the second caller never got a citable range row.
+    """
+    targets: list[dict] = []
+    seen_files: set[str] = set()
+    ordered = sorted(
+        (e for e in edges if isinstance(e, dict)),
+        key=lambda e: 0 if e.get("role") == "caller" else 1,
+    )
+    for edge in ordered:
+        if edge.get("role") != "caller":
+            continue
+        file_path = str(edge.get("file") or "").strip()
+        line = edge.get("line")
+        if not file_path or not isinstance(line, int) or file_path in seen_files:
+            continue
+        seen_files.add(file_path)
+        targets.append(edge)
+        if len(targets) >= max(1, limit):
+            break
+    return targets
+
+
 async def fallback_call_graph_to_search(
     *,
     gateway: Any,
@@ -3153,6 +3182,7 @@ async def execute_action_activity(
             if read_mode == "path_only":
                 merged_attributes["discovery_only"] = True
             fact_field = str(parameters.get("field_name", "") or "").strip()
+            fact_method = str(parameters.get("method_name", "") or "").strip()
             if fact_field:
                 from investigation_agent_platform.application.analysis.java_field_facts import (
                     resolve_java_field_fact,
@@ -3177,6 +3207,34 @@ async def execute_action_activity(
                     outcome_detail["code_fact_resolution_v2"] = dual[
                         "code_fact_resolution_v2"
                     ]
+                except Exception:
+                    pass
+            if fact_method:
+                # Method-return-on-guard resolution (L5 class): the subject
+                # is a method's guarded `return` literal, which the field
+                # path can never resolve. Emits V2 SOURCE_VALUE_FACT only
+                # (legacy CodeFactResolution is field-shaped by construction).
+                try:
+                    from investigation_agent_platform.application.analysis.java.method_return_facts import (
+                        resolve_java_method_return_fact,
+                    )
+
+                    _method_resolution = resolve_java_method_return_fact(
+                        evidence,
+                        fact_method,
+                        guard_condition=(
+                            str(parameters.get("guard_condition") or "").strip() or None
+                        ),
+                        declaring_type=(
+                            str(parameters.get("declaring_type") or "").strip() or None
+                        ),
+                    )
+                    merged_attributes["code_fact_resolution_v2"] = (
+                        _method_resolution.model_dump(mode="json")
+                    )
+                    outcome_detail["code_fact_resolution_v2"] = (
+                        _method_resolution.model_dump(mode="json")
+                    )
                 except Exception:
                     pass
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
@@ -4767,48 +4825,46 @@ async def execute_action_activity(
                 return banked_count + extra
             # Call-site chaining (L2 twice): a graph edge names the caller
             # file but no row shows the call expression the verifier
-            # demands. Read a window around the top caller edge so the turn
-            # banks a real call-site row (TRACE_LOGIC pattern). One bounded
-            # read; failures keep the graph results regardless.
+            # demands. Read a window around each caller edge (one per
+            # file, bounded) so every visible caller gets a real
+            # call-site row (TRACE_LOGIC pattern). Previously only the
+            # first edge was read and the second caller never became
+            # citable. Failures keep the graph results regardless.
             try:
                 _edges = [
                     e for e in (outcome_detail.pop("_graph_edges", []) or []) if isinstance(e, dict)
                 ]
-                _callers_first = sorted(_edges, key=lambda e: 0 if e.get("role") == "caller" else 1)
-                _target = next(
-                    (
-                        e
-                        for e in _callers_first
-                        if str(e.get("file") or "").strip() and isinstance(e.get("line"), int)
-                    ),
-                    None,
-                )
-                if _target is not None and evidence_repo is not None:
+                _targets = _caller_chain_targets(_edges)
+                _banked_here: list[str] = []
+                if evidence_repo is not None:
                     from investigation_agent_platform.domain.evidence.requests import (
                         SourceRequest as _SourceRequest,
                     )
 
-                    _anchor = int(_target["line"])
-                    _read = await gateway.get_source(
-                        tenant_id,
-                        investigation_id,
-                        application_id or "example-app",
-                        _SourceRequest(
-                            repository=application_id or "example-app",
-                            file_path=str(_target["file"]),
-                            revision=str(parameters.get("revision", "HEAD")),
-                            start_line=max(1, _anchor - 40),
-                            end_line=_anchor + 40,
-                        ),
-                    )
-                    await evidence_repo.save(tenant_id, _read, investigation_id)
+                    for _target in _targets:
+                        _anchor = int(_target["line"])
+                        _read = await gateway.get_source(
+                            tenant_id,
+                            investigation_id,
+                            application_id or "example-app",
+                            _SourceRequest(
+                                repository=application_id or "example-app",
+                                file_path=str(_target["file"]),
+                                revision=str(parameters.get("revision", "HEAD")),
+                                start_line=max(1, _anchor - 40),
+                                end_line=_anchor + 40,
+                            ),
+                        )
+                        await evidence_repo.save(tenant_id, _read, investigation_id)
+                        _banked_here.append(str(_read.evidence_id))
+                if _banked_here:
                     try:
                         outcome_detail["evidence_ids"] = list(
                             outcome_detail.get("evidence_ids") or []
-                        ) + [str(_read.evidence_id)]
+                        ) + _banked_here
                     except Exception:
                         pass
-                    return banked_count + 1
+                    return banked_count + len(_banked_here)
             except Exception:
                 pass
             return banked_count
@@ -5677,6 +5733,12 @@ async def verify_root_cause_activity(
                 str(getattr(candidate, "statement", "") or "")
             )
             code_value_answered = code_value_result is not None and not refuting
+            # Init up front: every fast path below assigns only on its taken
+            # branch, and the general-build guard is skipped when
+            # code_value_claim is true — without this, a field-value claim
+            # with no deterministic resolution leaves causal_chain unbound
+            # (UnboundLocalError at the filter below; live L5 WORKFLOW_ERROR).
+            causal_chain: list = []
             if code_value_answered:
                 result = code_value_result
                 causal_chain = []
@@ -5693,6 +5755,7 @@ async def verify_root_cause_activity(
             # T1-1: doc-answer fast path (mirrors location). Skipped under
             # legacy verifier mode like the location path.
             doc_answered = False
+            doc_result = None
             if not location_answered and not code_value_answered and not code_value_claim:
                 try:
                     doc_result = engine.validate_doc_claim(candidate, bound, contradictions)
@@ -5726,6 +5789,7 @@ async def verify_root_cause_activity(
             # #65: state-answer fast path (mirrors doc). Banked DATABASE_STATE
             # rows answer value questions without causal machinery.
             state_answered = False
+            state_result = None
             if (
                 not location_answered
                 and not code_value_answered

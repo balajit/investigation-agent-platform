@@ -48,28 +48,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# 1. Env layering (repo defaults, then operator overrides). Secrets are
-# sourced, never printed.
-set -a
-[[ -f ./.env.local ]] && source ./.env.local
-[[ -f ~/bin/.iap.env.local ]] && source ~/bin/.iap.env.local
-set +a
+# 1. Env layering helper (repo defaults, then operator overrides). Secrets
+# are sourced, never printed. Only invoked where a live database is needed
+# (cleanup gate, live battery) — never in the unit-test process, where
+# exported IAP_* vars (e.g. IAP_HEALTH_DETAIL=full, IAP_TEMPORAL_TASK_QUEUE,
+# IAP_APP_ID) leak through `patch.dict(..., clear=False)` and break test
+# isolation (3 failures: readiness detail + 2 config defaults).
+load_dev_env() {
+    set -a
+    [[ -f ./.env.local ]] && source ./.env.local
+    # shellcheck disable=SC1090
+    [[ -f ~/bin/.iap.env.local ]] && source ~/bin/.iap.env.local
+    set +a
+}
 
 # 2. Cleanup gate: prior battery rows must go before anything runs.
 # Fail-closed — a cleanup failure aborts instead of testing stale rows.
+# Runs in a subshell so exported dev env never leaks into this shell (and
+# from here into pytest).
 echo "==> cleanup prior battery rows (tenant=$TENANT app=$APP_ID)" >&2
 # shellcheck disable=SC2086
-uv run python scripts/clean_battery.py \
-    --tenant "$TENANT" --app-id "$APP_ID" $FORCE_CLEANUP --execute
+(
+    load_dev_env
+    exec uv run python scripts/clean_battery.py \
+        --tenant "$TENANT" --app-id "$APP_ID" $FORCE_CLEANUP --execute
+)
 
 # 3. Tests.
 if [[ "$LIVE" == true ]]; then
+    load_dev_env
     echo "==> live battery (tenant=$TENANT)" >&2
     # shellcheck disable=SC2086
     exec uv run python scripts/live_battery.py \
         --tenant "$TENANT" --app-id "$APP_ID" ${ONLY:+--only "$ONLY"} \
         --timeout "$TIMEOUT" --no-cleanup-prior
 else
+    # Unit suite must run isolated: strip any IAP_* inherited from the
+    # caller's environment (e.g. a sourced .env.local after a dev restart).
+    # Tests set exactly what they need via patch.dict.
+    while IFS= read -r _iap_var; do
+        unset "$_iap_var"
+    done < <(compgen -e | grep '^IAP_' || true)
     echo "==> unit suite" >&2
     if [[ ${#PYTEST_ARGS[@]} -gt 0 ]]; then
         exec uv run python -m pytest "${PYTEST_ARGS[@]}"

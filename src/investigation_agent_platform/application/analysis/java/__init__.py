@@ -23,6 +23,9 @@ from investigation_agent_platform.application.analysis.java.local_facts import (
 from investigation_agent_platform.application.analysis.java.method_facts import (
     resolve_java_call_target,
 )
+from investigation_agent_platform.application.analysis.java.method_return_facts import (
+    resolve_java_method_return_fact,
+)
 from investigation_agent_platform.application.analysis.java.type_facts import (
     resolve_java_type_fact,
 )
@@ -35,6 +38,7 @@ __all__ = [
     "resolve_java_framework_boundary",
     "resolve_java_init_fact",
     "resolve_java_local_fact",
+    "resolve_java_method_return_fact",
     "resolve_java_possible_effect",
     "resolve_java_type_fact",
 ]

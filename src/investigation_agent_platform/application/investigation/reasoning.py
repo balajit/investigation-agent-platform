@@ -52,7 +52,114 @@ def _decision_extra(decision: Any) -> dict[str, Any]:
         return {}
 
 
-REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-011"
+REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-012"
+
+
+def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Coerce model-emitted decision JSON into ``InvestigationDecision`` shapes.
+
+    Nested ``claims[]`` items carry ``extra="forbid"`` (top-level unknown
+    keys are stripped in ``_validate_llm_decision``, nested ones are not),
+    so one invented key (``commit``, ``revision``, ``confidence`` at claim
+    level), a ``null`` evidence_ids, or an off-vocabulary ``claim_kind``
+    (e.g. ``HISTORY`` on a "what changed" question) fails the whole reason
+    step — twice, since the resample is byte-identical. Sanitize instead:
+    drop unknown claim keys, default unknown enums, drop statement-less
+    items. Top-level scalars stay strict (persistent garbage still yields
+    typed REASONING_UNAVAILABLE). Field names only are ever logged by
+    callers, never values.
+    """
+    from investigation_agent_platform.domain.code.models import JavaFactCategory
+    from investigation_agent_platform.domain.hypothesis.models import ClaimKind
+    from investigation_agent_platform.ports.reasoning.reasoner import DecisionClaim
+
+    known_claim = set(DecisionClaim.model_fields)
+    valid_kinds = {k.value for k in ClaimKind}
+    valid_fact_cats = {c.value for c in JavaFactCategory}
+
+    def _clean_fact_cat(value: Any) -> Any:
+        if value is None:
+            return None
+        return value if str(value) in valid_fact_cats else None
+
+    def _clean_opt_str(value: Any, limit: int) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value[:limit]
+        if isinstance(value, (int, float, bool)):
+            return str(value)[:limit]
+        return None
+
+    def _clean_target(raw: Any) -> Any:
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            return None
+        out: dict[str, Any] = {}
+        for key in (
+            "symbol",
+            "counterpart",
+            "file_path",
+            "scope",
+            "declaring_type",
+        ):
+            if key in raw:
+                out[key] = _clean_opt_str(raw[key], 512)
+        for key in ("line_start", "line_end"):
+            if key in raw:
+                try:
+                    num = int(raw[key])  # type: ignore[arg-type]
+                    out[key] = num if num >= 1 else None
+                except (TypeError, ValueError):
+                    out[key] = None
+        if "value_semantics" in raw:
+            out["value_semantics"] = _clean_opt_str(raw["value_semantics"], 64)
+        if "claimed_value" in raw:
+            out["claimed_value"] = _clean_opt_str(raw["claimed_value"], 512)
+        if "fact_category" in raw:
+            out["fact_category"] = _clean_fact_cat(raw["fact_category"])
+        return out
+
+    clean: dict[str, Any] = dict(parsed)
+    raw_claims = clean.get("claims")
+    if raw_claims is None:
+        clean["claims"] = []
+    elif isinstance(raw_claims, dict):
+        raw_claims = [raw_claims]
+    if isinstance(raw_claims, list):
+        items: list[dict[str, Any]] = []
+        for entry in raw_claims:
+            if not isinstance(entry, dict):
+                continue
+            statement = entry.get("statement")
+            if not isinstance(statement, str) or not statement.strip():
+                continue
+            item = {k: v for k, v in entry.items() if k in known_claim}
+            item["statement"] = statement[:2048]
+            kind = item.get("claim_kind")
+            if kind is not None and str(kind) not in valid_kinds:
+                item["claim_kind"] = ClaimKind.CAUSAL.value
+            ev_ids = item.get("evidence_ids")
+            if ev_ids is None:
+                item["evidence_ids"] = []
+            elif isinstance(ev_ids, list):
+                item["evidence_ids"] = [e for e in ev_ids if isinstance(e, str)][:20]
+            else:
+                item["evidence_ids"] = []
+            if "fact_category" in item:
+                item["fact_category"] = _clean_fact_cat(item["fact_category"])
+            if "value_semantics" in item:
+                item["value_semantics"] = _clean_opt_str(item["value_semantics"], 64)
+            if "claimed_value" in item:
+                item["claimed_value"] = _clean_opt_str(item["claimed_value"], 512)
+            if "target" in item:
+                item["target"] = _clean_target(item["target"])
+            items.append(item)
+        clean["claims"] = items
+    else:
+        clean["claims"] = []
+    return clean
 
 # Reasoner sampling temperature (Phase 4 battery readout). First-turn
 # branch dominance at the 0.7 default produced opposite verdicts on
@@ -72,7 +179,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "action": {"action_type": "<one of QUERY_STATE|SEARCH_LOGS|GET_CODE|SEARCH_CODE|FIND_SYMBOL|FIND_CALL_GRAPH|GET_CODE_HISTORY|PROBE_API|CORRELATE|WALK_STACK|TRACE_LOGIC|TRACE_JOURNEY|WALK_SESSION_GRAPH|SEARCH_REF_DOCS|FORMULATE_HYPOTHESIS|VERIFY_HYPOTHESIS|CONCLUDE>", "parameters": {...}} — the single next step.
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; MANDATORY non-empty whenever visible evidence is non-empty — these are persisted as hypotheses and required for verification"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale".
 Do NOT include execution_hash (derived server-side).""",
@@ -88,13 +195,14 @@ For CORRELATE you MUST set "parameters": {"root_evidence_ids": [<evidence_id str
         """compiled_context.evidence_excerpts is the only model-visible evidence. Each excerpt carries evidence_id, evidence_type, source, and — for code — target, window, read_mode, symbol_spans, truncated, next_window, and citable_evidence_id. Cite evidence_id values from this list only; an ID absent from visible_evidence_ids is not visible and must not be cited.
 A code excerpt's content is the fetched window, not a summary. Reason over the window; never over the summary alone.
 When an excerpt carries code_fact_resolution, it is a deterministic analysis of that exact source evidence, not model-generated metadata. For a field-value claim, cite that source evidence, set target.declaring_type, copy the resolution's value_semantics and resolved_value to the claim's target, and do not state that the value remains effective after constructors, initializer blocks, setters, configuration binding, or runtime execution unless those effects are separately established.
+For a method-return question (what a method returns under a condition, which default applies on a branch), GET_CODE the method's file with parameters method_name (plus declaring_type and guard_condition when known, e.g. {"file_path": "...", "method_name": "normalize", "declaring_type": "LegacyCodeMapper", "guard_condition": "orderType == null"}); the resolver attaches code_fact_resolution_v2. Claim the answer with fact_category SOURCE_VALUE_FACT, target.symbol "<declaring_type>.<method>", and claimed_value exactly from the resolution — same range-read plus resolution rules as field-value claims, and the same prohibition on promoting the literal past the guarded return.
 When content_truncated is true or next_window is non-null, the packet was cut. Request GET_CODE for next_window.start_line through next_window.end_line before claiming behavior outside the window.
 A search hit or call-graph row is a candidate location, not proof. A definition hypothesis (defined/declared/implemented in X) MUST be followed by GET_CODE of the cited file before VERIFY_HYPOTHESIS — search matches alone never verify a definition.
 When citing code, cite the range-read evidence ID (GET_CODE result), not just the search-match ID that found the file.
 A log line merely NAMING a symbol is not a location citation — hedged claims like 'referenced in logs, suggesting X lives in Y' never verify without a code row for Y whose window contains the symbol.
 A location answer verifies on code citations alone only when the cited range-read window contains the asserted symbol or line; that is what 'location citation' means.
 Behavior claims need code that shows the mechanism plus runtime evidence (logs, state, or a live probe). Code alone establishes structure, not observed behavior.
-Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit that does not show the call is not a call site. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
+Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit that does not show the call is not a call site. When the question asks who calls a symbol and several caller edges are visible, emit one CALL_EDGE claim per caller (same target.symbol, one target.counterpart each), each citing its own call-site range read — a single-caller answer to a caller-enumeration question is incomplete. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
     ),
     (
         "code-reading",
@@ -344,6 +452,11 @@ class ReasoningCoordinator(InvestigationReasoner):
         """
         if not isinstance(parsed, dict):
             raise TypeError(f"LLM decision is not an object: {type(parsed).__name__}")
+        # Nested claims[] items are extra="forbid" while top-level keys are
+        # stripped below — sanitize first so one invented claim key or an
+        # off-vocabulary enum degrades the turn instead of failing it
+        # (covers both the initial and the resample validation).
+        parsed = _sanitize_decision_dict(parsed)
         known = set(InvestigationDecision.model_fields)
         unknown = sorted(k for k in parsed if k not in known)
         if unknown:

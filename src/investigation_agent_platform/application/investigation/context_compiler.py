@@ -20,7 +20,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
 # shape changes; persisted per decision for replay/evaluation.
-REASONER_PROMPT_VERSION = "v3-claim-grounded-011"
+REASONER_PROMPT_VERSION = "v3-claim-grounded-012"
 CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8

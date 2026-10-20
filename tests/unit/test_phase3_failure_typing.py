@@ -754,6 +754,115 @@ class TestInvalidSchemaRetry:
         assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
 
 
+class TestClaimSanitize:
+    """Live L3: claims[] items are extra=forbid — one invented key or an
+    off-vocabulary enum failed the whole reason step twice (byte-identical
+    resample) into terminal REASONING_UNAVAILABLE. Sanitizer degrades."""
+
+    @pytest.mark.asyncio
+    async def test_history_shaped_claim_validates_first_try(self) -> None:
+        coord, state, gateway = _reason_harness(
+            [
+                {
+                    "observations": [],
+                    "conclusion_readiness": 0.0,
+                    "claims": [
+                        {
+                            "statement": "OrderServiceImpl changed recently",
+                            "claim_kind": "HISTORY",
+                            "evidence_ids": None,
+                            "commit": "abc123",
+                            "revision": "r2",
+                        },
+                        {"statement": "   ", "claim_kind": "CAUSAL"},
+                        "not-a-claim",
+                    ],
+                }
+            ]
+        )
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 1
+        assert decision.metadata.get("status") != "REASONING_UNAVAILABLE"
+        assert len(decision.claims) == 1
+        assert decision.claims[0].statement == "OrderServiceImpl changed recently"
+        assert decision.claims[0].claim_kind.value == "CAUSAL"
+        assert list(decision.claims[0].evidence_ids) == []
+
+    @pytest.mark.asyncio
+    async def test_invalid_fact_category_defaults_none(self) -> None:
+        coord, state, gateway = _reason_harness(
+            [
+                {
+                    "observations": [],
+                    "claims": [
+                        {
+                            "statement": "handler routes orders",
+                            "fact_category": "GIT_FACT",
+                            "target": {
+                                "symbol": "handle",
+                                "line_start": 0,
+                                "bogus_key": 1,
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 1
+        assert decision.metadata.get("status") != "REASONING_UNAVAILABLE"
+        assert decision.claims[0].fact_category is None
+        assert decision.claims[0].target is not None
+        assert decision.claims[0].target.line_start is None
+
+
+class TestCallerChainTargets:
+    """L2 Helper-drop: call-site chaining read only the first caller edge,
+    so the second caller never got a citable range row."""
+
+    @staticmethod
+    def _edge(role, file, line):
+        return {"role": role, "file": file, "line": line}
+
+    def test_banks_every_caller_file_once(self):
+        from investigation_agent_platform.application.worker.activities import (
+            _caller_chain_targets,
+        )
+
+        edges = [
+            self._edge("caller", "proxy/OrderServiceRestProxy.java", 11),
+            self._edge("caller", "helper/OrderQualifyHelper.java", 12),
+            self._edge("callee", "handler/OrderServiceHandler.java", 4),
+        ]
+        targets = _caller_chain_targets(edges)
+        assert [(t["file"], t["line"]) for t in targets] == [
+            ("proxy/OrderServiceRestProxy.java", 11),
+            ("helper/OrderQualifyHelper.java", 12),
+        ]
+
+    def test_same_file_dedupes_and_malformed_skip(self):
+        from investigation_agent_platform.application.worker.activities import (
+            _caller_chain_targets,
+        )
+
+        edges = [
+            self._edge("caller", "a.java", 3),
+            self._edge("caller", "a.java", 9),
+            self._edge("caller", "", 4),
+            self._edge("caller", "b.java", "x"),
+            "not-a-dict",
+        ]
+        assert [t["line"] for t in _caller_chain_targets(edges)] == [3]
+
+    def test_limit_bounds_hub_symbols(self):
+        from investigation_agent_platform.application.worker.activities import (
+            _caller_chain_targets,
+        )
+
+        edges = [self._edge("caller", f"f{i}.java", i + 1) for i in range(10)]
+        assert len(_caller_chain_targets(edges, limit=3)) == 3
+
+
 class TestCallSiteChaining:
     @pytest.mark.asyncio
     async def test_caller_window_read_banked(self) -> None:

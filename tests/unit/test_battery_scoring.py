@@ -476,3 +476,45 @@ class TestCachedPrimary:
             import importlib
 
             importlib.reload(live_battery)
+
+    def test_prefers_primary_target_id_over_reason_regex(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import live_battery
+
+        pid = "22222222-3333-4444-5555-666666666666"
+        concl = {"status": "ANSWERED", "root_cause": "r", "supporting_evidence_ids": []}
+
+        def _fake_api(base, tenant, method, path, body=None, timeout=30):
+            if path.endswith("/conclusion"):
+                return 200, {"conclusion": concl}
+            if path.endswith("/findings"):
+                return 200, {}
+            if "evidence" in path:
+                return 200, {"items": []}
+            if path.endswith("/hypotheses"):
+                return 200, {"items": []}
+            # Structured primary id present; reason carries no uuid
+            # (older shape had only the reason text).
+            return 200, {
+                "investigation": {
+                    "metadata": {
+                        "disposition": {
+                            "action": "serve_cached",
+                            "primary_target_id": pid,
+                            "reason": "prior conclusion re-verified CONFIRMED",
+                        }
+                    }
+                }
+            }
+
+        live_battery.api = _fake_api
+        try:
+            out, note = live_battery._cached_primary("b", "t", "deadbeef")
+        finally:
+            import importlib
+
+            importlib.reload(live_battery)
+        assert out is not None
+        assert out[0] == pid

@@ -151,6 +151,32 @@ class TestTreeSitterProvider:
             assert isinstance(callees, list)
 
     @pytest.mark.asyncio
+    async def test_find_callers_java_receiver_method(self) -> None:
+        # Live L2: handler.handle(orderId) is a method_invocation whose
+        # 'function' field is None ('name' -> handle, 'object' -> handler).
+        # The callee must resolve to the method, not the receiver.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "myrepo" / "src"
+            repo.mkdir(parents=True)
+            (repo / "OrderQualifyHelper.java").write_text(
+                "package com.sample.orders.helper;\n"
+                "public class OrderQualifyHelper {\n"
+                "    private final OrderServiceHandler handler = new OrderServiceHandler();\n"
+                "    public String qualify(String orderId) {\n"
+                "        return handler.handle(orderId);\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            provider = TreeSitterCodeIntelligenceProvider(repo_base_path=tmp)
+            profile = _make_code_profile(source_roots=["src"])
+            callers = await provider.find_callers("t1", "handle", profile)
+            assert [c.caller_symbol for c in callers] == ["qualify"]
+            assert callers[0].callee_symbol == "handle"
+            callees = await provider.find_callees("t1", "qualify", profile)
+            assert [c.callee_symbol for c in callees] == ["handle"]
+
+    @pytest.mark.asyncio
     async def test_exception_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "myrepo" / "src"

@@ -698,8 +698,16 @@ class TreeSitterCodeIntelligenceProvider:
                     if node.type in CALL_NODE_TYPES:
                         # extract callee text
                         callee_text = ""
-                        # try field 'function' or first identifier
-                        func_node = node.child_by_field_name("function")
+                        # try field 'function' or first identifier. Java
+                        # method_invocation carries the method name on
+                        # field 'name' ('function' is None) with the
+                        # receiver on 'object' — without the 'name'
+                        # fallback the callee reads as the receiver
+                        # (e.g. "handler" for handler.handle(...)) and no
+                        # caller edge is ever produced.
+                        func_node = node.child_by_field_name(
+                            "function"
+                        ) or node.child_by_field_name("name")
                         if func_node is not None:
                             callee_text = self._byte_slice(code, func_node.start_byte, func_node.end_byte).strip()
                             # handle dotted: take last part
@@ -862,7 +870,9 @@ class TreeSitterCodeIntelligenceProvider:
                     and node.end_byte <= end_byte
                     and node.type in CALL_NODE_TYPES
                 ):
-                    func_node = node.child_by_field_name("function")
+                    func_node = node.child_by_field_name(
+                        "function"
+                    ) or node.child_by_field_name("name")
                     callee = ""
                     if func_node is not None:
                         callee = (
