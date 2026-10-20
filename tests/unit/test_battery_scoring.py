@@ -389,3 +389,88 @@ class TestCleanupScope:
         import clean_battery
 
         assert clean_battery.decide_scope("n-a", True) == "all"
+
+
+class TestCachedPrimary:
+    def test_follows_served_conclusion(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import live_battery
+
+        pid = "11111111-2222-3333-4444-555555555555"
+        concl = {
+            "status": "ANSWERED",
+            "root_cause": "SampleOrderFilter is implemented in src/SampleOrderFilter.java",
+            "supporting_evidence_ids": ["e1"],
+            "supporting_hypothesis_ids": [],
+            "limitations": [],
+        }
+        row = {
+            "evidence_id": "e1",
+            "evidence_type": "SOURCE_CODE",
+            "title": "t",
+            "summary": "s",
+            "content_snippet": "72| public class SampleOrderFilter",
+            "source": "git://r/f@abc",
+            "attributes": {},
+            "provenance": {
+                "source_location": {
+                    "file_path": "src/SampleOrderFilter.java",
+                    "line_start": 72,
+                    "line_end": 80,
+                    "revision": "abc",
+                }
+            },
+        }
+        calls = []
+
+        def _fake_api(base, tenant, method, path, body=None, timeout=30):
+            calls.append(path)
+            if path.endswith("/conclusion"):
+                return 200, {"conclusion": concl}
+            if path.endswith("/findings"):
+                return 200, {}
+            if "evidence" in path:
+                return 200, {"items": [row]}
+            if path.endswith("/hypotheses"):
+                return 200, {"items": []}
+            return 200, {
+                "investigation": {
+                    "metadata": {
+                        "disposition": {
+                            "action": "serve_cached",
+                            "reason": f"duplicate of {pid}",
+                        }
+                    }
+                }
+            }
+
+        live_battery.api = _fake_api
+        try:
+            out = live_battery._cached_primary("b", "t", "deadbeef")
+        finally:
+            import importlib
+
+            importlib.reload(live_battery)
+        assert out is not None
+        got_pid, got_concl, _, _, _ = out
+        assert got_pid == pid
+        assert got_concl["status"] == "ANSWERED"
+
+    def test_non_cached_returns_none(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import live_battery
+
+        def _fake_api(base, tenant, method, path, body=None, timeout=30):
+            return 200, {"investigation": {"metadata": {"disposition": {"action": "fresh"}}}}
+
+        live_battery.api = _fake_api
+        try:
+            assert live_battery._cached_primary("b", "t", "deadbeef") is None
+        finally:
+            import importlib
+
+            importlib.reload(live_battery)

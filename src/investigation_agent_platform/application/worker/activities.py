@@ -4535,6 +4535,32 @@ async def execute_action_activity(
                 callees = meta.get("callees", []) or []
                 outcome_detail["_graph_callers"] = len(callers)
                 outcome_detail["_graph_callees"] = len(callees)
+                graph_edges: list[dict] = []
+                for role, node in (
+                    [("caller", c) for c in callers] + [("callee", c) for c in callees]
+                ):
+                    try:
+                        if not isinstance(node, dict):
+                            continue
+                        loc = node.get("location") or {}
+                        if not isinstance(loc, dict):
+                            continue
+                        try:
+                            edge_line = int(loc.get("line_number") or 0) or None
+                        except (TypeError, ValueError):
+                            edge_line = None
+                        graph_edges.append(
+                            {
+                                "role": role,
+                                "caller": str(node.get("caller_symbol") or "?")[:256],
+                                "callee": str(node.get("callee_symbol") or "?")[:256],
+                                "file": str(loc.get("file_path") or "").strip(),
+                                "line": edge_line,
+                            }
+                        )
+                    except Exception:
+                        continue
+                outcome_detail["_graph_edges"] = graph_edges[:10]
                 if not callers and not callees:
                     return []
                 import hashlib as _hashlib
@@ -4725,6 +4751,56 @@ async def execute_action_activity(
                     union=True,
                 )
                 return banked_count + extra
+            # Call-site chaining (L2 twice): a graph edge names the caller
+            # file but no row shows the call expression the verifier
+            # demands. Read a window around the top caller edge so the turn
+            # banks a real call-site row (TRACE_LOGIC pattern). One bounded
+            # read; failures keep the graph results regardless.
+            try:
+                _edges = [
+                    e for e in (outcome_detail.pop("_graph_edges", []) or [])
+                    if isinstance(e, dict)
+                ]
+                _callers_first = sorted(
+                    _edges, key=lambda e: 0 if e.get("role") == "caller" else 1
+                )
+                _target = next(
+                    (
+                        e
+                        for e in _callers_first
+                        if str(e.get("file") or "").strip()
+                        and isinstance(e.get("line"), int)
+                    ),
+                    None,
+                )
+                if _target is not None and evidence_repo is not None:
+                    from investigation_agent_platform.domain.evidence.requests import (
+                        SourceRequest as _SourceRequest,
+                    )
+
+                    _anchor = int(_target["line"])
+                    _read = await gateway.get_source(
+                        tenant_id,
+                        investigation_id,
+                        application_id or "example-app",
+                        _SourceRequest(
+                            repository=application_id or "example-app",
+                            file_path=str(_target["file"]),
+                            revision=str(parameters.get("revision", "HEAD")),
+                            start_line=max(1, _anchor - 40),
+                            end_line=_anchor + 40,
+                        ),
+                    )
+                    await evidence_repo.save(tenant_id, _read, investigation_id)
+                    try:
+                        outcome_detail["evidence_ids"] = list(
+                            outcome_detail.get("evidence_ids") or []
+                        ) + [str(_read.evidence_id)]
+                    except Exception:
+                        pass
+                    return banked_count + 1
+            except Exception:
+                pass
             return banked_count
 
         async def _handle_get_code_history() -> int:

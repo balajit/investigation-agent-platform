@@ -719,11 +719,44 @@ class ReasoningCoordinator(InvestigationReasoner):
         try:
             decision = self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
         except Exception as exc:
+            # Schema-invalid output is usually sampling noise, not a dead
+            # provider: one bounded resample before declaring the reasoning
+            # step unavailable (4/10 live runs died here with zero evidence).
+            # Field locations (never values) are logged for prompt diagnosis.
+            from pydantic import ValidationError
+
+            if not isinstance(exc, ValidationError):
+                logger.warning(
+                    "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
+                    extra={"tenant_id": tenant_id, "error": str(exc)},
+                )
+                return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
+            try:
+                fields = sorted(
+                    {
+                        ".".join(str(p) for p in (e.get("loc") or ()) if p != "__root__")
+                        for e in exc.errors()
+                    }
+                )
+            except Exception:
+                fields = []
             logger.warning(
-                "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
-                extra={"tenant_id": tenant_id, "error": str(exc)},
+                "LLM decision failed validation; resampling once",
+                extra={"tenant_id": tenant_id, "fields": fields[:10]},
             )
-            return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
+            try:
+                resp = await gateway.complete(tenant_id, req)
+                decision = self._validate_llm_decision(
+                    resp.parsed, tenant_id, state.investigation.id
+                )
+            except Exception as exc2:
+                logger.warning(
+                    "LLM decision invalid after resample; returning REASONING_UNAVAILABLE",
+                    extra={"tenant_id": tenant_id, "error": str(exc2)},
+                )
+                return self._unavailable_decision(
+                    f"invalid_llm_schema:{type(exc2).__name__}"
+                )
         decision = self._ensure_claim_coverage(decision, tenant_id, state)
         # Token accounting: surface this call's usage on the decision so
         # the worker can accumulate per-investigation spend (budget

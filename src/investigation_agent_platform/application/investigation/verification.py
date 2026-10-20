@@ -261,12 +261,17 @@ class LimitationCode(str, Enum):
         or runtime rows) but no single cited row shows the asserted
         relation — the mechanism is supported, not demonstrated, so the
         claim publishes as likely, never established.
+    NO_RUNTIME_OBSERVATION: a behavior claim has its code path and a
+        tested rival but no runtime observation — routine in code-only
+        scopes. The mechanism is code-plausible, not observed: likely,
+        never established.
     """
 
     RIVAL_UNTESTED = "RIVAL_UNTESTED"
     SINGLE_PROVIDER = "SINGLE_PROVIDER"
     CONCLUSION_UNMAPPED = "CONCLUSION_UNMAPPED"
     RELATION_UNDEMONSTRATED = "RELATION_UNDEMONSTRATED"
+    NO_RUNTIME_OBSERVATION = "NO_RUNTIME_OBSERVATION"
 
 
 class VerificationLimitation(BaseModel):
@@ -659,11 +664,7 @@ class VerificationEngine:
     @staticmethod
     def behavior_proof(evidence_items: list[Any]) -> tuple[bool, str]:
         """Code (range-read) AND runtime evidence — code alone is structure."""
-        has_code = any(
-            VerificationEngine._item_type(i) in VerificationEngine.CODE_EVIDENCE_TYPES
-            and VerificationEngine._is_range_read(i)
-            for i in evidence_items or []
-        )
+        has_code = VerificationEngine.behavior_has_code_path(evidence_items)
         has_runtime = any(
             VerificationEngine._item_type(i) in VerificationEngine.RUNTIME_EVIDENCE_TYPES
             for i in evidence_items or []
@@ -676,6 +677,18 @@ class VerificationEngine:
         if not has_runtime:
             missing.append("runtime evidence (log, trace, state, metric or probe)")
         return (False, "behavior claim lacks " + " and ".join(missing))
+
+    @staticmethod
+    def behavior_has_code_path(evidence_items: list[Any]) -> bool:
+        """A real code range read exists (the code half of a behavior claim)."""
+        try:
+            return any(
+                VerificationEngine._item_type(i) in VerificationEngine.CODE_EVIDENCE_TYPES
+                and VerificationEngine._is_range_read(i)
+                for i in evidence_items or []
+            )
+        except Exception:
+            return False
 
     @staticmethod
     def absence_proof(
@@ -1444,6 +1457,32 @@ class VerificationEngine:
             return False
 
     @staticmethod
+    @staticmethod
+    def _rival_tested_for(candidate: Any, siblings: list[Any] | None) -> bool:
+        """At least one sibling was evaluated against evidence (pure).
+
+        Same tested definition as rival_contrast, inverted: used to earn
+        the code-only behavior demotion path. The candidate itself is
+        excluded by id; unreadable siblings do not count.
+        """
+        try:
+            candidate_id = getattr(candidate, "id", None)
+            for sib in siblings or []:
+                try:
+                    if candidate_id is not None and getattr(sib, "id", None) == candidate_id:
+                        continue
+                    assessments = getattr(sib, "assessments", None)
+                    status = str(
+                        getattr(getattr(sib, "status", ""), "value", getattr(sib, "status", ""))
+                    ).upper()
+                    if assessments or status in VerificationEngine._TESTED_STATUSES:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     def rival_contrast(
         candidate: Any, siblings: list[Any] | None
     ) -> tuple[bool, list[VerificationLimitation]]:
@@ -1798,6 +1837,8 @@ class VerificationEngine:
             return "Evaluate every rival hypothesis against evidence, then re-verify."
         if "RELATION_UNDEMONSTRATED" in codes:
             return "Cite the code/log rows showing each causal step's mechanism, then re-verify."
+        if "NO_RUNTIME_OBSERVATION" in codes:
+            return "Observe the behavior at runtime (log, trace, state, or probe), then re-verify."
         if "CONCLUSION_UNMAPPED" in codes and sentences:
             return f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
         if "CONCLUSION_UNMAPPED" in codes:
@@ -1881,23 +1922,35 @@ class VerificationEngine:
                 confidence=confidence,
             )
         kind_gate = self.check_claim_kind(hypothesis, evidence_items)
+        behavior_likely_only = False
         if kind_gate is not None and not kind_gate[0]:
             kind = VerificationEngine.effective_claim_kind(hypothesis)
-            return VerificationResult(
-                hypothesis_id=hypothesis.id,
-                status=VerificationStatus.INCONCLUSIVE,
-                corroborating_evidence_ids=[],
-                explanation=(
-                    f"{kind.value if kind else 'Claim'} claim not demonstrated by "
-                    f"its cited evidence: {kind_gate[1]}."
-                ),
-                confidence=InvestigationConfidence(
-                    coverage_score=0.3,
-                    reliability_score=0.5,
-                    causal_score=0.0,
-                    contradiction_penalty=0.0,
-                ),
-            )
+            if (
+                kind == ClaimKind.BEHAVIOR
+                and VerificationEngine.behavior_has_code_path(evidence_items)
+                and self._rival_tested_for(hypothesis, sibling_hypotheses)
+            ):
+                # Code-complete behavior with a tested rival but no runtime
+                # observation (routine in code-only scopes): proceed to
+                # scoring, then cap at likely with NO_RUNTIME_OBSERVATION.
+                # Demote-only — never established, never blocked.
+                behavior_likely_only = True
+            else:
+                return VerificationResult(
+                    hypothesis_id=hypothesis.id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=(
+                        f"{kind.value if kind else 'Claim'} claim not demonstrated by "
+                        f"its cited evidence: {kind_gate[1]}."
+                    ),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.3,
+                        reliability_score=0.5,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                )
         if VerificationEngine.claims_definition(
             getattr(hypothesis, "statement", "")
         ) and not VerificationEngine.has_range_read(evidence_items):
@@ -2064,6 +2117,19 @@ class VerificationEngine:
                             detail=(
                                 f"{relation_reason}; the mechanism is "
                                 "supported, not demonstrated: likely, not "
+                                "established."
+                            )[:500],
+                        )
+                    )
+                    tier = "likely"
+                if behavior_likely_only:
+                    limitations.append(
+                        VerificationLimitation(
+                            code=LimitationCode.NO_RUNTIME_OBSERVATION,
+                            detail=(
+                                "Behavior established from code path with a "
+                                "tested rival but no runtime observation; "
+                                "code-plausible, not observed: likely, not "
                                 "established."
                             )[:500],
                         )

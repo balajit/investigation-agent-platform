@@ -119,6 +119,22 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
         _, det = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}")
         meta = ((det.get("investigation") or {}).get("metadata")) or {}
         rec["failure"] = meta.get("failure")
+    if status == "CANCELLED":
+        # serve_cached is the product working (a re-verified prior
+        # conclusion was served instead of re-running): follow the cached
+        # primary and grade THAT answer rather than failing the run for
+        # not running. Anything else stays not-startable FAIL.
+        primary = _cached_primary(api_base, tenant, iid)
+        if primary is not None:
+            pid, concl, findings, evidence, hyps = primary
+            verdict, detail = score_supported(case, concl, findings, evidence, hyps)
+            rec.update(verdict=verdict, detail=f"served cached from {pid[:8]}: {detail}")
+            rec.update(diagnose(concl, findings, evidence, hyps))
+            rec["duration_s"] = round(time.time() - t0, 1)
+            rec["cached_from"] = pid
+            return rec
+        rec.update(status=status, verdict="FAIL", detail=f"not startable ({status})")
+        return rec
     _, conclusion = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}/conclusion")
     _, findings = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}/findings")
     _, evidence = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}/evidence?limit=100")
@@ -265,6 +281,37 @@ async def _analyze_one(conn, iid: str) -> dict:
         out["has_next_check"] = bool(concl["next_check"])
         out["n_support_db"] = concl["n_support"]
     return out
+
+
+def _cached_primary(api_base, tenant, iid):
+    """(primary_id, conclusion, findings, evidence, hyps) or None.
+
+    A CANCELLED investigation whose disposition served a re-verified
+    cached conclusion names the primary as 'duplicate of <uuid>'.
+    Returns None for any other shape — the run stays not-startable FAIL.
+    """
+    try:
+        _, det = api(api_base, tenant, "GET", f"/api/v1/investigations/{iid}")
+        meta = ((det.get("investigation") or {}).get("metadata")) or {}
+        disp = meta.get("disposition") or {}
+        if disp.get("action") != "serve_cached":
+            return None
+        match = re.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            str(disp.get("reason", "")),
+        )
+        if not match:
+            return None
+        pid = match.group(0)
+        _, conclusion = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/conclusion")
+        _, findings = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/findings")
+        _, evidence = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/evidence?limit=100")
+        _, hyps = api(api_base, tenant, "GET", f"/api/v1/investigations/{pid}/hypotheses")
+        if not (conclusion.get("conclusion") or {}).get("status"):
+            return None
+        return pid, conclusion.get("conclusion") or {}, findings, evidence, hyps
+    except Exception:
+        return None
 
 
 def poll(api_base, tenant, iid, timeout):

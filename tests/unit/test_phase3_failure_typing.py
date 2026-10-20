@@ -657,3 +657,181 @@ class TestCallEdgePackets:
         assert loc.revision == "abc123"
         assert edges[0].attributes["discovery_only"] is True
         assert edges[0].attributes["callee_symbol"] == "reserve"
+
+
+def _reason_harness(parsed_list, obs=None):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+
+    from investigation_agent_platform.application.investigation.reasoning import (
+        ReasoningCoordinator,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
+        Investigation,
+        InvestigationContext,
+        InvestigationRequest,
+        InvestigationState,
+    )
+    from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
+    from investigation_agent_platform.ports.reasoning.llm_gateway import LLMGatewayResponse
+
+    now = datetime.now(UTC)
+    inv = Investigation(
+        session_id="sess-1",
+        application_id="app",
+        tenant_id="tenant-a",
+        request=InvestigationRequest(
+            application_id="app",
+            problem_description="p",
+            session_id="sess-1",
+            requested_by="tester",
+        ),
+        context=InvestigationContext(
+            environment="production", time_window=(now - timedelta(hours=1), now)
+        ),
+    )
+    safety = MagicMock()
+    safety.validate_prompt_safety = AsyncMock(return_value=True)
+    gateway = MagicMock()
+
+    def _resp(parsed):
+        return LLMGatewayResponse(
+            content="{}",
+            parsed=parsed,
+            metadata=LLMCallMetadata(
+                model_name="t",
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+                estimated_cost_usd=0.0,
+                latency_ms=1.0,
+            ),
+        )
+
+    gateway.complete = AsyncMock(side_effect=[_resp(p) for p in parsed_list])
+    coord = ReasoningCoordinator(
+        prompt_safety_policy=safety, llm_gateway=gateway, observability=obs
+    )
+    return coord, InvestigationState(investigation=inv), gateway
+
+
+class TestInvalidSchemaRetry:
+    @staticmethod
+    def _valid():
+        return {
+            "observations": [],
+            "conclusion_readiness": 0.0,
+            "hypotheses_evaluated": ["pool fails"],
+        }
+
+    @staticmethod
+    def _invalid():
+        return {"observations": [], "conclusion_readiness": "high"}
+
+    @pytest.mark.asyncio
+    async def test_resample_recovers_valid_decision(self) -> None:
+        coord, state, gateway = _reason_harness([self._invalid(), self._valid()])
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 2
+        assert list(decision.hypotheses_evaluated) == ["pool fails"]
+        assert decision.metadata.get("status") != "REASONING_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_persistent_invalid_abstains_typed(self) -> None:
+        coord, state, gateway = _reason_harness([self._invalid(), self._invalid()])
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 2
+        assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
+        assert "invalid_llm_schema" in decision.metadata.get("reason", "")
+
+    @pytest.mark.asyncio
+    async def test_non_validation_error_fails_fast(self) -> None:
+        coord, state, gateway = _reason_harness(
+            [{"observations": [], "action": {"action_type": "NOPE"}}]
+        )
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 1
+        assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
+
+
+class TestCallSiteChaining:
+    @pytest.mark.asyncio
+    async def test_caller_window_read_banked(self) -> None:
+        calls = {}
+
+        async def _find_call_graph(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                items=[],
+                total_count=1,
+                provider_metadata={
+                    "callers": [
+                        {
+                            "caller_symbol": "CheckoutController",
+                            "callee_symbol": "reserve",
+                            "location": {"file_path": "Checkout.java", "line_number": 88},
+                        }
+                    ],
+                    "callees": [
+                        {
+                            "caller_symbol": "reserve",
+                            "callee_symbol": "inventory",
+                            "location": {"file_path": "Reserve.java", "line_number": 10},
+                        }
+                    ],
+                },
+            )
+
+        async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            calls["req"] = req
+            return SimpleNamespace(
+                evidence_id=uuid4(),
+                evidence_type="SOURCE_CODE",
+                provenance=SimpleNamespace(
+                    source_location=SimpleNamespace(
+                        file_path=req.file_path,
+                        line_start=req.start_line,
+                        line_end=req.end_line,
+                        revision="abc",
+                    )
+                ),
+                content_snippet="x",
+            )
+
+        _, saved = _ctx_with(
+            SimpleNamespace(find_call_graph=_find_call_graph, get_source=_get_source)
+        )
+        result = await execute_action_activity(
+            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
+        )
+        # Summary + 2 edges + 1 chained caller window.
+        assert result.data["items_count"] == 4
+        assert calls["req"].file_path == "Checkout.java"
+        assert calls["req"].start_line == 48
+        assert calls["req"].end_line == 128
+
+    @pytest.mark.asyncio
+    async def test_no_location_no_extra_read(self) -> None:
+        calls = []
+
+        async def _find_call_graph(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                items=[],
+                total_count=1,
+                provider_metadata={
+                    "callers": [{"caller_symbol": "A", "callee_symbol": "b", "location": {}}],
+                    "callees": [{"caller_symbol": "b", "callee_symbol": "c", "location": {}}],
+                },
+            )
+
+        async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
+            calls.append(1)
+            raise AssertionError("no located edge: must not read")
+
+        _, _ = _ctx_with(
+            SimpleNamespace(find_call_graph=_find_call_graph, get_source=_get_source)
+        )
+        result = await execute_action_activity(
+            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
+        )
+        assert result.data["items_count"] == 1
+        assert calls == []
