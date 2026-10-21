@@ -352,3 +352,20 @@ harvested newest-first (`_latest_fuzzy_orientation`) in `reason_activity` and pa
 renderer already gates the hint as non-citable steering. See `tests/unit/test_verify_outcome.py` (8 cases:
 promotion chains, refutation parsing, terminal-row safety, orientation harvest). Full unit suite 2523
 passed, ruff clean on touched files, mypy at the 26-error pre-existing baseline.
+
+## 63. Rival-shared evidence + conclusion entailment (2026-10-21)
+
+Phase 2 of `tmp/PhasedPlan_Agent_Verification.md`. Two determinism upgrades, both pure and
+fail-open. First, `VerificationEngine.rival_evidence_overlap` (Phase 2a): the fraction of a
+candidate's corroborating rows also supporting a verifier-touched rival
+(`UNDER_INVESTIGATION`/`SUPPORTED`/`VERIFIED`) feeds `contradiction_penalty`, and any share
+demotes the conclusion to likely with a `RIVAL_SHARED_EVIDENCE` limitation. Formulate-time
+`SUPPORTS` citations are claims, not proof, so `PROPOSED` rivals sharing rows are priced by
+the existing `RIVAL_UNTESTED` demote instead — this distinction was forced by a golden that
+caught the first (over-strict) version. Second, `causal_sentence_entailed` (Phase 2b): a
+conclusion sentence asserting causation maps only when one bound row (or validated chain
+link) contains cause-side AND effect-side stems; cause in row 3 + effect in row 7 is
+consistency, not proof, and now lands `CONCLUSION_UNMAPPED`. Non-causal sentences, vague
+effects, and analysis errors keep the existing mapping path. See
+`tests/unit/test_rival_overlap.py` (9 cases) and `tests/unit/test_conclusion_entailment.py`
+(9 cases). Full unit suite 2545 passed, ruff clean, mypy at the 26-error pre-existing baseline.

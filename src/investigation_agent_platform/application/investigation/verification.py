@@ -362,6 +362,10 @@ class LimitationCode(str, Enum):
     CONCLUSION_UNMAPPED = "CONCLUSION_UNMAPPED"
     RELATION_UNDEMONSTRATED = "RELATION_UNDEMONSTRATED"
     NO_RUNTIME_OBSERVATION = "NO_RUNTIME_OBSERVATION"
+    # Phase 2a: part of the winner's corroborating rows also supports a live
+    # rival — the same rows establish two stories, so confidence pays a
+    # rival-shared penalty and the conclusion publishes as likely at best.
+    RIVAL_SHARED_EVIDENCE = "RIVAL_SHARED_EVIDENCE"
 
 
 class VerificationLimitation(BaseModel):
@@ -2746,6 +2750,55 @@ class VerificationEngine:
             pass
         return False
 
+    @staticmethod
+    def rival_evidence_overlap(
+        candidate: Any, siblings: list[Any] | None, corroborating_ids: list[Any] | None
+    ) -> tuple[float, list[str]]:
+        """Fraction of the candidate's corroborating rows also supporting a live rival.
+
+        Same rows establishing two stories is genuine ambiguity, not
+        corroboration depth: the shared fraction feeds contradiction_penalty
+        (Phase 2a), and any share at all demotes the conclusion to likely.
+        Only verifier-touched rivals count (UNDER_INVESTIGATION/SUPPORTED/
+        VERIFIED): formulate-time SUPPORTS citations are claims, not proof —
+        a PROPOSED rival sharing rows is unevaluated, priced instead by the
+        RIVAL_UNTESTED demote. The candidate itself (by id), REJECTED rows,
+        and CONTRADICTED rows (already lost) are excluded. ID comparison
+        tolerates UUID/str mixing. Pure and deterministic; unreadable rows
+        fail closed toward no-share.
+        """
+        try:
+            candidate_ids = {str(e) for e in (corroborating_ids or [])}
+            if not candidate_ids:
+                return (0.0, [])
+            candidate_id = getattr(candidate, "id", None)
+            shared_statements: list[str] = []
+            shared: set[str] = set()
+            for sib in siblings or []:
+                try:
+                    if candidate_id is not None and getattr(sib, "id", None) == candidate_id:
+                        continue
+                    status = str(
+                        getattr(getattr(sib, "status", ""), "value", getattr(sib, "status", ""))
+                    ).upper()
+                    if status not in ("UNDER_INVESTIGATION", "SUPPORTED", "VERIFIED"):
+                        continue
+                    rival_ids = {
+                        str(e) for e in (getattr(sib, "supporting_evidence_ids", None) or [])
+                    }
+                    overlap = candidate_ids & rival_ids
+                    if overlap:
+                        shared |= overlap
+                        shared_statements.append(str(getattr(sib, "statement", "") or "")[:200])
+                except Exception:
+                    continue
+            if not shared:
+                return (0.0, [])
+            return (min(1.0, len(shared) / len(candidate_ids)), shared_statements)
+        except Exception:
+            return (0.0, [])
+
+    @staticmethod
     def rival_contrast(
         candidate: Any, siblings: list[Any] | None
     ) -> tuple[bool, list[VerificationLimitation]]:
@@ -3198,6 +3251,101 @@ class VerificationEngine:
             return True
 
     @staticmethod
+    def _region_tokens(region: str, min_len: int = 4) -> list[str]:
+        """Subject-shaped tokens of an arbitrary text region (pure).
+
+        Same token rules as _claim_subject_tokens (Capitalized words, quoted
+        phrases, path basenames, stopwords dropped, stemmed) without
+        the verb split — shared by the cause side (pre-verb region) and the
+        effect side (post-verb region) of a causal sentence. The effect side
+        passes min_len=3: effects are often acronyms or codes (NPE, OOM)
+        that the cause-side floor would discard.
+        """
+        try:
+            tokens: list[str] = []
+            for match in re.finditer(r"[A-Za-z][A-Za-z0-9_.\-/]*", region or ""):
+                raw = match.group(0).strip(".,;:)]}'\"")
+                if "/" in raw:
+                    raw = raw.rsplit("/", 1)[-1]
+                if "." in raw and " " not in raw:
+                    raw = raw.split(".")[0]
+                lowered_raw = raw.lower()
+                if len(raw) < min_len or lowered_raw in VerificationEngine._SUBJECT_STOPWORDS:
+                    continue
+                stemmed = VerificationEngine._stem_token(raw)
+                if stemmed and stemmed not in tokens:
+                    tokens.append(stemmed)
+            return tokens
+        except Exception:
+            return []
+
+    @staticmethod
+    def _causal_verb_span(sentence: str) -> tuple[str, int] | None:
+        """(verb, original-coord start index) of the first causal verb, else None.
+
+        Multi-word verbs ("results in", "due to") match space-padded so
+        "led" never fires inside "failed". Pure.
+        """
+        try:
+            lowered = f" {(sentence or '').lower()} "
+            first: tuple[str, int] | None = None
+            for verb in VerificationEngine._CAUSAL_SPLIT_VERBS:
+                index = lowered.find(f" {verb} ")
+                if index != -1 and (first is None or index < first[1]):
+                    first = (verb, index)
+            return first
+        except Exception:
+            return None
+
+    @staticmethod
+    def causal_sentence_entailed(
+        sentence: str, evidence_items: list[Any] | None, causal_texts: list[Any] | None = None
+    ) -> bool | None:
+        """Does one bound row (or chain link) show the asserted causal relation?
+
+        Returns None when the sentence makes no causal claim with tokens on
+        both sides (non-causal sentences and vague effects keep the existing
+        mapping path). Returns True when a single row blob or causal-link
+        text contains cause-side AND effect-side stems — the relation is
+        entailed, not merely consistent across scattered rows. Returns False
+        when the sentence asserts causation but no single row shows both
+        sides: cause in row 3 + effect in row 7 is consistency, not proof.
+        Fail-open (True) on any analysis error: never newly demote on a crash.
+        """
+        try:
+            span = VerificationEngine._causal_verb_span(sentence)
+            if span is None:
+                return None
+            verb, index = span
+            cause_tokens = VerificationEngine._region_tokens((sentence or "")[:index])
+            effect_tokens = VerificationEngine._region_tokens(
+                (sentence or "")[index + len(verb) + 1 :], min_len=3
+            )
+            if not cause_tokens or not effect_tokens:
+                return None
+            blobs: list[str] = []
+            for item in evidence_items or []:
+                try:
+                    texts, _paths = VerificationEngine._bound_corpus([item])
+                    blob = " ".join(str(t or "") for t in texts).strip()
+                    if blob:
+                        blobs.append(blob)
+                except Exception:
+                    continue
+            for text in causal_texts or []:
+                if str(text or "").strip():
+                    blobs.append(str(text))
+            for blob in blobs:
+                stems = VerificationEngine._text_stems(blob)
+                if any(t in stems for t in cause_tokens) and any(
+                    t in stems for t in effect_tokens
+                ):
+                    return True
+            return False
+        except Exception:
+            return None
+
+    @staticmethod
     def map_conclusion_sentences(
         root_cause: str,
         evidence_items: list[Any],
@@ -3218,6 +3366,17 @@ class VerificationEngine:
                 if not sentence:
                     continue
                 if VerificationEngine._resolution_grounded(sentence, evidence_items):
+                    continue
+                # Phase 2b: entailment for causal claims. A sentence asserting
+                # causation ("X causes Y") maps only when one bound row (or
+                # chain link) shows both sides — cause in row 3 + effect in
+                # row 7 is consistency, not proof. Non-causal sentences and
+                # vague effects keep the existing mapping path.
+                entailed = VerificationEngine.causal_sentence_entailed(
+                    sentence, evidence_items, causal_texts
+                )
+                if entailed is False:
+                    unmapped.append(sentence)
                     continue
                 if not VerificationEngine.sentence_mapped(sentence, value_texts, file_paths):
                     unmapped.append(sentence)
@@ -3577,12 +3736,26 @@ class VerificationEngine:
         )
         reliability = (with_provenance / len(evidence_items)) if evidence_items else 0.0
         causal = min(1.0, len(causal_chain) / 2.0) if causal_chain else 0.0
+        # Phase 2a: rival-shared rows are ambiguity, not corroboration
+        # depth. The shared fraction feeds contradiction_penalty (0.20
+        # weight in overall_confidence) so a winner splitting its evidence
+        # with a live rival must clear the threshold on the remainder.
+        # Scope: main causal path only; the specialized value/history/state
+        # paths build their own confidence objects (follow-up).
+        rival_shared = 0.0
+        rival_shared_statements: list[str] = []
+        try:
+            rival_shared, rival_shared_statements = VerificationEngine.rival_evidence_overlap(
+                hypothesis, sibling_hypotheses, corroborating_ids
+            )
+        except Exception:
+            rival_shared, rival_shared_statements = 0.0, []
 
         confidence = InvestigationConfidence(
             coverage_score=coverage,
             reliability_score=reliability,
             causal_score=causal,
-            contradiction_penalty=0.0,
+            contradiction_penalty=min(1.0, rival_shared),
         )
 
         status = (
@@ -3637,6 +3810,18 @@ class VerificationEngine:
                 )
                 limitations.extend(rival_limits)
                 if demote:
+                    tier = "likely"
+                if rival_shared > 0.0:
+                    limitations.append(
+                        VerificationLimitation(
+                            code=LimitationCode.RIVAL_SHARED_EVIDENCE,
+                            detail=(
+                                f"{rival_shared:.0%} of corroborating rows also support a "
+                                f"live rival (e.g. {rival_shared_statements[0][:160] if rival_shared_statements else 'unknown'}). "
+                                "Same rows, two stories: likely, not established."
+                            )[:500],
+                        )
+                    )
                     tier = "likely"
                 relation_ok, relation_reason = VerificationEngine.causal_relation_demonstrated(
                     causal_chain, evidence_items
