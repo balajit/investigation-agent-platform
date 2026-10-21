@@ -124,6 +124,11 @@ class ActionOutcome(BaseModel):
     # P3-2: per-source breakdown for fanned-out actions (QUERY_STATE across
     # datasources). Each entry: {source, status, items}. Empty for single.
     sources: list[dict[str, Any]] = Field(default_factory=list)
+    # Fuzzy code-recall steering hint (verified-authority symbols only, never
+    # cited): the gateway banks it in result provider_metadata, and the
+    # handler copies the latest one here so the workflow can carry it into
+    # the next turn's history. Direction only, like hub orientation.
+    fuzzy_orientation: dict[str, Any] | None = Field(default=None)
 
 
 class ActorType(StrEnum):

@@ -609,6 +609,23 @@ def _coerced_data(cls: type, params: object, *, activity: str) -> dict[str, Any]
     )
 
 
+def _latest_fuzzy_orientation(recent_actions: Any) -> dict[str, Any] | None:
+    """Newest history-carried fuzzy orientation, if any (D4, best-effort).
+
+    The gateway banks code-recall orientation in result provider_metadata
+    (never as evidence); the workflow merges it into history entries, so the
+    latest hint is picked up here and threaded into reason() as non-citable
+    steering. Malformed entries degrade to None, never raise.
+    """
+    try:
+        for entry in reversed(recent_actions or []):
+            if isinstance(entry, dict) and isinstance(entry.get("fuzzy_orientation"), dict):
+                return entry["fuzzy_orientation"]
+    except Exception:
+        pass
+    return None
+
+
 async def _hub_orientation_for(
     ctx: Any, tenant_id: str, investigation: Any
 ) -> dict[str, Any] | None:
@@ -1755,12 +1772,17 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     ),
                 )
 
+            # D4 fuzzy orientation: history-carried, newest wins (see
+            # _latest_fuzzy_orientation). Threaded into reason(), whose
+            # renderer already gates it as non-citable steering.
+            _fuzzy_orientation = _latest_fuzzy_orientation(recent_actions)
             decision = await coordinator.reason(
                 tenant_id,
                 state,
                 recent_actions=recent_actions,
                 orientation_notes=knowledge_orientation,
                 hub_orientation=await _hub_orientation_for(ctx, tenant_id, investigation),
+                fuzzy_orientation=_fuzzy_orientation,
             )
             # Phase 3.4: an LLM outage is a platform failure, not a default
             # action. A REASONING_UNAVAILABLE decision previously flowed
@@ -4110,6 +4132,17 @@ async def execute_action_activity(
                 )
                 return 0
             banked = _bank(qres.items)
+            # D4 fuzzy orientation is otherwise dropped at banking (the
+            # fallback returns metadata-only results): copy the latest hint
+            # into the outcome side-channel so the next reasoning turn can
+            # use it as non-citable steering.
+            try:
+                _meta = getattr(qres, "provider_metadata", None) or {}
+                _fuzzy = _meta.get("fuzzy_orientation") if isinstance(_meta, dict) else None
+                if isinstance(_fuzzy, dict) and _fuzzy:
+                    outcome_detail["fuzzy_orientation"] = _fuzzy
+            except Exception:
+                pass
             if summarize is not None:
                 try:
                     banked = list(banked) + list(summarize(qres) or [])
@@ -5562,6 +5595,11 @@ async def execute_action_activity(
                 error_code=outcome_detail.get("error_code"),
                 miss_reason=outcome_detail.get("miss_reason"),
                 duration_ms=_dispatch_ms,
+                fuzzy_orientation=(
+                    outcome_detail.get("fuzzy_orientation")
+                    if isinstance(outcome_detail.get("fuzzy_orientation"), dict)
+                    else None
+                ),
                 sources=[
                     {k: str(v) for k, v in s.items()}
                     for s in (outcome_detail.get("sources") or [])
@@ -6113,21 +6151,15 @@ async def verify_root_cause_activity(
             except Exception:
                 pass
             verified = result.status.value == "VERIFIED"
-            # Advance the candidate lifecycle to reflect the evaluation.
+            # Persist the verdict back onto the candidate (scores, bindings,
+            # lifecycle) so the next ranking sorts on maintained fields.
             try:
-                from investigation_agent_platform.domain.hypothesis.models import (
-                    HypothesisStatus as _HStatus,
+                from investigation_agent_platform.application.investigation.verification import (
+                    apply_verification_outcome,
                 )
 
-                updated = candidate
-                if not verified and updated.status == _HStatus.PROPOSED:
-                    updated = updated.transition_status(_HStatus.UNDER_INVESTIGATION)
-                if verified and updated.status in (
-                    _HStatus.PROPOSED,
-                    _HStatus.UNDER_INVESTIGATION,
-                ):
-                    updated = updated.transition_status(_HStatus.SUPPORTED)
-                if updated is not candidate and hypothesis_repo is not None:
+                updated = apply_verification_outcome(candidate, result)
+                if updated != candidate and hypothesis_repo is not None:
                     await hypothesis_repo.save(tenant_id, updated, investigation_id)
             except Exception:
                 pass

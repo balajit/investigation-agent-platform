@@ -334,3 +334,21 @@ Phase 5 runs without a live environment: `tests/unit/test_python_e2e_offline.py`
 ## 61. Agent-loop hardening: hidden requery, one-action gate, range cap, case state (2026-10-21)
 
 Three design docs (`tmp/Design_Adoptable_from_opencode.md`, `tmp/Design_Adoptable_from_SWEagent_AgentLoop.md`, `tmp/Design_Adoptable_from_SWEagent_Context.md`) mapped opencode/SWE-agent patterns onto IAP; the highest-value slices ship here. Reason path (`application/investigation/reasoning.py`): validation failures that qualify as sampling noise — pydantic `ValidationError` plus one-action cardinality violations (`"LLM decision proposes ..."` prefix, covering plural-`actions`, list-`action`, and conflicting `action` vs `next_action`) — get up to two hidden same-request resamples (three attempts total) instead of one; misses are recorded in decision metadata (`resample_count`, `resample_reasons`), never fed back as observations. Disallowed `action_type` and non-validation errors still fail closed immediately to typed `REASONING_UNAVAILABLE`, preserving the existing fail-fast contract. One-action cardinality is enforced at the parser layer: zero-or-two proposals are a resamplable format error, never a silent pick-first. Evidence acquisition (`domain/evidence/requests.py`): `SourceRequest` rejects explicit ranges wider than 501 lines at the boundary with a paging fix-hint; path-only reads stay allowed as discovery, and the internal ±120-line windows are unaffected. Context (`application/investigation/context_compiler.py`): compiled context gains a pinned `case_state` block (lifecycle, banked counts by type, known-fact/entity counts, tool-history depth, plan length) rendered from already-persisted state — no new storage, no agent memory — counted in the budget but never shed; prompt version bumped to `v3-claim-grounded-015` (system-prompt sections version stays 014, unchanged). See `tests/unit/test_reason_requery.py` (requery budget, cardinality, exhaustion), `tests/unit/test_context_compiler.py::test_case_state_pinned_block_from_persisted_fields`, and the updated `test_phase3_failure_typing.py` persistent-invalid contract (3 attempts). Full unit suite 2515 passed, ruff clean, mypy at the 2-error pre-existing baseline.
+
+## 62. VERIFY verdict persistence + fuzzy orientation reachability (2026-10-21)
+
+Phase 1 of `tmp/PhasedPlan_Agent_Verification.md`. Two dead signals wired up. First,
+`apply_verification_outcome(candidate, result)` (`application/investigation/verification.py`, pure):
+unions corroborating IDs into `supporting_evidence_ids`, parses `against_evidence` into
+`refuting_evidence_ids`, sets `support_score = coverage_score` / `confidence_score = overall_confidence`,
+and advances lifecycle with valid-transition guards (verified `PROPOSED→UNDER_INVESTIGATION→SUPPORTED`,
+contradicted `→CONTRADICTED`, evaluated-but-unproven `PROPOSED→UNDER_INVESTIGATION`; terminal rows never
+resurrected). `verify_root_cause_activity` calls it instead of the inline transition block — which, on
+inspection, attempted the invalid direct edge `PROPOSED→SUPPORTED` inside a blanket except and silently
+never fired. `rank_hypotheses` now sorts on maintained fields instead of 0.5 defaults. Second, D4 fuzzy
+orientation is reachable: code-navigation results carrying `provider_metadata.fuzzy_orientation` flow into
+`ActionOutcome.fuzzy_orientation` (new optional field), merge into workflow history when present, and are
+harvested newest-first (`_latest_fuzzy_orientation`) in `reason_activity` and passed to `reason()`, whose
+renderer already gates the hint as non-citable steering. See `tests/unit/test_verify_outcome.py` (8 cases:
+promotion chains, refutation parsing, terminal-row safety, orientation harvest). Full unit suite 2523
+passed, ruff clean on touched files, mypy at the 26-error pre-existing baseline.

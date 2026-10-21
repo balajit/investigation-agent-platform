@@ -1687,6 +1687,11 @@ class RunInvestigationWorkflow:
                         "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
                     }
                 )
+                # D4 fuzzy orientation rides history (not the prompt): the
+                # next reason turn picks up the latest hint as non-citable
+                # steering. Only set when present to keep history lean.
+                if isinstance(_outcome.get("fuzzy_orientation"), dict):
+                    action_history[-1]["fuzzy_orientation"] = _outcome["fuzzy_orientation"]
                 # G8: track synthesis state for the forcing rule.
                 if _dispatched_action == "FORMULATE_HYPOTHESIS":
                     formulated_count += 1

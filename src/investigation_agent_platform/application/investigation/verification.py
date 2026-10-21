@@ -21,6 +21,7 @@ from investigation_agent_platform.domain.hypothesis.models import (
     ClaimKind,
     ClaimTarget,
     Hypothesis,
+    HypothesisStatus,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
@@ -151,6 +152,88 @@ def select_verifiable_candidate(
             if key in (evidence_by_id or {}):
                 return _prefer_discriminating(candidate, eligible, evidence_by_id)
     return eligible[0] if eligible else None
+
+
+def apply_verification_outcome(candidate: Hypothesis, result: "VerificationResult") -> Hypothesis:
+    """Persist a verification verdict back onto the candidate.
+
+    Phase 1 determinism item: `rank_hypotheses` sorts on `support_score` /
+    `confidence_score`, but nothing ever wrote them — every row kept the 0.5
+    defaults and ranking degraded to status-then-oldest. This helper writes
+    what the verifier computed so the next ranking is over maintained fields:
+    corroborating IDs union into `supporting_evidence_ids`, parsed
+    `against_evidence` into `refuting_evidence_ids`, `support_score` from the
+    coverage score, `confidence_score` from the overall confidence. Lifecycle
+    advances with valid-transition guards (a PROPOSED row reaches
+    CONTRADICTED via UNDER_INVESTIGATION; an invalid edge leaves the status
+    untouched). Pure and deterministic; never raises.
+    """
+    updated = candidate
+    try:
+        conf = result.confidence
+        support = max(0.0, min(1.0, float(conf.coverage_score)))
+        confidence = max(0.0, min(1.0, float(conf.overall_confidence)))
+    except Exception:
+        return candidate
+    try:
+        merged_support = list(getattr(updated, "supporting_evidence_ids", []) or [])
+        for eid in result.corroborating_evidence_ids or []:
+            if eid not in merged_support:
+                merged_support.append(eid)
+        merged_support = merged_support[:200]
+        merged_refuting = list(getattr(updated, "refuting_evidence_ids", []) or [])
+        for raw in result.against_evidence or []:
+            try:
+                parsed_id = raw if isinstance(raw, UUID) else UUID(str(raw))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if parsed_id not in merged_refuting:
+                merged_refuting.append(parsed_id)
+        merged_refuting = merged_refuting[:200]
+        if (
+            merged_support != list(getattr(updated, "supporting_evidence_ids", []) or [])
+            or merged_refuting != list(getattr(updated, "refuting_evidence_ids", []) or [])
+            or float(getattr(updated, "support_score", 0.5) or 0.0) != support
+            or float(getattr(updated, "confidence_score", 0.5) or 0.0) != confidence
+        ):
+            updated = updated.model_copy(
+                update={
+                    "supporting_evidence_ids": merged_support,
+                    "refuting_evidence_ids": merged_refuting,
+                    "support_score": support,
+                    "confidence_score": confidence,
+                }
+            )
+    except Exception:
+        return candidate
+    verified = str(getattr(result.status, "value", result.status)) == "VERIFIED"
+    contradicted = str(getattr(result.status, "value", result.status)) == "CONTRADICTED"
+    try:
+        current = updated.status
+        # NOTE: PROPOSED→SUPPORTED is not a valid direct edge in the
+        # lifecycle graph — both promotion paths chain through
+        # UNDER_INVESTIGATION. (The pre-helper inline block attempted the
+        # direct edge inside a blanket except and silently never fired.)
+        if verified and current in (
+            HypothesisStatus.PROPOSED,
+            HypothesisStatus.UNDER_INVESTIGATION,
+        ):
+            if current == HypothesisStatus.PROPOSED:
+                updated = updated.transition_status(HypothesisStatus.UNDER_INVESTIGATION)
+            updated = updated.transition_status(HypothesisStatus.SUPPORTED)
+        elif contradicted and current in (
+            HypothesisStatus.PROPOSED,
+            HypothesisStatus.UNDER_INVESTIGATION,
+            HypothesisStatus.SUPPORTED,
+        ):
+            if current == HypothesisStatus.PROPOSED:
+                updated = updated.transition_status(HypothesisStatus.UNDER_INVESTIGATION)
+            updated = updated.transition_status(HypothesisStatus.CONTRADICTED)
+        elif not verified and not contradicted and current == HypothesisStatus.PROPOSED:
+            updated = updated.transition_status(HypothesisStatus.UNDER_INVESTIGATION)
+    except ValueError:
+        pass
+    return updated
 
 
 def _prefer_discriminating(first_match: Any, eligible: list, evidence_by_id: dict) -> Any:
