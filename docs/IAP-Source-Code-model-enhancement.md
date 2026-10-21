@@ -2,7 +2,7 @@
 
 ## Context
 
-The platform carries two code-model layers that grew up separately and now overlap without a contract between them. `src/investigation_agent_platform/domain/code/models.py` holds the investigation-facing shapes (`CodeSymbol`, `CallGraph`, `ExceptionPath`, `DatabaseOperation`, plus the newer `CodeFactResolution` from the Java field-fact work). `src/investigation_agent_platform/domain/topology/models.py` holds the Layer 3 authority (`ASTNodeIdentity` with deterministic UUIDv5 identity via `compute_ast_node_id`, `SourceFileIdentity`, `PackageIdentity`, edge inputs, `ASTTopologyPayload`, attribution results). A review against `tmp/GEMINI_THOUGHTS_COGNEE.md` confirmed the topology layer is the stronger design and the code layer has real structural gaps, listed below. This design closes those gaps with compatible, Cognee-independent hardening: no new dependency, no `DataPoint` inheritance in the domain, no persistence migration.
+The platform carries two code-model layers that grew up separately and now overlap without a contract between them. `src/investigation_agent_platform/domain/code/models.py` holds the investigation-facing shapes (`CodeSymbol`, `CallGraph`, `ExceptionPath`, `DatabaseOperation`, plus the newer `CodeFactResolution` from the Java field-fact work). `src/investigation_agent_platform/domain/topology/models.py` holds the Layer 3 authority (`ASTNodeIdentity` with deterministic UUIDv5 identity via `compute_ast_node_id`, `SourceFileIdentity`, `PackageIdentity`, edge inputs, `ASTTopologyPayload`, attribution results). A review against external feedback confirmed the topology layer is the stronger design and the code layer has real structural gaps, listed below. This design closes those gaps with compatible, Cognee-independent hardening: no new dependency, no `DataPoint` inheritance in the domain, no persistence migration.
 
 Confirmed gaps (all verified against current source, not inferred):
 
@@ -17,7 +17,7 @@ Confirmed gaps (all verified against current source, not inferred):
 
 ## References
 
-- [tmp/GEMINI_THOUGHTS_COGNEE.md](../tmp/GEMINI_THOUGHTS_COGNEE.md) — External review whose gap table (BaseModel vs DataPoint, UUID keys vs typed edges, missing index metadata, UUIDv5 vs UUID4) motivated this hardening; its Cognee-specific remedies are dispositioned in ADR-COGNEE-001, not here.
+- External review (working notes, unshipped) whose gap table (BaseModel vs DataPoint, UUID keys vs typed edges, missing index metadata, UUIDv5 vs UUID4) motivated this hardening; its Cognee-specific remedies are dispositioned in ADR-COGNEE-001, not here.
 - [docs/architecture/ADR-COGNEE-001.md](./architecture/ADR-COGNEE-001.md) — Projection-only Cognee verdict and the P1–P8 proposal record; constrains this design to stay Cognee-independent.
 - [docs/IAP-Code-Java-lang-impl-design.md](./IAP-Code-Java-lang-impl-design.md) — Owns the `CodeFactResolution` generalization; this design only aligns its identity fields with the node identity below.
 - [Cognee custom data models](https://docs.cognee.ai/guides/custom-data-models) — Verified that `DataPoint` subclasses embed `index_fields` into vector storage and expand `DataPoint`-valued fields into edges; informs why the domain stays plain Pydantic and the adapter owns all `DataPoint` mapping.

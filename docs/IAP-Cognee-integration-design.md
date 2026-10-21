@@ -2,7 +2,7 @@
 
 ## Context
 
-The platform already has a narrow, proven Cognee path and an explicit verdict constraining it. `src/investigation_agent_platform/infrastructure/topology/cognee_adapter.py` projects validated `ASTTopologyPayload`s into `TopologySymbolPoint` `DataPoint`s via `map_payload_to_points` and writes them with `add_data_points(graph_only=True)` under opaque salted datasets (`derive_dataset_id`), behind `IAP_COGNEE_ENABLED=false` default. Reads are retrieval-only (`RETRIEVAL_ONLY_SEARCH_TYPES` with non-overridable `ALLOW_COMPLETION=false`), and attribution serving stays on the Neo4j adapter until a re-verdict. `docs/architecture/ADR-COGNEE-001.md` records the accepted decision plus, since the 2026-10-20 amendment, the full P1–P8 disposition of the external proposal in `tmp/GEMINI_THOUGHTS_COGNEE.md`.
+The platform already has a narrow, proven Cognee path and an explicit verdict constraining it. `src/investigation_agent_platform/infrastructure/topology/cognee_adapter.py` projects validated `ASTTopologyPayload`s into `TopologySymbolPoint` `DataPoint`s via `map_payload_to_points` and writes them with `add_data_points(graph_only=True)` under opaque salted datasets (`derive_dataset_id`), behind `IAP_COGNEE_ENABLED=false` default. Reads are retrieval-only (`RETRIEVAL_ONLY_SEARCH_TYPES` with non-overridable `ALLOW_COMPLETION=false`), and attribution serving stays on the Neo4j adapter until a re-verdict. `docs/architecture/ADR-COGNEE-001.md` records the accepted decision plus, since the 2026-10-20 amendment, the full P1–P8 disposition of the external proposal.
 
 That proposal's durable insight is the gateway ordering: fuzzy semantic discovery as an untrusted hypothesis generator with structural truth holding veto power, and fuzzy output never leaving the evidence gateway. Its overreach — domain models inheriting `DataPoint`, `cognify()` over AST data, direct agent search, LLM-derived flows, default vectors — is declined in the ADR and stays declined here.
 
@@ -11,7 +11,7 @@ This design wires the adopted subset into the investigation loop as a structural
 ## References
 
 - [docs/architecture/ADR-COGNEE-001.md](./architecture/ADR-COGNEE-001.md) — Adopted projection-only verdict, spike evidence, and the P1–P8 proposal record this design implements without reopening.
-- [tmp/GEMINI_THOUGHTS_COGNEE.md](../tmp/GEMINI_THOUGHTS_COGNEE.md) — The adapter, dual-engine, and verify-and-enforce patterns adopted here; the declined items stay declined per the ADR.
+- External review (working notes, unshipped) — The adapter, dual-engine, and verify-and-enforce patterns adopted here; the declined items stay declined per the ADR (P1–P8 disposition table).
 - [docs/IAP-Source-Code-model-enhancement.md](./IAP-Source-Code-model-enhancement.md) — Deterministic identity and edge shapes the fallback re-verifies against; companion design, no shared code changes.
 - [Cognee custom data models](https://docs.cognee.ai/guides/custom-data-models) — Verified `add_data_points` semantics: `DataPoint`-valued fields become edges, scalars stay properties, only `metadata.index_fields` are embedded, and standalone calls leave nodes globally unassociated unless a pipeline context links the dataset; informs the dataset, edge-label, and vector-off decisions below.
 

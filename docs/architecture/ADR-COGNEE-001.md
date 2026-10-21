@@ -62,7 +62,7 @@ Concretely:
 - A battery PARTIAL/FAIL is shown fixable *only* by semantic recall.
 - New item tracked in `docs/IAP_Arch_Eng_Recommendations.log`.
 
-## Proposal record (2026-10-20, `tmp/GEMINI_THOUGHTS_COGNEE.md`)
+## Proposal record (2026-10-20, external proposal, working notes unshipped)
 
 A later external review proposed layering Cognee over the validated topology as a
 semantic discovery and reasoning engine, with an adapter plus a verify-and-enforce
@@ -101,6 +101,6 @@ any structural truth exists. In all cases fuzzy output is never banked as
 
 - Spike: `scripts/cognee_spike.py` (ingest/probe/leakage, tree-sitter chunker)
 - Ledger: Cognee spike verdict entry, 2026-10-17 session
-- Proposal reviewed: `tmp/GEMINI_THOUGHTS_COGNEE.md` (2026-10-20 session; uncommitted working-tree note, not a committed contract)
+- Proposal reviewed: external Cognee proposal (2026-10-20 session; working notes, not a committed contract)
 - Follow-up designs: `docs/IAP-Source-Code-model-enhancement.md`, `docs/IAP-Cognee-integration-design.md`
 - Related: architecture §10 (R1/R2/R4), §13 (compression), §15 (sharing)

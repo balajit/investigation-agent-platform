@@ -90,7 +90,7 @@ services:
     depends_on:
       - temporal
 
-  # Dev log shipper for the IAP self profile (tmp/TO_DO_OPS_001.md): tails the
+  # Dev log shipper for the IAP self profile: tails the
   # structlog JSON logs into `logs-n-a-iap-development-*`, matching the
   # `logs-n-a-*-development-*` contract. Config: docker/logging/filebeat.yml.
   # P3-1: crystaldba Postgres MCP (restricted read-only, SSE). One instance

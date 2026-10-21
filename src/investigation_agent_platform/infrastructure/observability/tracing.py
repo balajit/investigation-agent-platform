@@ -1,11 +1,11 @@
 # src/investigation_agent_platform/infrastructure/observability/tracing.py
-"""Shared OTel decorator for the investigation path (OTEL_PLAN P0).
+"""Shared OTel decorator for the investigation path.
 
 ``@traced`` is the single compliant way to emit spans. The span IS the
 telemetry record: name ``{layer}.{component}.{operation}``, required attrs
 ``iap.tenant_id`` / ``iap.investigation_id`` / ``iap.component`` /
 ``iap.outcome``, optional families per kind, hard bans on payload content
-(see ``tmp/OTEL_PLAN.md`` §1 — the normative format spec).
+(see ``docs/IAP-OTEL-telemetry-format.md`` §1–§4 — the normative format spec).
 
 Fail-safety: OTel's global tracer is a no-op without an SDK/exporter, so
 decorated code runs unchanged with zero spans. Decorator bugs must never

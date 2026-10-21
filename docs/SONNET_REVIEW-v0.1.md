@@ -2,7 +2,7 @@
 
 - **Scope:** agentic decision-making, evidence utilization, reasoning loop, conclusion quality. Syntax and style are out of scope.
 - **Reviewer:** Sonnet (principal AI systems / autonomous-agent audit lens).
-- **Source prompt:** `tmp/REV_PROMPT.md`.
+- **Source prompt:** review prompt recorded at review time (working notes, unshipped).
 - **Code reviewed:** `application/worker/workflows.py`, `application/worker/activities.py`, `application/investigation/{reasoning,verification,planner,context_compiler,memory,validator,disposition}.py`, `application/correlation/engine.py`, `application/evidence/divergence.py`, `domain/hypothesis/models.py`, `domain/investigation/models.py`, `ports/reasoning/reasoner.py`.
 - **Recommendations ledger:** every item below was appended as `OPEN` to `docs/IAP_Arch_Eng_Recommendations.log` before this report was written.
 

@@ -1,6 +1,6 @@
 # IAP Application Profile 1.0 — Content Model, Lifecycle API, Platform Adoption & Spring Derivation
 
-Status: FINAL DESIGN (no code). Version 1.0. Supersedes `tmp/IAP-implementation-appl-profile-v0.1.md` (rev 2) and incorporates all items from `tmp/IAP-implementation-appl-profile-base.md` that v0.1 did not consider (concrete schema blocks, extended enums, structured query templates, per-kind datasource specs, migration specifics, phased plan, file appendix — see §14).
+Status: FINAL DESIGN (no code). Version 1.0. Supersedes the prior v0.1 draft (rev 2) and incorporates all base items that v0.1 did not consider (concrete schema blocks, extended enums, structured query templates, per-kind datasource specs, migration specifics, phased plan, file appendix — see §14).
 
 ## 1. Purpose, scope & goals
 
@@ -35,7 +35,7 @@ Only `GET /profiles` (latest per app, sanitized: strips `state.queryTemplates`/`
 
 Gateway composes authorizer/capability/registry from the repo; authorizer gates on `enabledEvidenceTypes` (`allowed_capabilities` informational only); elastic path uses `mappingSourceId→mapping.index_patterns` (`indices` unread); state providers are global (single Oracle DSN, static MCP YAML, **no Postgres provider at all** despite the seed claiming `postgres`); code paths read single `repository`/`defaultBranch`/`sourceRoots` plus global `IAP_CODE_REPO_BASE`; topology reverse-maps OTel `service.name` via `code.serviceName`; validator enforces templates/roots/caps; worker bounds queries by time-window/caps; knowledge/chat/capabilities routers read no profile fields.
 
-### 2.5 Spring Config reference (`tmp/sourcecode/`)
+### 2.5 Spring Config reference (external sample, unshipped)
 
 Reference provides `OAuth2ClientCredentials` (token caching with early renewal, HTTPS-only), `SpringConfigClient` (`GET {server}/{app}/{profile}[/{label}]`, allowlists before I/O, precedence-ordered `propertySources` merge, allowlist + redaction, typed errors: authentication / authorization / not-found / rate-limit / server / transport), count-only logging. Package layout prescribed as `integrations/spring_config/{__init__,client,models,security,exceptions}.py` with tests under `tests/integrations/spring_config/`.
 
@@ -356,16 +356,16 @@ Secrets never in profile content (§3.3 scan + §5.1 strip matrix + §12 redacti
 
 ## 10. Spring Config Server derivation (dynamic profile instantiation)
 
-Goal: given a Spring Config Server URL (+ application/profile/label), dynamically instantiate an ApplicationProfile DRAFT from the live Spring configuration instead of hand-authoring it. Reference material: `tmp/sourcecode/{config.yaml, pkg_layout.md, spring_config.py}` — the client design below adopts that reference's contract (OAuth2 client-credentials, HTTPS-only, allowlists, precedence merge, redaction, typed errors) and adds the IAP derivation layer on top. No Spring code exists in `src/` today; package layout follows `pkg_layout.md`.
+Goal: given a Spring Config Server URL (+ application/profile/label), dynamically instantiate an ApplicationProfile DRAFT from the live Spring configuration instead of hand-authoring it. Reference contract (external sample, unshipped): OAuth2 client-credentials, HTTPS-only, allowlists, precedence merge, redaction, typed errors — the client design below adopts that contract and adds the IAP derivation layer on top. No Spring code exists in `src/` today; package layout follows the prescribed `integrations/spring_config/{__init__,client,models,security,exceptions}.py` with tests under `tests/integrations/spring_config/`.
 
-### 10.1 Client (`integrations/spring_config/`, per `pkg_layout.md`)
+### 10.1 Client (`integrations/spring_config/`, per the prescribed layout)
 
 - `client.py` — `SpringConfigClient` + `OAuth2ClientCredentials` exactly per the reference: token cache with early renewal, `GET {server}/{application}/{profile}[/{label}]`, timeouts, bounded GET-only retries (429/502/503/504, honor Retry-After), application allowlist + profile allowlist enforced *before* any I/O, label charset validation, precedence-ordered `propertySources` merge, property allowlist + sensitivity redaction, typed errors (authentication / authorization / not-found / rate-limit / server / transport), count-only logging (never bodies/values/tokens). Port the reference file largely as-is; adapt imports/logging to repo conventions. Sync `requests` is acceptable here (derive/refresh paths only, never the Temporal workflow hot loop — see §10.5).
 - `models.py` — `ConfigResult{application, profile, label?, properties, property_sources}` + `SpringSource` declaration + `DerivationReport` (§3.6).
 - `security.py` — property allowlist patterns + sensitivity matcher (superset of the reference regex: add `spring.datasource.password`, `*_keystore*`, `*truststore*`, `spring.rabbitmq.*password*`, cloud credential keys) plus tenant-scoped allowlist loader (which Spring apps/profiles a tenant may import).
 - `exceptions.py` — the typed hierarchy, mapped to HTTP in §10.6.
 - `config.yaml` — operator env template: `<PREFIX>_CONFIG_SERVER_URL`, `<PREFIX>_OAUTH_{TOKEN_URL,CLIENT_ID,CLIENT_SECRET(injected at runtime),SCOPE}`. Client secret comes from the runtime environment/secret store only — never from profile content, never logged.
-- Tests mirror `pkg_layout.md` (`test_client/test_oauth/test_security`) against a stub Config Server (fixture `propertySources` payloads, no network).
+- Tests mirror the prescribed layout (`test_client/test_oauth/test_security`) against a stub Config Server (fixture `propertySources` payloads, no network).
 
 ### 10.2 Derivation mapping (Spring properties → profile sections)
 

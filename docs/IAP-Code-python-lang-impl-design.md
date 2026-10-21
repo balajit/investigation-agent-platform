@@ -91,7 +91,7 @@ Labels describe the IAP Python fact-analysis capability, not the general ability
 
 ## References
 
-- [`tmp/PY_PROMPT.md`](../tmp/PY_PROMPT.md) — User-supplied audit scope, Python anatomy, verifier counterexamples, contract, evaluation requirements, and deliverables.
+- User-supplied audit scope (working notes, unshipped): Python anatomy, verifier counterexamples, contract, evaluation requirements, and deliverables — all incorporated into this design below.
 - [`docs/IAP-Code-Java-lang-impl-design.md`](./IAP-Code-Java-lang-impl-design.md) — Existing Java language analyzer baseline, shared CodeFactResolution evolution, Java category proof limits, and candidate phases.
 - [`docs/IAP-architecture-v1.0.md`](./IAP-architecture-v1.0.md) — As-built Evidence Gateway, provider, code evidence, typed claim, verifier, and Java fact flow.
 - [`docs/DS_REVIEW_v0.1.md`](./DS_REVIEW_v0.1.md) — Code grounding, revision/range/evidence binding, code packet visibility, and investigation evaluation constraints.

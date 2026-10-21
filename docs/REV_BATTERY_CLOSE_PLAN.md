@@ -1,6 +1,6 @@
 # REV_BATTERY Close-Out Plan
 
-Source review: `tmp/REV_BATTERY.md` on `reports/live_battery_20261021T030700.md` (10 runs, 5 PASS / 5 FAIL, all FAILs `INSUFFICIENT_EVIDENCE`, all runs `chains=0`).
+Source review of `reports/live_battery_20261021T030700.md` (10 runs, 5 PASS / 5 FAIL, all FAILs `INSUFFICIENT_EVIDENCE`, all runs `chains=0`).
 Ledger scope: 8 `OPEN` review items + 3 `OPEN` repro defects (all dated 2026-10-21). Statuses move `OPEN` → `PLANNED` on plan acceptance → removed on implementation (docs updated first).
 
 ## Repro goldens (captured live via `evaluate_hypothesis`, bound in-investigation only)

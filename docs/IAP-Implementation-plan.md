@@ -6,7 +6,7 @@
 
 Three designs converge on one investigation pipeline and share one identity layer:
 
-- `docs/IAP-Code-Java-lang-impl-design.md` — Java fact resolution, candidate Phases 0–8. Normative source: `docs/JAV_PROMPT.md` (moved from git-ignored `tmp/` in Stage 0).
+- `docs/IAP-Code-Java-lang-impl-design.md` — Java fact resolution, candidate Phases 0–8. Normative source: `docs/JAV_PROMPT.md` (promoted to tracked docs in Stage 0).
 - `docs/IAP-Source-Code-model-enhancement.md` — deterministic symbol identity, column ranges, edge-based call graph. No new dependency, no migration.
 - `docs/IAP-Cognee-integration-design.md` — structural-first fuzzy fallback inside the evidence gateway, behind `IAP_COGNEE_ENABLED=false`. Bounds: `ADR-COGNEE-001` (P4–P8 declines stand).
 
