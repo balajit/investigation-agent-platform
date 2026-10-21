@@ -269,6 +269,39 @@ class PyGit2Adapter:
             ) from outer_exc
 
     @staticmethod
+    def _resolve_bare_basename(repo: Any, tip: Any, basename: str) -> str | None:
+        """Unique repo-relative tip-tree path with this basename, else None.
+
+        Bounded recursive scan (20k entries). Zero matches (deleted file,
+        wrong name) and multiple matches (ambiguous) both return None so the
+        caller fails closed instead of certifying an empty history.
+        """
+        matches: list[str] = []
+        stack: list[tuple[Any, str]] = [(tip.tree, "")]
+        seen = 0
+        while stack and len(matches) <= 1:
+            tree, prefix = stack.pop()
+            try:
+                entries = list(tree)
+            except Exception:
+                continue
+            for entry in entries:
+                seen += 1
+                if seen > 20000:
+                    return None
+                try:
+                    obj = repo[entry.id]
+                except Exception:
+                    continue
+                if isinstance(obj, pygit2.Tree):
+                    stack.append((obj, prefix + entry.name + "/"))
+                elif entry.name == basename:
+                    matches.append(prefix + entry.name)
+                    if len(matches) > 1:
+                        return None
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
     def _primary_locator(profile: ApplicationProfile) -> tuple[str, str]:
         """Locator + branch of the first declared repo (compat).
 
@@ -714,6 +747,30 @@ class PyGit2Adapter:
                 tip = repo.revparse_single(branch)
             except Exception:
                 tip = repo.revparse_single("HEAD")
+            # Bare-basename requests (live L3: "OrderServiceImpl.java") never
+            # match a tree path, so the walk below silently yields zero rows
+            # and the caller banks a false empty-search proof. Resolve a bare
+            # name against the tip tree: unique match wins, anything else
+            # fails closed with CodePathNotFoundError (a miss, never
+            # evidence of absence). Slashed paths keep current behavior so
+            # deleted-file history still resolves.
+            if "/" not in (tree_path or "") and _tree_entry_id(tip, tree_path or "") is None:
+                resolved = self._resolve_bare_basename(repo, tip, tree_path or "")
+                if resolved is None:
+                    tried = ", ".join(locator for locator, _, _ in roots)
+                    raise CodePathNotFoundError(
+                        f"No unique file named '{tree_path}' in declared repositories "
+                        f"[{tried}]: refusing empty history as proof of no change"
+                    )
+                logger.info(
+                    "History bare-basename resolved",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "requested_path": path,
+                        "resolved_path": resolved,
+                    },
+                )
+                tree_path = resolved
             walker = repo.walk(tip.id, pygit2.GIT_SORT_TIME)  # type: ignore[arg-type]
             count = 0
 
@@ -784,6 +841,11 @@ class PyGit2Adapter:
                 )
                 count += 1
             return evidences
+        except CodePathNotFoundError:
+            # A miss is a miss, not an execution failure: propagate unwrapped
+            # so the gateway degrades with a typed miss_reason and no caller
+            # banks an empty-search proof from it.
+            raise
         except Exception as exc:
             logger.error(
                 "Git commit history fetch failure",

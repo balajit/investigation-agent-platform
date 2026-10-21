@@ -251,11 +251,17 @@ def _check_history(expect: dict, root: str, rows: list) -> tuple:
 
 
 def _check_values(expect: dict, root: str, rows: list) -> tuple:
-    snippets = [str(r.get("content_snippet") or "") for r in rows]
+    # A cited row's identity (file path) is evidence of WHERE, same as its
+    # snippet is evidence of what — method-anchored windows legitimately omit
+    # the enclosing class declaration (live L5: the 6-19 window never names
+    # LegacyCodeMapper in prose, but its path does). Same helper as the
+    # caller check uses (_row_texts), so prose-against-row matching is one
+    # rule everywhere instead of two.
+    texts = [_row_texts(r) for r in rows]
     for value in expect.get("expect_values") or []:
         if value.lower() not in root.lower():
             return (False, f"value '{value}' not in conclusion")
-        if not any(value.lower() in s.lower() for s in snippets):
+        if not any(value.lower() in s.lower() for s in texts):
             return (False, f"value '{value}' in prose but no cited row shows it")
     return (True, "")
 

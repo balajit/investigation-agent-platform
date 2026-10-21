@@ -83,6 +83,8 @@ class TreeSitterParser:
     def _parse_symbols_sync(self, code_bytes: bytes, language: str) -> list[CodeSymbol]:
         parser = self._get_parser(language)
         tree = parser.parse(code_bytes)
+        if getattr(tree.root_node, "has_error", False):
+            return []
 
         symbols: list[CodeSymbol] = []
         cursor = tree.walk()

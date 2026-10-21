@@ -393,6 +393,10 @@ class TreeSitterCodeIntelligenceProvider:
             tree = parser.parse(bytes(code, "utf-8"))
         except Exception:
             return []
+        if getattr(tree.root_node, "has_error", False):
+            # Fail closed on partial parses: error trees yield incomplete
+            # symbol inventories that must not masquerade as complete.
+            return []
         symbols: list[CodeSymbol] = []
         cursor = tree.walk()
         visited_children = False

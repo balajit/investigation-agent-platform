@@ -614,7 +614,7 @@ def _source_value_target(
     action_history: list | None,
     forced_count: int,
 ) -> dict[str, Any] | None:
-    """Request exact Java source before accepting a field or method value."""
+    """Request exact Java/Python source before accepting a field or method value."""
     try:
         if int(forced_count or 0) >= 2:
             return None
@@ -635,7 +635,13 @@ def _source_value_target(
             method_return = fact_category == "SOURCE_VALUE_FACT" and semantics == "GUARDED_RETURN_LITERAL"
             field_value = (
                 str(claim.get("claim_kind", "")).upper() == "DEFINITION"
-                and semantics in {"EXPLICIT_INITIALIZER", "LANGUAGE_DEFAULT"}
+                and semantics
+                in {
+                    "EXPLICIT_INITIALIZER",
+                    "LANGUAGE_DEFAULT",
+                    "PARAMETER_DEFAULT_EXPRESSION",
+                    "FRAMEWORK_DEFAULT",
+                }
             )
             if not (method_return or field_value):
                 continue
@@ -644,7 +650,7 @@ def _source_value_target(
                 continue
             symbol = str(target.get("symbol", "") or "").strip()
             file_path = str(target.get("file_path", "") or "").strip()
-            if not symbol or not file_path or not file_path.lower().endswith(".java"):
+            if not symbol or not file_path or not file_path.lower().endswith((".java", ".py")):
                 continue
             if any(
                 isinstance(action, dict)

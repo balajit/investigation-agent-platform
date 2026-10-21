@@ -3194,7 +3194,83 @@ async def execute_action_activity(
                 merged_attributes["discovery_only"] = True
             fact_field = str(parameters.get("field_name", "") or "").strip()
             fact_method = str(parameters.get("method_name", "") or "").strip()
-            if fact_field:
+            _evidence_path = str(
+                getattr(
+                    getattr(getattr(evidence, "provenance", None), "source_location", None),
+                    "file_path",
+                    "",
+                )
+                or ""
+            )
+            _is_python = _evidence_path.lower().endswith(".py")
+
+            _version_repo = application_id or "example-app"
+
+            async def _read_version_file(_name: str) -> str | None:
+                # Trusted repo-declared version: read version files at the
+                # analyzed SHA via the gateway (same authorization, never
+                # banked). The dispatch module skips unpinned revisions.
+                try:
+                    _pinned = str(
+                        getattr(
+                            getattr(getattr(evidence, "provenance", None), "source_location", None),
+                            "revision",
+                            "",
+                        )
+                        or ""
+                    )
+                    _vreq = SourceRequest(
+                        repository=_version_repo,
+                        file_path=_name,
+                        revision=_pinned,
+                    )
+                    _vev = await gateway.get_source(
+                        tenant_id, investigation_id, _version_repo, _vreq
+                    )
+                except Exception:
+                    return None
+                _vattrs = getattr(_vev, "attributes", None) or {}
+                if _vattrs.get("truncated"):
+                    return None
+                return str(getattr(_vev, "content_snippet", "") or "") or None
+
+            if fact_field and _is_python:
+                # Python value resolution (scope/class/framework): V2 only,
+                # never the Java field-shaped legacy key.
+                try:
+                    from investigation_agent_platform.application.analysis.python.dispatch import (
+                        resolve_python_field_fact as _dispatch_python_field,
+                    )
+
+                    _py_resolution, _config_source = await _dispatch_python_field(
+                        evidence,
+                        field_name=fact_field,
+                        declaring_type=(
+                            str(parameters.get("declaring_type") or "").strip() or None
+                        ),
+                        class_scope=(
+                            str(parameters.get("class_scope") or "").strip() or None
+                        ),
+                        function_scope=(
+                            str(parameters.get("function_scope") or "").strip() or None
+                        ),
+                        read_version_file=_read_version_file,
+                    )
+                    if _py_resolution is not None:
+                        merged_attributes["code_fact_resolution_v2"] = (
+                            _py_resolution.model_dump(mode="json")
+                        )
+                        if _config_source is not None:
+                            # Names the configuration source for the
+                            # verifier's CONFIGURATION_SOURCE family
+                            # (declaration file, never a value).
+                            merged_attributes["configuration_source"] = _config_source
+                        outcome_detail["code_fact_resolution_v2"] = (
+                            _py_resolution.model_dump(mode="json")
+                        )
+                except Exception:
+                    pass
+            elif fact_field:
                 from investigation_agent_platform.application.analysis.java_field_facts import (
                     resolve_java_field_fact,
                 )
@@ -3220,7 +3296,38 @@ async def execute_action_activity(
                     ]
                 except Exception:
                     pass
-            if fact_method:
+            if fact_method and _is_python:
+                # Python method questions: with a class scope this answers
+                # "which implementation runs" via the static MRO; without a
+                # scope it inventories the function's possible paths.
+                try:
+                    from investigation_agent_platform.application.analysis.python.dispatch import (
+                        resolve_python_method_fact as _dispatch_python_method,
+                    )
+
+                    _method_resolution = await _dispatch_python_method(
+                        evidence,
+                        method_name=fact_method,
+                        declaring_type=(
+                            str(parameters.get("declaring_type") or "").strip() or None
+                        ),
+                        class_scope=(
+                            str(parameters.get("class_scope") or "").strip() or None
+                        ),
+                        guard_condition=(
+                            str(parameters.get("guard_condition") or "").strip() or None
+                        ),
+                        read_version_file=_read_version_file,
+                    )
+                    merged_attributes["code_fact_resolution_v2"] = (
+                        _method_resolution.model_dump(mode="json")
+                    )
+                    outcome_detail["code_fact_resolution_v2"] = (
+                        _method_resolution.model_dump(mode="json")
+                    )
+                except Exception:
+                    pass
+            elif fact_method:
                 # Method-return-on-guard resolution (L5 class): the subject
                 # is a method's guarded `return` literal, which the field
                 # path can never resolve. Emits V2 SOURCE_VALUE_FACT only
@@ -6995,7 +7102,19 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 blockers=list(decision.blockers),
             ),
         )
-        await _persist_abstention("insufficient", list(decision.blockers), candidate.id)
+        # Phase 2b: lead with the verification explanation so the persisted
+        # next_check names the failed proof (range-read rebind, runtime
+        # observation, source-value resolution) instead of the generic
+        # chain message. Fail-open: explanation add-on never blocks.
+        _denial_reasons: list[str] = []
+        try:
+            _expl = str(getattr(verification, "explanation", "") or "").strip()
+            if _expl:
+                _denial_reasons.append(_expl[:500])
+        except Exception:
+            pass
+        _denial_reasons.extend(list(decision.blockers))
+        await _persist_abstention("insufficient", _denial_reasons, candidate.id)
         return InvestigationStatus.COMPLETED
 
     # P0-3: persist the Finding + InvestigationConclusion that back this

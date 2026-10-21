@@ -68,21 +68,30 @@ def test_source_value_claim_forces_exact_java_range_read():
     }
 
 
-def test_source_value_forcing_is_bounded_and_only_for_java():
+def test_source_value_forcing_is_bounded_and_covers_java_and_python():
     claim = {
         "claim_kind": "DEFINITION",
         "value_semantics": "LANGUAGE_DEFAULT",
         "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.py"},
     }
-    assert (
-        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0) is None
-    )
+    assert _source_value_target(
+        {"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0
+    ) == {
+        "file_path": "src/TransactionProcessor.py",
+        "field_name": "retryCount",
+        "start_line": 1,
+        "end_line": 2000,
+    }
     java_claim = {
         **claim,
         "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.java"},
     }
     assert (
         _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [java_claim]}, [], 2)
+        is None
+    )
+    assert (
+        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 2)
         is None
     )
 

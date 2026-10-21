@@ -403,6 +403,39 @@ def diagnose(concl, findings, evidence, hyps):
     }
 
 
+def _failure_bucket(rec: dict) -> str:
+    """Heuristic five-bucket tag (REV_BATTERY Phase 3b, report-only).
+
+    Buckets: retrieval / target-resolution / proof-construction / policy /
+    genuine-insufficiency. Uses API + DB diagnostics already in the record;
+    never re-runs verification. Refine as the structured trace lands.
+    """
+    db = rec.get("db") or {}
+    kinds = db.get("claim_kinds") or {}
+    ev_types = rec.get("evidence_by_type") or {}
+    hyps = rec.get("hypotheses") or []
+    n_ev = rec.get("evidence_total", "?")
+    try:
+        n_ev = int(n_ev)
+    except (TypeError, ValueError):
+        n_ev = -1
+    if n_ev == 0:
+        return "retrieval — no evidence banked"
+    if "CALL_EDGE" in kinds:
+        return "proof-construction — call candidates banked but no verified call-site binding (see bound vs banked rows)"
+    if "ABSENCE" in kinds and (db.get("absence_proofs") or 0) > 0:
+        return "policy — scoped absence proof banked but heuristic score / chain gate abstains"
+    if "BEHAVIOR" in kinds and not any(
+        t in ev_types for t in ("RUNTIME_LOG", "RUNTIME_TRACE", "DATABASE_STATE", "METRIC", "LOG", "TRACE")
+    ):
+        return "policy — behavior claim with code only, no runtime observation"
+    if "CAUSAL" in kinds and (db.get("hyps_with_chain") or 0) == 0:
+        return "proof-construction — causal claim with no bound causal chain"
+    if not hyps:
+        return "retrieval — no hypotheses formulated"
+    return "genuine-insufficiency — see limitation / next_check"
+
+
 def build_report(meta, records):
     lines = []
     lines.append(f"# Live battery report — {meta['ts']}")
@@ -495,6 +528,8 @@ def build_report(meta, records):
                 lines.append(f"- db disposition: {db['disposition']}")
             if db.get("error"):
                 lines.append(f"- db error: {db['error']}")
+            if verdict == "FAIL":
+                lines.append(f"- bucket: {_failure_bucket(r)}")
     lines.append("")
     # cross-run DB aggregates
     kind_totals: dict = {}

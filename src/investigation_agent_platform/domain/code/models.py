@@ -57,6 +57,9 @@ class CodeValueSemantics(StrEnum):
     LATER_MUTABLE = "LATER_MUTABLE"
     RUNTIME_EFFECTIVE = "RUNTIME_EFFECTIVE"
     GUARDED_RETURN_LITERAL = "GUARDED_RETURN_LITERAL"
+    # Python fact semantics (shared enum; no versioned envelope per pre-prod decision).
+    PARAMETER_DEFAULT_EXPRESSION = "PARAMETER_DEFAULT_EXPRESSION"
+    FRAMEWORK_DEFAULT = "FRAMEWORK_DEFAULT"
 
 
 class JavaFactCategory(StrEnum):
@@ -76,6 +79,11 @@ class JavaFactCategory(StrEnum):
     CONFIGURATION_FACT = "CONFIGURATION_FACT"
     RUNTIME_OBSERVATION_FACT = "RUNTIME_OBSERVATION_FACT"
     CAUSAL_CLAIM = "CAUSAL_CLAIM"
+
+
+#: Language-neutral alias. The enum keeps its Java-prefixed class name for
+#: backward compatibility; Python resolvers reuse the same members.
+CodeFactCategory = JavaFactCategory
 
 
 class SemanticStage(StrEnum):

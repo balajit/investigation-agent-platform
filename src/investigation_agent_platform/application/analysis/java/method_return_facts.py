@@ -144,7 +144,32 @@ def resolve_java_method_return_fact(
     except Exception as exc:
         return unresolved(f"java_parser_unavailable:{type(exc).__name__}")
     if tree.root_node.has_error:
-        return unresolved("java_syntax_error_or_incomplete_source_window")
+        # GET_CODE windows are method-anchored but often run through the
+        # enclosing class's closing brace (live L5 banks 6-19: method 6-18
+        # plus the lone class `}` on 19), which tree-sitter-java rejects as
+        # a dangling close. Retry with trailing brace-only lines stripped
+        # (bounded); the method body itself is never touched — a window
+        # whose error lies elsewhere stays UNRESOLVED with the same code.
+        stripped = list(lines)
+        fixed = False
+        for _ in range(3):
+            if not stripped or stripped[-1].text.strip() != "}":
+                break
+            stripped = stripped[:-1]
+            try:
+                candidate = _p.parse_java(
+                    "\n".join(line.text for line in stripped).encode("utf-8")
+                )
+            except Exception:
+                break
+            if not candidate.root_node.has_error:
+                tree = candidate
+                lines = stripped
+                source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
+                fixed = True
+                break
+        if not fixed:
+            return unresolved("java_syntax_error_or_incomplete_source_window")
 
     package = _p.package_name(tree.root_node, source_bytes)
     methods = list(_iter_method_declarations(tree.root_node, source_bytes, method_name.strip()))
@@ -159,6 +184,21 @@ def resolve_java_method_return_fact(
                 f"{package}.{(_enclosing_class(m, source_bytes) or '')}", declaring_type
             )
         ]
+    if not methods and declaring_type:
+        # Method-anchored windows carry no enclosing class, so the
+        # declaring-type filter above matches nothing (live L5 banks 6-19:
+        # the method without its class). Fall back to the evidence file's
+        # basename stem: LegacyCodeMapper.java corroborates declaring type
+        # LegacyCodeMapper. Still requires exactly one same-named method in
+        # the window — overloads and wrong-file windows stay unresolved.
+        stem = source_path.rsplit("/", 1)[-1]
+        if "." in stem:
+            stem = stem.rsplit(".", 1)[0]
+        requested = declaring_type.rsplit(".", 1)[-1]
+        if stem and requested and stem.casefold() == requested.casefold():
+            methods = list(
+                _iter_method_declarations(tree.root_node, source_bytes, method_name.strip())
+            )
     if not methods:
         return unresolved("method_not_found")
     if len(methods) > 1:
@@ -169,7 +209,18 @@ def resolve_java_method_return_fact(
     qualified = (
         f"{package}.{class_name}" if package and class_name else (class_name or package)
     )
-    subject = f"{qualified}.{method_name.strip()}" if qualified else method_name.strip()
+    _mname = method_name.strip()
+    if qualified:
+        subject = f"{qualified}.{_mname}"
+    elif declaring_type and declaring_type.strip():
+        # Method-anchored windows carry no package/class context, so the
+        # resolved subject would be the bare method name — which no
+        # declaring-type claim target identifies (live L5). Qualify with the
+        # requested declaring type; the basename fallback above already tied
+        # the method to the right file.
+        subject = f"{declaring_type.strip()}.{_mname}"
+    else:
+        subject = _mname
     first_line = lines[0].number
     want_guard = _normalize(guard_condition) if guard_condition else ""
 
