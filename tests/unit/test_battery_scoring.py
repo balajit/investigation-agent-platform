@@ -253,6 +253,43 @@ class TestValuesHistoryAbstention:
         )
         assert verdict == "PARTIAL"
 
+    def test_value_in_cited_path_counts_as_shown(self):
+        # Live L5 shape: the 6-19 method window never names LegacyCodeMapper
+        # in prose, but the cited row's path is the mapper file. Row identity
+        # (same helper as the caller check) counts — snippet-only matching
+        # would PARTIAL a fully evidenced answer.
+        row = _row(
+            "e1",
+            file_path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
+            snippet="8|             return \"STANDARD\";",
+        )
+        case = _case(
+            expect={"status": "ANSWERED", "claim": "values",
+                    "expect_values": ["STANDARD", "LegacyCodeMapper"]}
+        )
+        root = "When orderType is null, LegacyCodeMapper.normalize returns 'STANDARD'."
+        verdict, _ = battery.score_supported(
+            case, _conclusion(root=root, supporting=["e1"]), {}, _ev([row]), _hyps([])
+        )
+        assert verdict == "PASS"
+
+    def test_value_in_neither_prose_nor_row_is_partial(self):
+        row = _row(
+            "e1",
+            file_path="service/src/main/java/com/sample/orders/legacy/OtherMapper.java",
+            snippet="8|             return \"STANDARD\";",
+        )
+        case = _case(
+            expect={"status": "ANSWERED", "claim": "values",
+                    "expect_values": ["STANDARD", "LegacyCodeMapper"]}
+        )
+        root = "When orderType is null, LegacyCodeMapper.normalize returns 'STANDARD'."
+        verdict, detail = battery.score_supported(
+            case, _conclusion(root=root, supporting=["e1"]), {}, _ev([row]), _hyps([])
+        )
+        assert verdict == "PARTIAL"
+        assert "LegacyCodeMapper" in detail
+
     def test_commit_row_passes_history(self):
         row = _row(
             "e1",

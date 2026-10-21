@@ -1299,11 +1299,16 @@ class VerificationEngine:
         return False
 
     @staticmethod
-    def _call_shown(callee: str, snippet: str) -> bool:
+    def _call_shown(
+        callee: str, snippet: str, *, exclude_construction: bool = False
+    ) -> bool:
         """True when the snippet contains a call expression for ``callee``.
 
         A declaration line (``def callee(``) matches ``callee(`` too, so
         declarations are excluded: a definition is not a call site.
+        With ``exclude_construction``, ``new Callee(`` construction sites are
+        also excluded: instantiating a class is not invoking it (live L2#2
+        answered a "who calls" claim on field-construction lines alone).
         """
         names = {callee}
         for sep in ("::", ".", "#"):
@@ -1321,8 +1326,84 @@ class VerificationEngine:
                 for match in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", line):
                     if VerificationEngine._DECLARATION_PREFIX.search(line[: match.start()]):
                         continue
+                    if exclude_construction and re.search(
+                        r"\bnew\s*$", line[: match.start()]
+                    ):
+                        continue
                     return True
         return False
+
+    @staticmethod
+    def _instance_call_rows(callee_class: str, rows: list[Any]) -> list[Any]:
+        """Rows proving invocation through a declared instance of ``callee_class``.
+
+        A bare-class callee ("OrderServiceHandler") never names its method,
+        so ``handler.handle(`` cannot match the class name. Instead join two
+        same-file facts: a row declaring ``CalleeClass <var>`` and a row
+        showing ``<var>.<method>(``. Both halves must be bound rows of one
+        file — a declaration without a shown invocation proves nothing.
+        """
+        try:
+            if not callee_class or any(
+                sep in callee_class for sep in ("::", ".", "#")
+            ):
+                return []
+            # Declaration and invocation must come from one file — a field
+            # typed X in file A never proves a call in file B.
+            decl: dict[tuple[str, str], list[Any]] = {}
+            for item in rows or []:
+                try:
+                    path = VerificationEngine._item_file(item)
+                    text = str(getattr(item, "content_snippet", "") or "")
+                    for raw in text.splitlines():
+                        line = (
+                            raw.split("| ", 1)[1]
+                            if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
+                            else raw
+                        )
+                        for var_match in re.finditer(
+                            rf"(?<![A-Za-z0-9_]){re.escape(callee_class)}\s+([A-Za-z_]\w*)\s*[=;]",
+                            line,
+                        ):
+                            decl.setdefault((path, var_match.group(1)), []).append(item)
+                except Exception:
+                    continue
+            if not decl:
+                return []
+            out: list[Any] = []
+            seen: set[int] = set()
+            for item in rows or []:
+                try:
+                    path = VerificationEngine._item_file(item)
+                    text = str(getattr(item, "content_snippet", "") or "")
+                    used: set[str] = set()
+                    for raw in text.splitlines():
+                        line = (
+                            raw.split("| ", 1)[1]
+                            if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
+                            else raw
+                        )
+                        for dpath, var in decl:
+                            if dpath != path:
+                                continue
+                            if re.search(
+                                rf"(?<![A-Za-z0-9_]){re.escape(var)}\s*\.\s*[A-Za-z_]\w*\s*\(",
+                                line,
+                            ):
+                                used.add(var)
+                    for var in used:
+                        if id(item) not in seen:
+                            seen.add(id(item))
+                            out.append(item)
+                        for row in decl.get((path, var), []):
+                            if id(row) not in seen:
+                                seen.add(id(row))
+                                out.append(row)
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return []
 
     @staticmethod
     def _extract_call_edge(statement: str) -> tuple[str | None, str | None]:
@@ -1398,11 +1479,22 @@ class VerificationEngine:
         ]
         if not rows:
             return (False, "no cited code row with file, line range and revision provenance")
+        bare = not any(sep in (callee or "") for sep in ("::", ".", "#"))
         shown = [
             i
             for i in rows
-            if VerificationEngine._call_shown(callee, str(getattr(i, "content_snippet", "") or ""))
+            if VerificationEngine._call_shown(
+                callee,
+                str(getattr(i, "content_snippet", "") or ""),
+                exclude_construction=bare,
+            )
         ]
+        if not shown and bare:
+            # Bare-class callee ("OrderServiceHandler") never names its
+            # method, so constructor lines alone prove nothing — but an
+            # invocation through a declared instance does. Join the
+            # declaration row with the invocation row (same file).
+            shown = VerificationEngine._instance_call_rows(callee, rows)
         if not shown:
             return (
                 False,
@@ -1453,16 +1545,24 @@ class VerificationEngine:
             return False
 
     @staticmethod
-    def absence_proof(evidence_items: list[Any], target: ClaimTarget | None) -> tuple[bool, str]:
-        """Scoped empty search: states its scope and records zero matches.
+    def absence_outcome(
+        evidence_items: list[Any], target: ClaimTarget | None
+    ) -> tuple[str, str]:
+        """Four-outcome absence classification (Phase 2a, pure, deterministic).
 
-        Accepted proof shape (produced by typed no-match outcomes): an
-        evidence row with ``attributes.search_scope`` and
-        ``attributes.match_count == 0`` whose scope covers the claimed one.
+        - NO_SCOPE: claim states no search scope (target-resolution failure).
+        - EMPTY_SEARCH_PROVED: scoped match_count==0 row covers the claim.
+        - NO_SEARCH: bound set holds no empty-search rows at all (retrieval
+          failure — never invent "nothing changed" from this).
+        - SCOPE_MISMATCH: empty-search rows exist but none covers the claim
+          (target-resolution failure).
         """
-        scope = (target.scope or "").strip() if target is not None else ""
+        scope = (
+            (getattr(target, "scope", "") or "").strip() if target is not None else ""
+        )
         if not scope:
-            return (False, "absence claim states no search scope (set target.scope)")
+            return ("NO_SCOPE", "absence claim states no search scope (set target.scope)")
+        scoped_rows: list[str] = []
         for item in evidence_items or []:
             attributes = getattr(item, "attributes", None) or {}
             if not isinstance(attributes, dict):
@@ -1470,12 +1570,33 @@ class VerificationEngine:
             proof_scope = str(attributes.get("search_scope", "") or "").strip()
             if attributes.get("match_count") != 0 or not proof_scope:
                 continue
-            if proof_scope.lower() == scope.lower() or scope.lower() in proof_scope.lower():
-                return (True, "")
+            scoped_rows.append(proof_scope)
+        if not scoped_rows:
+            return (
+                "NO_SEARCH",
+                "no empty-search evidence bound; do not conclude absence from retrieval silence",
+            )
+        lowered = scope.lower()
+        for proof_scope in scoped_rows:
+            if proof_scope.lower() == lowered or lowered in proof_scope.lower():
+                return ("EMPTY_SEARCH_PROVED", "")
         return (
-            False,
+            "SCOPE_MISMATCH",
             f"no scoped empty-search evidence covers '{scope}'; an empty result alone is not proof of absence",
         )
+
+    @staticmethod
+    def absence_proof(evidence_items: list[Any], target: ClaimTarget | None) -> tuple[bool, str]:
+        """Scoped empty search: states its scope and records zero matches.
+
+        Accepted proof shape (produced by typed no-match outcomes): an
+        evidence row with ``attributes.search_scope`` and
+        ``attributes.match_count == 0`` whose scope covers the claimed one.
+        """
+        outcome, reason = VerificationEngine.absence_outcome(evidence_items, target)
+        if outcome == "EMPTY_SEARCH_PROVED":
+            return (True, "")
+        return (False, reason)
 
     def check_claim_kind(
         self, hypothesis: Any, evidence_items: list[Any]
@@ -1504,8 +1625,31 @@ class VerificationEngine:
                     row = evidence_by_id.get(str(assessment.evidence_id))
                     if row is None:
                         return (False, "a caller edge's bound call-site evidence is unavailable")
+                    # Same-claim sibling repair (live L2 035908): the model
+                    # cited a sibling (comment/search row) while the showing
+                    # call-site range sits bound but unlinked. The claim
+                    # stays bound to showing evidence — set membership in
+                    # the bound set — rather than failing on the pointer.
+                    # Tight: only same-file range rows for this target.
+                    _rows: list[Any] = [row]
+                    _tfile = str(
+                        getattr(assessment.claim_target, "file_path", "") or ""
+                    )
+                    if _tfile:
+                        for _item in evidence_items or []:
+                            if _item is row:
+                                continue
+                            try:
+                                if not VerificationEngine._paths_match(
+                                    _tfile, VerificationEngine._item_file(_item)
+                                ):
+                                    continue
+                            except Exception:
+                                continue
+                            if _item not in _rows:
+                                _rows.append(_item)
                     edge_ok, edge_reason = VerificationEngine.call_site_proof(
-                        [row], assessment.claim_target, statement
+                        _rows, assessment.claim_target, statement
                     )
                     if not edge_ok:
                         return (False, edge_reason)
@@ -1530,13 +1674,18 @@ class VerificationEngine:
                         statement,
                     ):
                         named_callers.append(file_stem.casefold())
-                bound_callers = {
-                    str(getattr(a.claim_target, "counterpart", "") or "")
-                    .rsplit(".", 1)[-1]
-                    .casefold()
-                    for a in edge_assessments
-                    if getattr(a, "claim_target", None) is not None
-                }
+                bound_callers: set[str] = set()
+                for a in edge_assessments:
+                    _ct = getattr(a, "claim_target", None)
+                    if _ct is None:
+                        continue
+                    _cp = str(getattr(_ct, "counterpart", "") or "")
+                    for _sep in ("::", "#"):
+                        _cp = _cp.replace(_sep, ".")
+                    for _part in _cp.split("."):
+                        _part = _part.strip()
+                        if _part:
+                            bound_callers.add(_part.casefold())
                 if set(named_callers) - bound_callers:
                     return (False, "caller enumeration names a caller without its own CALL_EDGE claim")
                 return (True, "")
@@ -2026,8 +2175,23 @@ class VerificationEngine:
         """
         try:
             statement_paths = VerificationEngine._statement_paths(statement or "")
-            if not statement_paths:
-                return []
+            # REV_BATTERY Phase 1b: caller-enumeration claims name bare class
+            # stems ("X calls Z") with no slash-path, so the path-token
+            # fallback sees nothing and the banked call-site range never
+            # joins the bound set (live L2#2). Fall back to bare-stem
+            # matching with the same file+revision + range-read gates.
+            use_stem_fallback = not statement_paths
+            statement_stems: set[str] = set()
+            if use_stem_fallback:
+                for _m in re.finditer(r"[A-Za-z][A-Za-z0-9_]*", statement or ""):
+                    _tok = _m.group(0)
+                    if len(_tok) < 4:
+                        continue
+                    if _tok.lower() in VerificationEngine._SUBJECT_STOPWORDS:
+                        continue
+                    statement_stems.add(_tok.casefold())
+                if not statement_stems:
+                    return []
             matched = []
             seen = set()
             for item in evidence_items or []:
@@ -2042,7 +2206,13 @@ class VerificationEngine:
                     revision = getattr(location, "revision", None)
                     if not file_path or not revision:
                         continue
-                    if not any(
+                    if use_stem_fallback:
+                        _base = str(file_path).strip().strip("/").split("/")[-1]
+                        if "." in _base:
+                            _base = _base.rsplit(".", 1)[0]
+                        if not _base or _base.casefold() not in statement_stems:
+                            continue
+                    elif not any(
                         VerificationEngine._paths_match(path, str(file_path))
                         for path in statement_paths
                     ):
@@ -2800,9 +2970,101 @@ class VerificationEngine:
                 if file_path:
                     paths.append(file_path)
                     texts.append(file_path)
+                texts.extend(VerificationEngine._bound_resolution_identities(item))
             except Exception:
                 continue
         return texts, paths
+
+    @staticmethod
+    def _bound_resolution_identities(item: Any) -> list[str]:
+        """Subject/value identity strings of a bound RESOLVED code-fact.
+
+        The proof of a source-value claim increasingly lives in the analyzer
+        resolution payload (subject_identity, declaring type, resolved value),
+        not just the snippet prose — method-anchored windows legitimately
+        omit the enclosing class declaration (live L5). Surfacing those
+        strings keeps conclusion mapping honest about what the bound rows
+        actually establish. Non-RESOLVED or missing payloads contribute
+        nothing; fail-open tolerates every payload shape.
+        """
+        out: list[str] = []
+        try:
+            attrs = getattr(item, "attributes", None) or {}
+            if not isinstance(attrs, dict):
+                return out
+            payload = attrs.get("code_fact_resolution_v2") or attrs.get(
+                "code_fact_resolution"
+            )
+            if payload is None:
+                return out
+            if isinstance(payload, dict):
+                status = str(payload.get("status") or "")
+                fields = [
+                    payload.get("subject_identity"),
+                    payload.get("declaring_type"),
+                    payload.get("field_name"),
+                    payload.get("resolved_value"),
+                ]
+            else:
+                status = str(getattr(payload, "status", "") or "")
+                fields = [
+                    getattr(payload, "subject_identity", None),
+                    getattr(payload, "declaring_type", None),
+                    getattr(payload, "field_name", None),
+                    getattr(payload, "resolved_value", None),
+                ]
+            if "RESOLVED" not in status.upper():
+                return out
+            for field in fields:
+                text = str(field or "").strip()
+                if text and text.upper() not in {"NONE", "NULL"} and text not in out:
+                    out.append(text)
+        except Exception:
+            return []
+        return out
+
+    @staticmethod
+    def _resolution_grounded(sentence: str, evidence_items: list[Any] | None) -> bool:
+        """A sentence restating a bound RESOLVED code fact is mapped.
+
+        Requires both halves of the proven fact in the sentence: the subject
+        identity (stem match on any dot-segment) and the resolved literal
+        (quoted or plain substring). Value-only or subject-only mentions
+        still take the normal text-mapping path, so this can never launder
+        an unrelated value into a grounded claim.
+        """
+        try:
+            text = str(sentence or "")
+            if not text:
+                return False
+            lowered = text.lower()
+            for item in evidence_items or []:
+                attrs = getattr(item, "attributes", None) or {}
+                if not isinstance(attrs, dict):
+                    continue
+                payload = attrs.get("code_fact_resolution_v2")
+                if payload is None:
+                    continue
+                if isinstance(payload, dict):
+                    status = str(payload.get("status") or "")
+                    subject = str(payload.get("subject_identity") or "")
+                    value = payload.get("resolved_value")
+                else:
+                    status = str(getattr(payload, "status", "") or "")
+                    subject = str(getattr(payload, "subject_identity", "") or "")
+                    value = getattr(payload, "resolved_value", None)
+                if "RESOLVED" not in status.upper() or not subject or value is None:
+                    continue
+                subject_hit = any(
+                    len(part) >= 3 and part.lower() in lowered
+                    for part in re.split(r"[.:#]", subject)
+                )
+                value_hit = str(value).strip() != "" and str(value).lower() in lowered
+                if subject_hit and value_hit:
+                    return True
+            return False
+        except Exception:
+            return False
 
     @staticmethod
     def sentence_mapped(sentence: str, value_texts: list[Any], file_paths: list[Any]) -> bool:
@@ -2871,6 +3133,8 @@ class VerificationEngine:
             for raw in re.split(r"(?<=[.!?])\s+", (root_cause or "").strip()):
                 sentence = raw.strip().strip(".,;:!?\"'")
                 if not sentence:
+                    continue
+                if VerificationEngine._resolution_grounded(sentence, evidence_items):
                     continue
                 if not VerificationEngine.sentence_mapped(sentence, value_texts, file_paths):
                     unmapped.append(sentence)
@@ -2977,7 +3241,38 @@ class VerificationEngine:
                 return (
                     "Cite and bind supporting evidence to the candidate hypothesis, then re-verify."
                 )
-            if any(t == "no validated causal chain" for t in lowered):
+            if any("cited evidence_id" in t and "unknown" in t for t in lowered):
+                return (
+                    "Rebind supporting IDs within this investigation (a cited key "
+                    "resolves elsewhere or nowhere), then re-verify."
+                )
+            if any("caller enumeration names a caller" in t for t in lowered):
+                return (
+                    "Bind each named caller to its own CALL_EDGE claim with a "
+                    "shown call site, then re-verify."
+                )
+            if any("no cited row shows a call" in t for t in lowered):
+                return (
+                    "Bind the range-read row showing the call expression "
+                    "(not a search hit or comment), then re-verify."
+                )
+            if any("runtime" in t and "behavior" in t for t in lowered):
+                return (
+                    "Observe the behavior at runtime (log, trace, state, or probe), then re-verify."
+                )
+            if any("java fact" in t for t in lowered):
+                return (
+                    "Bind a resolved source-value fact (or widen the range window "
+                    "past the method-only slice), then re-verify."
+                )
+            if any("empty-search" in t or "absence" in t for t in lowered):
+                return (
+                    "Narrow or re-scope the empty-search proof to the claimed scope, then re-verify."
+                )
+            if any(
+                t == "no validated causal chain" or "no causal chain established" in t
+                for t in lowered
+            ):
                 return "Bind a causal chain with cited evidence for each link, then re-verify."
             return f"Resolve '{texts[0][:300]}', then re-verify."
         except Exception:

@@ -1,6 +1,6 @@
 # Design: IAP Python Language Code-Fact Resolution
 
-**Status:** Source-grounded review and candidate implementation plan only. No product-code or test changes are authorized by this document. The current audit confirms Python-aware navigation but no Python source-value resolver. A v2 verifier claim-text mismatch is reproduced and is the first correction gate before Python fact expansion.
+**Status:** Phases 0–4 implemented 2026-10-21 (v2 verifier mismatch fixed with regression tests; shared-enum contract, no versioned envelope per pre-prod decision; `application/analysis/python/` resolvers for assignments, parameter defaults, class attributes, and dataclass/Pydantic frameworks; worker `.py` dispatch and `.py` source-value forcing; navigation `has_error` fail-closed; 21-case fixture battery in `tests/fixtures/python/`). Full unit suite 2441 passed. This document remains the audit record; behavior authority is the code cited in `docs/IAP-architecture-v1.0.md` §59.
 
 ## Context
 

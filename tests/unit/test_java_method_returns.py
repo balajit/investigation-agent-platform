@@ -117,6 +117,68 @@ def test_resolves_without_declaring_type():
     assert result.resolved_value == "STANDARD"
 
 
+_LIVE_L5_WINDOW = """    public String normalize(String orderType) {
+        if (orderType == null) {
+            return "STANDARD";
+        }
+        switch (orderType) {
+            case "LEGACY-BULK":
+                return "BULK";
+            case "LEGACY-RES":
+                return "RESIDENTIAL";
+            default:
+                return orderType;
+        }
+    }
+}"""
+
+
+def test_live_l5_window_with_class_brace_resolves():
+    """Live 041339 L5#1: GET_CODE banks 6-19 (method 6-18 + class `}`)."""
+    source = _LIVE_L5_WINDOW
+    start = 6
+    lines = "\n".join(f"{start + i}| {ln}" for i, ln in enumerate(source.splitlines()))
+    ev = _source_evidence(source, start=start)
+    assert ev.content_snippet == lines
+    result = resolve_java_method_return_fact(
+        ev,
+        "normalize",
+        guard_condition="orderType == null",
+        declaring_type="LegacyCodeMapper",
+    )
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.resolved_value == "STANDARD"
+    assert result.declaration_location.line_start == 8
+    assert result.declaration_location.line_end == 8
+
+
+def test_method_only_window_still_resolves():
+    """Narrower 6-18 method window keeps resolving (no behavior change)."""
+    source = "\n".join(_LIVE_L5_WINDOW.splitlines()[:-1])
+    ev = _source_evidence(source, start=6)
+    result = resolve_java_method_return_fact(
+        ev,
+        "normalize",
+        guard_condition="orderType == null",
+        declaring_type="LegacyCodeMapper",
+    )
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.resolved_value == "STANDARD"
+
+
+def test_garbage_window_stays_unresolved():
+    """A genuinely broken window is not rescued by brace stripping."""
+    ev = _source_evidence("public String normalize( { if ( ", start=6)
+    result = resolve_java_method_return_fact(
+        ev,
+        "normalize",
+        guard_condition="orderType == null",
+        declaring_type="LegacyCodeMapper",
+    )
+    assert result.status == CodeFactStatus.UNRESOLVED
+    assert "java_syntax_error_or_incomplete_source_window" in result.limitation_codes
+
+
 def test_wrong_guard_is_unresolved():
     ev = _source_evidence(_MAPPER)
     result = resolve_java_method_return_fact(
