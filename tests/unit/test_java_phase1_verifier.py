@@ -317,3 +317,56 @@ def test_node_id_optional_match_and_parser_version_permissive():
     hyp_clash = _typed_hypothesis(banked, JavaFactCategory.SOURCE_VALUE_FACT, hyp_node_id=uuid4())
     ok, reason = VerificationEngine.java_fact_proof(hyp_clash, [banked])
     assert not ok and "node_id" in reason
+
+
+# --- Phase 0 hard gate: v2 source-value claim/value reconciliation ---
+
+
+def _resolved_v2_banked():
+    ev = _source_evidence("class Foo {\n int x = 3;\n}")
+    legacy = resolve_java_field_fact(ev, "x")
+    v2 = legacy_to_v2_resolution(legacy)
+    assert v2.resolved_value == "3"
+    return _v2_evidence(v2, ev)
+
+
+def test_source_value_v2_rejects_statement_mismatch():
+    """Structured 3 + statement 999 must not verify (Phase 0 gate V2a)."""
+    banked = _resolved_v2_banked()
+    hyp = _typed_hypothesis(
+        banked,
+        JavaFactCategory.SOURCE_VALUE_FACT,
+        claimed_value="3",
+        statement="The default value of x is 999",
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [banked])
+    assert not ok and "statement" in reason
+    assert VerificationEngine().validate_java_fact_claim(hyp, [banked], []) is None
+
+
+def test_source_value_v2_requires_structured_value():
+    """Missing structured value + statement 999 must not verify (Phase 0 gate V2b)."""
+    banked = _resolved_v2_banked()
+    hyp = _typed_hypothesis(
+        banked,
+        JavaFactCategory.SOURCE_VALUE_FACT,
+        claimed_value=None,
+        statement="The default value of x is 999",
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [banked])
+    assert not ok and "structured claimed_value" in reason
+    assert VerificationEngine().validate_java_fact_claim(hyp, [banked], []) is None
+
+
+def test_source_value_v2_rejects_structured_mismatch():
+    """Structured 999 vs resolved 3 must not verify even when prose agrees."""
+    banked = _resolved_v2_banked()
+    hyp = _typed_hypothesis(
+        banked,
+        JavaFactCategory.SOURCE_VALUE_FACT,
+        claimed_value="999",
+        statement="The default value of x is 999",
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [banked])
+    assert not ok and "conflicts with resolved source value" in reason
+    assert VerificationEngine().validate_java_fact_claim(hyp, [banked], []) is None

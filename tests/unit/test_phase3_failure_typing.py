@@ -10,9 +10,10 @@ completed enriched turns only; the proposal arrives via reason_data).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -35,6 +36,13 @@ from investigation_agent_platform.domain.common.exceptions import (
     ProviderNotConfiguredError,
     ProviderTimeoutException,
     ProviderUnavailableException,
+)
+from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
+from investigation_agent_platform.domain.provenance.models import (
+    EvidenceFreshness,
+    EvidenceProvenance,
+    QueryFingerprint,
+    SourceLocation,
 )
 
 
@@ -785,7 +793,7 @@ class TestClaimSanitize:
         assert decision.metadata.get("status") != "REASONING_UNAVAILABLE"
         assert len(decision.claims) == 1
         assert decision.claims[0].statement == "OrderServiceImpl changed recently"
-        assert decision.claims[0].claim_kind.value == "CAUSAL"
+        assert decision.claims[0].claim_kind.value == "HISTORY"
         assert list(decision.claims[0].evidence_ids) == []
 
     @pytest.mark.asyncio
@@ -892,27 +900,54 @@ class TestCallSiteChaining:
 
         async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             calls["req"] = req
-            return SimpleNamespace(
-                evidence_id=uuid4(),
-                evidence_type="SOURCE_CODE",
-                provenance=SimpleNamespace(
-                    source_location=SimpleNamespace(
+            now = datetime.now(UTC)
+            return Evidence(
+                tenant_id="tenant-a",
+                investigation_id=UUID(str(investigation_id)),
+                evidence_type=EvidenceType.SOURCE_CODE,
+                provider="test",
+                source="test://repo",
+                title="caller source",
+                summary="caller source range",
+                content_snippet="88| handler.handle(request)",
+                observed_at=now,
+                retrieved_at=now,
+                provenance=EvidenceProvenance(
+                    tenant_id="tenant-a",
+                    investigation_id=UUID(str(investigation_id)),
+                    provider_type="test",
+                    requested_provider_id="test",
+                    actual_provider_id="test",
+                    source_system="git",
+                    retrieval_timestamp=now,
+                    query_fingerprint=QueryFingerprint(
+                        provider_type="test", operation="GET_SOURCE", normalized_query_hash="caller"
+                    ),
+                    source_location=SourceLocation(
+                        system="git",
+                        identifier=req.file_path,
                         file_path=req.file_path,
                         line_start=req.start_line,
                         line_end=req.end_line,
                         revision="abc",
-                    )
+                    ),
                 ),
-                content_snippet="x",
+                freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                fingerprint=f"caller-{uuid4()}",
             )
 
-        _, saved = _ctx_with(
+        ctx, saved = _ctx_with(
             SimpleNamespace(find_call_graph=_find_call_graph, get_source=_get_source)
         )
+
+        async def _save_one(tenant_id, item, investigation_id):  # type: ignore[no-untyped-def]
+            saved.append(item)
+
+        ctx.evidence_repo.save = _save_one
         result = await execute_action_activity(
             _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
         )
-        # Summary + 2 edges + 1 chained caller window.
+        # Summary + 2 edges + one actual source call-site range.
         assert result.data["items_count"] == 4
         assert calls["req"].file_path == "Checkout.java"
         assert calls["req"].start_line == 48

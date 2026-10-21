@@ -78,7 +78,7 @@ def _system_prompt_for(problem):
 
 
 def test_prompt_version_bumped_for_g1():
-    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-012"
+    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-014"
 
 
 def test_explicit_path_short_circuits_to_get_code_first():
@@ -128,6 +128,13 @@ def test_method_return_questions_route_to_method_name_resolution():
     assert '"method_name": "normalize"' in prompt
     assert "SOURCE_VALUE_FACT" in prompt
     assert "GUARDED_RETURN_LITERAL" in prompt
+
+
+def test_history_questions_use_a_typed_commit_claim():
+    prompt = _system_prompt_for("What changed in OrderServiceImpl.java recently?")
+    assert "HISTORY: for recent-change questions" in prompt
+    assert "target.commit_id" in prompt
+    assert "COMMIT_HISTORY row" in prompt
 
 
 def test_application_context_includes_allowed_capabilities():

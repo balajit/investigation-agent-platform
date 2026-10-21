@@ -118,7 +118,7 @@ class TestClaimKeying:
             evidence_rows=[SimpleNamespace(evidence_id=evidence_id)],
             hyp_repo=hyp_repo,
         )
-        statement = "retryCount default value is 3"
+        statement = "When orderType is null, normalize returns STANDARD"
         action_input = _input("FORMULATE_HYPOTHESIS", {})
         action_input.hypotheses = [statement]
         action_input.claims = [
@@ -126,15 +126,64 @@ class TestClaimKeying:
                 "statement": statement,
                 "claim_kind": "DEFINITION",
                 "evidence_ids": [str(evidence_id)],
-                "target": {"symbol": "retryCount"},
-                "value_semantics": "EXPLICIT_INITIALIZER",
-                "claimed_value": "3",
+                "target": {
+                    "symbol": "LegacyCodeMapper.normalize",
+                    "fact_category": "SOURCE_VALUE_FACT",
+                    "value_semantics": "GUARDED_RETURN_LITERAL",
+                    "claimed_value": "STANDARD",
+                },
+                "fact_category": "SOURCE_VALUE_FACT",
+                "value_semantics": "GUARDED_RETURN_LITERAL",
+                "claimed_value": "STANDARD",
             }
         ]
         await execute_action_activity(action_input)
         assessment = saved_hyps[0].assessments[0]
-        assert assessment.value_semantics == "EXPLICIT_INITIALIZER"
-        assert assessment.claimed_value == "3"
+        assert assessment.value_semantics == "GUARDED_RETURN_LITERAL"
+        assert assessment.claimed_value == "STANDARD"
+        assert assessment.fact_category.value == "SOURCE_VALUE_FACT"
+
+    @pytest.mark.asyncio
+    async def test_same_statement_multiple_callers_keep_distinct_claim_bindings(self) -> None:
+        e1, e2 = uuid4(), uuid4()
+        saved_hyps = []
+
+        async def _save_hyp(tenant_id, hyp, investigation_id):  # type: ignore[no-untyped-def]
+            saved_hyps.append(hyp)
+
+        hyp_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]), save=_save_hyp
+        )
+        _ctx_with(
+            SimpleNamespace(),
+            evidence_rows=[SimpleNamespace(evidence_id=e1), SimpleNamespace(evidence_id=e2)],
+            hyp_repo=hyp_repo,
+        )
+        statement = "Two callers invoke OrderServiceHandler.handle"
+        action_input = _input("FORMULATE_HYPOTHESIS", {})
+        action_input.hypotheses = [statement]
+        action_input.claims = [
+            {
+                "statement": statement,
+                "claim_kind": "CALL_EDGE",
+                "evidence_ids": [str(e1)],
+                "target": {"symbol": "OrderServiceHandler.handle", "counterpart": "OrderQualifyHelper"},
+            },
+            {
+                "statement": statement,
+                "claim_kind": "CALL_EDGE",
+                "evidence_ids": [str(e2)],
+                "target": {"symbol": "OrderServiceHandler.handle", "counterpart": "OrderServiceRestProxy"},
+            },
+        ]
+        await execute_action_activity(action_input)
+        assessments = saved_hyps[0].assessments
+        assert len(assessments) == 2
+        assert {assessment.claim_target.counterpart for assessment in assessments} == {
+            "OrderQualifyHelper",
+            "OrderServiceRestProxy",
+        }
+        assert {assessment.evidence_id for assessment in assessments} == {e1, e2}
 
 
 class TestAbsenceProducer:

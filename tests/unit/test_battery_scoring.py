@@ -29,6 +29,7 @@ def _row(
     snippet="72| public class SampleOrderFilter",
     attributes=None,
 ):
+    row_attributes = dict(attributes or {})
     location = {"file_path": file_path, "revision": revision}
     if line_start is not None:
         location["line_start"] = line_start
@@ -38,10 +39,10 @@ def _row(
         "evidence_id": eid,
         "evidence_type": etype,
         "title": f"Source: {file_path}",
-        "summary": f"snippet from {file_path}",
+        "summary": row_attributes.get("summary", f"snippet from {file_path}"),
         "content_snippet": snippet,
         "source": f"git://r/{file_path}@{revision}",
-        "attributes": dict(attributes or {}),
+        "attributes": row_attributes,
         "provenance": {"source_location": location},
     }
 
@@ -171,7 +172,8 @@ class TestCallerGrading:
                 "status": "ANSWERED",
                 "claim": "callers",
                 "callee": "OrderServiceHandler",
-                "expect_any": ["OrderQualifyHelper"],
+                "callee_method": "handle",
+                "expect_any": ["OrderQualifyHelper", "OrderServiceRestProxy"],
             }
         )
 
@@ -179,7 +181,7 @@ class TestCallerGrading:
         row = _row(
             "e1",
             file_path="src/OrderQualifyHelper.java",
-            snippet="10| def qualify():\n11|     return OrderServiceHandler(oid).handle()",
+            snippet="10| public String qualify() {\n11|     return handler.handle(orderId);",
         )
         root = "OrderQualifyHelper calls OrderServiceHandler.handle from the qualify branch."
         verdict, _ = battery.score_supported(
@@ -201,6 +203,24 @@ class TestCallerGrading:
             _hyps([]),
         )
         assert verdict == "PARTIAL"
+
+    def test_any_expected_caller_with_its_own_callsite_is_enough(self):
+        row = _row(
+            "e1",
+            file_path="src/OrderServiceRestProxy.java",
+            snippet="20| return handler.handle(orderId);",
+        )
+        verdict, detail = battery.score_supported(
+            self._caller_case(),
+            _conclusion(
+                root="OrderServiceRestProxy calls OrderServiceHandler.handle.",
+                supporting=["e1"],
+            ),
+            {},
+            _ev([row]),
+            _hyps([]),
+        )
+        assert verdict == "PASS", detail
 
 
 class TestValuesHistoryAbstention:
@@ -234,7 +254,13 @@ class TestValuesHistoryAbstention:
         assert verdict == "PARTIAL"
 
     def test_commit_row_passes_history(self):
-        row = _row("e1", etype="COMMIT_HISTORY", snippet="abc1234 tune pool")
+        row = _row(
+            "e1",
+            etype="COMMIT_HISTORY",
+            file_path="OrderServiceImpl.java",
+            snippet="abc1234 tune pool",
+            attributes={"summary": "tune pool"},
+        )
         case = _case(
             expect={"status": "ANSWERED", "claim": "history", "cited_path": "OrderServiceImpl.java"}
         )

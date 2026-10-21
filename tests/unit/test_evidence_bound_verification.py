@@ -81,6 +81,157 @@ def test_rank_rejected_last():
     assert ranked[-1].statement == "bad"
 
 
+def test_history_claim_requires_matching_latest_commit_subject():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    path = "service/src/OrderServiceImpl.java"
+    now = datetime.now(UTC)
+
+    def _commit(sha, subject, observed_at):
+        row = _ev(provider="git", etype=EvidenceType.COMMIT_HISTORY)
+        return row.model_copy(
+            update={
+                "summary": subject,
+                "observed_at": observed_at,
+                "provenance": row.provenance.model_copy(
+                    update={
+                        "source_location": row.provenance.source_location.model_copy(
+                            update={"file_path": path, "revision": sha}
+                        )
+                    }
+                ),
+            }
+        )
+
+    older = _commit("abc11111", "Guard null orderType", now)
+    latest = _commit("def22222", "Tighten eligibility window", now)
+    hyp = _hyp(
+        "Latest change to OrderServiceImpl.java at def22222: Tighten eligibility window",
+        HypothesisStatus.PROPOSED,
+    )
+    target = ClaimTarget(file_path=path, commit_id="def22222")
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp.id,
+        evidence_id=latest.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="latest commit",
+        claim_kind=ClaimKind.HISTORY,
+        claim_target=target,
+        commit_id="def22222",
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": [assessment],
+            "supporting_evidence_ids": [latest.evidence_id],
+        }
+    )
+    engine = VerificationEngine()
+    assert engine.validate_history_claim(hyp, [latest, older], []) is not None
+
+    wrong = hyp.model_copy(
+        update={
+            "statement": "Latest change to OrderServiceImpl.java at abc11111: Guard null orderType",
+            "assessments": [
+                assessment.model_copy(
+                    update={
+                        "claim_target": ClaimTarget(file_path=path, commit_id="abc11111"),
+                        "commit_id": "abc11111",
+                    }
+                )
+            ],
+        }
+    )
+    assert engine.validate_history_claim(wrong, [latest, older], []) is None
+
+
+def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    now = datetime.now(UTC)
+    iid = uuid4()
+
+    def _call_row(path, snippet):
+        row = _code_evidence("GET_SOURCE").model_copy(update={"investigation_id": iid})
+        location = row.provenance.source_location.model_copy(
+            update={"file_path": path, "revision": "abc123", "line_start": 10, "line_end": 20}
+        )
+        provenance = row.provenance.model_copy(update={"source_location": location})
+        return row.model_copy(
+            update={
+                "content_snippet": snippet,
+                "provenance": provenance,
+                "observed_at": now,
+                "retrieved_at": now,
+            }
+        )
+
+    helper = _call_row(
+        "src/OrderQualifyHelper.java",
+        "10| public String qualify() {\n11| return handler.handle(orderId);",
+    )
+    proxy = _call_row(
+        "src/OrderServiceRestProxy.java",
+        "10| public String submit() {\n11| return handler.handle(orderId);",
+    )
+    hyp = _hyp(
+        "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle"
+    )
+    assessments = [
+        HypothesisEvidenceAssessment(
+            hypothesis_id=hyp.id,
+            evidence_id=helper.evidence_id,
+            assessment=AssessmentType.SUPPORTS,
+            strength=AssessmentStrength.STRONG,
+            reason="helper call",
+            claim_kind=ClaimKind.CALL_EDGE,
+            claim_target=ClaimTarget(
+                symbol="OrderServiceHandler.handle",
+                counterpart="OrderQualifyHelper",
+            ),
+        )
+    ]
+    hyp = hyp.model_copy(
+        update={
+            "assessments": assessments,
+            "supporting_evidence_ids": [helper.evidence_id],
+        }
+    )
+    ok, reason = VerificationEngine().check_claim_kind(hyp, [helper, proxy])
+    assert ok is False
+    assert "without its own CALL_EDGE claim" in reason
+
+    proxy_assessment = assessments[0].model_copy(
+        update={
+            "evidence_id": proxy.evidence_id,
+            "claim_target": ClaimTarget(
+                symbol="OrderServiceHandler.handle",
+                counterpart="OrderServiceRestProxy",
+            ),
+        }
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": assessments + [proxy_assessment],
+            "supporting_evidence_ids": [helper.evidence_id, proxy.evidence_id],
+        }
+    )
+    ok, reason = VerificationEngine().check_claim_kind(hyp, [helper, proxy])
+    assert ok is True, reason
+
+
 def test_unresolved_critical_contradiction_contradicts():
     engine = VerificationEngine()
     result = engine.evaluate_hypothesis(

@@ -2573,11 +2573,12 @@ async def execute_action_activity(
         proposed_hypotheses: list[str] = [
             str(h) for h in (data.get("hypotheses", []) or []) if str(h).strip()
         ]
-        # Phase 2.1: typed claims keyed by (normalized statement, kind).
+        # Phase 2.1: typed claims keyed by statement, kind, and target identity.
         # A claim whose statement is absent from hypotheses_evaluated is
         # still persisted. Same statement with different kinds stays
-        # distinct — keying by statement alone collapsed rivals.
-        proposed_claims: dict[tuple[str, str], dict[str, Any]] = {}
+        # Caller edges and history commits for one statement also remain
+        # distinct so each keeps its own citation binding.
+        proposed_claims: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
         for raw_claim in (data.get("claims", []) or [])[:20]:
             if not isinstance(raw_claim, dict):
                 continue
@@ -2585,7 +2586,17 @@ async def execute_action_activity(
             if not claim_text:
                 continue
             claim_kind_key = str(raw_claim.get("claim_kind") or "CAUSAL").strip().upper()
-            proposed_claims[(claim_text, claim_kind_key)] = raw_claim
+            claim_target = raw_claim.get("target")
+            claim_target = claim_target if isinstance(claim_target, dict) else {}
+            proposed_claims[
+                (
+                    claim_text,
+                    claim_kind_key,
+                    str(claim_target.get("counterpart") or "").strip().casefold(),
+                    str(claim_target.get("commit_id") or "").strip().casefold(),
+                    str(claim_target.get("file_path") or "").replace("\\", "/").strip().casefold(),
+                )
+            ] = raw_claim
             if claim_text not in proposed_hypotheses:
                 proposed_hypotheses.append(claim_text)
         if not tenant_id or not inv_id_str:
@@ -4837,6 +4848,9 @@ async def execute_action_activity(
                 _targets = _caller_chain_targets(_edges)
                 _banked_here: list[str] = []
                 if evidence_repo is not None:
+                    from investigation_agent_platform.domain.evidence.models import (
+                        EvidenceType as _EvidenceType,
+                    )
                     from investigation_agent_platform.domain.evidence.requests import (
                         SourceRequest as _SourceRequest,
                     )
@@ -4854,6 +4868,16 @@ async def execute_action_activity(
                                 start_line=max(1, _anchor - 40),
                                 end_line=_anchor + 40,
                             ),
+                        )
+                        _read = _read.model_copy(
+                            update={
+                                "evidence_type": _EvidenceType.SOURCE_CODE,
+                                "attributes": {
+                                    **(getattr(_read, "attributes", None) or {}),
+                                    "read_mode": "range",
+                                    "call_graph_role": "caller",
+                                },
+                            }
                         )
                         await evidence_repo.save(tenant_id, _read, investigation_id)
                         _banked_here.append(str(_read.evidence_id))
@@ -5144,22 +5168,28 @@ async def execute_action_activity(
                 claim_cited = list(cited)
                 assessments: list[Any] = []
                 typed_list = [
-                    raw for (text, _kind), raw in proposed_claims.items() if text == statement
+                    (claim_key, raw)
+                    for claim_key, raw in proposed_claims.items()
+                    if claim_key[0] == statement
                 ]
                 if typed_list:
                     # A typed claim carries ONLY its own binding — the
                     # batch-wide list is dropped, never merged.
                     claim_cited = []
-                for typed in typed_list:
+                claim_binding_ids: dict[tuple[str, str, str, str, str], list[UUID]] = {}
+                for claim_key, typed in typed_list:
                     typed_cited: list[Any] = []
                     for raw in (typed.get("evidence_ids", []) or [])[:20]:
                         try:
                             cid = UUID(str(raw))
                         except (ValueError, TypeError, AttributeError):
                             continue
-                        if cid in known_evidence_ids and cid not in claim_cited:
-                            claim_cited.append(cid)
-                            typed_cited.append(cid)
+                        if cid in known_evidence_ids:
+                            if cid not in claim_cited:
+                                claim_cited.append(cid)
+                            if cid not in typed_cited:
+                                typed_cited.append(cid)
+                    claim_binding_ids[claim_key] = typed_cited
                     try:
                         kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
                         raw_target = typed.get("target")
@@ -5167,40 +5197,6 @@ async def execute_action_activity(
                             ClaimTarget.model_validate(raw_target)
                             if isinstance(raw_target, dict)
                             else None
-                        )
-                        assessments.extend(
-                            HypothesisEvidenceAssessment(
-                                hypothesis_id=hypothesis_id,
-                                evidence_id=cid,
-                                assessment=AssessmentType.SUPPORTS,
-                                strength=AssessmentStrength.MODERATE,
-                                reason=f"cited by {kind.value} claim"[:1024],
-                                claim_kind=kind,
-                                claim_target=target,
-                                value_semantics=(
-                                    str(
-                                        typed.get("value_semantics")
-                                        or (
-                                            (raw_target or {}).get("value_semantics")
-                                            if isinstance(raw_target, dict)
-                                            else ""
-                                        )
-                                    )[:64]
-                                    or None
-                                ),
-                                claimed_value=(
-                                    str(
-                                        typed.get("claimed_value")
-                                        or (
-                                            (raw_target or {}).get("claimed_value")
-                                            if isinstance(raw_target, dict)
-                                            else ""
-                                        )
-                                    )[:512]
-                                    or None
-                                ),
-                            )
-                            for cid in typed_cited
                         )
                         if kind == ClaimKind.DEFINITION:
                             raw_resolution = next(
@@ -5262,6 +5258,45 @@ async def execute_action_activity(
                         # claim stays untyped and verifies by inference.
                         continue
                 try:
+                    for claim_key, typed in typed_list:
+                        target_data = typed.get("target")
+                        target_data = target_data if isinstance(target_data, dict) else {}
+                        edge_target = (
+                            ClaimTarget.model_validate(target_data) if target_data else None
+                        )
+                        kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
+                        fact_category = typed.get("fact_category") or (
+                            edge_target.fact_category.value
+                            if edge_target is not None and edge_target.fact_category is not None
+                            else None
+                        )
+                        for evidence_id in claim_binding_ids.get(claim_key, []):
+                            assessment = HypothesisEvidenceAssessment(
+                                hypothesis_id=hypothesis_id,
+                                evidence_id=evidence_id,
+                                assessment=AssessmentType.SUPPORTS,
+                                strength=AssessmentStrength.MODERATE,
+                                reason=f"cited by {kind.value} claim",
+                                claim_kind=kind,
+                                claim_target=edge_target,
+                                commit_id=claim_key[3] or None,
+                                fact_category=fact_category,
+                                value_semantics=(
+                                    str(
+                                        typed.get("value_semantics")
+                                        or target_data.get("value_semantics", "")
+                                    )[:64]
+                                    or None
+                                ),
+                                claimed_value=(
+                                    str(
+                                        typed.get("claimed_value")
+                                        or target_data.get("claimed_value", "")
+                                    )[:512]
+                                    or None
+                                ),
+                            )
+                            assessments.append(assessment)
                     await hypothesis_repo.save(
                         tenant_id,
                         Hypothesis(
@@ -5731,8 +5766,10 @@ async def verify_root_cause_activity(
             code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
             code_value_claim = VerificationEngine.claims_field_value(
                 str(getattr(candidate, "statement", "") or "")
-            )
+            ) or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
             code_value_answered = code_value_result is not None and not refuting
+            history_result = engine.validate_history_claim(candidate, bound, contradictions)
+            history_answered = history_result is not None and not refuting
             # Init up front: every fast path below assigns only on its taken
             # branch, and the general-build guard is skipped when
             # code_value_claim is true — without this, a field-value claim
@@ -5742,12 +5779,18 @@ async def verify_root_cause_activity(
             if code_value_answered:
                 result = code_value_result
                 causal_chain = []
+            elif history_answered:
+                result = history_result
+                causal_chain = []
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
             location_result = engine.validate_location_claim(candidate, bound, contradictions)
             location_answered = (
-                location_result is not None and not refuting and not code_value_claim
+                location_result is not None
+                and not refuting
+                and not code_value_claim
+                and not history_answered
             )
             if location_answered:
                 result = location_result
@@ -5756,7 +5799,12 @@ async def verify_root_cause_activity(
             # legacy verifier mode like the location path.
             doc_answered = False
             doc_result = None
-            if not location_answered and not code_value_answered and not code_value_claim:
+            if (
+                not location_answered
+                and not code_value_answered
+                and not history_answered
+                and not code_value_claim
+            ):
                 try:
                     doc_result = engine.validate_doc_claim(candidate, bound, contradictions)
                     doc_answered = doc_result is not None and not refuting
@@ -5793,6 +5841,7 @@ async def verify_root_cause_activity(
             if (
                 not location_answered
                 and not code_value_answered
+                and not history_answered
                 and not doc_answered
                 and not code_value_claim
             ):
@@ -5840,6 +5889,7 @@ async def verify_root_cause_activity(
             if (
                 not location_answered
                 and not code_value_answered
+                and not history_answered
                 and not doc_answered
                 and not state_answered
                 and not code_value_claim
@@ -5862,12 +5912,13 @@ async def verify_root_cause_activity(
                 blockers.append(f"{len(refuting)} refuting evidence item(s) bound")
             if code_value_claim and not code_value_answered:
                 blockers.append("code value claim lacks a matching deterministic resolution")
-            if code_value_answered:
+            if code_value_answered or history_answered:
                 blockers.clear()
             if (
                 not causal_chain
                 and not location_answered
                 and not code_value_answered
+                and not history_answered
                 and not doc_answered
                 and not state_answered
                 and not code_value_claim
@@ -5895,9 +5946,13 @@ async def verify_root_cause_activity(
             elif code_value_answered:
                 result = code_value_result
                 causal_chain = []
+            elif history_answered:
+                result = history_result
+                causal_chain = []
             elif (
                 not code_value_claim
                 and not location_answered
+                and not history_answered
                 and not doc_answered
                 and not state_answered
             ):
@@ -6810,8 +6865,10 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     )
     code_value_claim = VerificationEngine.claims_field_value(
         str(getattr(candidate, "statement", "") or "")
-    )
+    ) or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
     code_value_answered = code_value_verification is not None and not refuting
+    history_verification = _verify_engine.validate_history_claim(candidate, bound, contradictions)
+    history_answered = history_verification is not None and not refuting
     if code_value_claim and not code_value_answered:
         await _persist_abstention(
             "refuted" if refuting else "insufficient",
@@ -6819,10 +6876,15 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             candidate.id,
         )
         return InvestigationStatus.COMPLETED
-    location_verification = VerificationEngine().validate_location_claim(
+    location_verification = _verify_engine.validate_location_claim(
         candidate, bound, contradictions
     )
-    location_answered = location_verification is not None and not refuting and not code_value_claim
+    location_answered = (
+        location_verification is not None
+        and not refuting
+        and not code_value_claim
+        and not history_answered
+    )
     # T1-1: doc validation up front so the abstention check below sees it.
     doc_answered = False
     doc_verification = None
@@ -6837,6 +6899,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     if (
         not location_answered
         and not code_value_answered
+        and not history_answered
         and not doc_answered
         and not code_value_claim
     ):
@@ -6854,6 +6917,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             not causal_chain
             and not location_answered
             and not code_value_answered
+            and not history_answered
             and not doc_answered
             and not state_answered
         )
@@ -6867,6 +6931,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             not causal_chain
             and not location_answered
             and not code_value_answered
+            and not history_answered
             and not doc_answered
             and not state_answered
         ):
@@ -6879,6 +6944,8 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         verification = location_verification
     elif code_value_answered:
         verification = code_value_verification
+    elif history_answered:
+        verification = history_verification
     elif doc_answered and doc_verification is not None:
         verification = doc_verification
     elif state_answered and state_verification is not None:
@@ -6886,6 +6953,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     if (
         not location_answered
         and not code_value_answered
+        and not history_answered
         and not doc_answered
         and not state_answered
         and not code_value_claim
@@ -6912,6 +6980,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         policy,
         location_validated=location_answered,
         code_value_validated=code_value_answered,
+        history_validated=history_answered,
         doc_validated=doc_answered,
         state_validated=state_answered,
     )
@@ -6956,7 +7025,13 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         tenant_id=tenant_id,
         investigation_id=investigation_id,
         finding_type=FindingType.OBSERVATION
-        if (location_answered or code_value_answered or doc_answered or state_answered)
+        if (
+            location_answered
+            or code_value_answered
+            or history_answered
+            or doc_answered
+            or state_answered
+        )
         else FindingType.ROOT_CAUSE,
         title=hyp.title,
         statement=hyp.statement,

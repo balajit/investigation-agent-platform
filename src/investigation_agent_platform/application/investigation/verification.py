@@ -935,12 +935,24 @@ class VerificationEngine:
                 hypothesis, "target", None
             )
             if category == JavaFactCategory.SOURCE_VALUE_FACT:
-                if claimed_value is not None and str(claimed_value) != str(
+                if claimed_value is None:
+                    return (False, "source-value claim has no structured claimed_value")
+                if resolution.resolved_value is None:
+                    return (False, "resolved source fact has no comparable value")
+                if str(claimed_value) != str(resolution.resolved_value):
+                    return (
+                        False,
+                        f"claimed value {claimed_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
+                    )
+                statement_value = VerificationEngine._claimed_literal_from_statement(
+                    str(getattr(hypothesis, "statement", "") or "")
+                )
+                if statement_value is not None and statement_value != str(
                     resolution.resolved_value
                 ):
                     return (
                         False,
-                        f"claimed value {claimed_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
+                        f"claim statement conflicts with resolved source value {resolution.resolved_value!r}",
                     )
                 subject = (
                     str(getattr(target, "symbol", "") or "")
@@ -1003,6 +1015,16 @@ class VerificationEngine:
             statement or "",
         )
         if match is None:
+            # Confident fallback for "<trigger> of <symbol> is <literal>",
+            # e.g. "The default value of x is 999". The symbol slot is a
+            # single dotted identifier; nothing else may intervene.
+            match = re.search(
+                r"(?i)(?:default\s+value|initial\s+value|field\s+value|value)"
+                r"\s+of\s+[A-Za-z_][\w.]*\s+is\s+"
+                r"(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)",
+                statement or "",
+            )
+        if match is None:
             return None
         value = match.group(1).strip()
         if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
@@ -1012,9 +1034,12 @@ class VerificationEngine:
     def validate_code_value_claim(
         self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
     ) -> VerificationResult | None:
-        """Verify a typed field value against trusted analyzer output."""
+        """Verify typed source-value claims against trusted analyzer output."""
         statement = str(getattr(hypothesis, "statement", "") or "")
-        if not self.claims_field_value(statement) or self.concedes_claim(statement):
+        if not (
+            self.claims_field_value(statement)
+            or self._fact_category_of(hypothesis) == JavaFactCategory.SOURCE_VALUE_FACT
+        ) or self.concedes_claim(statement):
             return None
         if any(
             getattr(c, "resolution_status", "") == "UNRESOLVED"
@@ -1025,6 +1050,9 @@ class VerificationEngine:
             for c in (contradictions or [])
         ):
             return None
+        fact_category = self._fact_category_of(hypothesis)
+        if fact_category is not None:
+            return self.validate_java_fact_claim(hypothesis, evidence_items, contradictions)
         ok, reason = self.code_value_proof(hypothesis, evidence_items)
         resolution = self._resolution_from_evidence(evidence_items)
         if not ok or resolution is None:
@@ -1385,9 +1413,11 @@ class VerificationEngine:
                 i
                 for i in shown
                 if VerificationEngine._symbol_in_text(
-                    caller, str(getattr(i, "content_snippet", "") or "")
+                    caller.rsplit(".", 1)[-1], str(getattr(i, "content_snippet", "") or "")
                 )
-                or VerificationEngine._symbol_in_text(caller, VerificationEngine._item_file(i))
+                or VerificationEngine._symbol_in_text(
+                    caller.rsplit(".", 1)[-1], VerificationEngine._item_file(i)
+                )
             ]
             if not shown:
                 return (False, f"call to '{callee}' is shown but not from '{caller}'")
@@ -1459,12 +1489,217 @@ class VerificationEngine:
         if kind == ClaimKind.DEFINITION:
             return VerificationEngine.definition_window_proof(evidence_items, target)
         if kind == ClaimKind.CALL_EDGE:
+            edge_assessments = [
+                assessment
+                for assessment in (getattr(hypothesis, "assessments", None) or [])
+                if getattr(assessment, "claim_kind", None) == ClaimKind.CALL_EDGE
+                and getattr(assessment, "claim_target", None) is not None
+            ]
+            if edge_assessments:
+                evidence_by_id = {
+                    str(getattr(item, "evidence_id", "")): item
+                    for item in evidence_items or []
+                }
+                for assessment in edge_assessments:
+                    row = evidence_by_id.get(str(assessment.evidence_id))
+                    if row is None:
+                        return (False, "a caller edge's bound call-site evidence is unavailable")
+                    edge_ok, edge_reason = VerificationEngine.call_site_proof(
+                        [row], assessment.claim_target, statement
+                    )
+                    if not edge_ok:
+                        return (False, edge_reason)
+                named_callers: list[str] = []
+                for item in evidence_items or []:
+                    if VerificationEngine._item_type(item) not in VerificationEngine.CODE_EVIDENCE_TYPES:
+                        continue
+                    if VerificationEngine._item_window(item) is None:
+                        continue
+                    if not VerificationEngine._call_shown(
+                        str(getattr(target, "symbol", "") or ""),
+                        str(getattr(item, "content_snippet", "") or ""),
+                    ):
+                        continue
+                    file_stem = (
+                        VerificationEngine._item_file(item)
+                        .rsplit("/", 1)[-1]
+                        .rsplit(".", 1)[0]
+                    )
+                    if file_stem and re.search(
+                        rf"(?<![A-Za-z0-9_]){re.escape(file_stem)}(?![A-Za-z0-9_])",
+                        statement,
+                    ):
+                        named_callers.append(file_stem.casefold())
+                bound_callers = {
+                    str(getattr(a.claim_target, "counterpart", "") or "")
+                    .rsplit(".", 1)[-1]
+                    .casefold()
+                    for a in edge_assessments
+                    if getattr(a, "claim_target", None) is not None
+                }
+                if set(named_callers) - bound_callers:
+                    return (False, "caller enumeration names a caller without its own CALL_EDGE claim")
+                return (True, "")
+            aggregate_edges = VerificationEngine._aggregate_call_edges(hypothesis)
+            if aggregate_edges:
+                for edge in aggregate_edges:
+                    edge_ok, edge_reason = VerificationEngine.call_site_proof(
+                        evidence_items, edge, statement
+                    )
+                    if not edge_ok:
+                        return (False, edge_reason)
+                return (True, "")
             return VerificationEngine.call_site_proof(evidence_items, target, statement)
         if kind == ClaimKind.BEHAVIOR:
             return VerificationEngine.behavior_proof(evidence_items)
         if kind == ClaimKind.ABSENCE:
             return VerificationEngine.absence_proof(evidence_items, target)
+        if kind == ClaimKind.HISTORY:
+            return VerificationEngine.history_proof(evidence_items, target)
         return None
+
+    @staticmethod
+    def _aggregate_call_edges(hypothesis: Any) -> list[ClaimTarget]:
+        """Detect claims whose one target actually asserts several callers."""
+        target = getattr(hypothesis, "claim_target", None)
+        if target is None or not getattr(target, "counterpart", None):
+            return []
+        counterpart = str(target.counterpart)
+        names = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", counterpart)
+        names = [name for name in names if name.casefold() not in {"and", "or"}]
+        if len(names) < 2:
+            return []
+        return [
+            ClaimTarget(
+                symbol=target.symbol,
+                counterpart=name,
+                file_path=target.file_path,
+                line_start=target.line_start,
+                line_end=target.line_end,
+            )
+            for name in names
+        ]
+
+    @staticmethod
+    def history_proof(
+        evidence_items: list[Any], target: ClaimTarget | None
+    ) -> tuple[bool, str]:
+        """A cited commit row must identify the claimed file and commit."""
+        if target is None or not target.file_path or not target.commit_id:
+            return (False, "history claim must identify target.file_path and target.commit_id")
+        path_rows: list[Any] = []
+        matching_rows: list[Any] = []
+        for item in evidence_items or []:
+            if VerificationEngine._item_type(item) != "COMMIT_HISTORY":
+                continue
+            if not VerificationEngine._paths_match(target.file_path, VerificationEngine._item_file(item)):
+                continue
+            path_rows.append(item)
+            revision = str(
+                getattr(
+                    getattr(getattr(item, "provenance", None), "source_location", None),
+                    "revision",
+                    "",
+                )
+                or ""
+            )
+            commit_id = target.commit_id.lower()
+            revision_lower = revision.lower()
+            if not (revision_lower.startswith(commit_id) or commit_id.startswith(revision_lower)):
+                continue
+            content = "\n".join(
+                str(getattr(item, field, "") or "")
+                for field in ("title", "summary", "content_snippet", "source")
+            )
+            # Require a meaningful commit description in the same row;
+            # matching a path and hash alone does not ground "what changed".
+            description = str(getattr(item, "summary", "") or "").strip()
+            if description and content.strip():
+                matching_rows.append(item)
+        if path_rows and matching_rows:
+            newest = max(
+                path_rows,
+                key=lambda item: getattr(item, "observed_at", None)
+                or getattr(item, "retrieved_at", None)
+                or datetime.min.replace(tzinfo=UTC),
+            )
+            if newest in matching_rows:
+                return (True, "")
+        return (
+            False,
+            f"no cited COMMIT_HISTORY row matches {target.file_path} at commit {target.commit_id}",
+        )
+
+    def validate_history_claim(
+        self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
+    ) -> VerificationResult | None:
+        """Verify a recent-change statement against its exact commit subject."""
+        if VerificationEngine.effective_claim_kind(hypothesis) != ClaimKind.HISTORY:
+            return None
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        if self.concedes_claim(statement):
+            return None
+        if any(
+            getattr(c, "resolution_status", "") == "UNRESOLVED"
+            and str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))).upper()
+            in {"HIGH", "CRITICAL"}
+            for c in contradictions or []
+        ):
+            return None
+        target = getattr(hypothesis, "claim_target", None)
+        proof_ok, _ = VerificationEngine.history_proof(evidence_items, target)
+        if not proof_ok or target is None:
+            return None
+        matching: list[Any] = []
+        path_commits: list[Any] = []
+        for item in evidence_items or []:
+            if VerificationEngine._item_type(item) != "COMMIT_HISTORY":
+                continue
+            if not VerificationEngine._paths_match(target.file_path or "", VerificationEngine._item_file(item)):
+                continue
+            revision = str(
+                getattr(
+                    getattr(getattr(item, "provenance", None), "source_location", None),
+                    "revision",
+                    "",
+                )
+                or ""
+            ).lower()
+            if not revision:
+                continue
+            path_commits.append(item)
+            commit_id = str(target.commit_id or "").lower()
+            subject = str(getattr(item, "summary", "") or "").strip()
+            if (
+                (revision.startswith(commit_id) or commit_id.startswith(revision))
+                and subject
+                and subject.casefold() in statement.casefold()
+            ):
+                matching.append(item)
+        if not matching or not path_commits:
+            return None
+        newest = max(
+            path_commits,
+            key=lambda item: getattr(item, "observed_at", None)
+            or getattr(item, "retrieved_at", None)
+            or datetime.min.replace(tzinfo=UTC),
+        )
+        if newest not in matching:
+            return None
+        confidence = InvestigationConfidence(
+            coverage_score=1.0,
+            reliability_score=1.0,
+            causal_score=0.5,
+            contradiction_penalty=0.0,
+        )
+        return VerificationResult(
+            hypothesis_id=hypothesis.id,
+            status=VerificationStatus.VERIFIED,
+            corroborating_evidence_ids=[item.evidence_id for item in matching],
+            explanation="Recent-change claim matches the cited file, commit, and commit subject.",
+            confidence=confidence,
+            location_validated=True,
+        )
 
     @staticmethod
     def claims_location(statement: str) -> bool:
@@ -1870,7 +2105,12 @@ class VerificationEngine:
         # location answer, whatever its phrasing ("found in" inside a
         # behavior claim must not take the citations-only fast path).
         claim_kind = VerificationEngine.effective_claim_kind(hypothesis)
-        if claim_kind in (ClaimKind.BEHAVIOR, ClaimKind.ABSENCE, ClaimKind.CAUSAL):
+        if claim_kind in (
+            ClaimKind.BEHAVIOR,
+            ClaimKind.ABSENCE,
+            ClaimKind.HISTORY,
+            ClaimKind.CAUSAL,
+        ):
             return None
         # G9 correction fallback: phrasing patterns miss ("the correct file
         # is X"), so a statement naming a cited evidence path qualifies as
@@ -3125,6 +3365,7 @@ class ConclusionGate:
         doc_validated: bool = False,
         state_validated: bool = False,
         code_value_validated: bool = False,
+        history_validated: bool = False,
     ) -> ConclusionGateDecision:
         blockers: list[str] = []
         if verification.status != VerificationStatus.VERIFIED:
@@ -3151,6 +3392,7 @@ class ConclusionGate:
             and not doc_validated
             and not state_validated
             and not code_value_validated
+            and not history_validated
         ):
             # G1: location answers have no causal chain by nature — the
             # location validation (cited code with provenance) stands in.

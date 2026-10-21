@@ -41,6 +41,7 @@ class ClaimKind(StrEnum):
     BEHAVIOR: "the code does X at runtime" — needs code AND runtime evidence.
     ABSENCE: "X does not exist / is never called" — needs a scoped, empty
         search proof; an empty result alone is never proof.
+    HISTORY: "file F changed in commit C" — needs a matching COMMIT_HISTORY row.
     CAUSAL: root-cause mechanism — the existing causal-chain path.
     """
 
@@ -48,6 +49,7 @@ class ClaimKind(StrEnum):
     CALL_EDGE = "CALL_EDGE"
     BEHAVIOR = "BEHAVIOR"
     ABSENCE = "ABSENCE"
+    HISTORY = "HISTORY"
     CAUSAL = "CAUSAL"
 
 
@@ -68,6 +70,7 @@ class ClaimTarget(BaseModel):
     line_end: int | None = Field(default=None, ge=1)
     scope: str | None = Field(default=None, max_length=512)
     declaring_type: str | None = Field(default=None, max_length=512)
+    commit_id: str | None = Field(default=None, max_length=64)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
@@ -90,6 +93,7 @@ class HypothesisEvidenceAssessment(BaseModel):
     reason: str = Field(..., max_length=1024)
     claim_kind: ClaimKind | None = None
     claim_target: ClaimTarget | None = None
+    commit_id: str | None = Field(default=None, max_length=64)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
@@ -146,6 +150,13 @@ class Hypothesis(BaseModel):
         for asm in self.assessments:
             if asm.claim_target is not None:
                 return asm.claim_target
+        return None
+
+    @property
+    def commit_id(self) -> str | None:
+        for asm in self.assessments:
+            if asm.commit_id:
+                return asm.commit_id
         return None
 
     @property

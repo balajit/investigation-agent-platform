@@ -193,13 +193,36 @@ def _check_definition(expect: dict, root: str, rows: list) -> tuple:
 
 def _check_callers(expect: dict, root: str, rows: list) -> tuple:
     callee = expect.get("callee", "")
-    shown = any(_call_shown(callee, str(r.get("content_snippet") or "")) for r in rows)
-    if callee and not shown:
-        return (False, f"no cited row shows a call to '{callee}'")
-    corpus = root + "\n" + "\n".join(_row_texts(r) for r in rows)
-    for caller in expect.get("expect_any") or []:
-        if caller.lower() not in corpus.lower():
-            return (False, f"expected caller '{caller}' not grounded")
+    callee_method = str(expect.get("callee_method") or "").strip()
+    candidates = [str(c) for c in (expect.get("expect_any") or []) if str(c).strip()]
+    grounded: list[str] = []
+    for caller in candidates:
+        for row in rows:
+            file_path, line_start, line_end, revision = _row_location(row)
+            snippet = str(row.get("content_snippet") or "")
+            invocation = callee_method or callee
+            caller_stem = caller.rsplit(".", 1)[-1]
+            source_evidence = str(row.get("evidence_type", "") or "").upper() in {
+                "SOURCE_CODE",
+                "EXCEPTION_PATH",
+            }
+            caller_file_match = caller_stem.lower() in file_path.lower()
+            if (
+                caller_stem.lower() in _row_texts(row).lower()
+                and callee
+                and source_evidence
+                and _call_shown(invocation, snippet)
+                and isinstance(line_start, int)
+                and isinstance(line_end, int)
+                and bool(revision)
+                and caller_file_match
+            ):
+                grounded.append(caller)
+                break
+    if not grounded:
+        if not candidates:
+            return (False, "no expected caller candidates configured")
+        return (False, f"no expected caller has a cited range showing a call to '{callee}'")
     return (True, "")
 
 
@@ -207,8 +230,23 @@ def _check_history(expect: dict, root: str, rows: list) -> tuple:
     want = expect.get("cited_path", "")
     if want and want.lower() not in root.lower():
         return (False, f"conclusion names no {want}")
-    if not any(str(r.get("evidence_type", "") or "").upper() == "COMMIT_HISTORY" for r in rows):
+    commits = [
+        row
+        for row in rows
+        if str(row.get("evidence_type", "") or "").upper() == "COMMIT_HISTORY"
+        and (not want or _path_matches(want, _row_location(row)[0]))
+    ]
+    if not commits:
         return (False, "no cited commit row")
+    if not any(
+        (subject := str(row.get("summary") or "").strip())
+        and any(
+            len(token) >= 4 and token.lower() in root.lower()
+            for token in re.findall(r"[A-Za-z0-9_-]+", subject)
+        )
+        for row in commits
+    ):
+        return (False, "conclusion does not describe a cited commit subject")
     return (True, "")
 
 

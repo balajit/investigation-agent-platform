@@ -614,7 +614,7 @@ def _source_value_target(
     action_history: list | None,
     forced_count: int,
 ) -> dict[str, Any] | None:
-    """Request exact Java source before accepting a field-value claim."""
+    """Request exact Java source before accepting a field or method value."""
     try:
         if int(forced_count or 0) >= 2:
             return None
@@ -624,31 +624,49 @@ def _source_value_target(
         for claim in data.get("claims", []) or []:
             if not isinstance(claim, dict):
                 continue
-            if str(claim.get("claim_kind", "")).upper() != "DEFINITION":
-                continue
-            if str(claim.get("value_semantics", "")).upper() not in {
-                "EXPLICIT_INITIALIZER",
-                "LANGUAGE_DEFAULT",
-            }:
+            semantics = str(
+                claim.get("value_semantics")
+                or (claim.get("target") or {}).get("value_semantics", "")
+            ).upper()
+            fact_category = str(
+                claim.get("fact_category")
+                or (claim.get("target") or {}).get("fact_category", "")
+            ).upper()
+            method_return = fact_category == "SOURCE_VALUE_FACT" and semantics == "GUARDED_RETURN_LITERAL"
+            field_value = (
+                str(claim.get("claim_kind", "")).upper() == "DEFINITION"
+                and semantics in {"EXPLICIT_INITIALIZER", "LANGUAGE_DEFAULT"}
+            )
+            if not (method_return or field_value):
                 continue
             target = claim.get("target") or {}
             if not isinstance(target, dict):
                 continue
-            field_name = str(target.get("symbol", "") or "").strip()
+            symbol = str(target.get("symbol", "") or "").strip()
             file_path = str(target.get("file_path", "") or "").strip()
-            if not field_name or not file_path or not file_path.lower().endswith(".java"):
+            if not symbol or not file_path or not file_path.lower().endswith(".java"):
                 continue
             if any(
                 isinstance(action, dict)
                 and str(action.get("action", "")).upper() == "GET_CODE"
                 and int(action.get("evidence_added", 0) or 0) > 0
                 and str((action.get("parameters") or {}).get("file_path", "")).strip() == file_path
-                and str((action.get("parameters") or {}).get("field_name", "")).strip()
-                == field_name
+                and (
+                    str((action.get("parameters") or {}).get("method_name", "")).strip()
+                    == symbol.rsplit(".", 1)[-1]
+                    if method_return
+                    else str((action.get("parameters") or {}).get("field_name", "")).strip()
+                    == symbol
+                )
                 for action in (action_history or [])
             ):
                 continue
-            params: dict[str, Any] = {"file_path": file_path, "field_name": field_name}
+            params: dict[str, Any] = {"file_path": file_path}
+            params["method_name" if method_return else "field_name"] = (
+                symbol.rsplit(".", 1)[-1] if method_return else symbol
+            )
+            if method_return and target.get("guard_condition"):
+                params["guard_condition"] = str(target["guard_condition"])
             for target_key, param_key in (
                 ("declaring_type", "declaring_type"),
                 ("revision", "revision"),

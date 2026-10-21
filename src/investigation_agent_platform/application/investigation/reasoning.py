@@ -52,7 +52,7 @@ def _decision_extra(decision: Any) -> dict[str, Any]:
         return {}
 
 
-REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-012"
+REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-014"
 
 
 def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -103,6 +103,8 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
             "file_path",
             "scope",
             "declaring_type",
+            "commit_id",
+            "guard_condition",
         ):
             if key in raw:
                 out[key] = _clean_opt_str(raw[key], 512)
@@ -179,7 +181,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "action": {"action_type": "<one of QUERY_STATE|SEARCH_LOGS|GET_CODE|SEARCH_CODE|FIND_SYMBOL|FIND_CALL_GRAPH|GET_CODE_HISTORY|PROBE_API|CORRELATE|WALK_STACK|TRACE_LOGIC|TRACE_JOURNEY|WALK_SESSION_GRAPH|SEARCH_REF_DOCS|FORMULATE_HYPOTHESIS|VERIFY_HYPOTHESIS|CONCLUDE>", "parameters": {...}} — the single next step.
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; MANDATORY non-empty whenever visible evidence is non-empty — these are persisted as hypotheses and required for verification"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale".
 Do NOT include execution_hash (derived server-side).""",
@@ -195,14 +197,14 @@ For CORRELATE you MUST set "parameters": {"root_evidence_ids": [<evidence_id str
         """compiled_context.evidence_excerpts is the only model-visible evidence. Each excerpt carries evidence_id, evidence_type, source, and — for code — target, window, read_mode, symbol_spans, truncated, next_window, and citable_evidence_id. Cite evidence_id values from this list only; an ID absent from visible_evidence_ids is not visible and must not be cited.
 A code excerpt's content is the fetched window, not a summary. Reason over the window; never over the summary alone.
 When an excerpt carries code_fact_resolution, it is a deterministic analysis of that exact source evidence, not model-generated metadata. For a field-value claim, cite that source evidence, set target.declaring_type, copy the resolution's value_semantics and resolved_value to the claim's target, and do not state that the value remains effective after constructors, initializer blocks, setters, configuration binding, or runtime execution unless those effects are separately established.
-For a method-return question (what a method returns under a condition, which default applies on a branch), GET_CODE the method's file with parameters method_name (plus declaring_type and guard_condition when known, e.g. {"file_path": "...", "method_name": "normalize", "declaring_type": "LegacyCodeMapper", "guard_condition": "orderType == null"}); the resolver attaches code_fact_resolution_v2. Claim the answer with fact_category SOURCE_VALUE_FACT, target.symbol "<declaring_type>.<method>", and claimed_value exactly from the resolution — same range-read plus resolution rules as field-value claims, and the same prohibition on promoting the literal past the guarded return.
+For a method-return question (what a method returns under a condition, which default applies on a branch), GET_CODE the method's file with parameters method_name (plus declaring_type and guard_condition when known, e.g. {"file_path": "...", "method_name": "normalize", "declaring_type": "LegacyCodeMapper", "guard_condition": "orderType == null"}); the resolver attaches code_fact_resolution_v2. Claim the answer with fact_category SOURCE_VALUE_FACT, target.symbol "<declaring_type>.<method>", target.file_path matching the cited source row, value_semantics GUARDED_RETURN_LITERAL, and claimed_value exactly from the resolution — same range-read plus resolution rules as field-value claims, and the same prohibition on promoting the literal past the guarded return.
 When content_truncated is true or next_window is non-null, the packet was cut. Request GET_CODE for next_window.start_line through next_window.end_line before claiming behavior outside the window.
 A search hit or call-graph row is a candidate location, not proof. A definition hypothesis (defined/declared/implemented in X) MUST be followed by GET_CODE of the cited file before VERIFY_HYPOTHESIS — search matches alone never verify a definition.
 When citing code, cite the range-read evidence ID (GET_CODE result), not just the search-match ID that found the file.
 A log line merely NAMING a symbol is not a location citation — hedged claims like 'referenced in logs, suggesting X lives in Y' never verify without a code row for Y whose window contains the symbol.
 A location answer verifies on code citations alone only when the cited range-read window contains the asserted symbol or line; that is what 'location citation' means.
 Behavior claims need code that shows the mechanism plus runtime evidence (logs, state, or a live probe). Code alone establishes structure, not observed behavior.
-Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit that does not show the call is not a call site. When the question asks who calls a symbol and several caller edges are visible, emit one CALL_EDGE claim per caller (same target.symbol, one target.counterpart each), each citing its own call-site range read — a single-caller answer to a caller-enumeration question is incomplete. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
+Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit does not prove a call. For caller enumeration, emit one CALL_EDGE claim per caller, each with its own call-site row; a single-caller answer to a caller-enumeration question is incomplete. HISTORY: for recent-change questions, cite one COMMIT_HISTORY row per claim, set target.file_path and target.commit_id from that row, and include that exact commit subject in the statement; do not use CAUSAL or require runtime evidence. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
     ),
     (
         "code-reading",

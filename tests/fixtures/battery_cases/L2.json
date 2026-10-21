@@ -7,6 +7,7 @@
     "status": "ANSWERED",
     "claim": "callers",
     "callee": "OrderServiceHandler",
+    "callee_method": "handle",
     "expect_any": ["OrderQualifyHelper", "OrderServiceRestProxy"]
   }
 }

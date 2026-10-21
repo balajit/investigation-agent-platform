@@ -223,3 +223,29 @@ def test_conflicting_claimed_value_fails_closed():
     ok, _ = VerificationEngine.java_fact_proof(hyp, [banked])
     assert not ok
     assert VerificationEngine().validate_java_fact_claim(hyp, [banked], []) is None
+
+
+def test_method_return_fact_without_structured_value_fails_closed():
+    ev = _source_evidence(_MAPPER)
+    resolution = resolve_java_method_return_fact(ev, "normalize", guard_condition="orderType == null")
+    banked = ev.model_copy(
+        update={
+            "attributes": {
+                **ev.attributes,
+                CODE_FACT_RESOLUTION_V2_KEY: resolution.model_dump(mode="json"),
+            }
+        }
+    )
+    hyp = SimpleNamespace(
+        id=uuid4(),
+        statement="When orderType is null, normalize returns STANDARD",
+        claim_target=SimpleNamespace(
+            symbol="com.sample.orders.legacy.LegacyCodeMapper.normalize",
+            claimed_value=None,
+        ),
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        supporting_evidence_ids=[banked.evidence_id],
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [banked])
+    assert not ok
+    assert "no structured claimed_value" in reason

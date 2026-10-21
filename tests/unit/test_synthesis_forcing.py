@@ -87,6 +87,30 @@ def test_source_value_forcing_is_bounded_and_only_for_java():
     )
 
 
+def test_guarded_method_return_claim_forces_method_range_read():
+    claim = {
+        "claim_kind": "CAUSAL",
+        "fact_category": "SOURCE_VALUE_FACT",
+        "value_semantics": "GUARDED_RETURN_LITERAL",
+        "target": {
+            "symbol": "com.sample.LegacyCodeMapper.normalize",
+            "declaring_type": "com.sample.LegacyCodeMapper",
+            "file_path": "src/LegacyCodeMapper.java",
+            "guard_condition": "orderType == null",
+        },
+    }
+    assert _source_value_target(
+        {"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0
+    ) == {
+        "file_path": "src/LegacyCodeMapper.java",
+        "method_name": "normalize",
+        "guard_condition": "orderType == null",
+        "declaring_type": "com.sample.LegacyCodeMapper",
+        "start_line": 1,
+        "end_line": 2000,
+    }
+
+
 def test_no_force_after_cap_reached():
     assert _should_force_formulate(9, 0, ["h1"], 9, 2) is False
 
