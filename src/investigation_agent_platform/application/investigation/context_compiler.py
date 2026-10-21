@@ -20,7 +20,10 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
 # shape changes; persisted per decision for replay/evaluation.
-REASONER_PROMPT_VERSION = "v3-claim-grounded-014"
+# v3-claim-grounded-015: adds the pinned `case_state` block (lifecycle,
+# banked counts by type, known-fact/entity counts, plan length) so the
+# stateless reasoner regains cross-turn facts structurally.
+REASONER_PROMPT_VERSION = "v3-claim-grounded-015"
 CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8
@@ -713,6 +716,7 @@ def enforce_context_budget(
             _section_tokens(ctx.get(key))
             for key in (
                 "plan",
+                "case_state",
                 "hypotheses",
                 "timeline",
                 "pending_questions",
@@ -779,6 +783,31 @@ def enforce_context_budget(
 
 
 @traced("reason", require_scope=False)
+def compile_case_state(state: Any, evidence: list[Any]) -> dict[str, Any]:
+    """Pinned case facts rendered from already-persisted state (SWE-agent ctx §5).
+
+    No new storage, no agent memory: lifecycle, banked counts by evidence
+    type, known-fact/entity counts, tool-history depth, and plan length come
+    from fields the worker already hydrates. Small by construction (scalars
+    only) and pinned — the budget enforcer never sheds it.
+    """
+    by_type: dict[str, int] = {}
+    for item in evidence or []:
+        etype = getattr(getattr(item, "evidence_type", ""), "value", None)
+        key = str(etype or getattr(item, "evidence_type", "") or "UNKNOWN")
+        by_type[key] = by_type.get(key, 0) + 1
+    investigation = getattr(state, "investigation", None)
+    return {
+        "lifecycle_state": str(getattr(getattr(investigation, "status", ""), "value", "") or ""),
+        "banked_total": len(evidence or []),
+        "banked_by_type": by_type,
+        "known_facts": len(getattr(state, "known_facts", []) or []),
+        "known_entities": len(getattr(state, "known_entities", []) or []),
+        "tool_history_depth": len(getattr(state, "tool_history", []) or []),
+        "plan_steps": len(getattr(state, "investigation_plan", []) or []),
+    }
+
+
 def compile_reasoning_context(state: Any) -> dict[str, Any]:
     """Assemble the P0-1 context sections from hydrated investigation state."""
     problem = str(
@@ -826,6 +855,7 @@ def compile_reasoning_context(state: Any) -> dict[str, Any]:
         {
             "prompt_version": REASONER_PROMPT_VERSION,
             "plan": classify_surfaces(problem),
+            "case_state": compile_case_state(state, evidence),
             "hypotheses": compile_hypotheses(hypotheses),
             "timeline": compile_timeline(_get(state, "timeline", []) or []),
             "pending_questions": [

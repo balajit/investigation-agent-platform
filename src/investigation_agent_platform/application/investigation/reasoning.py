@@ -469,7 +469,39 @@ class ReasoningCoordinator(InvestigationReasoner):
                 extra={"tenant_id": tenant_id},
             )
         clean = {k: v for k, v in parsed.items() if k in known}
+        # SWE-agent loop §3: one-action cardinality at the parser layer.
+        # The decision carries exactly one optional action; zero-or-two+
+        # proposals are a FormatError routed into the hidden-requery budget,
+        # never a silent pick-first. Detect the multi-action shapes the
+        # json_object fallback can produce before honoring any of them.
+        _plural = parsed.get("actions")
+        if isinstance(_plural, list) and _plural:
+            raise ValueError(
+                "LLM decision proposes multiple actions; exactly one action "
+                f"is allowed (got {_plural.__len__()} in 'actions')"
+            )
         action_raw = clean.get("action")
+        if isinstance(action_raw, list):
+            raise TypeError(
+                "LLM decision proposes an 'action' list; "
+                "exactly one action object is allowed"
+            )
+        _next_raw = parsed.get("next_action")
+        if isinstance(action_raw, dict) and isinstance(_next_raw, str) and _next_raw:
+            try:
+                _next_type = ActionType(_next_raw)
+            except ValueError:
+                _next_type = None
+            _inner_type = action_raw.get("action_type")
+            if (
+                _next_type is not None
+                and isinstance(_inner_type, str)
+                and _inner_type != _next_type.value
+            ):
+                raise ValueError(
+                    "LLM decision proposes conflicting actions: "
+                    f"'action.action_type={_inner_type}' vs 'next_action={_next_type.value}'"
+                )
         if action_raw is None:
             # json_object-fallback alternate: the model may emit the
             # workflow's own vocabulary (next_action/action_parameters)
@@ -880,45 +912,92 @@ class ReasoningCoordinator(InvestigationReasoner):
             )
             return self._unavailable_decision("empty_llm_response")
 
+        _resample_reasons: list[str] = []
         try:
             decision = self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
         except Exception as exc:
-            # Schema-invalid output is usually sampling noise, not a dead
-            # provider: one bounded resample before declaring the reasoning
-            # step unavailable (4/10 live runs died here with zero evidence).
-            # Field locations (never values) are logged for prompt diagnosis.
+            # SWE-agent loop §2: bounded hidden requery. Schema/cardinality
+            # failures are usually sampling noise, not a dead provider: up to
+            # two hidden resamples (three attempts total) before declaring
+            # the step unavailable. Retries are same-request resamples — the
+            # miss is recorded in trajectory metadata, never fed back as an
+            # observation. Only pydantic ValidationError and the one-action
+            # cardinality ValueErrors ("LLM decision proposes ...") qualify;
+            # anything else (including disallowed action_type) fails closed
+            # immediately — inventing out-of-vocabulary actions is a
+            # prompt/capability problem, not sampling noise.
             from pydantic import ValidationError
 
-            if not isinstance(exc, ValidationError):
+            def _is_resamplable(_e: BaseException) -> bool:
+                if isinstance(_e, ValidationError):
+                    return True
+                return isinstance(_e, (ValueError, TypeError)) and str(_e).startswith(
+                    "LLM decision proposes"
+                )
+
+            if not _is_resamplable(exc):
                 logger.warning(
                     "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
                     extra={"tenant_id": tenant_id, "error": str(exc)},
                 )
                 return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
-            try:
-                fields = sorted(
-                    {
-                        ".".join(str(p) for p in (e.get("loc") or ()) if p != "__root__")
-                        for e in exc.errors()
-                    }
+            decision = None
+            _last_exc: Exception = exc
+            for _attempt in range(2):
+                if isinstance(_last_exc, ValidationError):
+                    try:
+                        _fields = sorted(
+                            {
+                                ".".join(str(p) for p in (e.get("loc") or ()) if p != "__root__")
+                                for e in _last_exc.errors()
+                            }
+                        )
+                    except Exception:
+                        _fields = [type(_last_exc).__name__]
+                else:
+                    # Cardinality failures carry no .errors(); log the
+                    # exception type as the repair signal instead.
+                    _fields = [type(_last_exc).__name__]
+                _resample_reasons.append(
+                    f"{type(_last_exc).__name__}:{','.join(_fields[:5])}"
                 )
-            except Exception:
-                fields = []
-            logger.warning(
-                "LLM decision failed validation; resampling once",
-                extra={"tenant_id": tenant_id, "fields": fields[:10]},
-            )
-            try:
-                resp = await gateway.complete(tenant_id, req)
-                decision = self._validate_llm_decision(
-                    resp.parsed, tenant_id, state.investigation.id
-                )
-            except Exception as exc2:
                 logger.warning(
-                    "LLM decision invalid after resample; returning REASONING_UNAVAILABLE",
-                    extra={"tenant_id": tenant_id, "error": str(exc2)},
+                    "LLM decision failed validation; hidden resample %d/2",
+                    _attempt + 1,
+                    extra={"tenant_id": tenant_id, "fields": _fields[:10]},
                 )
-                return self._unavailable_decision(f"invalid_llm_schema:{type(exc2).__name__}")
+                try:
+                    resp = await gateway.complete(tenant_id, req)
+                    if self._observability is not None:
+                        try:
+                            from investigation_agent_platform.ports.observability.telemetry import (
+                                SpanContext as _ResampleSpanContext,
+                            )
+
+                            _rctx = _ResampleSpanContext(
+                                tenant_id=tenant_id,
+                                investigation_id=state.investigation.id,
+                            )
+                            self._observability.record_llm_call(_rctx, resp.metadata)
+                        except Exception:
+                            pass
+                    if not resp.parsed:
+                        _last_exc = ValueError("empty resampled LLM response")
+                        continue
+                    decision = self._validate_llm_decision(
+                        resp.parsed, tenant_id, state.investigation.id
+                    )
+                    break
+                except Exception as exc2:
+                    _last_exc = exc2
+                    if not _is_resamplable(exc2):
+                        break
+            if decision is None:
+                logger.warning(
+                    "LLM decision invalid after hidden resamples; returning REASONING_UNAVAILABLE",
+                    extra={"tenant_id": tenant_id, "error": str(_last_exc)},
+                )
+                return self._unavailable_decision(f"invalid_llm_schema:{type(_last_exc).__name__}")
         decision = self._ensure_claim_coverage(decision, tenant_id, state)
         # Token accounting: surface this call's usage on the decision so
         # the worker can accumulate per-investigation spend (budget
@@ -934,6 +1013,11 @@ class ReasoningCoordinator(InvestigationReasoner):
             llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
         merged_metadata = dict(getattr(decision, "metadata", None) or {})
         merged_metadata["llm_usage"] = llm_usage
+        # SWE-agent loop §2: hidden-requery accounting — the miss is recorded
+        # in trajectory metadata, never fed back as an observation.
+        if _resample_reasons:
+            merged_metadata["resample_count"] = len(_resample_reasons)
+            merged_metadata["resample_reasons"] = _resample_reasons[:2]
         # P0-1: prompt versioning for replay/evaluation.
         import hashlib as _hashlib
 

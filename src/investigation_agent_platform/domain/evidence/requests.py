@@ -184,6 +184,26 @@ class SourceRequest(BaseModel):
             raise ValueError("Unsafe directory traversal sequence in file_path.")
         return v
 
+    @field_validator("end_line")
+    @classmethod
+    def validate_range_width(cls, v: int | None, info: ValidationInfo) -> int | None:
+        # opencode §3: acquisition-time caps. Reads are ranged and bounded
+        # at the boundary — an unbounded window must never reach the
+        # provider only to be silently cut by the snippet budget. Path-only
+        # reads (no range) stay allowed and are labeled discovery downstream;
+        # explicit ranges wider than the cap must page via next_window.
+        # Internal callers use ±120-line windows (241 lines); the cap leaves
+        # headroom above that without approaching the 4,000-char packet cut.
+        start_line = info.data.get("start_line")
+        if v is not None and start_line is not None and v < start_line:
+            raise ValueError("end_line cannot precede start_line.")
+        if v is not None and start_line is not None and (v - start_line) > 500:
+            raise ValueError(
+                f"Requested range is {v - start_line + 1} lines; "
+                "the per-read cap is 501 lines — page with a narrower window."
+            )
+        return v
+
 
 class CallGraphRequest(BaseModel):
     """Request to generate call hierarchies for target symbols."""

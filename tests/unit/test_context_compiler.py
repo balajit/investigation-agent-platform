@@ -351,3 +351,24 @@ class TestContextShrink:
         second = enforce_context_budget(_ctx(), budget=300)
         assert first["purged"] == second["purged"]
         assert first["estimated_tokens"] == second["estimated_tokens"]
+
+
+def test_case_state_pinned_block_from_persisted_fields():
+    from investigation_agent_platform.application.investigation.context_compiler import (
+        enforce_context_budget,
+    )
+
+    rows = [
+        _evidence(summary="a", etype=EvidenceType.SOURCE_CODE),
+        _evidence(summary="b", etype=EvidenceType.SOURCE_CODE),
+        _evidence(summary="c", etype=EvidenceType.LOG),
+    ]
+    ctx = compile_reasoning_context(_state(rows))
+    block = ctx["case_state"]
+    assert block["banked_total"] == 3
+    assert block["banked_by_type"]["SOURCE_CODE"] == 2
+    assert block["banked_by_type"]["LOG"] == 1
+    assert block["lifecycle_state"] != ""
+    # Pinned: survives even a tiny budget that sheds everything else.
+    squeezed = enforce_context_budget(dict(ctx), budget=50)
+    assert squeezed["case_state"] == block

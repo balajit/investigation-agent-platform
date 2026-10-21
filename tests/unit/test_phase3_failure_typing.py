@@ -746,9 +746,12 @@ class TestInvalidSchemaRetry:
 
     @pytest.mark.asyncio
     async def test_persistent_invalid_abstains_typed(self) -> None:
-        coord, state, gateway = _reason_harness([self._invalid(), self._invalid()])
+        # SWE-agent loop §2: two hidden resamples (three attempts total).
+        coord, state, gateway = _reason_harness(
+            [self._invalid(), self._invalid(), self._invalid()]
+        )
         decision = await coord.reason("tenant-a", state)
-        assert gateway.complete.call_count == 2
+        assert gateway.complete.call_count == 3
         assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
         assert "invalid_llm_schema" in decision.metadata.get("reason", "")
 
