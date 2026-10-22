@@ -2,11 +2,15 @@
 
 Companion to [IAP-TENANT-ONBOARDING-DESIGN.md](./IAP-TENANT-ONBOARDING-DESIGN.md) (decisions D1–D9). This plan sequences the remediation in review-roadmap order, gates each phase on measured evidence, and defines rollback per phase. No phase weakens an existing check, and no destructive flow ships before its backup, approval-binding, and restore proofs pass.
 
+The feedback follow-up requirements and active phase gates are in [the canonical Luna implementation plan](./IAP-TENANT-ONBOARDING-IMPL-PLAN-luna.md) and the [security/concurrency](./IAP-TENANT-ONBOARDING-SECURITY-CONCURRENCY.md), [workflow correctness](./IAP-TENANT-ONBOARDING-WORKFLOW-CORRECTNESS.md), and [deployment/deletion assurance](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md) specifications. Phase 0R in that plan blocks executable intake or dispatch.
+
 ## Operating rules
 
 All phases obey these rules without exception. Intake validation, eligibility evaluation, and approval binding complete before any clone, credential resolution, or external write. Privileged routes re-check capability and approval binding rather than trusting earlier checks. Telemetry uses additive fail-open hooks with closed label vocabularies, so a metrics failure can never fail provisioning. Served-cached conclusions and existing profile revisions are untouched; new optional JSON keys degrade to labeled fallbacks. No commit without operator approval per standing constraint.
 
-## Phase 0 — Scope, identity, and contract skeletons (no behavior change)
+## Historical Phase 0 — Scope and capability foundation
+
+The capability foundation was implemented in commit `cb858f7`. Current as-built status and all active gates are maintained in [the canonical Luna implementation plan](./IAP-TENANT-ONBOARDING-IMPL-PLAN-luna.md); do not use the remaining original phase text below as the active execution sequence.
 
 Goal: land the non-behavioral skeleton the whole remediation stands on. Declare the narrowed scope and trust boundary in the architecture docs, add the tenant registry model with canonical ids and tombstones, add the capability vocabulary with the platform-operator role and bootstrap invitation, and replace placeholder router and CLI examples with explicitly labeled non-executable stubs plus failing conformance test scaffolds so nothing aspirational can be mistaken for working.
 
@@ -20,9 +24,21 @@ Goal: land the non-behavioral skeleton the whole remediation stands on. Declare 
 | Exit | Scope statement reviewed; authorization matrix green; every stub labeled and covered by a failing-then-passing test |
 | Rollback | Pure additions; disable by not wiring routes |
 
+## Phase 0R — Remediate implemented security and concurrency contracts (active details in Luna v2)
+
+Goal: close review gaps in the committed capability helper and control-store schema before enabling intake or dispatch. Preserve the capability vocabulary and migration 023 data while adding scoped grants, reviewed database-role boundaries, tenant-safe references, lifecycle fencing, and execution generations.
+
+| Item | Detail |
+|---|---|
+| Design decisions | Scoped authorization/revocation; registry bootstrap/admin path; forced RLS and tenant-composite relationships; cleanup epoch/fence; dispatch lease fencing; business execution generations. See the security and workflow supplements. |
+| Files created/changed | Scoped grant types/resolver and tests; additive migrations after revision 023 and ORM changes; RLS role contract and database integration tests. |
+| Tests | Cross-tenant/app/environment/operation scope and revocation; real application/worker/admin roles with FORCE RLS; cross-tenant FK rejection; bootstrap privilege audit; stale epoch/lease/generation race tests; fresh-install and upgrade compatibility. |
+| Exit | Security/platform owners approve role/bootstrap boundaries; actual-role isolation and concurrency gates pass; routes/workers remain disabled until exit. |
+| Rollback | Disable routes/workers; preserve all durable request/dispatch/audit records and fencing state. No destructive rollback or removal of committed intent. |
+
 ## Phase 1 — Control store, intake revisions, and executable intake (P1 core)
 
-Goal: make intake durable, versioned, and safe. Ship the registry and control-store tables with RLS and app-role grants, immutable intake revisions with optimistic concurrency, typed secret references with path and value rejection, structured repo identifiers with destination allowlists and commit pinning, and the full tenants intake and status surface with real schemas. Files become offline capture and export only.
+Goal: make intake durable, versioned, and safe. After Phase 0R, use the registry/control-store tables with verified RLS and role boundaries, immutable intake revisions with optimistic concurrency, typed secret references with path and value rejection, structured repo identifiers with destination allowlists and commit pinning, and the tenants intake/status surface. Files become offline capture and export only.
 
 | Item | Detail |
 |---|---|
@@ -54,14 +70,14 @@ Goal: make provisioning resumable and safe. Ship the deterministic workflows wit
 |---|---|
 | Design decisions | D7 (orchestration, ledger, outbox, reconciler), D5 attach semantics |
 | Files created | Workflow definitions, `onboarding_steps` table migration, outbox dispatcher and reconciler, attach merge with tombstone support |
-| Tests | Crash injection before and after each side effect and at dispatch boundaries; replay duplicates nothing; uncertain outcomes reconcile by provider key; stuck jobs alert with explicit resume or terminate; concurrent attaches never lose updates |
+| Tests | Follow the workflow correctness specification: crash injection before/after each side effect and dispatch boundary; replay duplicates nothing; uncertain outcomes reconcile by provider key; lease fencing; `AlreadyStarted`/ambiguous start; terminal retry generation; cancellation at each side-effect boundary; stuck jobs alert with explicit resume or terminate; concurrent attaches never lose updates |
 | Metrics | Step durations, retry rate, stuck workflows, compensation and reconciliation backlog, orphan resources found |
 | Exit | End-to-end apply and attach on fixtures with failure injection green; duplicate submissions replay or conflict correctly; no in-place mutation of the active request snapshot |
 | Rollback | New workflow versions deploy alongside old; in-flight requests drain on their pinned definition |
 
 ## Phase 4 — Exact-plan cleanup with backup proof (P1 core)
 
-Goal: make deletion safe before it exists. Ship deletion manifests with plan-hash binding and atomic approval consumption, dual control where policy requires, legal-hold enforcement, encrypted backup creation with restore rehearsal, tombstones, per-system purge with reconciliation, and residual reporting. No purge ships until the restore drill passes.
+Goal: make deletion safe before it exists. Follow the deployment/deletion assurance specification: derive the store registry from attested deployment inventory, detect drift, fence writes before final enumeration, canonicalize manifests with versioned RFC 8785 rules, atomically consume approval with purge job/outbox creation, and report distinct complete/retained/residual/incomplete/blocked/canceled outcomes. No purge ships until inventory, approval, backup, and restore gates pass.
 
 | Item | Detail |
 |---|---|
@@ -86,11 +102,11 @@ Goal: close the adversarial and operational gaps. Fix pre-auth rate limiting to 
 
 ## Phase 6 — Deferred items with explicit entry conditions (P2/P3)
 
-Full optimistic-concurrency conformance suite, tenant and global quota fairness with load validation, compliance evidence mapping with regulated-tenant approval paths, and self-service, migration, and dedicated-tier futures. Each item starts only when its entry condition in the design's Risks and Documentation Plan is met; none blocks production readiness of Phases 0–5, and none may be built silently without its named owner.
+Full optimistic-concurrency conformance suite beyond the Phase 0R gate, tenant and global quota fairness with load validation, compliance evidence mapping with regulated-tenant approval paths, and self-service, migration, and dedicated-tier futures. Each item starts only when its entry condition in the design's Risks and Documentation Plan is met; none may weaken a Phase 0R–5 gate or be built silently without its named owner.
 
 ## Traceability
 
-Phase 0 covers the scope statement and D1 skeletons. Phase 1 covers D2, D5, and the registry and request tables. Phase 2 covers D3, D4 composition, and D9 eligibility. Phase 3 covers D7 and attach. Phase 4 covers D6 and retention. Phase 5 covers D8, D9 remainder, and operability. Phase 6 covers parked futures. Review roadmap P1 items land in Phases 0–5; P2 and P3 items land in Phase 6 with entry conditions.
+Phase 0 covers the scope statement and D1 vocabulary. Phase 0R repairs the implemented authorization/schema foundations against the three review supplements. Phase 1 covers D2, D5, and the registry/request intake surface. Phase 2 covers D3, D4 composition, and D9 eligibility. Phase 3 covers workflow correctness and attach. Phase 4 covers deployment inventory, D6/D8 approval and deletion assurance. Phase 5 covers remaining abuse controls and operability. Phase 6 covers deferred items. P0 security/concurrency gates precede intake and dispatch; production acceptance gates in the assurance specification precede rollout.
 
 ## Do-not-do list (binding on all phases)
 

@@ -1,14 +1,16 @@
 # Design: IAP Tenant Configuration Onboarding — Luna Review Revision
 
+> **Active design (consolidated):** This file is the single active design. Decisions D1–D10 below remain in force; the three linked supplements are normative where they make the implementation contract more specific. The former `IAP-TENANT-ONBOARDING-DESIGN-Luna-v2.md` review-response delta has been folded into this file and removed. Phase 0R in the implementation plan blocks intake, dispatch, and cleanup until the remediation gate passes.
+
 IAP-scoped tenant configuration onboarding with an explicit trust boundary, canonical tenant registry, operation capabilities, immutable intake revisions, policy-driven readiness, durable Temporal orchestration, transactional-outbox dispatch, and deletion manifests that prove per-store inventory and outcome coverage. This design does not provision customer identity, subscriptions, networks, DNS, certificates, or infrastructure; those remain external authorities.
 
 ## Context
 
-IAP is a multi-tenant investigation platform operating as a shared API/worker fleet. Tenant identity is authenticated from verified JWT claims in production; tenant-bearing relational data uses PostgreSQL/RLS and tenant predicates; background jobs use Temporal execution with a PostgreSQL queryable read model; application profiles have their own revision and activation lifecycle. Operator-home scope files are organized for operator capture and environment configuration, not as shared-fleet state.
+IAP is a multi-tenant investigation platform operating as a shared API/worker fleet. Tenant identity is authenticated from verified JWT claims in production; tenant-bearing relational data uses PostgreSQL/RLS and tenant predicates; background jobs use Temporal execution with a PostgreSQL queryable read model; application profiles have their own revision and activation lifecycle. Operator-home scope files are organized for operator capture and environment configuration, not as shared-fleet state. Authority is separated: the tenant registry issues canonical identity; the shared control store is authoritative for immutable request revisions and dispatch intent; Temporal is authoritative for workflow execution; PostgreSQL job rows are queryable read models, not execution authority.
 
 The current tenant-onboarding proposal establishes the right high-level scope and adds canonical identity, capabilities, immutable intake revisions, lifecycle states, typed secret references, constrained outbound integration, adapter probes, cleanup approval, and an implementation plan. This revision incorporates the remaining architecture review findings: capability operations must map to lifecycle gates and owners; dispatch must use a same-transaction outbox rather than leave “equivalent dispatcher” undefined; cleanup must enumerate a configured store registry and bind exact per-store resource plans; and the example approval-token algorithm must bind one canonical payload consistently.
 
-This is a design proposal. It does not assert that onboarding code, tables, adapters, outbox dispatch, store inventory, approval logic, or tests currently exist.
+This is a design proposal, not proof of production readiness. The implementation status is separately recorded in the phase plan. The repository currently has capability-policy foundations and migration 023; the review supplements identify scoped-authorization, database-role/RLS, tenant-job relationship, cleanup-fencing, and workflow-generation remediation required before enabling intake, dispatch, or cleanup.
 
 ### `docs/dev/architecture.md` changes
 
@@ -19,10 +21,13 @@ No `docs/dev/architecture.md` exists in the project. On implementation, update `
 - [IAP architecture](./IAP-architecture-v1.0.md) — shared-fleet deployment, Temporal, PostgreSQL/RLS, background jobs, providers, caches, artifacts, and operator-home conventions.
 - [Tenant onboarding design revision 2](./IAP-TENANT-ONBOARDING-DESIGN.md) — source proposal and decisions D1–D9 incorporated and tightened here.
 - [Tenant onboarding implementation plan revision 2](./IAP-TENANT-ONBOARDING-IMPL-PLAN.md) — source phase sequence and acceptance criteria, expanded here for outbox and complete deletion coverage.
-- [Luna implementation plan](./IAP-TENANT-ONBOARDING-IMPL-PLAN-luna.md) — phased build sequence and gates aligned with this design.
+- [Luna implementation plan](./IAP-TENANT-ONBOARDING-IMPL-PLAN-luna.md) — active phase sequence, as-built status, remediation gate, and review boundaries.
 - [Tenant onboarding architecture review](./IAP-TENANT-ONBOARDING-ARCHITECTURE-REVIEW.md) — critical review findings, including the capability matrix, dispatch choice, manifest coverage, and approval-token defect.
 - [Background job contract](./IAP-implementation-part11-knowledge-v1.0.md) — Temporal workflow authority and PostgreSQL job read-model conventions.
 - [Environment matrix](../config/env-matrix.md) — environment contract for any onboarding feature flags or settings introduced during implementation.
+- [Security and concurrency supplement](./IAP-TENANT-ONBOARDING-SECURITY-CONCURRENCY.md) — scoped authorization, RLS roles and policies, tenant-scoped relationships, cleanup fencing, and atomic approval consumption.
+- [Workflow correctness specification](./IAP-TENANT-ONBOARDING-WORKFLOW-CORRECTNESS.md) — acceptance atomicity, outbox leases, Temporal identity/retry generations, transitions, cancellation, and reconciliation.
+- [Deployment and deletion assurance specification](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md) — authoritative deployment inventory, drift, canonical manifest hashing, residual states, and measurable release gates.
 
 ## Goals / Non-Goals
 
@@ -54,12 +59,15 @@ No `docs/dev/architecture.md` exists in the project. On implementation, update `
 
 The capability vocabulary is `tenant:read`, `tenant:onboard`, `tenant:configure`, `tenant:approve`, `tenant:cleanup`, `tenant:suspend`, `tenant:resume`, and `tenant:support`. `tenant:approve` and destructive `tenant:cleanup` require policy-defined separation of duties; the requester cannot satisfy the second-person approval requirement. Break-glass support requires a reason, short-lived authorization, restricted action set, and immutable audit entry. Authorization policy is evaluated on each API request and again before workflow side effects that cross privilege boundaries.
 
+**Normative authorization refinement:** The grant is a server-managed, versioned record scoped to verified principal, capability, canonical tenant, application, environment, and operation, with validity, revocation, issuer, and policy version. The server selects the required capability from the operation being performed; request fields and caller-supplied operator Booleans cannot grant privilege. The policy resolver must match every dimension and fail closed on missing/stale policy; it must reauthorize before privileged workflow side effects. The illustrative helper below is not a sufficient implementation contract because it only checks an unscoped capability set and a Boolean operator flag. Use the [security and concurrency supplement](./IAP-TENANT-ONBOARDING-SECURITY-CONCURRENCY.md) as the normative authorization, bootstrap, RLS, and audit specification. The committed Phase 0 helper is a capability vocabulary/policy skeleton only; intake and privileged routes remain disabled until the remediation gate passes.
+
 ```python
-# src/investigation_agent_platform/application/onboarding/authorization.py
+# Contract sketch only. The committed authorization module is not yet this model.
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from datetime import datetime
 
 
 class Capability(StrEnum):
@@ -82,6 +90,21 @@ class AuthorizationScope:
 
 
 @dataclass(frozen=True)
+class ScopedGrant:
+    principal_id: str
+    capability: Capability
+    tenant_id: str
+    application_id: str | None
+    environment: str
+    operation: str
+    not_before: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    policy_version: str
+    grant_version: int
+
+
+@dataclass(frozen=True)
 class AuthorizationDecision:
     allowed: bool
     principal_id: str
@@ -92,26 +115,32 @@ class AuthorizationDecision:
 
 def authorize(
     *,
-    principal_id: str,
-    granted: frozenset[Capability],
+    verified_principal_id: str,
+    grant: ScopedGrant | None,
     required: Capability,
     scope: AuthorizationScope,
-    platform_operator: bool,
-    requester_id: str | None = None,
+    policy_version: str,
+    now: datetime,
 ) -> AuthorizationDecision:
-    """Authorize one operation; tenant identity alone never grants capability."""
-    operator_only = {Capability.ONBOARD, Capability.CLEANUP, Capability.APPROVE}
-    if required in operator_only and not platform_operator:
-        return AuthorizationDecision(False, principal_id, required, scope, "OPERATOR_ROLE_REQUIRED")
-    if required not in granted:
-        return AuthorizationDecision(False, principal_id, required, scope, "CAPABILITY_MISSING")
-    if required in {Capability.APPROVE, Capability.CLEANUP}:
-        if requester_id is not None and principal_id == requester_id:
-            return AuthorizationDecision(False, principal_id, required, scope, "SEPARATION_OF_DUTIES")
-    return AuthorizationDecision(True, principal_id, required, scope, "ALLOWED")
+    """Match all grant dimensions; missing, stale, revoked, or expired grants deny."""
+    if grant is None:
+        return AuthorizationDecision(False, verified_principal_id, required, scope, "GRANT_MISSING")
+    matches = (
+        grant.principal_id == verified_principal_id
+        and grant.capability == required
+        and grant.tenant_id == scope.tenant_id
+        and grant.application_id == scope.application_id
+        and grant.environment == scope.environment
+        and grant.operation == scope.operation
+        and grant.policy_version == policy_version
+        and grant.revoked_at is None
+        and grant.not_before <= now < grant.expires_at
+    )
+    reason = "ALLOWED" if matches else "GRANT_SCOPE_OR_VALIDITY_MISMATCH"
+    return AuthorizationDecision(matches, verified_principal_id, required, scope, reason)
 ```
 
-**Alternative considered:** Allow any user whose token contains the tenant claim to mutate onboarding state. Rejected because tenant context does not prove function-level permission and fails to distinguish ordinary tenant access from platform administration. A locally hard-coded `platform_operator` boolean is only illustrative; production derives roles from the verified identity/policy service and tests its freshness and failure behavior.
+**Alternative considered:** Allow any user whose token contains the tenant claim to mutate onboarding state. Rejected because tenant context does not prove function-level permission and fails to distinguish ordinary tenant access from platform administration. A generic operator Boolean is insufficient; administrative access must resolve to a narrowly scoped, current grant issued by trusted policy administration. The code sketch omits persistence, grant issuance, revocation propagation, authoritative requester lookup, and audit storage; those must be implemented and tested before enabling routes.
 
 **Rationale:** The registry owns identity existence; the identity provider authenticates the principal; the authorization policy decides allowed operations. No display name or unverified header participates in identity or filesystem path decisions.
 
@@ -121,7 +150,7 @@ def authorize(
 
 ### D2: Capability catalog and lifecycle traceability
 
-**Decision:** Every supported onboarding capability is declared in a versioned catalog. A catalog entry names capability key/version, scope, source class, owning authority, required/optional policy by service tier, required capability, API/CLI entrypoint, request/tenant lifecycle states, readiness probe/freshness contract, retry and compensation behavior, data classification, and deletion action. An adapter not present in the catalog cannot be accepted from intake. A policy must choose exactly one status for every configured item: required, optional, not applicable, or unsupported. Unknown policy data fails closed before network or filesystem side effects. The complete catalog must include lifecycle operations as well as connector types: reservation, intake edit/submit, approval, apply, attach, retry, cancel, activation, suspend/resume, cleanup-plan, cleanup-approval, and status/read operations.
+**Decision:** Every supported onboarding capability is declared in a versioned catalog. A catalog entry names capability key/version, scope, source class, owning authority, required/optional policy by service tier, required capability, API/CLI entrypoint, request/tenant lifecycle states, readiness probe/freshness contract, retry and compensation behavior, data classification, and deletion action. An adapter not present in the catalog cannot be accepted from intake. Policy dispositions use a closed enum (`REQUIRED`, `OPTIONAL`, `NOT_APPLICABLE`, `UNSUPPORTED`) and cross-field validation requires exactly one disposition for every configured capability/tier pair. Unknown policy data fails closed before network or filesystem side effects. The complete catalog must include lifecycle operations as well as connector types: reservation, intake edit/submit, approval, apply, attach, retry, cancel, activation, suspend/resume, cleanup-plan, cleanup-approval, and status/read operations.
 
 The initial supported classes are repository/profile, logs, traces, metrics, datasources, config servers, and read-only knowledge corpora. Identity, subscription, billing, DNS, certificate, and infrastructure integrations remain external and are represented only by references/eligibility evidence if a later approved scope requires them.
 
@@ -140,6 +169,10 @@ The initial supported classes are repository/profile, logs, traces, metrics, dat
 **Alternative considered:** Infer supported capability behavior from intake fields and adapter class names. Rejected because schema presence does not determine whether a source is required, who owns it, or how it is removed.
 
 **Rationale:** The catalog is the common contract for intake validation, activation, status, operations, and deletion. It prevents capability drift between API, adapters, and cleanup.
+
+### D2.1: Closed policy disposition vocabulary
+
+Policy payloads use only `REQUIRED`, `OPTIONAL`, `NOT_APPLICABLE`, or `UNSUPPORTED`; free-form status strings are invalid. Schema validation verifies every supported capability has exactly one disposition for each configured service tier and rejects missing, duplicate, contradictory, or unknown entries before side effects.
 
 **Trade-offs:** The catalog is versioned product policy and requires owners to update it when providers or service tiers change. The first release limits support to explicitly enumerated adapters.
 
@@ -161,9 +194,9 @@ Repository and provider identifiers use allowlisted provider keys and structured
 
 ### D4: Independent tenant, onboarding-request, profile, and job states
 
-**Decision:** Maintain separate correlated state machines. Tenant registry owns tenant lifecycle; onboarding control store owns request lifecycle; profile service owns profile revisions and `DRAFT/ACTIVE/DEPRECATED/ARCHIVED`; Temporal owns execution history; PostgreSQL job rows are read models. Suggested request states are `DRAFT`, `VALIDATING`, `AWAITING_APPROVAL`, `QUEUED`, `PROVISIONING`, `READINESS_CHECK`, `ACTIVE`, `FAILED_RETRYABLE`, `FAILED_TERMINAL`, `CANCEL_REQUESTED`, `CANCELED`, `DEPROVISIONING`, `DEPROVISIONED`. Tenant status may additionally be `RESERVED`, `ACTIVE`, `SUSPENDED`, or `RETIRED`.
+**Decision:** Maintain separate correlated state machines. Tenant registry owns tenant lifecycle; onboarding control store owns request lifecycle; profile service owns profile revisions and `DRAFT/ACTIVE/DEPRECATED/ARCHIVED`; Temporal owns execution history; PostgreSQL job rows are read models. Request state follows the explicitly guarded transition table in the [workflow correctness specification](./IAP-TENANT-ONBOARDING-WORKFLOW-CORRECTNESS.md); tenant state may be `RESERVED`, `ACTIVE`, `SUSPENDED`, `CLEANUP_PENDING`, or `RETIRED`. Cleanup outcomes use the distinct statuses in the [deployment/deletion assurance specification](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md), not a generic success Boolean.
 
-Every transition checks expected version, actor capability, request/policy revision, and transition guard. `ACTIVE` requires a durable readiness decision for every catalog-required capability. A profile becoming active does not activate a tenant. A changed intake or policy revision invalidates affected approvals and probe freshness.
+Every transition checks expected version, current scoped authorization, request/policy revision, lifecycle version/epoch, and transition guard. `ACTIVE` requires a durable, fresh readiness decision for every catalog-required capability. A profile becoming active does not activate a tenant. A changed intake, policy, or catalog revision invalidates affected approvals and probe freshness. Cancellation is durable and does not imply that external side effects were undone; compensation and residual outcomes remain explicit.
 
 **Alternative considered:** Use the background-job status as the tenant lifecycle. Rejected because execution status does not represent approval, suspension, readiness, or business activation.
 
@@ -171,11 +204,13 @@ Every transition checks expected version, actor capability, request/policy revis
 
 **Trade-offs:** Cross-machine correlation needs invariant tests and operational dashboards. The state model is intentionally limited to business transitions that the module owns.
 
+The workflow correctness specification is normative for expected-version transitions, cancellation, activation fencing, retry generations, and reconciliation. In particular, a dispatcher redelivery reuses the same execution identity; a business recovery after terminal completion requires an explicit monotonic generation linked to the immutable request revision. No same-revision terminal retry may be enabled until generation and stale-worker fencing are implemented.
+
 ---
 
 ### D5: Real adapter probes and mandatory readiness policy
 
-**Decision:** Each catalogued adapter is a request-scoped instance with typed outcomes `VERIFIED`, `DEGRADED`, `FAILED`, `UNSUPPORTED`, `SKIPPED`, or `NOT_CONFIGURED`. Probe evidence records adapter/version, capability key, tenant/app/environment scope, timestamp, freshness, auth mode, and closed-vocabulary diagnostic code. Only a successful scoped probe can satisfy a mandatory gate. Provider failure is never equivalent to empty data. Optional connectors may be skipped only by explicit service-tier policy. Unknown or omitted mandatory adapters block activation.
+**Decision:** Each catalogued adapter is a request-scoped instance with typed outcomes `VERIFIED`, `DEGRADED`, `FAILED`, `UNSUPPORTED`, `SKIPPED`, or `NOT_CONFIGURED`. Probe evidence records adapter/version, capability key, tenant/app/environment scope, exact request revision, policy/catalog versions, timestamp, expiry, auth mode, and closed-vocabulary diagnostic code. Evidence applies only to that exact immutable scope/version set and before expiry. Revalidate critical authorization/policy inputs and rerun any probe whose freshness or underlying credential/permission state may have changed immediately before activation. Only a successful scoped, fresh probe can satisfy a mandatory gate. Provider failure is never equivalent to empty data. Optional connectors may be skipped only by explicit service-tier policy. Unknown or omitted mandatory adapters block activation.
 
 The four stages are `discover → normalize → bind → verify`. Each returns a new immutable result; no shared mutable adapter instance crosses requests. Connector credentials resolve at execution time through a scoped secret reference and are read-only at the external provider when supported.
 
@@ -213,7 +248,7 @@ class DispatchState(StrEnum):
 
 
 class WorkflowDispatch(BaseModel):
-    """Durable command to start one onboarding workflow execution."""
+    """Contract sketch; runtime dispatch semantics are specified separately."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -221,6 +256,7 @@ class WorkflowDispatch(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=64)
     request_id: UUID
     revision: int = Field(ge=1)
+    execution_generation: int = Field(ge=1)
     job_id: UUID
     workflow_id: str = Field(min_length=1, max_length=256)
     schema_version: str = Field(min_length=1, max_length=32)
@@ -229,6 +265,7 @@ class WorkflowDispatch(BaseModel):
     next_attempt_at: datetime | None = None
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
+    lease_fencing_token: int = Field(ge=1)
     temporal_run_id: str | None = None
     last_error_code: str | None = None
     created_at: datetime
@@ -237,19 +274,21 @@ class WorkflowDispatch(BaseModel):
 
 **Alternative considered:** Start Temporal directly from the API after committing database state. Rejected because process failure between commit and start strands the request. Start before commit risks an orphan workflow. Kafka-only dispatch is also rejected as the database commit is the authority and no dual-write transaction exists.
 
-**Rationale:** One same-database commit records both business intent and dispatch intent. Deterministic workflow IDs make dispatcher retries safe; reconciliation covers ambiguous start acknowledgements.
+**Rationale:** One same-database commit records both business intent and dispatch intent. Dispatcher redelivery reuses an execution identity; business recovery after terminal execution increments an explicit generation. Reconciliation covers ambiguous start acknowledgements.
 
 **Trade-offs:** The dispatcher and reconciler are production-critical components with lease tuning, backoff, monitoring, and workflow-version compatibility responsibilities. They do not make external provider actions atomic.
+
+The [workflow correctness specification](./IAP-TENANT-ONBOARDING-WORKFLOW-CORRECTNESS.md) defines the atomic acceptance invariant, claim/lease/fencing protocol, ambiguous Temporal start recovery, retry-budget escalation, transition CAS, cancellation/compensation, and reconciliation actions. Migration 023 supplies only the initial dispatch schema; it does not implement these runtime guarantees or execution generations.
 
 ---
 
 ### D7: Complete store registry and per-resource deletion manifest
 
-**Decision:** Cleanup is a durable exact-plan workflow. Each deployment has a versioned registry of required store adapters. A preview must query every enabled/required store and produce a complete inventory; missing adapter, incomplete enumeration, provider timeout, stale inventory, or unknown resource ownership blocks approval. The manifest classifies every resource as tenant-owned, shared/reference-counted, derived/cache, customer-owned external, or platform audit/retention and selects one action: `DELETE`, `DETACH`, `REVOKE`, `RETAIN`, or `EXPIRE`.
+**Decision:** Cleanup is a durable exact-plan workflow. Each deployment has a versioned registry of required store adapters derived from an attested deployment inventory and continuously checked for drift. A preview must query every applicable required store/resource class and produce complete evidence; missing adapter, incomplete enumeration, provider timeout, stale inventory, unknown ownership, or deployment/registry drift blocks approval. The manifest classifies every resource as tenant-owned, shared/reference-counted, derived/cache, customer-owned external, or platform audit/retention and selects one action: `DELETE`, `DETACH`, `REVOKE`, `RETAIN`, or `EXPIRE`. Adapters explicitly declare exact enumeration, scoped revocation, policy expiry, or unsupported semantics; unsupported required classes block completion.
 
 The deployment inventory covers PostgreSQL tables and shared references, object/artifact storage including versions, search/runtime evidence, graph/topology projections, Kafka messages, Temporal workflows/history/schedules, caches, operator-home exports/config artifacts, secret grants/material, backups/replicas, audit records, and external customer systems. Not every store is active in every deployment; the registered deployment set is authoritative. External customer data is never deleted by IAP unless a separate, explicitly authorized product contract makes IAP the data owner.
 
-Each manifest entry is keyed by `(manifest_id, store_id, resource_type, resource_ref)` and records store adapter/version, scope, ownership class, enumerator version, enumeration time/completeness, count, retention/legal-hold decision, backup disposition, action, and per-resource idempotency key. The immutable plan hash covers the canonical manifest contents, including scope, entries, policy/catalog/store-registry versions, backup evidence, requester, required approver identities, and expiry; `canonical_plan_hash` itself is excluded from the hash input to avoid self-reference. Execution status, attempts, completion evidence, and residual reasons are append-only outcome records keyed to manifest entries and cannot rewrite the approved plan.
+Each manifest entry is keyed by `(manifest_id, store_id, resource_type, resource_ref)` and records store adapter/version, scope, ownership class, enumerator version/mode, enumeration window/completeness, count, retention/legal-hold decision, backup disposition, action, and per-resource idempotency key. The immutable plan hash covers the canonical manifest contents, including scope, lifecycle epoch, entries, deployment inventory/store-registry/policy/catalog versions, backup evidence, requester, required approver identities, and expiry; `canonical_plan_hash` itself is excluded. Versioned RFC 8785/JCS serialization is applied after schema-defined ordering of unordered collections and normalization of timestamps/optional values. Execution status, attempts, completion evidence, and residual reasons are append-only outcome records keyed to the manifest hash and entry key; they cannot rewrite the approved plan.
 
 ```python
 # src/investigation_agent_platform/domain/onboarding/deletion.py
@@ -291,6 +330,13 @@ class InventoryCompleteness(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class InventoryMode(StrEnum):
+    EXACT_ENUMERATION = "EXACT_ENUMERATION"
+    SCOPED_REVOCATION = "SCOPED_REVOCATION"
+    POLICY_EXPIRY = "POLICY_EXPIRY"
+    UNSUPPORTED = "UNSUPPORTED"
+
+
 class StoreResourcePlan(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -316,6 +362,7 @@ class StoreInventoryResult(BaseModel):
     store_id: str
     adapter_version: str
     enumerated_at: datetime
+    inventory_mode: InventoryMode
     completeness: InventoryCompleteness
     resource_count: int = Field(ge=0)
     inventory_version: str
@@ -327,6 +374,9 @@ class DeletionManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     manifest_id: UUID
+    schema_version: str = Field(min_length=1, max_length=32)
+    canonicalization_version: str = Field(min_length=1, max_length=32)
+    hash_algorithm: str = "SHA-256"
     tenant_id: str
     application_id: str | None
     environment: str
@@ -342,11 +392,15 @@ class DeletionManifest(BaseModel):
     canonical_plan_hash: str
 ```
 
+Manifest and approval hashing use the versioned RFC 8785/JCS and domain-separation contract in the [deployment/deletion assurance specification](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md). Arrays representing unordered resources are sorted by schema-defined stable keys before canonicalization; meaningful order is explicitly preserved. Outcomes remain append-only and outside the approved-plan hash.
+
 **Alternative considered:** Use a flat resource ID list and aggregate counts, or delete by tenant prefix in each provider. Rejected because IDs are not globally unique, counts cannot prove store enumeration, prefixes may cover siblings/shared resources, and shared reference data needs ownership/refcount semantics.
 
 **Rationale:** Exact approval is useful only when the plan is complete. A deployment-level registry plus completeness markers makes omissions and provider outages visible instead of silently successful.
 
 **Trade-offs:** Store adapters must implement enumerate/plan/apply/verify and keep schemas versioned. Some immutable backups or platform audit records cannot be physically deleted immediately; the manifest must state retention disposition and customer-access boundary instead of falsely claiming physical erasure.
+
+The [deployment and deletion assurance specification](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md) is normative for authoritative deployment inventory, registry drift, canonicalization, per-entry outcomes, retention/residual terminal states, and measurable release gates. A registry alone does not prove completeness; it must reconcile with attested deployment inventory. Cleanup must acquire and retain a tenant/app/environment lifecycle fence through drain, final enumeration, execution, and final reconciliation.
 
 ---
 
@@ -359,21 +413,17 @@ class DeletionManifest(BaseModel):
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 from datetime import UTC, datetime
 from typing import Any
 
 
 def canonical_approval_digest(payload: dict[str, Any]) -> str:
-    """Hash canonical approval fields using the same serializer at creation and validation."""
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    """Contract sketch: use the versioned RFC 8785/JCS implementation adapter."""
+    # jcs_canonicalize is supplied by the reviewed RFC 8785 implementation.
+    canonical_bytes = jcs_canonicalize(payload)
+    material = b"IAP-TENANT-ONBOARDING-APPROVAL\0v1\0" + canonical_bytes
+    return hashlib.sha256(material).hexdigest()
 
 
 def build_approval_payload(
@@ -396,6 +446,7 @@ def build_approval_payload(
     if not nonce:
         raise ValueError("nonce must not be empty")
     return {
+        "canonicalization_version": "rfc8785-v1",
         "manifest_id": manifest_id,
         "plan_hash": plan_hash,
         "tenant_id": tenant_id,
@@ -444,6 +495,10 @@ def approval_matches(
 
 **Trade-offs:** Canonical schema/versioning, nonce/token-digest persistence, and atomic consumption are required. SHA-256 digests do not provide non-repudiation; authorization and append-only audit remain separate controls.
 
+Terminal deletion outcomes are distinct: `COMPLETE` (all actions verified, no tenant-accessible residual), `COMPLETE_WITH_RETENTION` (policy-required retained data is inaccessible and has an expiry/owner), `COMPLETE_WITH_APPROVED_RESIDUALS` (separately approved, entry-specific residual; never described as erased), `INCOMPLETE`, `BLOCKED`, or `CANCELED`. Unknown/missing entries are nonterminal. A cleanup fence/epoch blocks new mutations and provisioning before final inventory and remains through final reconciliation; stale workflows cannot recreate resources or report completion after the epoch changes.
+
+The [security and concurrency supplement](./IAP-TENANT-ONBOARDING-SECURITY-CONCURRENCY.md) is normative for approval persistence and consumption: persist token and canonical-payload digests plus authenticated requester/approver, exact scope, expiry, nonce, policy version, and consumption linkage; conditionally consume once and create purge job, audit, and outbox intent in the same transaction. The [deployment and deletion assurance specification](./IAP-TENANT-ONBOARDING-DEPLOYMENT-DELETION-ASSURANCE.md) defines versioned RFC 8785 canonical JSON, collection sorting, timestamp/optional-value rules, golden vectors, and honest terminal residual semantics.
+
 ---
 
 ### D9: Executable API/CLI, policy, and operational controls
@@ -481,7 +536,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKeyConstraint, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -493,6 +548,22 @@ class WorkflowDispatchORM:
     __table_args__ = (
         UniqueConstraint("tenant_id", "workflow_id", name="uq_onboarding_dispatch_workflow"),
         UniqueConstraint("event_id", name="uq_onboarding_dispatch_event"),
+        UniqueConstraint(
+            "tenant_id", "request_id", "revision", "execution_generation",
+            name="uq_onboarding_dispatch_generation",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision"],
+            ["onboarding_requests.tenant_id", "onboarding_requests.request_id", "onboarding_requests.revision"],
+            ondelete="RESTRICT",
+            name="fk_onboarding_dispatch_request_revision",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "job_id"],
+            ["background_jobs.tenant_id", "background_jobs.id"],
+            ondelete="RESTRICT",
+            name="fk_onboarding_dispatch_tenant_job",
+        ),
         Index("ix_onboarding_dispatch_pending", "state", "next_attempt_at"),
     )
 
@@ -501,6 +572,7 @@ class WorkflowDispatchORM:
     event_id: Mapped[UUID] = mapped_column(nullable=False)
     request_id: Mapped[UUID] = mapped_column(nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_generation: Mapped[int] = mapped_column(Integer, nullable=False)
     job_id: Mapped[UUID] = mapped_column(nullable=False)
     workflow_id: Mapped[str] = mapped_column(String(256), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -509,6 +581,7 @@ class WorkflowDispatchORM:
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(128))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
     temporal_run_id: Mapped[str | None] = mapped_column(String(256))
     last_error_code: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -573,11 +646,19 @@ class DeletionApprovalORM:
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_id: Mapped[UUID] = mapped_column(nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(256), nullable=False)
     approver_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    capability_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonicalization_version: Mapped[str] = mapped_column(String(32), nullable=False)
     nonce: Mapped[str] = mapped_column(String(128), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purge_job_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    dispatch_id: Mapped[UUID | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -616,6 +697,7 @@ The following public contract models complete the principal request and response
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -640,15 +722,31 @@ class IntakePutRequest(BaseModel):
     schema_version: str = Field(min_length=1, max_length=32)
 
 
+class ProbeOutcome(StrEnum):
+    VERIFIED = "VERIFIED"
+    DEGRADED = "DEGRADED"
+    FAILED = "FAILED"
+    UNSUPPORTED = "UNSUPPORTED"
+    SKIPPED = "SKIPPED"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+
+
 class CapabilityStatusRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     capability_key: str
-    status: str
+    status: ProbeOutcome
     required: bool
     probe_at: datetime | None = None
     freshness_expires_at: datetime | None = None
     diagnostic_code: str | None = None
+
+
+class PolicyDisposition(StrEnum):
+    REQUIRED = "REQUIRED"
+    OPTIONAL = "OPTIONAL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    UNSUPPORTED = "UNSUPPORTED"
 
 
 class CapabilityCatalogEntry(BaseModel):
@@ -660,11 +758,24 @@ class CapabilityCatalogEntry(BaseModel):
     owner: str = Field(min_length=1, max_length=128)
     scope_level: str = Field(min_length=1, max_length=32)
     required_capability: str = Field(min_length=1, max_length=128)
-    policy_by_tier: dict[str, str] = Field(max_length=32)
+    policy_by_tier: dict[str, PolicyDisposition] = Field(max_length=32)
     readiness_probe: str = Field(min_length=1, max_length=128)
     freshness_seconds: int = Field(ge=0)
     retry_policy_version: str = Field(min_length=1, max_length=32)
     deletion_action: str = Field(min_length=1, max_length=32)
+
+
+class DeletionStatus(StrEnum):
+    PREVIEW = "PREVIEW"
+    APPROVAL_PENDING = "APPROVAL_PENDING"
+    QUEUED = "QUEUED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETE = "COMPLETE"
+    COMPLETE_WITH_RETENTION = "COMPLETE_WITH_RETENTION"
+    COMPLETE_WITH_APPROVED_RESIDUALS = "COMPLETE_WITH_APPROVED_RESIDUALS"
+    INCOMPLETE = "INCOMPLETE"
+    BLOCKED = "BLOCKED"
+    CANCELED = "CANCELED"
 
 
 class SourceCapabilityInput(BaseModel):
@@ -727,6 +838,7 @@ class ApprovalReceipt(BaseModel):
 class ApprovalPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    canonicalization_version: str = Field(min_length=1, max_length=32)
     manifest_id: UUID
     plan_hash: str = Field(min_length=64, max_length=64)
     tenant_id: str = Field(min_length=1, max_length=64)
@@ -749,7 +861,7 @@ class DeletionRequestRead(BaseModel):
     environment: str
     plan_hash: str
     store_registry_version: str
-    complete: bool
+    status: DeletionStatus
     inventory: list[StoreInventoryResult]
     blocking_codes: list[str]
     expires_at: datetime
@@ -833,16 +945,22 @@ Structured telemetry includes correlation/request/job/step IDs, tenant ID under 
 
 ## Migrations
 
-V0.1 creates `tenant_registry`, `onboarding_requests`, and `onboarding_dispatches` in one additive Alembic revision. Each table receives a tenant-scoped policy and `FORCE ROW LEVEL SECURITY`. `tenant_registry` uses `canonical_id` as its scope column; request and dispatch tables use `tenant_id`. The migration explicitly grants CRUD to `CURRENT_USER`; deployment must run migrations as the runtime application role, or provision an explicit grant migration when a distinct migrator role is used. No migration is run against a live database without direct approval.
+V0.1 creates `tenant_registry`, `onboarding_requests`, and `onboarding_dispatches` in one additive Alembic revision. Each table receives a tenant-scoped policy and `FORCE ROW LEVEL SECURITY`. `tenant_registry` uses `canonical_id` as its scope column; request and dispatch tables use `tenant_id`. The migration explicitly grants CRUD to `CURRENT_USER`; deployment must verify the migration and runtime principals, and the grant does not bypass RLS. Registry bootstrap/operator lookup requires the separately reviewed admin path; migration 023 does not provide it. No migration is run against a live database without direct approval.
 
-The registry trigger prevents canonical ID updates and physical deletion; retirement is a status transition. The request trigger prevents changing or deleting the immutable request/revision identity, input, policy/catalog versions, actor, or idempotency key while allowing state, state version, timestamps, and attached job ID to evolve. Dispatch has a unique `(tenant_id, request_id, revision)`, a unique tenant/workflow ID, a composite FK to the immutable request revision, and an FK to the existing `background_jobs` row.
+The registry trigger prevents canonical ID updates and physical deletion; retirement is a status transition. The request trigger prevents changing or deleting the immutable request/revision identity, input, policy/catalog versions, actor, or idempotency key while allowing state, state version, timestamps, and attached job ID to evolve. Dispatch has a unique tenant/workflow ID and a composite FK to the immutable request revision. Current revision 023 does not yet have a tenant-composite FK for its `background_jobs` reference or an execution-generation/lease-fencing model; Phase 0R must add them before dispatch enablement. Phase 0R must also add cleanup lifecycle fencing before any cleanup or conflicting mutation is enabled.
 
 1. Create the three named tables, constraints, and supporting indexes in revision `023_onboarding_control_store`, with RLS, grants, immutability triggers, and a non-destructive downgrade in that same migration.
-2. For fresh installs using the current metadata-driven `000_baseline_schema`, the migration detects whether each table already exists and skips duplicate table creation while applying the intended RLS, grant, and trigger controls. Offline SQL mode emits the DDL; tests inspect it. The schema contract test asserts the migration and ORM declare exactly these three new tables.
+2. For fresh installs using the current metadata-driven `000_baseline_schema`, revision 023 detects whether each table already exists and skips duplicate table creation while applying the intended RLS, grant, and trigger controls. Offline SQL mode emits DDL; tests inspect it. The schema contract test asserts the migration and ORM declare exactly these three new tables. Phase 0R adds schema changes in later additive revisions and verifies both fresh-install and upgrade paths.
 3. Add step ledger, approval, store registry, immutable deletion manifest, and append-only deletion outcome tables with tenant-scoped policies.
 4. Deploy additive schema and compatible readers before enabling routes/workers. Start with disabled flags and shadow validation; do not send traffic to a worker that cannot read the current schema version.
 5. Preserve legacy profiles and existing job records; onboarding adopts existing tenants explicitly through a reservation/link operation.
 6. Rollback disables new intake/dispatch/cleanup routes but retains durable request, dispatch, and manifest records for safe forward recovery. Never roll back by deleting pending intent or approved manifests.
+
+### Current implementation boundary and remediation gate
+
+The repository currently contains Phase 0 capability vocabulary/policy foundations (commit `cb858f7`) and revision 023's three-table control-store schema (commit `797f6a2`). These are not sufficient for onboarding route or worker enablement. The authorization helper does not yet resolve scoped, revocable grants; there is no reviewed registry bootstrap/admin role path; the background-job reference is not tenant-composite; and the schema has no cleanup lifecycle fence/epoch, lease fencing token, or execution-generation model. These are known design-to-implementation gaps, not evidence of an observed production exploit. Phase 0R in the implementation plan is a blocking repair phase; it must use additive migration(s) after 023 and preserve existing durable data. Migration 023 is not rewritten. No live database migration, destructive cleanup, or production enablement is authorized by this design; unit tests and offline SQL generation do not substitute for the database-role, concurrency, and deployment-attestation evidence the gate requires.
+
+The complete security, workflow, and deletion specifications are linked above and are required acceptance contracts. Offline SQL generation and unit tests do not prove runtime role/RLS behavior, concurrent approval atomicity, or deployment inventory completeness; those require database-role integration, concurrency, and deployment-attestation evidence respectively.
 
 ## Testing Philosophy
 
