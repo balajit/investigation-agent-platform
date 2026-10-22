@@ -548,7 +548,7 @@ class TestMigrationChainFinal:
 
     def test_chain_is_linear_ending_at_head(self) -> None:
         chain, _ = self._versions()
-        assert chain[-1] == "022_conclusion_next_check"
+        assert chain[-1] == "023_onboarding_control_store"
         assert len(chain) == len(set(chain))
         assert "016_profile_v2_columns" in chain
         assert "015_batch_intake" in chain
@@ -561,7 +561,7 @@ class TestMigrationChainFinal:
 
         cfg = Config(Path(__file__).resolve().parents[2] / "alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["022_conclusion_next_check"]
+        assert script.get_heads() == ["023_onboarding_control_store"]
 
     def test_every_revision_has_upgrade_and_downgrade(self) -> None:
         _, modules = self._versions()
@@ -569,6 +569,66 @@ class TestMigrationChainFinal:
             assert callable(getattr(module, "upgrade", None)), f"{name} missing upgrade()"
             assert callable(getattr(module, "downgrade", None)), f"{name} missing downgrade()"
 
+    def test_onboarding_v01_migration_declares_exact_three_tables_and_rls(self) -> None:
+        chain, modules = self._versions()
+        assert chain[-1] == "023_onboarding_control_store"
+        migration = modules["023_onboarding_control_store"]
+        assert migration._TABLES == (
+            "tenant_registry",
+            "onboarding_requests",
+            "onboarding_dispatches",
+        )
+        source = Path(__file__).resolve().parents[2] / "migrations" / "versions" / (
+            "023_onboarding_control_store.py"
+        )
+        text = source.read_text(encoding="utf-8")
+        assert "ENABLE ROW LEVEL SECURITY" in text
+        assert "FORCE ROW LEVEL SECURITY" in text
+        assert "current_setting('app.tenant_id', true)" in text
+        assert "TO CURRENT_USER" in text
+        assert "onboarding_reject_request_revision_change" in text
+        assert "BEFORE UPDATE OR DELETE ON onboarding_requests" in text
+
+    def test_onboarding_migration_creates_no_phase2_tables(self) -> None:
+        source = Path(__file__).resolve().parents[2] / "migrations" / "versions" / (
+            "023_onboarding_control_store.py"
+        )
+        text = source.read_text(encoding="utf-8")
+        for table in ("onboarding_steps", "deletion_manifests", "onboarding_store_registry"):
+            assert f'"{table}"' not in text
+
+    def test_onboarding_migration_offline_sql_is_renderable(self) -> None:
+        import subprocess
+        import sys
+
+        config = Path(__file__).resolve().parents[2] / "alembic.ini"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(config),
+                "-x",
+                "url=postgresql://localhost/onboarding_offline",
+                "upgrade",
+                "head",
+                "--sql",
+            ],
+            cwd=config.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "CREATE TABLE tenant_registry" in proc.stdout
+        assert "CREATE TABLE onboarding_requests" in proc.stdout
+        assert "CREATE TABLE onboarding_dispatches" in proc.stdout
+        assert "ALTER TABLE tenant_registry FORCE ROW LEVEL SECURITY" in proc.stdout
+        assert "CREATE TRIGGER tenant_registry_canonical_id_immutable" in proc.stdout
+        assert "CREATE TRIGGER onboarding_request_revision_immutable" in proc.stdout
+        assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE onboarding_requests TO CURRENT_USER" in proc.stdout
+        assert "onboarding_dispatches_tenant_isolation" in proc.stdout
 
 # ---------------------------------------------------------------------------
 # 4. Versioned + pinned API/MCP/Kafka contract fixtures

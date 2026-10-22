@@ -806,6 +806,7 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "023_onboarding_control_store",
             "022_conclusion_next_check",
             "021_analyzer_tables",
             "020_conclusion_verifier",
@@ -832,6 +833,21 @@ class TestMigrationChain:
             "000_baseline_schema",
         ]
 
+    def test_onboarding_control_store_is_tenant_scoped(self) -> None:
+        from investigation_agent_platform.infrastructure.persistence.models import (
+            OnboardingDispatchORM,
+            OnboardingRequestORM,
+            TenantRegistryORM,
+        )
+
+        assert TenantRegistryORM.__table__.c.canonical_id.unique is True
+        assert "tenant_id" in OnboardingRequestORM.__table__.c
+        assert "tenant_id" in OnboardingDispatchORM.__table__.c
+        assert OnboardingDispatchORM.__table__.c.lease_owner.nullable is True
+        assert OnboardingDispatchORM.__table__.c.lease_expires_at.nullable is True
+        assert OnboardingRequestORM.__table__.c.intake_json.nullable is False
+        assert OnboardingRequestORM.__table__.c.content_hash.nullable is False
+
     def test_orm_tables_all_have_tenant_isolation_columns(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base
 
@@ -847,6 +863,8 @@ class TestMigrationChain:
             "idempotency_keys",
             "outbox_events",
             "action_executions",
+            "onboarding_requests",
+            "onboarding_dispatches",
         }
         metadata_tables = set(Base.metadata.tables)
         assert tenant_tables.issubset(metadata_tables)

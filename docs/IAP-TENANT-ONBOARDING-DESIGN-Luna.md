@@ -833,8 +833,12 @@ Structured telemetry includes correlation/request/job/step IDs, tenant ID under 
 
 ## Migrations
 
-1. Add tenant registry/reservation and onboarding request revision tables with uniqueness, optimistic concurrency, RLS, app-role grants, and no backfill that guesses canonical identity.
-2. Add workflow dispatch/outbox table and indexes in the same migration sequence as request/job transaction wiring; protect the unique workflow ID per tenant/request/revision.
+V0.1 creates `tenant_registry`, `onboarding_requests`, and `onboarding_dispatches` in one additive Alembic revision. Each table receives a tenant-scoped policy and `FORCE ROW LEVEL SECURITY`. `tenant_registry` uses `canonical_id` as its scope column; request and dispatch tables use `tenant_id`. The migration explicitly grants CRUD to `CURRENT_USER`; deployment must run migrations as the runtime application role, or provision an explicit grant migration when a distinct migrator role is used. No migration is run against a live database without direct approval.
+
+The registry trigger prevents canonical ID updates and physical deletion; retirement is a status transition. The request trigger prevents changing or deleting the immutable request/revision identity, input, policy/catalog versions, actor, or idempotency key while allowing state, state version, timestamps, and attached job ID to evolve. Dispatch has a unique `(tenant_id, request_id, revision)`, a unique tenant/workflow ID, a composite FK to the immutable request revision, and an FK to the existing `background_jobs` row.
+
+1. Create the three named tables, constraints, and supporting indexes in revision `023_onboarding_control_store`, with RLS, grants, immutability triggers, and a non-destructive downgrade in that same migration.
+2. For fresh installs using the current metadata-driven `000_baseline_schema`, the migration detects whether each table already exists and skips duplicate table creation while applying the intended RLS, grant, and trigger controls. Offline SQL mode emits the DDL; tests inspect it. The schema contract test asserts the migration and ORM declare exactly these three new tables.
 3. Add step ledger, approval, store registry, immutable deletion manifest, and append-only deletion outcome tables with tenant-scoped policies.
 4. Deploy additive schema and compatible readers before enabling routes/workers. Start with disabled flags and shadow validation; do not send traffic to a worker that cannot read the current schema version.
 5. Preserve legacy profiles and existing job records; onboarding adopts existing tenants explicitly through a reservation/link operation.
