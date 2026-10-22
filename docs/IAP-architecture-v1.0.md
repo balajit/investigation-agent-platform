@@ -369,3 +369,7 @@ consistency, not proof, and now lands `CONCLUSION_UNMAPPED`. Non-causal sentence
 effects, and analysis errors keep the existing mapping path. See
 `tests/unit/test_rival_overlap.py` (9 cases) and `tests/unit/test_conclusion_entailment.py`
 (9 cases). Full unit suite 2545 passed, ruff clean, mypy at the 26-error pre-existing baseline.
+
+## 64. Tenant onboarding v0.1 scope and capability authorization
+
+Tenant onboarding is scoped to IAP configuration intake and coordination; customer identity, billing, subscriptions, DNS, certificates, networking, and infrastructure remain external authorities. The planned capability vocabulary is implemented in `application/onboarding/authorization.py`: tenant read/configure, platform onboarding/approval/cleanup, suspension/resume, and support. The pure authorization decision requires an upstream verified principal and policy-derived grants. Onboarding, approval, and cleanup require platform-operator authorization; approval and cleanup also fail closed if requester identity is missing or matches the authenticated principal. The authorization matrix is covered by `tests/unit/test_tenant_onboarding_authorization.py`. This v0.1 Phase 0 is policy foundation only: it does not add API routes, registry/control-store persistence, role claim parsing, or production identity-provider wiring. Those are gated by the subsequent Phase 1 implementation plan and must preserve these checks at every route and privileged workflow boundary.
