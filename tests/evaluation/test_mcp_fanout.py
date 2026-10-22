@@ -8,7 +8,10 @@ from uuid import uuid4
 
 import pytest
 
-from investigation_agent_platform.application.evidence.gateway import AsyncEvidenceGateway
+from investigation_agent_platform.application.evidence.gateway import (
+    AsyncEvidenceGateway,
+    EvidenceDeduplicator,
+)
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
 from investigation_agent_platform.domain.evidence.requests import ApplicationStateRequest
 from investigation_agent_platform.domain.provenance.models import (
@@ -98,9 +101,11 @@ def _gateway(providers, timeout_seconds=30.0, fanout_concurrency=None):
     )
     gw._enforce_authorization = AsyncMock()
     gw._effective_profile = AsyncMock(return_value=SimpleNamespace(id="app"))
-    gw._deduplicator = AsyncMock(
-        **{"deduplicate.side_effect": lambda t, items: items}
+    deduplicator = AsyncMock(spec=EvidenceDeduplicator)
+    deduplicator.deduplicate.side_effect = (
+        lambda tenant_id, items, investigation_id=None: items
     )
+    gw._deduplicator = deduplicator
     return gw
 
 
