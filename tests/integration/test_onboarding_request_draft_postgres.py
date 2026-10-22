@@ -187,7 +187,7 @@ def _draft() -> TenantIntakeEnvelope:
 
 @pytest.mark.asyncio
 async def test_actual_app_role_draft_replay_conflict_and_side_effect_bounds(draft_roles) -> None:  # type: ignore[no-untyped-def]
-    _admin, engines, roles, schema = draft_roles
+    admin, engines, roles, schema = draft_roles
     app_engine = create_async_engine(engines["app"].url.set(drivername="postgresql+asyncpg"))
     event.listen(
         app_engine.sync_engine,
@@ -245,6 +245,9 @@ async def test_actual_app_role_draft_replay_conflict_and_side_effect_bounds(draf
         assert audit.database_role == roles["app"]
         assert audit.action == "CREATE"
         assert audit.idempotency_key == "db-draft-key"
+
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         assert conn.exec_driver_sql("SELECT count(*) FROM background_jobs").scalar_one() == 0
         assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_dispatches").scalar_one() == 0
 
