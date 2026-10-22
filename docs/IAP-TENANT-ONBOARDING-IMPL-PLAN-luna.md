@@ -1,6 +1,6 @@
 # Implementation Plan: IAP Tenant Configuration Onboarding — Luna Revision
 
-> **Active sequence (consolidated):** This file is the active phase sequence. It records Phases 0 and 1A as committed as-built status, gates the required Phase 0R remediation before intake or dispatch, and sequences Phases 1B–6. The former `IAP-TENANT-ONBOARDING-IMPL-PLAN-luna-v2.md` has been folded into this file and removed. Stop at each phase boundary for owner review; do not start the next phase until that review is accepted.
+> **Active sequence (consolidated):** This file is the active phase sequence. It records Phases 0 and 1A as committed as-built status, gates the required Phase 0R remediation before intake or dispatch, and sequences Phases 1B–6. The former `IAP-TENANT-ONBOARDING-IMPL-PLAN-luna-v2.md` has been folded into this file and removed. Stop at each phase boundary for owner review; do not start the next phase until that review is accepted. Current session work is planned and reviewed in the session sequence below; implementation status is recorded only after each phase's checks complete.
 
 Companion to [IAP-TENANT-ONBOARDING-DESIGN-Luna.md](./IAP-TENANT-ONBOARDING-DESIGN-Luna.md). This plan incorporates the focused architecture review of capability completeness, workflow dispatch, deletion-store coverage, and approval-token correctness. It is a sequence and acceptance contract, not implementation authorization. Do not commit, migrate a live database, purge data, deploy, or execute external onboarding without the required explicit approval.
 
@@ -19,6 +19,79 @@ The follow-up review is specified in [the security/concurrency supplement](./IAP
 - Keep metrics fail-open, but keep authorization, state, outbox, audit, store enumeration, and approval persistence fail-closed.
 - Record unresolved recommendations in the project ledger. Update architecture/runbook documentation before closing a recommendation as implemented.
 - Do not enable intake or dispatch until Phase 0R repairs pass. Do not enable cleanup until fencing, inventory assurance, atomic approval, and restore gates pass.
+- Before any registry repository implementation, resolve and review the separately authenticated registry-admin access model required by FORCE RLS. No `BYPASSRLS`, magic tenant GUC value, or unreviewed permissive policy is allowed.
+- Establish a baseline once per session. Record existing failures and do not repeat the same known-failing full suite after every edit; use focused tests during a phase and rerun broader checks at phase close.
+
+## Current Session Work Breakdown — review after every phase
+
+This work is a staged implementation, not permission to bypass the Phase 0R gate or claim production readiness. A completed phase pauses for owner review; the next phase does not begin until accepted.
+
+### Session Phase A — Baseline and planning record
+
+- [x] Record existing test baseline and failure signature in this ledger.
+- [x] Verify recommended sequence against current code and preserve pre-existing untracked review documents.
+- [x] At close, report the failure baseline so it is not repeatedly rerun during every subsequent change.
+
+**Status:** Complete, baseline corrected 2026-10-22. The 5 `test_mcp_fanout.py` failures recorded at session baseline were fixed by commit `fe611a9` (spec-bound deduplicator mock); the fanout suite is 6/6 green and restored to normal triage. Session baseline otherwise stands: 104 passed, 86 skipped. No onboarding code changed during baseline/planning.
+
+### Session Phase B — Phase 0R authorization/RLS and dispatch foundation — IN PROGRESS
+
+- [x] Record approved grant authority, database roles, opt-in PostgreSQL test environment, and worker polling-policy decisions.
+- [x] Inspect existing database session, background-job, migration, and operator-bootstrap patterns.
+- [x] Additive schema and ORM: `onboarding_grants`, unique `(tenant_id, id)` for background jobs, composite request/dispatch job FKs, dispatch fencing/generation, append-only dispatch/grant audit; leave migration 023 unchanged and seed no grant rows.
+- [x] Implement database-backed scoped grant resolution from verified JWT `sub`; tenant claim is identity context only; fail closed on invalid scope, time window, revocation, or policy-version mismatch.
+- [x] Provision `iap_migrator`, `iap_app`, `iap_worker`, and `iap_registry_admin` outside migrations with no runtime DDL or `BYPASSRLS`; migration 024 revokes revision 023 ACLs and applies the explicit role matrix.
+- [x] Add human-only registry-admin policy and dedicated iap_worker policies on `onboarding_dispatches` only; worker UPDATE is column-limited; worker request reads require transaction-local tenant context from the claimed dispatch.
+- [x] Implement atomic `SKIP LOCKED` claims, monotonic fencing, lease renewal/release, expired-lease reconciliation, audit identity/token, stale-owner rejection, and shared reconciler claim path.
+- [x] Add opt-in actual-role tests gated by `IAP_RUN_ONBOARDING_DB_TESTS=1`, `IAP_TEST_PG_URL`, TCP skip, scratch-role setup/teardown, cross-tenant visibility, concurrency, privilege denial, stale-token, app isolation, and migrator DDL checks; test run remains skipped when PostgreSQL is unreachable.
+- [x] Document role provisioning, dual-person first-platform-grant workflow, and DB-trigger `updated_at` maintenance for raw worker updates.
+- [x] Add the dual-person grant mint/revoke CLI with exact-payload digest checks and an append-only audit row; external identity verification remains operator responsibility.
+- [x] Ensure dispatcher claim/renew/release/stale-fence audits contain transaction-local worker process ID and database `session_user`; both are attribution only, never authorization.
+- [x] Run focused/phase-close checks; Ruff, mypy, offline Alembic SQL, and diff checks pass. Pause for owner review before intake schemas.
+
+**Phase B owner decisions, 2026-10-22:** The entitlement, role, and test-environment choices are approved. The worker policy decision further approves a single dedicated role-targeted polling/claim policy on `onboarding_dispatches`, limited column UPDATE grants, `SKIP LOCKED` atomic claims, tenant-context request reads, worker process and database identity/token auditing, and shared dispatcher/reconciler operations. The worker `WITH CHECK` permits null lease owner on release/requeue or requires the owner to equal transaction-local `iap.worker_id`. Registry admin remains human/operator-only. No tenant-directory table or registry-admin polling path is permitted. Rationale and exact constraints are recorded in `docs/IAP-TENANT-ONBOARDING-DB-ROLES.md` and the ledger.
+
+**Binding Phase 0R implementation sequence — implemented, actual-role verification gate remains:**
+
+1. Additive migration/ORM: `onboarding_grants`; `UNIQUE (tenant_id, id)` on `background_jobs`; tenant-composite dispatch job FK; dispatch lease fencing token and execution generation; explicit role grants/policies including the dispatch-only worker policy; no edits to revision 023 and no grant seed data.
+2. Authorization: resolve database-backed grants against verified JWT `sub`, capability, canonical scope, validity, revocation, and policy version; represent platform scope only with the explicit `__platform__` literal; fail closed.
+3. Worker operations: atomic fleet-wide dispatch claim with column-limited update privileges, append/record audit identity and fencing token, then set tenant-local context from the claimed dispatch before any request/intake read; implement lease renewal/release and stale-token rejection. Reconciliation shares these operations.
+4. Bootstrap/roles/docs: provide reviewed external role-provisioning script (migrator/app/worker/registry-admin, no runtime DDL or BYPASSRLS), dual-person offline first-grant procedure and audit runbook. No migrations seed platform grants.
+5. Actual-role integration gate: opt-in `IAP_RUN_ONBOARDING_DB_TESTS=1`, `IAP_TEST_PG_URL` default `postgresql://iap:iap@localhost:5432/iap_test`, TCP reachability skip, scratch-role lifecycle and teardown; assert cross-tenant worker claims for tenants A/B, concurrent `SKIP LOCKED` single winner, column/table privilege denial, stale lease token rejection, monotonic token, app tenant isolation, and migrator-only DDL.
+
+Phase 0R implementation is complete for owner review. Actual-role PostgreSQL proof is not complete: the opt-in tests were explicitly enabled but skipped because the configured database endpoint was unreachable. Intake/routes remain disabled until those role, FORCE RLS, ACL, concurrent claim, stale fencing, and migrator-only DDL proofs run successfully.
+
+**Current Phase B implementation status:** Additive migration 024, ORM grant/fencing/audit models, scoped-grant repository/resolver, verified-principal dependency, claim/requeue/renew/release/reconciliation operations, external role-provisioning SQL, dual-person grant mint/revoke CLI and audit table, and actual-role PostgreSQL test scaffolds are in place. The worker UPDATE check requires `lease_owner IS NULL OR lease_owner = current_setting('iap.worker_id', true)`, and claim/reconcile transactions set that context before changing dispatch rows. Actual-role tests now cover audit context/attribution and visibility, the exact-scope grant function's match/expiry/revocation/policy/principal/operation behavior, and the accepted procedural dual-person limitation. Focused suite before these additions: 190 passed, 2 actual-role tests skipped (PostgreSQL unreachable), 6 expected xfails. Ruff, mypy, offline Alembic SQL generation, and `git diff --check` were previously green; rerun after this review update. No onboarding routes exist yet; any future route must invoke `authorize_scoped`. Actual-role DB proof remains required before enabling onboarding access or intake. Phase E remains interfaces-only until Phase 2 defines ACCEPTED/TERMINAL transitions. The JCS digest carve-out and exact-application/environment v0.1 scope are documented in `docs/IAP-TENANT-ONBOARDING-DB-ROLES.md`.
+
+**Phase B phase-close verification:** Full suite `.venv/bin/python -m pytest -q` returned `109 passed, 88 skipped` before a repository live-API probe exited with `API not reachable at http://127.0.0.1:8000: Connection refused`. The six dispatcher crash scaffolds remain strict xfails; both opt-in PostgreSQL tests skip because local PostgreSQL is unreachable. Ruff, mypy on touched Python modules, offline Alembic SQL rendering, and `git diff --check` pass. The live-API and actual-role database gates remain outstanding; this phase report does not claim them green.
+
+### Session Phase C — Typed intake schema slice (Phase 1B first dependency)
+
+- [ ] Define strict, versioned intake models and typed secret references; forbid extra fields, secret values, filesystem paths, arbitrary URLs, and write-capable references.
+- [ ] Add adversarial schema tests for POSIX/Windows paths, credential-like values, URL forms, unknown keys, and reference access modes.
+- [ ] Do not implement persistence or routes in this slice; document any schema decisions needed by subsequent routes.
+- [ ] Pause for owner review.
+
+### Session Phase D — Remaining v0.1 route/example scaffolding
+
+- [ ] Add `tenant-id.env.example.yaml` containing safe synthetic values only and no secret-value/path-shaped fields.
+- [ ] Add onboarding router skeleton with explicit HTTP 501 responses for not-yet-implemented operations; no accepted/durable-success response and no side effects.
+- [ ] Add route tests proving 501 behavior and schema contract linkage without enabling onboarding.
+- [ ] Pause for owner review.
+
+### Session Phase E — Dispatcher/reconciler skeleton and failure scaffolds
+
+- [ ] Keep dispatcher/reconciler interfaces-only until Phase 2 authorizes `ACCEPTED`/`TERMINAL` transitions and defines transactional transition rules. No state-changing dispatcher skeleton before then.
+- [ ] Implement authorized lifecycle transitions together with Phase 2 durable dispatch/reconciler work and required crash/failure proofs.
+- [ ] Run focused crash/failure tests and phase-close checks; pause for owner review.
+
+### Session test baseline — 2026-10-22 (corrected)
+
+- Baseline command: `uv run --frozen pytest -q`.
+- Original result: 5 failed, 104 passed, 86 skipped. All five failures were in `tests/evaluation/test_mcp_fanout.py`.
+- Correction: commit `fe611a9` replaced the hand-rolled mock with `AsyncMock(spec=EvidenceDeduplicator)`; the fanout suite is 6/6 green and restored to normal triage. Future failures in that file are regressions, not baseline.
+- For reference, the original failure signature was: `_gateway.<locals>.<lambda>() takes 2 positional arguments but 3 were given` when `deduplicate` receives the investigation ID as its third positional argument.
+- Retest policy: do not run the full suite after each onboarding change. Use affected focused tests; run broader checks at each owner-review boundary. `pytest` was not on PATH; `uv run --frozen` provides the repo's locked environment.
 
 ## Phase 0 — Capability-policy foundation — COMPLETE, REVIEW REQUIRED
 

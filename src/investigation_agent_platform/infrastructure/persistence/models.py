@@ -872,6 +872,7 @@ class BackgroundJobORM(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_background_jobs_tenant_id_id"),
         Index("idx_bg_jobs_tenant_kind_status", "tenant_id", "kind", "status"),
         Index("idx_bg_jobs_tenant_created", "tenant_id", "created_at"),
     )
@@ -1331,6 +1332,7 @@ class TenantRegistryORM(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="RESERVED", server_default="RESERVED"
     )
+    lifecycle_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
     )
@@ -1357,7 +1359,214 @@ class TenantRegistryORM(Base):
             "status IN ('RESERVED', 'ACTIVE', 'SUSPENDED', 'RETIRED')",
             name="ck_tenant_registry_status",
         ),
+        CheckConstraint("lifecycle_epoch >= 1", name="ck_tenant_registry_lifecycle_epoch_positive"),
         Index("ix_tenant_registry_status", "status"),
+    )
+
+
+class OnboardingGrantORM(Base):
+    """Database-backed, versioned onboarding entitlement for one principal/scope."""
+
+    __tablename__ = "onboarding_grants"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    principal_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    capability: Mapped[str] = mapped_column(String(64), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    issuer_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    approved_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    approval_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    revoked_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    revocation_approved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    revocation_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "tenant_id = '__platform__' OR "
+            "(tenant_id = lower(btrim(tenant_id)) AND tenant_id ~ '^[a-z0-9][a-z0-9-]{0,63}$')",
+            name="ck_onboarding_grant_tenant_scope",
+        ),
+        CheckConstraint("expires_at > valid_from", name="ck_onboarding_grant_validity_window"),
+        Index(
+            "ix_onboarding_grant_principal_scope",
+            "principal_id",
+            "tenant_id",
+            "application_id",
+            "environment",
+            "operation",
+            "capability",
+        ),
+    )
+
+
+class OnboardingGrantAuditORM(Base):
+    """Append-only dual-person record for grant mint and revocation decisions."""
+
+    __tablename__ = "onboarding_grant_audits"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    grant_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    approved_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    approval_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("action IN ('MINT', 'REVOKE')", name="ck_onboarding_grant_audit_action"),
+        CheckConstraint("actor_id <> approved_by", name="ck_onboarding_grant_audit_two_person"),
+        Index("ix_onboarding_grant_audit_grant", "grant_id", "occurred_at"),
+    )
+
+
+class SupportRegistryORM(Base):
+    """Deployment-scoped support registry entry; platform configuration, no tenant scope."""
+
+    __tablename__ = "onboarding_support_registry"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    capability_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    limits: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    trust_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="UNVERIFIED", server_default="UNVERIFIED"
+    )
+    evidence_requirements: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    owner: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "strategy IN ('NATIVE', 'GENERIC', 'BRIDGE', 'UNSUPPORTED')",
+            name="ck_support_registry_strategy",
+        ),
+        CheckConstraint(
+            "trust_state IN ('UNVERIFIED', 'PROVISIONAL', 'TRUSTED')",
+            name="ck_support_registry_trust_state",
+        ),
+        UniqueConstraint(
+            "capability_key",
+            "version",
+            name="uq_support_registry_capability_version",
+        ),
+        Index("ix_support_registry_strategy", "strategy"),
+    )
+
+
+class CoverageReportORM(Base):
+    """Tenant-scoped coverage report linkage for one request revision generation."""
+
+    __tablename__ = "onboarding_coverage_reports"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    report_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    registry_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    estate_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    report_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_coverage_report_revision_positive"),
+        CheckConstraint("generation >= 1", name="ck_coverage_report_generation_positive"),
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision"],
+            [
+                "onboarding_requests.tenant_id",
+                "onboarding_requests.request_id",
+                "onboarding_requests.revision",
+            ],
+            ondelete="RESTRICT",
+            name="fk_coverage_report_request_revision",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "request_id",
+            "revision",
+            "generation",
+            name="uq_coverage_report_request_generation",
+        ),
+        Index(
+            "ix_coverage_report_tenant_request",
+            "tenant_id",
+            "request_id",
+            "revision",
+        ),
+    )
+
+
+class OnboardingDispatchAuditORM(Base):
+    """Append-only worker audit for dispatch lease and fencing operations."""
+
+    __tablename__ = "onboarding_dispatch_audits"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    dispatch_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    database_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "dispatch_id"],
+            ["onboarding_dispatches.tenant_id", "onboarding_dispatches.id"],
+            ondelete="RESTRICT",
+            name="fk_onboarding_dispatch_audit_dispatch",
+        ),
+        CheckConstraint(
+            "action IN ('CLAIM', 'RENEW', 'RELEASE', 'STALE_FENCE')",
+            name="ck_onboarding_dispatch_audit_action",
+        ),
+        CheckConstraint("length(worker_id) > 0", name="ck_onboarding_dispatch_audit_worker_nonempty"),
+        CheckConstraint("length(database_role) > 0", name="ck_onboarding_dispatch_audit_role_nonempty"),
+        CheckConstraint("fencing_token >= 0", name="ck_onboarding_dispatch_audit_token_nonnegative"),
+        Index("ix_onboarding_dispatch_audit_tenant_dispatch", "tenant_id", "dispatch_id", "occurred_at"),
     )
 
 
@@ -1404,6 +1613,12 @@ class OnboardingRequestORM(Base):
     )
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "job_id"],
+            ["background_jobs.tenant_id", "background_jobs.id"],
+            ondelete="RESTRICT",
+            name="fk_onboarding_request_tenant_job",
+        ),
         UniqueConstraint("tenant_id", "request_id", "revision", name="uq_onboarding_request_revision"),
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_onboarding_request_idempotency"),
         UniqueConstraint("tenant_id", "request_id", "content_hash", name="uq_onboarding_request_content"),
@@ -1441,7 +1656,7 @@ class OnboardingDispatchORM(Base):
     request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     job_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("background_jobs.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True), nullable=False
     )
     workflow_id: Mapped[str] = mapped_column(String(256), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1451,7 +1666,9 @@ class OnboardingDispatchORM(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     temporal_run_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -1467,9 +1684,20 @@ class OnboardingDispatchORM(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "request_id", "revision", name="uq_onboarding_dispatch_request_revision"
+            "tenant_id",
+            "request_id",
+            "revision",
+            "execution_generation",
+            name="uq_onboarding_dispatch_request_generation",
         ),
         UniqueConstraint("tenant_id", "workflow_id", name="uq_onboarding_dispatch_workflow"),
+        UniqueConstraint("tenant_id", "id", name="uq_onboarding_dispatch_tenant_id_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "job_id"],
+            ["background_jobs.tenant_id", "background_jobs.id"],
+            ondelete="RESTRICT",
+            name="fk_onboarding_dispatch_tenant_job",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "request_id", "revision"],
             [
@@ -1481,6 +1709,8 @@ class OnboardingDispatchORM(Base):
             name="fk_onboarding_dispatch_request_revision",
         ),
         CheckConstraint("revision >= 1", name="ck_onboarding_dispatch_revision_positive"),
+        CheckConstraint("execution_generation >= 1", name="ck_onboarding_dispatch_generation_positive"),
+        CheckConstraint("lease_fencing_token >= 0", name="ck_onboarding_dispatch_fencing_nonnegative"),
         CheckConstraint("attempts >= 0", name="ck_onboarding_dispatch_attempts_nonnegative"),
         CheckConstraint(
             "state IN ('PENDING', 'CLAIMED', 'ACCEPTED', 'RETRYABLE', 'TERMINAL')",

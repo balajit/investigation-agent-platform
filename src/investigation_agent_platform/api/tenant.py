@@ -70,6 +70,13 @@ class VerifiedIdentity:
     principal_id: str
 
 
+@dataclass(frozen=True)
+class VerifiedPrincipal:
+    """Verified subject identity; tenant claim is context, never entitlement."""
+
+    principal_id: str
+
+
 def _verify_jwt(token: str, settings: AuthSettings) -> dict[str, Any]:
     """Verify signature, issuer, audience, expiry, and algorithm allow-list.
 
@@ -241,3 +248,47 @@ async def require_tenant(identity: VerifiedIdentity = Depends(get_verified_ident
 async def require_principal(identity: VerifiedIdentity = Depends(get_verified_identity)) -> str:  # noqa: B008 - FastAPI Depends idiom
     """FastAPI dependency returning the verified principal ID for the request."""
     return identity.principal_id
+
+
+async def get_verified_principal(
+    request: Request,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> VerifiedPrincipal:
+    """Resolve verified JWT ``sub`` without requiring a tenant claim.
+
+    Platform grant administration is principal-scoped and must not depend on a
+    caller-controlled tenant header. This dependency still requires a verified
+    JWT; non-production header-only identity is not accepted here.
+    """
+    settings = _load_auth_settings()
+    bearer_token = (
+        authorization[len("bearer ") :].strip()
+        if authorization and authorization.lower().startswith("bearer ")
+        else None
+    )
+    if not bearer_token or not settings.jwt_verification_enabled:
+        raise ApiError(
+            code="AUTH_TOKEN_REQUIRED",
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            message="A verified bearer token is required",
+        )
+    try:
+        claims = _verify_jwt(bearer_token, settings)
+    except AuthConfigurationError:
+        raise
+    except jwt.PyJWTError as exc:
+        raise ApiError(
+            code="AUTH_TOKEN_INVALID",
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            message="Invalid authentication token",
+        ) from exc
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject.strip():
+        raise ApiError(
+            code="AUTH_SUBJECT_MISSING",
+            http_status=status.HTTP_401_UNAUTHORIZED,
+            message="Token does not contain a subject",
+        )
+    request.state.verified_principal_id = subject.strip()
+    return VerifiedPrincipal(principal_id=subject.strip())
