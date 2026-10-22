@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "Audience": {
+      "enum": [
+        "operator",
+        "customer"
+      ],
+      "title": "Audience",
+      "type": "string"
+    },
+    "QuestionKind": {
+      "enum": [
+        "why",
+        "evidence",
+        "what-would-change",
+        "limitations"
+      ],
+      "title": "QuestionKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A structured question against one validated coverage report.",
+  "properties": {
+    "audience": {
+      "$ref": "#/$defs/Audience",
+      "default": "operator"
+    },
+    "kind": {
+      "$ref": "#/$defs/QuestionKind"
+    },
+    "subject": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Subject",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "subject"
+  ],
+  "title": "CoverageQuestion",
+  "type": "object"
+}

@@ -1,0 +1,136 @@
+{
+  "$defs": {
+    "PipelineRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_destinations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifact Destinations",
+          "type": "array"
+        },
+        "builds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Builds",
+          "type": "array"
+        },
+        "config_path": {
+          "minLength": 1,
+          "title": "Config Path",
+          "type": "string"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Environments",
+          "type": "array"
+        },
+        "publishes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Publishes",
+          "type": "array"
+        },
+        "system": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        },
+        "tests": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "system",
+        "config_path"
+      ],
+      "title": "PipelineRecord",
+      "type": "object"
+    },
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "environments": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Environments",
+      "type": "array"
+    },
+    "pipelines": {
+      "items": {
+        "$ref": "#/$defs/PipelineRecord"
+      },
+      "title": "Pipelines",
+      "type": "array"
+    },
+    "test_commands": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Test Commands",
+      "type": "array"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "CiMapOutput",
+  "type": "object"
+}

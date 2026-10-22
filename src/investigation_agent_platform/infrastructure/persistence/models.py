@@ -1536,6 +1536,54 @@ class CoverageReportORM(Base):
     )
 
 
+class OnboardingCoverageFilingAuditORM(Base):
+    """Append-only worker attribution for one coverage report filing."""
+
+    __tablename__ = "onboarding_coverage_filing_audits"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    database_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    report_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision", "generation"],
+            [
+                "onboarding_coverage_reports.tenant_id",
+                "onboarding_coverage_reports.request_id",
+                "onboarding_coverage_reports.revision",
+                "onboarding_coverage_reports.generation",
+            ],
+            ondelete="RESTRICT",
+            name="fk_coverage_filing_audit_report",
+        ),
+        CheckConstraint("action IN ('FILED')", name="ck_coverage_filing_audit_action"),
+        CheckConstraint("length(worker_id) > 0", name="ck_coverage_filing_audit_worker_nonempty"),
+        CheckConstraint("length(database_role) > 0", name="ck_coverage_filing_audit_role_nonempty"),
+        CheckConstraint("fencing_token >= 0", name="ck_coverage_filing_audit_token_nonnegative"),
+        CheckConstraint("revision >= 1", name="ck_coverage_filing_audit_revision_positive"),
+        CheckConstraint("generation >= 1", name="ck_coverage_filing_audit_generation_positive"),
+        Index(
+            "ix_coverage_filing_audit_report",
+            "tenant_id",
+            "request_id",
+            "revision",
+            "generation",
+            "occurred_at",
+        ),
+    )
+
+
 class OnboardingDispatchAuditORM(Base):
     """Append-only worker audit for dispatch lease and fencing operations."""
 
@@ -1638,6 +1686,45 @@ class OnboardingRequestORM(Base):
             "environment",
             "revision",
         ),
+    )
+
+
+class OnboardingRequestAuditORM(Base):
+    """Append-only CREATE audit linkage for one immutable intake revision."""
+
+    __tablename__ = "onboarding_request_audits"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4, server_default=func.gen_random_uuid()
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_sub: Mapped[str] = mapped_column(String(256), nullable=False)
+    database_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision"],
+            [
+                "onboarding_requests.tenant_id",
+                "onboarding_requests.request_id",
+                "onboarding_requests.revision",
+            ],
+            ondelete="RESTRICT",
+            name="fk_onboarding_request_audit_revision",
+        ),
+        CheckConstraint("action IN ('CREATE')", name="ck_onboarding_request_audit_action"),
+        CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
+        CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
+        CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),
+        Index("ix_onboarding_request_audit_revision", "tenant_id", "request_id", "revision"),
     )
 
 

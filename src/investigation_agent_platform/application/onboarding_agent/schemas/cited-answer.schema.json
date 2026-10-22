@@ -1,0 +1,182 @@
+{
+  "$defs": {
+    "Audience": {
+      "enum": [
+        "operator",
+        "customer"
+      ],
+      "title": "Audience",
+      "type": "string"
+    },
+    "CapabilityDisposition": {
+      "additionalProperties": false,
+      "description": "One capability verdict. Disposition values follow the platform enum.",
+      "properties": {
+        "capability": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "disposition": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Disposition",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "capability",
+        "disposition"
+      ],
+      "title": "CapabilityDisposition",
+      "type": "object"
+    },
+    "CoverageQuestion": {
+      "additionalProperties": false,
+      "description": "A structured question against one validated coverage report.",
+      "properties": {
+        "audience": {
+          "$ref": "#/$defs/Audience",
+          "default": "operator"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind"
+        },
+        "subject": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject"
+      ],
+      "title": "CoverageQuestion",
+      "type": "object"
+    },
+    "EvidencePointer": {
+      "additionalProperties": false,
+      "description": "Stable reference into a content-addressed sniffer output.",
+      "properties": {
+        "field_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Field Path",
+          "type": "string"
+        },
+        "line_hint": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Hint"
+        },
+        "output_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output_hash",
+        "field_path"
+      ],
+      "title": "EvidencePointer",
+      "type": "object"
+    },
+    "QuestionKind": {
+      "enum": [
+        "why",
+        "evidence",
+        "what-would-change",
+        "limitations"
+      ],
+      "title": "QuestionKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A cited answer assembled only from report fields and fixed templates.\n\n``status`` is ``unknown`` when the subject matches nothing in the report;\nan unknown answer always names the resolving probe and never guesses.",
+  "properties": {
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/EvidencePointer"
+      },
+      "title": "Citations",
+      "type": "array"
+    },
+    "matched_disposition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CapabilityDisposition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "matched_service": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Matched Service"
+    },
+    "question": {
+      "$ref": "#/$defs/CoverageQuestion"
+    },
+    "resolving_probe": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolving Probe"
+    },
+    "status": {
+      "pattern": "^(answered|unknown)$",
+      "title": "Status",
+      "type": "string"
+    },
+    "summary": {
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "question",
+    "status",
+    "summary"
+  ],
+  "title": "CitedAnswer",
+  "type": "object"
+}

@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "Confidence": {
+      "enum": [
+        "VERIFIED",
+        "PROJECTED",
+        "SPECULATIVE"
+      ],
+      "title": "Confidence",
+      "type": "string"
+    },
+    "RankedCause": {
+      "additionalProperties": false,
+      "description": "One ranked diagnostic hypothesis with its distinguishing tests.\n\nMirrors the Claim probe rule: a non-VERIFIED cause without a\ndistinguishing test is a guess, not a diagnosis.",
+      "properties": {
+        "cause": {
+          "minLength": 1,
+          "title": "Cause",
+          "type": "string"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "distinguishing_tests": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Distinguishing Tests",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "rank": {
+          "minimum": 1,
+          "title": "Rank",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rank",
+        "cause",
+        "confidence",
+        "distinguishing_tests"
+      ],
+      "title": "RankedCause",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Ranked diagnosis for one snapshot. Always carries at least one cause:\n``no anomaly`` and ``insufficient evidence`` are explicit causes, never\nempty output.",
+  "properties": {
+    "causes": {
+      "items": {
+        "$ref": "#/$defs/RankedCause"
+      },
+      "minItems": 1,
+      "title": "Causes",
+      "type": "array"
+    },
+    "generation": {
+      "minimum": 1,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 1,
+      "title": "Revision",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "request_id",
+    "revision",
+    "generation",
+    "causes"
+  ],
+  "title": "Diagnosis",
+  "type": "object"
+}

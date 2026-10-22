@@ -1,0 +1,223 @@
+{
+  "$defs": {
+    "BuildDependency": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinates": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Coordinates",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "BuildDependency",
+      "type": "object"
+    },
+    "BuildModule": {
+      "additionalProperties": false,
+      "properties": {
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "source_roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Roots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "BuildModule",
+      "type": "object"
+    },
+    "BuildSystem": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "default": "inferred",
+          "maxLength": 32,
+          "title": "Confidence",
+          "type": "string"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/BuildDependency"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "excerpt_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Excerpt Paths",
+          "type": "array"
+        },
+        "modules": {
+          "items": {
+            "$ref": "#/$defs/BuildModule"
+          },
+          "title": "Modules",
+          "type": "array"
+        },
+        "tool": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "BuildSystem",
+      "type": "object"
+    },
+    "DirectoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "default": "unknown",
+          "maxLength": 64,
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "DirectoryEntry",
+      "type": "object"
+    },
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Build-system inventory. `tool=\"unrecognized\"` is a finding, not a gap.",
+  "properties": {
+    "directories": {
+      "items": {
+        "$ref": "#/$defs/DirectoryEntry"
+      },
+      "title": "Directories",
+      "type": "array"
+    },
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "systems": {
+      "items": {
+        "$ref": "#/$defs/BuildSystem"
+      },
+      "title": "Systems",
+      "type": "array"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "BuildMapOutput",
+  "type": "object"
+}

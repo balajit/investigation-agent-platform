@@ -78,6 +78,7 @@ from investigation_agent_platform.api.v1.routers.investigations import (
 )
 from investigation_agent_platform.api.v1.routers.jobs import router as jobs_router
 from investigation_agent_platform.api.v1.routers.knowledge import router as knowledge_router
+from investigation_agent_platform.api.v1.routers.onboarding import router as onboarding_router
 from investigation_agent_platform.api.v1.routers.profiles import router as profiles_router
 from investigation_agent_platform.api.v1.routers.reference_docs import (
     router as reference_docs_router,
@@ -593,6 +594,7 @@ def create_app(
     app.include_router(profiles_router, prefix=api_v1)
     app.include_router(events_router, prefix=api_v1)
     app.include_router(knowledge_router, prefix=api_v1)
+    app.include_router(onboarding_router, prefix=api_v1)
     app.include_router(capabilities_router, prefix=api_v1)
     app.include_router(jobs_router, prefix=api_v1)
     app.include_router(clusters_router, prefix=api_v1)

@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "SupportStrategy": {
+      "description": "How the platform handles an estate capability. Closed vocabulary.",
+      "enum": [
+        "NATIVE",
+        "GENERIC",
+        "BRIDGE",
+        "UNSUPPORTED"
+      ],
+      "title": "SupportStrategy",
+      "type": "string"
+    },
+    "TrustState": {
+      "description": "Verification state of a bridge or registry entry.",
+      "enum": [
+        "UNVERIFIED",
+        "PROVISIONAL",
+        "TRUSTED"
+      ],
+      "title": "TrustState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One row of the support registry as seen by the agent (read side).",
+  "properties": {
+    "capability_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Capability Key",
+      "type": "string"
+    },
+    "evidence_requirements": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Requirements"
+    },
+    "limits": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limits"
+    },
+    "owner": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "strategy": {
+      "$ref": "#/$defs/SupportStrategy"
+    },
+    "trust_state": {
+      "$ref": "#/$defs/TrustState",
+      "default": "UNVERIFIED"
+    },
+    "version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "capability_key",
+    "version",
+    "strategy",
+    "owner"
+  ],
+  "title": "RegistryEntry",
+  "type": "object"
+}

@@ -226,13 +226,14 @@ bridge past its verified trust state for coverage.
 | `remediation[]` | array | yes | Ordered operator recommendations with exact commands, expected outcomes, verification steps. Manual-apply default. Recommendations are never executable payloads: no shell chaining, parameters passed as data with safe handling, operator review mandatory, and report output must never become a shell command automatically. |
 | `limitations[]` | array | yes | What was not examined and why (unreachable paths, tier-3 unknowns, redacted inputs). A report without limitations is invalid. |
 
+**Canonicalization version + unknown-field policy (binding):** Every hashed preimage carries a canonicalization version, and any report-body key outside the approved field set is rejected rather than hashed silently — a producer/consumer version skew fails loud, never mints a hash over unknown fields. Bumping the version intentionally invalidates prior hashes.
+
 **Link-not-embed (binding):** The report is platform-derived evidence, never
 operator-supplied intake. It is linked by `(request_id, revision, generation)`
 with its own content hash, referenced — not embedded — by readiness/activation
 decisions. The request `content_hash` covers intake only. The precise linkage
 fields, hash canonicalization, generation semantics, and consuming API shape
-are PROPOSED (AG-02b) and require Phase 1B owner approval before 1B schemas
-finalize; the link-not-embed constraint itself is ACCEPTED (AG-02a).
+are ACCEPTED (AG-02b approved 2026-10-22); the link-not-embed constraint itself is ACCEPTED (AG-02a).
 
 **Contract ownership (binding):** Disposition vocabulary is platform-owned
 (D2.1/F-11); this document consumes it and defines nothing parallel. Coverage
@@ -337,9 +338,9 @@ authorizes nothing, and no status authorizes implementation.
 | # | Contract | Consuming phase | Status | Decision owner | Required sign-off | Notes |
 |---|---|---|---|---|---|---|
 | AG-01a | Read-only advisor principle; §3 boundary ("change minds, never state") | 0R (scopes), all | ACCEPTED | Agent design owner | Security (grant enforcement at build) | Principle agreed; enforcement mechanism needs Security sign-off before build. Three invocation contracts (§2) bound the principle. |
-| AG-01b | Dedicated agent principal, exact read-only scopes, enforcement details | 0R (grant model) | PROPOSED | 0R plan owner | Security + platform owners | Submitted as integration input; does not modify 0R scope. Decision D-01 in §14. |
+| AG-01b | Dedicated agent principal, exact read-only scopes, enforcement details | 0R (grant model) | PROPOSED | 0R plan owner | Owner acting as Security; platform owners (outstanding) | Content approved by owner 2026-10-22 as sufficient: finalized read-only scope set (intake snapshots, sniffer outputs, own coverage_reports, support_registry, background_jobs read-only, tenant registry direct tenant-scoped SELECT), JWT with fixed sub, SSO/OAuth deferred; no mediated-interface requirement (uniform worker-pattern RLS); MCP-for-agent tracked separately as deferred (AG-17/D-10) with no-silent-upgrade guardrail. Stays PROPOSED until platform-owners sign-off is recorded. Decision D-01 in §14. |
 | AG-02a | Link-not-embed constraint; intake hash covers intake only | 1B | ACCEPTED | Agent design owner | — (design) | Established constraint. |
-| AG-02b | Linkage fields, content-hash canonicalization, generation/retry semantics, consuming API shape (§5.1) | 1B | PROPOSED | Phase 1B design owner | Phase 1B design owner | Platform-owned shared contract; agent design proposes, 1B disposes. Decision D-03 in §14. |
+| AG-02b | Linkage fields, content-hash canonicalization, generation/retry semantics, consuming API shape (§5.1) | 1B | ACCEPTED | Phase 1B design owner | Phase 1B design owner | Approved by owner 2026-10-22: field set, canonical JSON bytes (sorted keys, no whitespace, UTF-8, float rejection), tenant-scoped generation uniqueness, idempotent retry / new-evidence-new-generation semantics. Decision D-03 resolved. |
 | AG-03 | Coverage Report schema (§5.1) | 1B (linkage), 3 (gating ref) | ACCEPTED | Agent design owner | Agent design owner (design); Security (before gating use) | Accepted by owner 2026-10-22 with markup incorporated (tenant-scoped generation uniqueness; report_id ≡ row PK mapping); field contracts binding; formal JSON Schema deferred. Decision D-02 resolved. |
 | AG-04 | Sniffer output contracts v1 (§4) | 1B, 3 | ACCEPTED | Agent design owner | Agent design owner | Accepted 2026-10-22. Schemas before implementations; parser-vs-capability split included. |
 | AG-05a | Support strategy + trust-state vocabulary | Review | ACCEPTED | Agent design owner | Agent design owner | Accepted 2026-10-22. Closed vocabulary; independent of storage. |
@@ -356,6 +357,7 @@ authorizes nothing, and no status authorizes implementation.
 | AG-14 | Producing silent gaps (unregistered strategies, missing unknown buckets) | All | REJECTED | Agent design owner | — | Prohibited behavior: fail closed but explained, always. |
 | AG-15 | Correction-record reuse beyond tenant scope | On explicit approval | DEFERRED | Agent design owner | Data governance | Parking confirmed 2026-10-22. Trigger: explicit approval; default tenant-scoped forever. |
 | AG-16 | Remediation auto-apply | On separately approved proposal | DEFERRED | Agent design owner | Security + platform owners | Parking confirmed 2026-10-22. Trigger: proposal with audit design; default manual-first. |
+| AG-17 | MCP for agent (future tool access) | On first MCP tool proposal | DEFERRED | Agent design owner | Owner acting as Security | New tools arrive only via explicit proposal with sandbox + authorization story; must not silently upgrade the agent from reader to actor. |
 
 ## 11. Decision register
 
@@ -371,8 +373,7 @@ authorizes nothing, and no status authorizes implementation.
 - **Link-not-embed + intake-hash scope** — locked before 1B (DEP-05). Late
   cost: acceptance-transaction redesign.
 - **Linkage fields + hash canonicalization + generation semantics** —
-  approved by the Phase 1B owner before 1B schemas finalize (AG-02b).
-  Late cost: intake/acceptance rework after the fact.
+  AG-02b ACCEPTED 2026-10-22. Late cost if revisited: intake/acceptance rework.
 - **Disposition enum final** — locked before 1B (DEP-04). Late cost: intake
   validation + policy references rewritten.
 - **Analysis-activity slot** — locked before Phase 2 (DEP-07). Late cost:
@@ -405,12 +406,15 @@ records rationale and defaults.
 - **Remediation auto-apply (AG-16):** manual-first default stands until a
   separately approved proposal with audit design exists; owner: agent design
   owner; sign-off: Security + platform owners.
+- **MCP tool access for the agent (AG-17):** no MCP tools until an explicit
+  proposal with sandbox + authorization story is approved; owner: agent design
+  owner; sign-off: owner acting as Security. Must not silently upgrade the
+  agent from reader to actor.
 
 ## 12. Open questions rollup (phase/event tagged)
 
 1. Report persistence and linkage: operator doc plus linked stored artifact
-   (AG-02b, §5.1)? Resolve with Phase 1B owner approval before 1B schemas
-   finalize — this is distinct from gating below.
+   (AG-02b ACCEPTED 2026-10-22, §5.1)? Resolved — this is distinct from gating below.
 2. Activation gating: advisory-only default stands; resolve at Phase 3
    planning with Product + Security (AG-07). Not the same decision as (1).
 3. Remediation authority: manual apply first, auto-apply later by separate
@@ -432,13 +436,16 @@ records rationale and defaults.
     (Trigger: application decision; tracked in thoughts Entry 7.)
 12. Muse provider compatibility with Meta Model API in code. (Trigger: first
     Muse-backed run.)
+13. MCP tool access for the agent (AG-17/D-10): deferred until an explicit
+    proposal with sandbox + authorization story; must not silently upgrade
+    the agent from reader to actor.
 
 ## 13. Design acceptance criteria
 
 Accepted 2026-10-22 against these criteria. Criteria 1, 3, 4, and 5 hold as
-written. Criterion 2 holds for the report contract itself (AG-03 ACCEPTED
-2026-10-22, D-02 resolved) except for AG-02b linkage ownership, which remains a
-binding open decision (D-03 in §14); likewise AG-01b enforcement approval
+written. Criterion 2 now holds in full: report contract (AG-03 ACCEPTED
+2026-10-22, D-02 resolved) and linkage ownership (AG-02b ACCEPTED 2026-10-22,
+D-03 resolved). Likewise AG-01b enforcement approval
 (D-01) is tracked, not assumed. Approval of
 this document covers the framework, all ACCEPTED rows, and all REJECTED
 prohibitions — it does not pre-approve any unresolved §14 decision, and no
@@ -481,15 +488,16 @@ required approval.
 
 | ID | Decision (AG ref) | Decided by | Required sign-off | Must be decided before | Default posture until decided |
 |---|---|---|---|---|---|
-| D-01 | Agent grant scopes + dedicated principal model (AG-01b) | 0R plan owner | Security + platform owners | 0R exit / any agent grant issuance or build depending on it | No agent principal exists; no agent activity runs. Resolver/role design proceeds without agent scopes. |
+| D-01 | Agent grant scopes + dedicated principal model (AG-01b) | 0R plan owner | Owner acting as Security (recorded); platform owners (outstanding) | 0R exit / any agent grant issuance or build depending on it | Owner-side content approval recorded 2026-10-22; no agent principal exists and no agent activity runs until platform-owners sign-off is also recorded. Resolver/role design proceeds without agent scopes. |
 | D-02 | Coverage Report schema acceptance (AG-03) | Agent design owner | Agent design owner (design); Security (before gating use) | Phase 1B schemas finalize | [RESOLVED 2026-10-22 — AG-03 ACCEPTED] Schema usable for 1B planning and linkage work; formal JSON Schema still deferred; Security sign-off still required before gating use. |
-| D-03 | Coverage linkage contract: fields, hash canonicalization, generation/retry semantics, consuming API (AG-02b) | Phase 1B design owner | Phase 1B design owner | Phase 1B schemas finalize | AG-02a constraint holds (link-not-embed, intake hash covers intake); no linked report is filed or gated on. |
+| D-03 | Coverage linkage contract: fields, hash canonicalization, generation/retry semantics, consuming API (AG-02b) | Phase 1B design owner | Phase 1B design owner | Phase 1B schemas finalize | [RESOLVED 2026-10-22 — AG-02b ACCEPTED] Field set, canonical JSON bytes, tenant-scoped generation uniqueness, idempotent retry / new-evidence-new-generation semantics approved. AG-02a constraint holds (link-not-embed, intake hash covers intake). Luna cleared to implement intake linkage per this contract. |
 | D-04 | Executing-bridge policy: sandbox, pins, audit (AG-06b) | Agent design owner | Security | First executing-bridge proposal | Data-only bridges only; executing bridges prohibited. Sandbox creation and testing is a prerequisite, not a parallel track. |
 | D-05 | Activation gating: coverage as gate vs. advisory (AG-07) | Agent design owner | Product + Security | Phase 3 planning (activation CAS changes) | Advisory-only: reports inform, never gate. |
 | D-06 | Registry governance: who approves entries/promotions (AG-08) | Agent design owner | Platform owners | First real registry entry | No entries; registry-gap findings only. Seed rows are never hypothetical. |
 | D-07 | Hermetic/on-prem execution (AG-09) | Agent design owner | Security + Legal | First customer demand for it | Bounded-role ask only; hermetic execution prohibited without this decision. |
 | D-08 | Correction-record reuse beyond tenant scope (AG-15) | Agent design owner | Data governance | Any cross-tenant correction use | Tenant-scoped forever. |
 | D-09 | Remediation auto-apply (AG-16) | Agent design owner | Security + platform owners | Any automated remediation | Manual-first; output is recommendation text, never executable action. |
+| D-10 | MCP tool access for the agent (AG-17) | Agent design owner | Owner acting as Security | First MCP tool proposal | No MCP tools; agent remains read-only. Any MCP proposal needs its own sandbox + authorization story and must not silently upgrade the agent from reader to actor. |
 
 Standing defaults that require no decision (recorded here so silence is not
 mistaken for an open item): model-agnostic harness with recorded versions;

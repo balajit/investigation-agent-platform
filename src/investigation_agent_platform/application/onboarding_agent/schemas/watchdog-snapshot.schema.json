@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "StageObservation": {
+      "additionalProperties": false,
+      "description": "One stage visit as reported by the invoking workflow.",
+      "properties": {
+        "entered_at": {
+          "format": "date-time",
+          "title": "Entered At",
+          "type": "string"
+        },
+        "lease_fencing_token": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lease Fencing Token"
+        },
+        "stage": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "entered_at"
+      ],
+      "title": "StageObservation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Tenant-scoped control-store state the workflow explicitly supplies.",
+  "properties": {
+    "consecutive_failures": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Consecutive Failures",
+      "type": "integer"
+    },
+    "current_stage": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Current Stage",
+      "type": "string"
+    },
+    "generation": {
+      "minimum": 1,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    },
+    "now": {
+      "format": "date-time",
+      "title": "Now",
+      "type": "string"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 1,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/StageObservation"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "stuck_bounds_seconds": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Stuck Bounds Seconds",
+      "type": "object"
+    }
+  },
+  "required": [
+    "request_id",
+    "revision",
+    "generation",
+    "current_stage",
+    "now"
+  ],
+  "title": "WatchdogSnapshot",
+  "type": "object"
+}

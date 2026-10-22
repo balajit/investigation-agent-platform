@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "HygieneFinding": {
+      "additionalProperties": false,
+      "description": "A redacted hygiene finding. Never carries raw secret material.",
+      "properties": {
+        "kind": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "minLength": 1,
+          "title": "Location",
+          "type": "string"
+        },
+        "redacted_pattern": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Redacted Pattern",
+          "type": "string"
+        },
+        "redaction_confident": {
+          "default": true,
+          "title": "Redaction Confident",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "location",
+        "redacted_pattern"
+      ],
+      "title": "HygieneFinding",
+      "type": "object"
+    },
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "excluded_inputs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Excluded Inputs",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/HygieneFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "HygieneOutput",
+  "type": "object"
+}

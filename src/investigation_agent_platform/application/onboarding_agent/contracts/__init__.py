@@ -17,7 +17,14 @@ from investigation_agent_platform.application.onboarding_agent.contracts.coverag
     ServiceVerdict,
     SupportTier,
 )
+from investigation_agent_platform.application.onboarding_agent.contracts.guidance import (
+    Audience,
+    CitedAnswer,
+    CoverageQuestion,
+    QuestionKind,
+)
 from investigation_agent_platform.application.onboarding_agent.contracts.linkage import (
+    CANONICALIZATION_VERSION,
     ReportLinkage,
     analysis_idempotency_key,
     canonical_json_bytes,
@@ -47,8 +54,16 @@ from investigation_agent_platform.application.onboarding_agent.contracts.sniffer
     SnifferEnvelope,
     validate_sniffer_payload,
 )
+from investigation_agent_platform.application.onboarding_agent.contracts.watchdog import (
+    Diagnosis,
+    RankedCause,
+    StageObservation,
+    WatchdogSnapshot,
+)
 
 __all__ = [
+    "CANONICALIZATION_VERSION",
+    "Audience",
     "BridgeUse",
     "BuildDependency",
     "BuildMapOutput",
@@ -58,10 +73,13 @@ __all__ = [
     "CensusFile",
     "CensusOutput",
     "CiMapOutput",
+    "CitedAnswer",
     "Claim",
     "Confidence",
+    "CoverageQuestion",
     "CoverageReport",
     "DepScanOutput",
+    "Diagnosis",
     "DirectoryEntry",
     "EnhancementGap",
     "EvidencePointer",
@@ -69,15 +87,19 @@ __all__ = [
     "HygieneFinding",
     "HygieneOutput",
     "LanguageTotals",
+    "QuestionKind",
+    "RankedCause",
     "RegistryEntry",
     "Remediation",
     "ReportLinkage",
     "ServiceVerdict",
     "SizerOutput",
     "SnifferEnvelope",
+    "StageObservation",
     "SupportStrategy",
     "SupportTier",
     "TrustState",
+    "WatchdogSnapshot",
     "analysis_idempotency_key",
     "canonical_json_bytes",
     "input_manifest_hash",

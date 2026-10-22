@@ -1,5 +1,6 @@
 """Onboarding agent contract tests: schemas, validation, canonical hashing."""
 
+import hashlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from investigation_agent_platform.application.onboarding_agent.contracts import (
+    CANONICALIZATION_VERSION,
     BuildMapOutput,
     BuildModule,
     BuildSystem,
@@ -271,6 +273,50 @@ def test_report_content_hash_excludes_identity_and_envelope() -> None:
     assert report_content_hash(body) == report_content_hash(changed_when)
     changed_verdict = dict(body, verdicts=[{"service": "b"}])
     assert report_content_hash(body) != report_content_hash(changed_verdict)
+
+
+def test_canonicalization_version_is_pinned_in_hash_preimages() -> None:
+    assert CANONICALIZATION_VERSION == "1"
+    out = {
+        "content_hash": "a" * 64,
+        "tool": "census",
+        "tool_version": "1",
+        "schema_version": "sniffer/v1",
+    }
+    expected_manifest = {
+        "canonicalization_version": "1",
+        "estate_sha": "estate",
+        "registry_version": "regv1",
+        "catalog_version": "catv1",
+        "generation": 1,
+        "inputs": [
+            {
+                "content_hash": "a" * 64,
+                "tool": "census",
+                "tool_version": "1",
+                "schema_version": "sniffer/v1",
+            }
+        ],
+    }
+    expected = hashlib.sha256(
+        canonical_json_bytes(expected_manifest)
+    ).hexdigest()
+    assert (
+        input_manifest_hash(
+            sniffer_outputs=[out],
+            estate_sha="estate",
+            registry_version="regv1",
+            catalog_version="catv1",
+            generation=1,
+        )
+        == expected
+    )
+
+
+def test_report_content_hash_rejects_unknown_fields() -> None:
+    body = {"verdicts": [{"service": "a"}], "future_field": "v2-surprise"}
+    with pytest.raises(ValueError, match="unknown report body fields"):
+        report_content_hash(body)
 
 
 def test_analysis_idempotency_key_is_stable_and_validated() -> None:

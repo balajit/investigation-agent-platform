@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "binaries": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Binaries",
+      "type": "array"
+    },
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "exclusion_rationale": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Exclusion Rationale",
+      "type": "object"
+    },
+    "generated": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Generated",
+      "type": "array"
+    },
+    "loc_by_service": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Loc By Service",
+      "type": "object"
+    },
+    "vendor": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Vendor",
+      "type": "array"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "SizerOutput",
+  "type": "object"
+}

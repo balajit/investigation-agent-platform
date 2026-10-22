@@ -1,0 +1,118 @@
+{
+  "$defs": {
+    "LockfileRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "resolved": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Resolved",
+          "type": "array"
+        },
+        "tool": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "path"
+      ],
+      "title": "LockfileRecord",
+      "type": "object"
+    },
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "consistency": {
+      "default": "consistent",
+      "enum": [
+        "consistent",
+        "divergent",
+        "no-lockfile"
+      ],
+      "title": "Consistency",
+      "type": "string"
+    },
+    "declared_but_unlocked": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Declared But Unlocked",
+      "type": "array"
+    },
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "locked_but_undeclared": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Locked But Undeclared",
+      "type": "array"
+    },
+    "lockfiles": {
+      "items": {
+        "$ref": "#/$defs/LockfileRecord"
+      },
+      "title": "Lockfiles",
+      "type": "array"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "DepScanOutput",
+  "type": "object"
+}

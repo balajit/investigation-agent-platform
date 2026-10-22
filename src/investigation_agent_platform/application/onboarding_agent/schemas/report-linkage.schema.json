@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "The reference a readiness/activation decision holds to a report.",
+  "properties": {
+    "generation": {
+      "minimum": 1,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "report_content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Report Content Hash",
+      "type": "string"
+    },
+    "report_id": {
+      "format": "uuid",
+      "title": "Report Id",
+      "type": "string"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 1,
+      "title": "Revision",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "request_id",
+    "revision",
+    "generation",
+    "report_id",
+    "report_content_hash"
+  ],
+  "title": "ReportLinkage",
+  "type": "object"
+}

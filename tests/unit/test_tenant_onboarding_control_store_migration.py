@@ -404,10 +404,32 @@ def test_request_job_reference_is_nullable_and_tenant_composite_fk() -> None:
 def test_migration_chain_has_single_v01_head() -> None:
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["024_onboarding_phase0r"]
-    revision = script.get_revision("024_onboarding_phase0r")
+    assert script.get_heads() == ["026_onboarding_request_audit"]
+    revision = script.get_revision("026_onboarding_request_audit")
     assert revision is not None
-    assert revision.down_revision == "023_onboarding_control_store"
+    assert revision.down_revision == "025_onboarding_coverage_filing"
+
+
+def test_phase026_request_audit_contract_is_additive_and_app_callable() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "026_onboarding_request_audit.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "026_onboarding_request_audit"' in source
+    assert 'down_revision = "025_onboarding_coverage_filing"' in source
+    assert '"onboarding_request_audits"' in source
+    assert "fk_onboarding_request_audit_revision" in source
+    assert "onboarding_request_audit_tenant_read" in source
+    assert "onboarding_request_audit_migrator_insert" in source
+    assert "p_actor_sub text" in source
+    assert "session_user::text" in source
+    assert "p_action <> 'CREATE'" in source
+    assert "GRANT EXECUTE ON FUNCTION record_onboarding_request_audit" in source
+    assert "TO iap_app" in source
+    assert "GRANT INSERT ON onboarding_request_audits TO iap_app" not in source
 
 
 def test_phase0r_schema_contract_declares_grants_fencing_and_worker_policy() -> None:

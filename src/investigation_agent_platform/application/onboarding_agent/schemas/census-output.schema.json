@@ -1,0 +1,217 @@
+{
+  "$defs": {
+    "CensusFile": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/ExtractedCapability"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "generated": {
+          "default": false,
+          "title": "Generated",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/FileKind"
+        },
+        "language": {
+          "default": "unknown",
+          "maxLength": 64,
+          "title": "Language",
+          "type": "string"
+        },
+        "loc": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Loc"
+        },
+        "parse_error": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Parse Error",
+          "type": "string"
+        },
+        "parse_status": {
+          "$ref": "#/$defs/ParseStatus",
+          "default": "skipped"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "size_bytes"
+      ],
+      "title": "CensusFile",
+      "type": "object"
+    },
+    "ExtractedCapability": {
+      "additionalProperties": false,
+      "description": "One capability actually extracted for a file, with provenance.",
+      "properties": {
+        "extractor": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Extractor",
+          "type": "string"
+        },
+        "extractor_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Extractor Version",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "extractor",
+        "extractor_version"
+      ],
+      "title": "ExtractedCapability",
+      "type": "object"
+    },
+    "FileKind": {
+      "enum": [
+        "text",
+        "binary"
+      ],
+      "title": "FileKind",
+      "type": "string"
+    },
+    "LanguageTotals": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "minimum": 0,
+          "title": "Files",
+          "type": "integer"
+        },
+        "loc": {
+          "minimum": 0,
+          "title": "Loc",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files",
+        "loc"
+      ],
+      "title": "LanguageTotals",
+      "type": "object"
+    },
+    "ParseStatus": {
+      "description": "Parser outcome only \u2014 never a verdict on support tier.",
+      "enum": [
+        "parsed",
+        "syntax-errors",
+        "grammar-unavailable",
+        "skipped"
+      ],
+      "title": "ParseStatus",
+      "type": "string"
+    },
+    "SnifferEnvelope": {
+      "additionalProperties": false,
+      "description": "Version envelope every sniffer output carries.",
+      "properties": {
+        "input_sha": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Sha",
+          "type": "string"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "sniffer/v1",
+          "default": "sniffer/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "tool_version",
+        "input_sha",
+        "produced_at"
+      ],
+      "title": "SnifferEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "File inventory + parse census. Unknown bucket always present.",
+  "properties": {
+    "envelope": {
+      "$ref": "#/$defs/SnifferEnvelope"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/CensusFile"
+      },
+      "title": "Files",
+      "type": "array"
+    },
+    "skipped": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Skipped",
+      "type": "array"
+    },
+    "totals_by_language": {
+      "additionalProperties": {
+        "$ref": "#/$defs/LanguageTotals"
+      },
+      "title": "Totals By Language",
+      "type": "object"
+    }
+  },
+  "required": [
+    "envelope"
+  ],
+  "title": "CensusOutput",
+  "type": "object"
+}
