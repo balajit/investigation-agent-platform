@@ -1,12 +1,12 @@
 # src/investigation_agent_platform/application/onboarding/workflows.py
 """Phase 2 onboarding workflow definitions (deterministic, Temporal-native).
 
-The dispatch lifecycle workflow below is intentionally thin: verify, heartbeat
-with cancellation checkpoints, and hand terminal outcomes to activities that
-perform CAS-guarded writes. Domain work arrives with Phase 3 adapters behind
-a workflow version bump (DEP-07); until then no phantom progress is
-manufactured — a workflow that cannot do domain work holds the execution
-open and observable rather than inventing an outcome.
+The dispatch lifecycle workflow below is intentionally thin: verify, file a
+deterministic coverage analysis (DEP-07), heartbeat with cancellation
+checkpoints, and hand terminal outcomes to activities that
+perform CAS-guarded writes. Domain adapters arrived with Phase 3; the
+workflow files their deterministic analysis output and never invents an
+outcome beyond what activities durably record.
 
 Temporal rules honored here: no I/O, no wall clocks, no randomness, no
 iteration over unordered collections inside workflow code. All state changes
@@ -26,6 +26,9 @@ with workflow.unsafe.imports_passed_through():
         CompleteCancellationInput,
         HeartbeatInput,
         VerifyRevisionInput,
+    )
+    from investigation_agent_platform.application.onboarding.steps import (
+        AnalyzeCoverageInput,
     )
 
 
@@ -57,12 +60,11 @@ class OnboardingDispatchResult:
 
 @workflow.defn(name="OnboardingDispatch", sandboxed=False)
 class OnboardingDispatchWorkflow:
-    """Long-running dispatch lifecycle: verify, heartbeat, cancel-or-terminate.
+    """Long-running dispatch lifecycle: verify, analyze, heartbeat, or terminate.
 
-    Completes only via cancellation (operator or request state) or terminal
-    failure handling. Domain completion arrives with Phase 3; until then the
-    workflow holds the execution open and observable rather than inventing an
-    outcome.
+    Completes via cancellation, terminal failure handling, or a failed
+    deterministic coverage analysis (DEP-07: assembled from stored probe
+    evidence, no model judgment, no phantom progress).
     """
 
     def __init__(self) -> None:
@@ -73,9 +75,7 @@ class OnboardingDispatchWorkflow:
         self._cancel_requested = True
 
     @workflow.run
-    async def run(
-        self, wf_input: OnboardingDispatchWorkflowInput
-    ) -> OnboardingDispatchResult:
+    async def run(self, wf_input: OnboardingDispatchWorkflowInput) -> OnboardingDispatchResult:
         snapshot = await workflow.execute_activity_method(
             _activities.OnboardingActivities.verify_revision,
             VerifyRevisionInput(
@@ -89,8 +89,23 @@ class OnboardingDispatchWorkflow:
         if not snapshot.proceed:
             if snapshot.reason == "cancellation requested":
                 return await self._finish_canceled(wf_input)
+            return OnboardingDispatchResult(status="failed", detail=snapshot.reason)
+        try:
+            await workflow.execute_activity_method(
+                _activities.OnboardingActivities.analyze_coverage,
+                AnalyzeCoverageInput(
+                    tenant_id=wf_input.tenant_id,
+                    request_id=wf_input.request_id,
+                    revision=wf_input.revision,
+                    generation=wf_input.execution_generation,
+                    snapshot_reference=wf_input.input_reference,
+                    dispatch_id=wf_input.dispatch_id,
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+        except Exception as exc:
             return OnboardingDispatchResult(
-                status="failed", detail=snapshot.reason
+                status="failed", detail=f"coverage analysis failed: {exc}"
             )
         while True:
             heartbeat = await workflow.execute_activity_method(
@@ -105,9 +120,7 @@ class OnboardingDispatchWorkflow:
             if heartbeat.cancel_requested or self._cancel_requested:
                 return await self._finish_canceled(wf_input)
             if not heartbeat.alive:
-                return OnboardingDispatchResult(
-                    status="failed", detail=heartbeat.detail
-                )
+                return OnboardingDispatchResult(status="failed", detail=heartbeat.detail)
             await workflow.wait_condition(
                 lambda: self._cancel_requested,
                 timeout=timedelta(seconds=wf_input.heartbeat_interval_seconds),

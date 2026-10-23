@@ -1849,12 +1849,19 @@ class AppContext:
         evidence_repo: EvidenceRepository | None = None,
         timeline_repo: TimelineRepository | None = None,
         hypothesis_repo: HypothesisRepository | Any | None = None,
+        onboarding_service: Any | None = None,
+        cleanup_service: Any | None = None,
     ) -> None:
         self.investigation_repo = investigation_repo or InMemoryInvestigationRepository()
         self.profile_repo = profile_repo or InMemoryApplicationProfileRepository()
         self.evidence_repo = evidence_repo or InMemoryEvidenceRepository()
         self.timeline_repo = timeline_repo or InMemoryTimelineRepository()
         self.hypothesis_repo: Any = hypothesis_repo or InMemoryHypothesisRepository()
+        # Tenant onboarding (Phase 4): None = routes stay explicitly
+        # unimplemented; bootstrap or tests inject the composed service.
+        self.onboarding_service: Any | None = onboarding_service
+        # Tenant cleanup (Phase 5): same pattern for deletion preview/approval.
+        self.cleanup_service: Any | None = cleanup_service
         # Part 11.2: findings/conclusions — durable Postgres in production,
         # process-local store in dev/test (mirrors every other Part 6+ repo).
         self.finding_repo: FindingConclusionRepository = InMemoryFindingConclusionRepository()

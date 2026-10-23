@@ -37,43 +37,43 @@ _RLS_TABLES = (
 )
 
 
+def _column_exists(table: str, column: str) -> bool:
+    bind = op.get_bind()
+    try:
+        inspector = sa.inspect(bind)
+        columns = inspector.get_columns(table)
+    except Exception:
+        # Missing table, or offline (--sql) mode: report missing so DDL is emitted.
+        return False
+    return column in {col["name"] for col in columns}
+
+
+_RETENTION_DEFAULTS = (
+    ("investigations", "investigation"),
+    ("evidence", "evidence"),
+    ("timeline_events", "timeline"),
+    ("investigation_transitions", "transition"),
+)
+
+
 def upgrade() -> None:
-    op.add_column(
-        "investigations",
-        sa.Column(
-            "retention_class",
-            sa.String(length=64),
-            server_default="investigation",
-            nullable=False,
-        ),
-    )
-    op.add_column(
-        "evidence",
-        sa.Column(
-            "retention_class",
-            sa.String(length=64),
-            server_default="evidence",
-            nullable=False,
-        ),
-    )
-    op.add_column(
-        "timeline_events",
-        sa.Column(
-            "retention_class",
-            sa.String(length=64),
-            server_default="timeline",
-            nullable=False,
-        ),
-    )
-    op.add_column(
-        "investigation_transitions",
-        sa.Column(
-            "retention_class",
-            sa.String(length=64),
-            server_default="transition",
-            nullable=False,
-        ),
-    )
+    # Fresh-install guard (chain-rot repair): the 000 baseline creates the
+    # full current schema, so retention_class may already exist. Databases
+    # upgrading from pre-3354 history take the create path via the same
+    # guards. The RLS block below is already idempotent (IF NOT EXISTS
+    # policy guard; ENABLE/FORCE are re-runnable).
+    for table, default in _RETENTION_DEFAULTS:
+        if _column_exists(table, "retention_class"):
+            continue
+        op.add_column(
+            table,
+            sa.Column(
+                "retention_class",
+                sa.String(length=64),
+                server_default=default,
+                nullable=False,
+            ),
+        )
     for table in _RLS_TABLES:
         op.execute(sa.text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         op.execute(

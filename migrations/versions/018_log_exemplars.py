@@ -17,7 +17,20 @@ from alembic import op  # type: ignore[import-not-found]
 from sqlalchemy.dialects import postgresql  # type: ignore[import-not-found]
 
 
+def _table_exists(table: str) -> bool:
+    bind = op.get_bind()
+    try:
+        return sa.inspect(bind).has_table(table)
+    except Exception:
+        # Offline (--sql) mode: report missing so DDL is emitted.
+        return False
+
+
 def upgrade() -> None:
+    # Fresh-install guard (chain-rot repair): the 000 baseline creates the
+    # full current schema, so this table may already exist.
+    if _table_exists("log_exemplars"):
+        return
     op.create_table(
         "log_exemplars",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),

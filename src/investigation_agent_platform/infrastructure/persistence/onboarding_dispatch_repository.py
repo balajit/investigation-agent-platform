@@ -659,3 +659,77 @@ class SqlAlchemyOnboardingDispatchRepository:
                     },
                 )
                 return result.first() is not None
+
+    async def read_latest_request_row(
+        self, tenant_id: str, request_id: Any
+    ) -> dict[str, Any] | None:
+        """Tenant-scoped read of the latest revision row for a request."""
+        async with self._session_factory() as session:
+            await self._set_tenant_context(session, tenant_id)
+            result = await session.execute(
+                text(
+                    "SELECT tenant_id, request_id, revision, idempotency_key, "
+                    "content_hash, schema_version, policy_version, "
+                    "catalog_version, application_id, environment, actor_id, "
+                    "state, state_version, job_id "
+                    "FROM onboarding_requests "
+                    "WHERE tenant_id = :tenant_id AND request_id = :request_id "
+                    "ORDER BY revision DESC LIMIT 1"
+                ),
+                {"tenant_id": tenant_id, "request_id": request_id},
+            )
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
+
+    async def request_cancellation(
+        self, tenant_id: str, request_id: Any, revision: int
+    ) -> bool:
+        """Move QUEUED to CANCEL_REQUESTED. Idempotent on repeats.
+
+        The workflow heartbeat routes CANCEL_REQUESTED to the cancel path;
+        the reconciler (or complete_cancellation activity) converges the row
+        to CANCELED. Returns False when the revision is not QUEUED.
+        """
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_requests SET state = 'CANCEL_REQUESTED', "
+                        "state_version = state_version + 1, "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND request_id = :request_id "
+                        "AND revision = :revision AND state = 'QUEUED' "
+                        "RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "request_id": request_id,
+                        "revision": revision,
+                    },
+                )
+                if result.first() is not None:
+                    return True
+                state = await self.read_request_state(tenant_id, request_id, revision)
+                return state in ("CANCEL_REQUESTED", "CANCELED")
+
+    async def retry_now(self, tenant_id: str, dispatch_id: Any) -> bool:
+        """Make a RETRYABLE dispatch due immediately. Idempotent on repeats.
+
+        Only RETRYABLE rows move; terminal outcomes are never resurrected and
+        live claims are never stolen. Returns False when not RETRYABLE.
+        """
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_dispatches SET next_attempt_at = clock_timestamp(), "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :dispatch_id "
+                        "AND state = 'RETRYABLE' "
+                        "RETURNING id"
+                    ),
+                    {"tenant_id": tenant_id, "dispatch_id": dispatch_id},
+                )
+                return result.first() is not None

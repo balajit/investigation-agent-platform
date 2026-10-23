@@ -726,7 +726,16 @@ class TestKnowledgeMigrationChain:
         newest28 = script.get_revision("028_onboarding_request_cancel")
         assert newest28 is not None
         assert newest28.down_revision == "027_onboarding_request_accept"
-        assert script.get_heads() == ["028_onboarding_request_cancel"]
+        newest29 = script.get_revision("029_onboarding_probe_readiness")
+        assert newest29 is not None
+        assert newest29.down_revision == "028_onboarding_request_cancel"
+        newest30 = script.get_revision("030_onboarding_request_activate")
+        assert newest30 is not None
+        assert newest30.down_revision == "029_onboarding_probe_readiness"
+        newest31 = script.get_revision("031_onboarding_deletion")
+        assert newest31 is not None
+        assert newest31.down_revision == "030_onboarding_request_activate"
+        assert script.get_heads() == ["031_onboarding_deletion"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

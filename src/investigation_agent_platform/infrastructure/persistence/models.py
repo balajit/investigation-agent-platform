@@ -866,8 +866,8 @@ class BackgroundJobORM(Base):
     input_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     result_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    quota_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
-    retention_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    quota_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default", server_default="default")
+    retention_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default", server_default="default")
     stages_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
@@ -1810,4 +1810,231 @@ class OnboardingDispatchORM(Base):
         ),
         Index("ix_onboarding_dispatch_pending", "state", "next_attempt_at", "created_at"),
         Index("ix_onboarding_dispatch_tenant_request", "tenant_id", "request_id", "revision"),
+    )
+
+
+class OnboardingProbeEvidenceORM(Base):
+    """One immutable adapter probe result pinned to a request revision (Phase 3)."""
+
+    __tablename__ = "onboarding_probe_evidences"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    application_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    adapter: Mapped[str] = mapped_column(String(128), nullable=False)
+    adapter_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    diagnostic_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    detail: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    auth_mode: Mapped[str] = mapped_column(String(64), nullable=False)
+    probed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision"],
+            [
+                "onboarding_requests.tenant_id",
+                "onboarding_requests.request_id",
+                "onboarding_requests.revision",
+            ],
+            ondelete="RESTRICT",
+            name="fk_probe_evidence_request_revision",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "request_id",
+            "revision",
+            "capability_key",
+            name="uq_probe_evidence_request_capability",
+        ),
+        CheckConstraint("revision >= 1", name="ck_probe_evidence_revision_positive"),
+        CheckConstraint(
+            "outcome IN ('VERIFIED', 'DEGRADED', 'FAILED', 'UNSUPPORTED', 'SKIPPED', 'NOT_CONFIGURED')",
+            name="ck_probe_evidence_outcome",
+        ),
+        CheckConstraint("expires_at > probed_at", name="ck_probe_evidence_expiry_after_probe"),
+        Index("ix_probe_evidence_request", "tenant_id", "request_id", "revision"),
+    )
+
+
+class OnboardingReadinessReportORM(Base):
+    """One readiness decision for a request revision and service tier (Phase 3)."""
+
+    __tablename__ = "onboarding_readiness_reports"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    blocking_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    report_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "request_id", "revision"],
+            [
+                "onboarding_requests.tenant_id",
+                "onboarding_requests.request_id",
+                "onboarding_requests.revision",
+            ],
+            ondelete="RESTRICT",
+            name="fk_readiness_report_request_revision",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "request_id",
+            "revision",
+            "tier",
+            name="uq_readiness_report_request_tier",
+        ),
+        CheckConstraint("revision >= 1", name="ck_readiness_report_revision_positive"),
+        CheckConstraint(
+            "decision IN ('READY', 'BLOCKED')",
+            name="ck_readiness_report_decision",
+        ),
+        Index("ix_readiness_report_request", "tenant_id", "request_id", "revision"),
+    )
+
+
+class OnboardingStoreRegistryORM(Base):
+    """Versioned deployment inventory declaring required cleanup adapters."""
+
+    __tablename__ = "onboarding_store_registry"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    deployment_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    store_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    store_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    adapter_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    registry_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    required_for_deletion: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    capabilities_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "deployment_id",
+            "store_id",
+            "registry_version",
+            name="uq_store_registry_version",
+        ),
+        Index("ix_store_registry_deployment", "deployment_id", "enabled"),
+    )
+
+
+class OnboardingDeletionManifestORM(Base):
+    """Immutable deletion approval plan; execution facts are append-only outcomes."""
+
+    __tablename__ = "onboarding_deletion_manifests"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    application_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    store_registry_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "manifest_id", name="uq_onboarding_manifest"),
+        CheckConstraint(
+            "state IN ('PREVIEW', 'APPROVAL_PENDING', 'QUEUED', 'IN_PROGRESS', 'COMPLETE', "
+            "'COMPLETE_WITH_RETENTION', 'COMPLETE_WITH_APPROVED_RESIDUALS', 'INCOMPLETE', "
+            "'BLOCKED', 'CANCELED')",
+            name="ck_deletion_manifest_state",
+        ),
+        CheckConstraint("plan_version >= 1", name="ck_deletion_manifest_plan_positive"),
+        Index("ix_onboarding_manifest_state", "tenant_id", "state"),
+    )
+
+
+class OnboardingDeletionApprovalORM(Base):
+    """Persisted approval payload digests and atomic one-time consumption."""
+
+    __tablename__ = "onboarding_deletion_approvals"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    requester_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    approver_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    store_registry_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    purge_job_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    dispatch_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "manifest_id", "nonce", name="uq_onboarding_approval_nonce"
+        ),
+        Index("ix_onboarding_approval_manifest", "tenant_id", "manifest_id", "consumed_at"),
+    )
+
+
+class OnboardingDeletionOutcomeORM(Base):
+    """Append-only execution status for one approved manifest resource entry."""
+
+    __tablename__ = "onboarding_deletion_outcomes"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    entry_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    store_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    completion_evidence_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    residual_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "manifest_id",
+            "entry_key",
+            "attempt",
+            name="uq_deletion_outcome_attempt",
+        ),
+        CheckConstraint("attempt >= 1", name="ck_deletion_outcome_attempt_positive"),
+        CheckConstraint(
+            "state IN ('DONE', 'RETAINED_BY_POLICY', 'APPROVED_RESIDUAL', 'INCOMPLETE', "
+            "'BLOCKED', 'FAILED')",
+            name="ck_deletion_outcome_state",
+        ),
+        Index("ix_deletion_outcome_manifest", "tenant_id", "manifest_id", "state"),
     )

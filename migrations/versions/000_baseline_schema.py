@@ -13,12 +13,18 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+import sqlalchemy as sa  # type: ignore[import-not-found]
 from alembic import op  # type: ignore[import-not-found]
 
 
 def upgrade() -> None:
     from investigation_agent_platform.infrastructure.persistence.models import Base
 
+    # Fresh installs create the full current schema here, which includes
+    # pgvector VECTOR columns. The dedicated 006 migration runs later in the
+    # chain, so ensure the extension exists before create_all. Idempotent and
+    # a no-op for databases that already passed 000.
+    op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
     bind = op.get_bind()
     Base.metadata.create_all(bind=bind)
 

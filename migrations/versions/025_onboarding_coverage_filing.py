@@ -12,43 +12,57 @@ branch_labels = None
 depends_on = None
 
 
+def _table_exists(table: str) -> bool:
+    bind = op.get_bind()
+    try:
+        return sa.inspect(bind).has_table(table)
+    except Exception:
+        # Offline (--sql) mode: report missing so DDL is emitted.
+        return False
+
+
 def upgrade() -> None:
-    op.create_table(
-        "onboarding_coverage_filing_audits",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("tenant_id", sa.String(64), nullable=False),
-        sa.Column("request_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("revision", sa.Integer(), nullable=False),
-        sa.Column("generation", sa.Integer(), nullable=False),
-        sa.Column("worker_id", sa.String(128), nullable=False),
-        sa.Column("database_role", sa.String(128), nullable=False),
-        sa.Column("fencing_token", sa.Integer(), nullable=False),
-        sa.Column("report_content_hash", sa.String(64), nullable=False),
-        sa.Column("action", sa.String(16), nullable=False),
-        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(
-            ["tenant_id", "request_id", "revision", "generation"],
-            [
-                "onboarding_coverage_reports.tenant_id",
-                "onboarding_coverage_reports.request_id",
-                "onboarding_coverage_reports.revision",
-                "onboarding_coverage_reports.generation",
-            ],
-            ondelete="RESTRICT",
-            name="fk_coverage_filing_audit_report",
-        ),
-        sa.CheckConstraint("action IN ('FILED')", name="ck_coverage_filing_audit_action"),
-        sa.CheckConstraint("length(worker_id) > 0", name="ck_coverage_filing_audit_worker_nonempty"),
-        sa.CheckConstraint("length(database_role) > 0", name="ck_coverage_filing_audit_role_nonempty"),
-        sa.CheckConstraint("fencing_token >= 0", name="ck_coverage_filing_audit_token_nonnegative"),
-        sa.CheckConstraint("revision >= 1", name="ck_coverage_filing_audit_revision_positive"),
-        sa.CheckConstraint("generation >= 1", name="ck_coverage_filing_audit_generation_positive"),
-    )
-    op.create_index(
-        "ix_coverage_filing_audit_report",
-        "onboarding_coverage_filing_audits",
-        ["tenant_id", "request_id", "revision", "generation", "occurred_at"],
-    )
+    # Fresh-install guard (chain-rot repair): the 000 baseline creates the
+    # full current schema, so this audit table may already exist. The RLS,
+    # policy, grant, and function statements below are NOT part of the
+    # baseline and always run; only the table + index creation is skipped.
+    if not _table_exists("onboarding_coverage_filing_audits"):
+        op.create_table(
+            "onboarding_coverage_filing_audits",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+            sa.Column("tenant_id", sa.String(64), nullable=False),
+            sa.Column("request_id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column("revision", sa.Integer(), nullable=False),
+            sa.Column("generation", sa.Integer(), nullable=False),
+            sa.Column("worker_id", sa.String(128), nullable=False),
+            sa.Column("database_role", sa.String(128), nullable=False),
+            sa.Column("fencing_token", sa.Integer(), nullable=False),
+            sa.Column("report_content_hash", sa.String(64), nullable=False),
+            sa.Column("action", sa.String(16), nullable=False),
+            sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.ForeignKeyConstraint(
+                ["tenant_id", "request_id", "revision", "generation"],
+                [
+                    "onboarding_coverage_reports.tenant_id",
+                    "onboarding_coverage_reports.request_id",
+                    "onboarding_coverage_reports.revision",
+                    "onboarding_coverage_reports.generation",
+                ],
+                ondelete="RESTRICT",
+                name="fk_coverage_filing_audit_report",
+            ),
+            sa.CheckConstraint("action IN ('FILED')", name="ck_coverage_filing_audit_action"),
+            sa.CheckConstraint("length(worker_id) > 0", name="ck_coverage_filing_audit_worker_nonempty"),
+            sa.CheckConstraint("length(database_role) > 0", name="ck_coverage_filing_audit_role_nonempty"),
+            sa.CheckConstraint("fencing_token >= 0", name="ck_coverage_filing_audit_token_nonnegative"),
+            sa.CheckConstraint("revision >= 1", name="ck_coverage_filing_audit_revision_positive"),
+            sa.CheckConstraint("generation >= 1", name="ck_coverage_filing_audit_generation_positive"),
+        )
+        op.create_index(
+            "ix_coverage_filing_audit_report",
+            "onboarding_coverage_filing_audits",
+            ["tenant_id", "request_id", "revision", "generation", "occurred_at"],
+        )
 
     op.execute(sa.text("ALTER TABLE onboarding_coverage_filing_audits ENABLE ROW LEVEL SECURITY"))
     op.execute(sa.text("ALTER TABLE onboarding_coverage_filing_audits FORCE ROW LEVEL SECURITY"))

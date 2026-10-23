@@ -2,6 +2,7 @@
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -20,9 +21,11 @@ from investigation_agent_platform.application.onboarding_agent.contracts import 
     DirectoryEntry,
     EvidencePointer,
     ExtractedCapability,
+    FileKind,
     HygieneFinding,
     HygieneOutput,
     LanguageTotals,
+    ParseStatus,
     RegistryEntry,
     Remediation,
     ReportLinkage,
@@ -36,8 +39,8 @@ from investigation_agent_platform.application.onboarding_agent.contracts import 
 )
 
 
-def _envelope(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
+def _envelope(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "tool": "census",
         "tool_version": "1.0",
         "input_sha": "abc123",
@@ -60,10 +63,10 @@ def test_census_totals_must_reconcile_and_include_unknown() -> None:
     files = [
         CensusFile(
             path="a.py",
-            kind="text",
+            kind=FileKind.TEXT,
             size_bytes=10,
             language="python",
-            parse_status="parsed",
+            parse_status=ParseStatus.PARSED,
             capabilities=[
                 ExtractedCapability(
                     name="symbols", extractor="tree-sitter", extractor_version="1"
@@ -72,7 +75,7 @@ def test_census_totals_must_reconcile_and_include_unknown() -> None:
             loc=10,
         ),
         CensusFile(
-            path="b.bin", kind="binary", size_bytes=99, parse_status="skipped"
+            path="b.bin", kind=FileKind.BINARY, size_bytes=99, parse_status=ParseStatus.SKIPPED
         ),
     ]
     with pytest.raises(ValidationError, match="unknown"):
@@ -105,10 +108,10 @@ def test_census_totals_must_reconcile_and_include_unknown() -> None:
 def test_parse_status_is_distinct_from_extracted_capabilities() -> None:
     file = CensusFile(
         path="broken.py",
-        kind="text",
+        kind=FileKind.TEXT,
         size_bytes=50,
         language="python",
-        parse_status="syntax-errors",
+        parse_status=ParseStatus.SYNTAX_ERRORS,
         parse_error="unexpected indent at line 3",
         capabilities=[
             ExtractedCapability(
@@ -117,7 +120,7 @@ def test_parse_status_is_distinct_from_extracted_capabilities() -> None:
         ],
         loc=50,
     )
-    assert file.parse_status == "syntax-errors"
+    assert file.parse_status == ParseStatus.SYNTAX_ERRORS
     assert file.capabilities[0].name == "symbols"
 
 
@@ -199,7 +202,7 @@ def test_remediation_argv_must_be_data_not_shell() -> None:
 
 
 def test_coverage_report_requires_limitations() -> None:
-    base = {
+    base: dict[str, Any] = {
         "report_id": uuid4(),
         "request_id": uuid4(),
         "revision": 1,
@@ -230,7 +233,7 @@ def test_canonical_json_is_deterministic_and_rejects_floats() -> None:
 
 
 def test_input_manifest_hash_ignores_order_and_volatile_fields() -> None:
-    out_a = {
+    out_a: dict[str, Any] = {
         "content_hash": "a" * 64,
         "tool": "census",
         "tool_version": "1",
@@ -238,13 +241,13 @@ def test_input_manifest_hash_ignores_order_and_volatile_fields() -> None:
         "produced_at": "2026-01-01",
         "hostname": "noisy",
     }
-    out_b = {
+    out_b: dict[str, Any] = {
         "content_hash": "b" * 64,
         "tool": "buildmap",
         "tool_version": "1",
         "schema_version": "sniffer/v1",
     }
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "estate_sha": "estate",
         "registry_version": "regv1",
         "catalog_version": "catv1",
@@ -261,7 +264,7 @@ def test_input_manifest_hash_ignores_order_and_volatile_fields() -> None:
 
 
 def test_report_content_hash_excludes_identity_and_envelope() -> None:
-    body = {
+    body: dict[str, Any] = {
         "report_id": "11111111-1111-1111-1111-111111111111",
         "verdicts": [{"service": "a"}],
         "produced_at": "whenever",

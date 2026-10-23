@@ -366,7 +366,15 @@ def test_baseline_metadata_contains_exact_v01_tables() -> None:
         assert table_name in Base.metadata.tables
         assert columns <= set(Base.metadata.tables[table_name].columns.keys())
     assert not any(name.startswith("onboarding_steps") for name in Base.metadata.tables)
-    assert not any("deletion_manifest" in name for name in Base.metadata.tables)
+    # Phase 5 deletion tables are part of the baseline metadata by design
+    # (created by migration 031 on upgrade paths, by 000 on fresh installs).
+    for deletion_table in (
+        "onboarding_store_registry",
+        "onboarding_deletion_manifests",
+        "onboarding_deletion_approvals",
+        "onboarding_deletion_outcomes",
+    ):
+        assert deletion_table in Base.metadata.tables
     assert "onboarding_dispatches" in Base.metadata.tables
 
 
@@ -405,10 +413,10 @@ def test_request_job_reference_is_nullable_and_tenant_composite_fk() -> None:
 def test_migration_chain_has_single_v01_head() -> None:
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["028_onboarding_request_cancel"]
-    revision = script.get_revision("028_onboarding_request_cancel")
+    assert script.get_heads() == ["031_onboarding_deletion"]
+    revision = script.get_revision("031_onboarding_deletion")
     assert revision is not None
-    assert revision.down_revision == "027_onboarding_request_accept"
+    assert revision.down_revision == "030_onboarding_request_activate"
 
 
 def test_phase026_request_audit_contract_is_additive_and_app_callable() -> None:
@@ -468,6 +476,52 @@ def test_phase027_extends_request_audit_only_for_acceptance() -> None:
     assert "session_user::text" in source
     assert "GRANT" not in source
     assert "CREATE TABLE" not in source
+
+
+def test_phase030_extends_request_audit_only_for_activation() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "030_onboarding_request_activate.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "030_onboarding_request_activate"' in source
+    assert 'down_revision = "029_onboarding_probe_readiness"' in source
+    assert "op.drop_constraint(" in source
+    assert "action IN ('CREATE', 'ACCEPT', 'ACTIVATE')" in source
+    assert "p_action NOT IN ('CREATE', 'ACCEPT', 'ACTIVATE')" in source
+    assert "CREATE OR REPLACE FUNCTION record_onboarding_request_audit" in source
+    assert "session_user::text" in source
+    assert "GRANT" not in source
+    assert "CREATE TABLE" not in source
+
+
+def test_phase031_deletion_tables_are_additive_and_tenant_scoped() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "031_onboarding_deletion.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "031_onboarding_deletion"' in source
+    assert 'down_revision = "030_onboarding_request_activate"' in source
+    for table in (
+        "onboarding_store_registry",
+        "onboarding_deletion_manifests",
+        "onboarding_deletion_approvals",
+        "onboarding_deletion_outcomes",
+    ):
+        assert f'"{table}"' in source or f"TABLE {table}" in source or table in source
+    assert "FORCE ROW LEVEL SECURITY" in source
+    assert "WITH CHECK (tenant_id = current_setting" in source
+    assert "uq_onboarding_approval_nonce" in source
+    assert "uq_deletion_outcome_attempt" in source
+    assert "APPROVED_RESIDUAL" in source
+    assert "DROP TABLE" not in source
+    assert "CREATE ROLE" not in source
+    assert "BYPASSRLS" not in source
 
 
 def test_phase028_worker_cancellation_grant_is_narrow_and_additive() -> None:

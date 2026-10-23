@@ -24,40 +24,59 @@ from alembic import op  # type: ignore[import-not-found]
 from sqlalchemy.dialects import postgresql  # type: ignore[import-not-found]
 
 
+def _column_exists(table: str, column: str) -> bool:
+    bind = op.get_bind()
+    try:
+        inspector = sa.inspect(bind)
+        columns = inspector.get_columns(table)
+    except Exception:
+        # Missing table, or offline (--sql) mode with a MockConnection that
+        # cannot be inspected; report missing so the DDL is emitted and SQL
+        # scripts stay complete.
+        return False
+    return column in {col["name"] for col in columns}
+
+
 def upgrade() -> None:
+    # Fresh-install guard (chain-rot repair): the 000 baseline creates the
+    # full current schema, so these objects may already exist. Databases
+    # upgrading from pre-009 history take the create path via the same
+    # guards. No behavior change for either path beyond skipping duplicates.
     # -- investigations: metadata round-trip -----------------------------
-    op.add_column(
-        "investigations",
-        sa.Column("metadata_json", postgresql.JSONB(), nullable=True),
-    )
+    if not _column_exists("investigations", "metadata_json"):
+        op.add_column(
+            "investigations",
+            sa.Column("metadata_json", postgresql.JSONB(), nullable=True),
+        )
 
     # -- application_profiles: immutable revisions -----------------------
-    op.add_column(
-        "application_profiles",
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-    )
-    op.add_column(
-        "application_profiles",
-        sa.Column(
-            "row_id",
-            postgresql.UUID(as_uuid=True),
-            nullable=False,
-            server_default=sa.text("gen_random_uuid()"),
-        ),
-    )
-    # Drop the old single-column PK (id alone) before promoting row_id.
-    op.drop_constraint("application_profiles_pkey", "application_profiles", type_="primary")
-    op.create_primary_key("application_profiles_pkey", "application_profiles", ["row_id"])
-    op.create_index("idx_app_profile_tenant_app", "application_profiles", ["tenant_id", "id"])
-    op.create_unique_constraint(
-        "uq_app_profile_tenant_id_version",
-        "application_profiles",
-        ["tenant_id", "id", "version"],
-    )
-    # Drop the server defaults now that existing rows are backfilled — new
-    # rows must supply both explicitly (ORM always does).
-    op.alter_column("application_profiles", "version", server_default=None)
-    op.alter_column("application_profiles", "row_id", server_default=None)
+    if not _column_exists("application_profiles", "version"):
+        op.add_column(
+            "application_profiles",
+            sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+        )
+        op.add_column(
+            "application_profiles",
+            sa.Column(
+                "row_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=False,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+        )
+        # Drop the old single-column PK (id alone) before promoting row_id.
+        op.drop_constraint("application_profiles_pkey", "application_profiles", type_="primary")
+        op.create_primary_key("application_profiles_pkey", "application_profiles", ["row_id"])
+        op.create_index("idx_app_profile_tenant_app", "application_profiles", ["tenant_id", "id"])
+        op.create_unique_constraint(
+            "uq_app_profile_tenant_id_version",
+            "application_profiles",
+            ["tenant_id", "id", "version"],
+        )
+        # Drop the server defaults now that existing rows are backfilled — new
+        # rows must supply both explicitly (ORM always does).
+        op.alter_column("application_profiles", "version", server_default=None)
+        op.alter_column("application_profiles", "row_id", server_default=None)
 
 
 def downgrade() -> None:

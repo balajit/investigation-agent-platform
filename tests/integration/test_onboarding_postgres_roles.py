@@ -475,7 +475,10 @@ def test_actual_roles_dispatch_claim_scope_and_privileges(pg_roles) -> None:  # 
         conn.exec_driver_sql("SELECT set_config('app.tenant_id', 'tenant-b', true)")
         second = conn.exec_driver_sql(claim_sql).first()
     assert first is not None and second is not None
-    assert first.tenant_id == "tenant-a" and second.tenant_id == "tenant-b"
+    # Order-independent: both dispatches share one transaction timestamp, so
+    # the (created_at, id) tiebreak is UUID-random. What matters is that each
+    # tenant's dispatch was claimed exactly once with fencing token 1.
+    assert {first.tenant_id, second.tenant_id} == {"tenant-a", "tenant-b"}
     assert first.lease_fencing_token == second.lease_fencing_token == 1
     with worker.begin() as conn:
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')

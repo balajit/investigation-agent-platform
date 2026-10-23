@@ -76,12 +76,13 @@ def summarize_dispatch_steps(
 
 @dataclass(frozen=True)
 class AnalyzeCoverageInput:
-    """Phase 2 analysis-activity slot (DEP-07): inputs by reference only.
+    """Phase 2/4 analysis-activity slot (DEP-07): inputs by reference only.
 
-    The judgment itself is not implemented: analysis must never run on
-    unvalidated inputs, and unjudged output must never be filed. The slot
-    exists so the workflow definition carries the idempotency contract
-    (request + revision + generation) before any model is wired in.
+    The activity resolves verdicts deterministically from stored probe
+    evidence and files the report under workflow authority; the agent
+    judges, the workflow files. Idempotency key is request + revision +
+    generation: retries of the same generation reassemble identically and
+    the coverage repository treats matching replays as success.
     """
 
     tenant_id: str
@@ -90,3 +91,4 @@ class AnalyzeCoverageInput:
     generation: int
     snapshot_reference: str
     evidence_hashes: list[str] = field(default_factory=list)
+    dispatch_id: str = ""

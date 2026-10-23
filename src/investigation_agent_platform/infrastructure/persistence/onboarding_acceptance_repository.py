@@ -198,9 +198,10 @@ class SqlAlchemyOnboardingAcceptanceRepository:
             await session.execute(
                 text(
                     "INSERT INTO background_jobs (id, tenant_id, kind, "
-                    "contract_version, status, created_by, workflow_id) VALUES "
+                    "contract_version, status, created_by, workflow_id, "
+                    "progress, total, created_at, attempt, version) VALUES "
                     "(:id, :tenant_id, :kind, :contract_version, 'PENDING', "
-                    ":created_by, :workflow_id)"
+                    ":created_by, :workflow_id, 0, 0, clock_timestamp(), 0, 1)"
                 ),
                 {
                     "id": job_id,
@@ -344,3 +345,41 @@ class SqlAlchemyOnboardingAcceptanceRepository:
             workflow_id=row["workflow_id"],
             state=row["state"],
         )
+
+    async def record_activation_audit(
+        self,
+        *,
+        tenant_id: str,
+        actor_sub: str,
+        request_id: UUID,
+        revision: int,
+        content_hash: str,
+        idempotency_key: str,
+    ) -> None:
+        """File the append-only ACTIVATE audit row for an approved revision.
+
+        Called after the registry transition commits; audit and activation
+        are separate durable facts, linked by coordinates.
+        """
+        if not tenant_id or len(tenant_id) > 64:
+            raise ValueError("tenant_id must be non-empty and at most 64 characters")
+        if not actor_sub or len(actor_sub) > 256:
+            raise ValueError("actor_sub must be non-empty and at most 256 characters")
+        if revision < 1:
+            raise ValueError("revision must be >= 1")
+        async with rls_session(self._session_factory, tenant_id) as session:
+            await session.execute(
+                text(
+                    "SELECT record_onboarding_request_audit(:tenant_id, "
+                    ":request_id, :revision, :actor_sub, 'ACTIVATE', "
+                    ":content_hash, :idempotency_key)"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "request_id": request_id,
+                    "revision": revision,
+                    "actor_sub": actor_sub,
+                    "content_hash": content_hash,
+                    "idempotency_key": idempotency_key,
+                },
+            )

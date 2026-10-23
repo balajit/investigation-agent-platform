@@ -173,3 +173,28 @@ class SqlAlchemyOnboardingCoverageRepository:
                         },
                     )
                 return cast(CoverageReportORM, row)
+
+    async def read_report(
+        self, tenant_id: str, request_id: UUID, revision: int, generation: int
+    ) -> CoverageReportORM | None:
+        """Return one filed report by linkage, or None (DEP-10 report GET)."""
+        if not tenant_id or len(tenant_id) > 64:
+            raise ValueError("tenant_id must be non-empty and at most 64 characters")
+        if revision < 1 or generation < 1:
+            raise ValueError("revision and generation must be >= 1")
+        async with self._session_factory() as session:
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": tenant_id},
+            )
+            return cast(
+                CoverageReportORM | None,
+                await session.scalar(
+                    select(CoverageReportORM).where(
+                        CoverageReportORM.tenant_id == tenant_id,
+                        CoverageReportORM.request_id == request_id,
+                        CoverageReportORM.revision == revision,
+                        CoverageReportORM.generation == generation,
+                    )
+                ),
+            )

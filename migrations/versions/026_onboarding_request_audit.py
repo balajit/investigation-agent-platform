@@ -12,46 +12,62 @@ branch_labels = None
 depends_on = None
 
 
+def _table_exists(table: str) -> bool:
+    bind = op.get_bind()
+    try:
+        return sa.inspect(bind).has_table(table)
+    except Exception:
+        # Offline (--sql) mode: report missing so DDL is emitted.
+        return False
+
+
 def upgrade() -> None:
-    op.create_table(
-        "onboarding_request_audits",
-        sa.Column(
-            "id",
-            postgresql.UUID(as_uuid=True),
-            primary_key=True,
-            server_default=sa.text("gen_random_uuid()"),
-        ),
-        sa.Column("tenant_id", sa.String(64), nullable=False),
-        sa.Column("request_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("revision", sa.Integer(), nullable=False),
-        sa.Column("actor_sub", sa.String(256), nullable=False),
-        sa.Column("database_role", sa.String(128), nullable=False),
-        sa.Column("action", sa.String(16), nullable=False),
-        sa.Column("content_hash", sa.String(64), nullable=False),
-        sa.Column("idempotency_key", sa.String(256), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(
+    # Fresh-install guard (chain-rot repair): the 000 baseline creates the
+    # full current schema, so this audit table may already exist. The RLS,
+    # policy, grant, and function statements below are NOT part of the
+    # baseline and always run; only the table + index creation is skipped.
+    # The CHECK created here is the CREATE-only form; migration 027 extends
+    # it to ('CREATE', 'ACCEPT') on both paths.
+    if not _table_exists("onboarding_request_audits"):
+        op.create_table(
+            "onboarding_request_audits",
+            sa.Column(
+                "id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column("tenant_id", sa.String(64), nullable=False),
+            sa.Column("request_id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column("revision", sa.Integer(), nullable=False),
+            sa.Column("actor_sub", sa.String(256), nullable=False),
+            sa.Column("database_role", sa.String(128), nullable=False),
+            sa.Column("action", sa.String(16), nullable=False),
+            sa.Column("content_hash", sa.String(64), nullable=False),
+            sa.Column("idempotency_key", sa.String(256), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.ForeignKeyConstraint(
+                ["tenant_id", "request_id", "revision"],
+                [
+                    "onboarding_requests.tenant_id",
+                    "onboarding_requests.request_id",
+                    "onboarding_requests.revision",
+                ],
+                ondelete="RESTRICT",
+                name="fk_onboarding_request_audit_revision",
+            ),
+            sa.CheckConstraint(
+                "action IN ('CREATE')", name="ck_onboarding_request_audit_action"
+            ),
+            sa.CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
+            sa.CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
+            sa.CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),
+        )
+        op.create_index(
+            "ix_onboarding_request_audit_revision",
+            "onboarding_request_audits",
             ["tenant_id", "request_id", "revision"],
-            [
-                "onboarding_requests.tenant_id",
-                "onboarding_requests.request_id",
-                "onboarding_requests.revision",
-            ],
-            ondelete="RESTRICT",
-            name="fk_onboarding_request_audit_revision",
-        ),
-        sa.CheckConstraint(
-            "action IN ('CREATE')", name="ck_onboarding_request_audit_action"
-        ),
-        sa.CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
-        sa.CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
-        sa.CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),
-    )
-    op.create_index(
-        "ix_onboarding_request_audit_revision",
-        "onboarding_request_audits",
-        ["tenant_id", "request_id", "revision"],
-    )
+        )
 
     op.execute(sa.text("ALTER TABLE onboarding_request_audits ENABLE ROW LEVEL SECURITY"))
     op.execute(sa.text("ALTER TABLE onboarding_request_audits FORCE ROW LEVEL SECURITY"))

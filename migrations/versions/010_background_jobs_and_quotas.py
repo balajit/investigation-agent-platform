@@ -129,8 +129,38 @@ def upgrade() -> None:
     op.execute(sa.text("ALTER TABLE quota_counters FORCE ROW LEVEL SECURITY"))
 
 
+def _constraint_exists(table: str, name: str) -> bool:
+    bind = op.get_bind()
+    try:
+        inspector = sa.inspect(bind)
+        fks = inspector.get_foreign_keys(table)
+        uniques = inspector.get_unique_constraints(table)
+        checks = inspector.get_check_constraints(table)
+    except Exception:
+        # Offline (--sql) mode cannot inspect; assume the constraint exists
+        # so the DROP is emitted and SQL scripts stay complete.
+        return True
+    names = (
+        {c["name"] for c in fks}
+        | {c["name"] for c in uniques}
+        | {c["name"] for c in checks}
+    )
+    return name in names
+
+
 def downgrade() -> None:
     op.execute(sa.text("DROP POLICY IF EXISTS quota_tenant ON quota_counters"))
     op.execute(sa.text("DROP TABLE IF EXISTS quota_counters"))
     op.execute(sa.text("DROP POLICY IF EXISTS bg_jobs_tenant ON background_jobs"))
+    # Later revisions (023+) add tenant-composite FKs from the onboarding
+    # control store to background_jobs, and their downgrades intentionally
+    # preserve durable tables. Drop those dependents first so this teardown
+    # works on chains that went past 023; guarded per-constraint so historic
+    # databases without them are unaffected.
+    for table, fk in (
+        ("onboarding_requests", "fk_onboarding_request_tenant_job"),
+        ("onboarding_dispatches", "fk_onboarding_dispatch_tenant_job"),
+    ):
+        if _constraint_exists(table, fk):
+            op.drop_constraint(fk, table, type_="foreignkey")
     op.execute(sa.text("DROP TABLE IF EXISTS background_jobs"))
