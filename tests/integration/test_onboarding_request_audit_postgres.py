@@ -91,7 +91,7 @@ def _create_schema(admin: Any, schema: str, roles: dict[str, str]) -> None:
             "actor_sub text NOT NULL, database_role text NOT NULL, action text NOT NULL, "
             "content_hash text NOT NULL, idempotency_key text NOT NULL, created_at timestamptz DEFAULT now(), "
             "FOREIGN KEY (tenant_id,request_id,revision) REFERENCES onboarding_requests "
-            "(tenant_id,request_id,revision), CHECK(action IN ('CREATE')))"
+            "(tenant_id,request_id,revision), CHECK(action IN ('CREATE','ACCEPT')))"
         )
         for table, tenant_column in (
             ("tenant_registry", "canonical_id"),
@@ -124,10 +124,10 @@ def _create_schema(admin: Any, schema: str, roles: dict[str, str]) -> None:
             f'LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,"{schema}" AS $$ '
             "BEGIN IF p_tenant_id IS DISTINCT FROM current_setting('app.tenant_id',true) THEN "
             "RAISE EXCEPTION 'onboarding request audit tenant context mismatch'; END IF; "
-            "IF p_action <> 'CREATE' THEN RAISE EXCEPTION 'invalid onboarding request audit action'; END IF; "
+            "IF p_action NOT IN ('CREATE','ACCEPT') THEN RAISE EXCEPTION 'invalid onboarding request audit action'; END IF; "
             "INSERT INTO onboarding_request_audits(tenant_id,request_id,revision,actor_sub,database_role,"
             "action,content_hash,idempotency_key) VALUES(p_tenant_id,p_request_id,p_revision,p_actor_sub,"
-            "session_user::text,'CREATE',p_content_hash,p_idempotency_key); END; $$"
+            "session_user::text,p_action,p_content_hash,p_idempotency_key); END; $$"
         )
         conn.exec_driver_sql(
             f'ALTER FUNCTION "{schema}".record_onboarding_request_audit(text,uuid,integer,text,text,text,text) OWNER TO "{migrator}"'
@@ -186,3 +186,50 @@ def test_app_executes_request_audit_while_other_roles_are_denied(request_audit_r
                     f'SELECT "{schema}".record_onboarding_request_audit('
                     "'tenant-a','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',1,'sub','CREATE','hash-a','key-a')"
                 )
+
+
+def test_accept_action_is_recorded_and_other_actions_are_rejected(request_audit_roles) -> None:  # type: ignore[no-untyped-def]
+    admin, roles, schema = request_audit_roles
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f'SET search_path TO "{schema}"')
+        conn.exec_driver_sql(
+            "INSERT INTO onboarding_requests VALUES "
+            "('cccccccc-cccc-4ccc-8ccc-cccccccccccc','tenant-a',"
+            "'dddddddd-dddd-4ddd-8ddd-dddddddddddd',1,'accept-key','accept-hash','DRAFT','sub-a',NULL)"
+        )
+
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f'SET ROLE "{roles["app"]}"')
+        conn.exec_driver_sql(f'SET search_path TO "{schema}"')
+        conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
+        conn.exec_driver_sql(
+            f'SELECT "{schema}".record_onboarding_request_audit('
+            "'tenant-a','dddddddd-dddd-4ddd-8ddd-dddddddddddd',1,'verified-sub','ACCEPT','accept-hash','accept-key')"
+        )
+        row = conn.exec_driver_sql(
+            "SELECT actor_sub,database_role,action,content_hash,idempotency_key "
+            "FROM onboarding_request_audits WHERE action='ACCEPT'"
+        ).one()
+        assert row.actor_sub == "verified-sub"
+        assert row.database_role == "iap"
+        assert row.action == "ACCEPT"
+        assert row.content_hash == "accept-hash"
+        assert row.idempotency_key == "accept-key"
+
+    for action in ("CLAIM", "APPROVE", "accept"):
+        with admin.begin() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{roles["app"]}"')
+            conn.exec_driver_sql(f'SET search_path TO "{schema}"')
+            conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
+            with pytest.raises(DBAPIError, match="invalid onboarding request audit action"):
+                conn.exec_driver_sql(
+                    f'SELECT "{schema}".record_onboarding_request_audit('
+                    "'tenant-a','dddddddd-dddd-4ddd-8ddd-dddddddddddd',1,'verified-sub',%s,'accept-hash','accept-key')",
+                    (action,),
+                )
+
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f'SET ROLE "{roles["app"]}"')
+        conn.exec_driver_sql(f'SET search_path TO "{schema}"')
+        conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
+        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 1

@@ -1720,7 +1720,7 @@ class OnboardingRequestAuditORM(Base):
             ondelete="RESTRICT",
             name="fk_onboarding_request_audit_revision",
         ),
-        CheckConstraint("action IN ('CREATE')", name="ck_onboarding_request_audit_action"),
+        CheckConstraint("action IN ('CREATE', 'ACCEPT')", name="ck_onboarding_request_audit_action"),
         CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
         CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
         CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),

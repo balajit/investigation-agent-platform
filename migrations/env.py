@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from investigation_agent_platform.infrastructure.persistence.models import (
     Base,
 )
+from investigation_agent_platform.infrastructure.persistence.pg_guard import (
+    command_is_write,
+    require_disposable,
+)
 
 config = context.config
 
@@ -61,9 +65,28 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _current_command_name() -> str | None:
+    """Alembic command driving this env run, from the CLI namespace.
+
+    Returns None when the command cannot be determined (programmatic use);
+    unknown commands are gated, never exempted.
+    """
+    cmd_opts = getattr(config, "cmd_opts", None)
+    cmd = getattr(cmd_opts, "cmd", None)
+    fn = cmd[0] if isinstance(cmd, (tuple, list)) and cmd else None
+    name = getattr(fn, "__name__", None)
+    return name if isinstance(name, str) else None
+
+
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = _resolve_url()
+    command = _current_command_name()
+    if command_is_write(command):
+        require_disposable(
+            configuration["sqlalchemy.url"],
+            purpose=f"alembic {command or 'unknown command'}",
+        )
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

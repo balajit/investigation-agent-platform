@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 from typing import Any
 
@@ -404,10 +405,10 @@ def test_request_job_reference_is_nullable_and_tenant_composite_fk() -> None:
 def test_migration_chain_has_single_v01_head() -> None:
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["026_onboarding_request_audit"]
-    revision = script.get_revision("026_onboarding_request_audit")
+    assert script.get_heads() == ["028_onboarding_request_cancel"]
+    revision = script.get_revision("028_onboarding_request_cancel")
     assert revision is not None
-    assert revision.down_revision == "025_onboarding_coverage_filing"
+    assert revision.down_revision == "027_onboarding_request_accept"
 
 
 def test_phase026_request_audit_contract_is_additive_and_app_callable() -> None:
@@ -430,6 +431,62 @@ def test_phase026_request_audit_contract_is_additive_and_app_callable() -> None:
     assert "GRANT EXECUTE ON FUNCTION record_onboarding_request_audit" in source
     assert "TO iap_app" in source
     assert "GRANT INSERT ON onboarding_request_audits TO iap_app" not in source
+
+
+def test_phase027_request_audit_acceptance_contract_extends_action_whitelist() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "027_onboarding_request_accept.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "027_onboarding_request_accept"' in source
+    assert 'down_revision = "026_onboarding_request_audit"' in source
+    assert "action IN ('CREATE', 'ACCEPT')" in source
+    assert "p_action NOT IN ('CREATE', 'ACCEPT')" in source
+    assert "CREATE OR REPLACE FUNCTION record_onboarding_request_audit" in source
+    assert "session_user::text" in source
+    assert "GRANT" not in source
+    assert "CREATE TABLE" not in source
+
+
+def test_phase027_extends_request_audit_only_for_acceptance() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "027_onboarding_request_accept.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "027_onboarding_request_accept"' in source
+    assert 'down_revision = "026_onboarding_request_audit"' in source
+    assert "op.drop_constraint(" in source
+    assert "action IN ('CREATE', 'ACCEPT')" in source
+    assert "p_action NOT IN ('CREATE', 'ACCEPT')" in source
+    assert "CREATE OR REPLACE FUNCTION record_onboarding_request_audit" in source
+    assert "session_user::text" in source
+    assert "GRANT" not in source
+    assert "CREATE TABLE" not in source
+
+
+def test_phase028_worker_cancellation_grant_is_narrow_and_additive() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "028_onboarding_request_cancel.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    assert 'revision = "028_onboarding_request_cancel"' in source
+    assert 'down_revision = "027_onboarding_request_accept"' in source
+    assert "GRANT UPDATE (state, state_version, updated_at)" in source
+    assert "ON onboarding_requests TO iap_worker" in source
+    assert "GRANT INSERT ON background_jobs TO iap_app" in source
+    assert "CREATE TABLE" not in source
+    assert "CREATE OR REPLACE FUNCTION" not in source
+    assert "iap_registry_admin" not in source
+    assert len(re.findall(r'sa\.text\(\s*"GRANT', source)) == 2
 
 
 def test_phase0r_schema_contract_declares_grants_fencing_and_worker_policy() -> None:

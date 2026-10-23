@@ -208,6 +208,39 @@ class SqlAlchemyOnboardingDispatchRepository:
         await self.requeue_one_expired_lease(worker_id=worker_id)
         return await self.claim_oldest_due(worker_id=worker_id, lease_duration=lease_duration)
 
+    async def read_request_row(
+        self, tenant_id: str, request_id: Any, revision: int
+    ) -> dict[str, Any] | None:
+        """Read one intake revision row, tenant-scoped, including content hash.
+
+        The claim-bound ``read_request`` below covers fleet-claimed reads;
+        this variant serves tenant-scoped callers (activities, guards) that
+        hold coordinates directly.
+        """
+        from investigation_agent_platform.infrastructure.persistence.rls import (
+            rls_session,
+        )
+
+        async with rls_session(self._session_factory, tenant_id) as session:
+            result = await session.execute(
+                text(
+                    "SELECT tenant_id, request_id, revision, idempotency_key, "
+                    "content_hash, schema_version, policy_version, "
+                    "catalog_version, application_id, environment, intake_json, "
+                    "actor_id, state, state_version, job_id "
+                    "FROM onboarding_requests "
+                    "WHERE tenant_id = :tenant_id AND request_id = :request_id "
+                    "AND revision = :revision"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "request_id": request_id,
+                    "revision": revision,
+                },
+            )
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
+
     async def read_request(
         self, claim: ClaimedOnboardingDispatch, *, request_id: UUID | None = None
     ) -> dict[str, Any] | None:
@@ -359,3 +392,270 @@ class SqlAlchemyOnboardingDispatchRepository:
             text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
             {"tenant_id": tenant_id},
         )
+
+    async def read_dispatch(
+        self, tenant_id: str, dispatch_id: Any
+    ) -> dict[str, Any] | None:
+        """Read one dispatch row, tenant-scoped. No state change."""
+        async with self._session_factory() as session:
+            await self._set_tenant_context(session, tenant_id)
+            result = await session.execute(
+                text(
+                    "SELECT id, tenant_id, request_id, revision, job_id, "
+                    "workflow_id, schema_version, state, attempts, "
+                    "next_attempt_at, lease_owner, lease_fencing_token, "
+                    "lease_expires_at, execution_generation, temporal_run_id, "
+                    "last_error_code, created_at, updated_at "
+                    "FROM onboarding_dispatches "
+                    "WHERE tenant_id = :tenant_id AND id = :dispatch_id"
+                ),
+                {"tenant_id": tenant_id, "dispatch_id": dispatch_id},
+            )
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
+
+    async def record_workflow_accepted(
+        self, tenant_id: str, dispatch_id: Any, fencing_token: int, run_id: str
+    ) -> bool:
+        """Record a started run and release the claim. CAS on fencing token.
+
+        No worker identity is required: the RLS WITH CHECK passes because
+        this write clears the lease owner to NULL. No dispatch audit row:
+        the sealed 024 contract audits lease events only; acceptance is
+        evidenced by the CLAIM audit (same fencing token) plus the recorded
+        run id. A superseded holder writes nothing.
+        """
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_dispatches SET state = 'ACCEPTED', "
+                        "temporal_run_id = :run_id, lease_owner = NULL, "
+                        "lease_expires_at = NULL, updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :dispatch_id "
+                        "AND state = 'CLAIMED' "
+                        "AND lease_fencing_token = :fencing_token "
+                        "RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "dispatch_id": dispatch_id,
+                        "fencing_token": fencing_token,
+                        "run_id": run_id,
+                    },
+                )
+                return result.first() is not None
+
+    async def release_for_retry(
+        self,
+        tenant_id: str,
+        dispatch_id: Any,
+        worker_id: str,
+        fencing_token: int,
+        error_code: str,
+        backoff_seconds: float,
+    ) -> bool:
+        """Release a held claim back to RETRYABLE with a backoff and audit.
+
+        Stale holders are refused (CAS on the fencing token); the reconciler
+        owns recovery from there.
+        """
+        if not worker_id or len(worker_id) > 128:
+            raise ValueError("worker_id must be non-empty and at most 128 characters")
+        if backoff_seconds < 0:
+            raise ValueError("backoff_seconds must be non-negative")
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                await session.execute(
+                    text("SELECT set_config('iap.worker_id', :worker_id, true)"),
+                    {"worker_id": worker_id},
+                )
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_dispatches SET state = 'RETRYABLE', "
+                        "lease_owner = NULL, lease_expires_at = NULL, "
+                        "last_error_code = :error_code, "
+                        "next_attempt_at = clock_timestamp() + "
+                        "make_interval(secs => :backoff_seconds), "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :dispatch_id "
+                        "AND state = 'CLAIMED' "
+                        "AND lease_fencing_token = :fencing_token "
+                        "RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "dispatch_id": dispatch_id,
+                        "fencing_token": fencing_token,
+                        "error_code": error_code[:64],
+                        "backoff_seconds": backoff_seconds,
+                    },
+                )
+                if result.first() is None:
+                    return False
+                await session.execute(
+                    text(
+                        "SELECT record_onboarding_dispatch_audit(:tenant_id, :dispatch_id, "
+                        "'RELEASE', :fencing_token)"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "dispatch_id": dispatch_id,
+                        "fencing_token": fencing_token,
+                    },
+                )
+                await session.flush()
+                return True
+
+    async def mark_terminal(
+        self,
+        tenant_id: str,
+        dispatch_id: Any,
+        error_code: str,
+        fencing_token: int | None = None,
+        only_from: tuple[str, ...] | None = None,
+    ) -> bool:
+        """Mark a dispatch terminally failed. No audit row: the sealed 024
+        contract audits lease events only; terminal attribution lives on the
+        row (error code, fencing generation) plus the CLAIM audit chain."""
+        if not error_code:
+            raise ValueError("error_code must be non-empty")
+        states = (
+            "AND state IN ("
+            + ", ".join(f"'{state}'" for state in (only_from or ()))
+            + ")"
+            if only_from
+            else ""
+        )
+        params: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "dispatch_id": dispatch_id,
+            "error_code": error_code[:64],
+        }
+        token_clause = ""
+        if fencing_token is not None:
+            token_clause = " AND lease_fencing_token = :fencing_token"
+            params["fencing_token"] = fencing_token
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_dispatches SET state = 'TERMINAL', "
+                        "lease_owner = NULL, lease_expires_at = NULL, "
+                        "last_error_code = :error_code, "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :dispatch_id "
+                        f"{states}{token_clause} RETURNING id"
+                    ),
+                    params,
+                )
+                return result.first() is not None
+
+    async def list_by_state(
+        self, state: str, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        """Fleet-wide scan of dispatches in one state (reconciler use).
+
+        No tenant context is set: the runtime dispatch policy is fleet-scoped
+        by design (single cross-tenant policy from Phase 0R).
+        """
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    "SELECT id, tenant_id, request_id, revision, job_id, "
+                    "workflow_id, schema_version, state, attempts, "
+                    "next_attempt_at, lease_owner, lease_fencing_token, "
+                    "lease_expires_at, execution_generation, temporal_run_id, "
+                    "last_error_code, created_at, updated_at "
+                    "FROM onboarding_dispatches WHERE state = :state "
+                    "ORDER BY updated_at, id LIMIT :limit"
+                ),
+                {"state": state, "limit": limit},
+            )
+            return [dict(row) for row in result.mappings().all()]
+
+    async def adopt_run_id(
+        self, tenant_id: str, dispatch_id: Any, run_id: str
+    ) -> bool:
+        """Adopt a reconciled run id for an ACCEPTED dispatch.
+
+        Projection-drift repair only: the reconciler verified via describe
+        that a different run id is the live one. CAS on ACCEPTED so a
+        concurrently transitioned dispatch is never overwritten.
+        """
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_dispatches SET temporal_run_id = :run_id, "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :dispatch_id "
+                        "AND state = 'ACCEPTED' RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "dispatch_id": dispatch_id,
+                        "run_id": run_id,
+                    },
+                )
+                return result.first() is not None
+
+    async def read_request_state(
+        self, tenant_id: str, request_id: Any, revision: int
+    ) -> str | None:
+        """Tenant-scoped request state read for dispatcher guards."""
+        async with self._session_factory() as session:
+            await self._set_tenant_context(session, tenant_id)
+            result = await session.execute(
+                text(
+                    "SELECT state FROM onboarding_requests "
+                    "WHERE tenant_id = :tenant_id AND request_id = :request_id "
+                    "AND revision = :revision"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "request_id": request_id,
+                    "revision": revision,
+                },
+            )
+            row = result.mappings().first()
+            return row["state"] if row is not None else None
+
+    async def complete_request_cancellation(
+        self, tenant_id: str, request_id: Any, revision: int
+    ) -> bool:
+        """Move QUEUED/CANCEL_REQUESTED to CANCELED. Idempotent on repeats.
+
+        Activation states are out of scope: only cancellation moves live here;
+        anything else is a plan decision, not an engineering default.
+        """
+        async with self._session_factory() as session:
+            async with session.begin():
+                await self._set_tenant_context(session, tenant_id)
+                result = await session.execute(
+                    text(
+                        "UPDATE onboarding_requests SET state = 'CANCELED', "
+                        "state_version = state_version + 1, "
+                        "updated_at = clock_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND request_id = :request_id "
+                        "AND revision = :revision "
+                        "AND state IN ('QUEUED', 'CANCEL_REQUESTED') "
+                        "RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "request_id": request_id,
+                        "revision": revision,
+                    },
+                )
+                return result.first() is not None

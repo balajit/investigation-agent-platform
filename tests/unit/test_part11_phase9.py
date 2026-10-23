@@ -803,4 +803,4 @@ class TestMigration015:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["026_onboarding_request_audit"]
+        assert script.get_heads() == ["028_onboarding_request_cancel"]
