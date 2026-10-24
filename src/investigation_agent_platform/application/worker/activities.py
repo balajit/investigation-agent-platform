@@ -32,8 +32,10 @@ from investigation_agent_platform.domain.proof.definition_dispatch import (
 from investigation_agent_platform.domain.proof.definition_shadow import (
     ShadowError,
     attach_shadow_observations,
+    pair_receipt,
     resolve_definition_mode,
     run_shadow_turn,
+    summarize_shadow_definitions,
     telemetry_omission_flagged,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
@@ -1072,6 +1074,11 @@ class ConcludeInvestigationInput:
     # D5: triage route selects the runtime verification preset for
     # failure-shaped runs; empty (legacy callers) keeps the default.
     triage_route: str = ""
+    # D3 T3 receipt pairing: the workflow's current receipt index and
+    # loop iteration so conclude-gate envelopes continue the run's
+    # ordered receipt chain (defaults keep legacy callers working).
+    definition_receipt_start: int = 0
+    conclude_iteration: int = 0
 
 
 def _stamp_loop_telemetry(inv: Any, telemetry: dict[str, Any] | None) -> Any:
@@ -1278,13 +1285,20 @@ def _derive_loop_telemetry(
             )
 
             dsummary = passed.get("shadow_definition_summary")
-            if isinstance(dsummary, dict):
+            dtrace = passed.get("definition_shadow_trace")
+            # N21 additive-key rule: no envelopes, no shadow keys. An empty
+            # trace means nothing was observed (flag off, or no verify turn
+            # produced an observation) — stamping zeroed blocks would fake
+            # a shadow presence the control arm must prove absent.
+            # G6 shadow_trace/shadow_summary predate D3 and are untouched.
+            _has_shadow_turns = isinstance(dtrace, list) and len(dtrace) > 0
+            if isinstance(dsummary, dict) and _has_shadow_turns:
                 telemetry["shadow_definition_summary"] = {
                     k: max(0, int(dsummary.get(k, 0) or 0))
                     for k in (
                         "turns", "admissible", "abstained", "unavailable",
-                        "capture_errors", "dropped_count", "duplicate_count",
-                        "telemetry_omissions",
+                        "capture_errors", "mirror_notes", "dropped_count",
+                        "duplicate_count", "telemetry_omissions",
                     )
                 }
                 # §1.6 frozen-inventory breakdowns (additive dicts, key/value
@@ -1304,7 +1318,7 @@ def _derive_loop_telemetry(
                     except Exception:
                         pass
             dtrace = passed.get("definition_shadow_trace")
-            if isinstance(dtrace, list):
+            if isinstance(dtrace, list) and len(dtrace) > 0:
                 projected, health = _project_d3_trace(dtrace)
                 telemetry["definition_shadow_trace"] = projected
                 if isinstance(telemetry.get("shadow_definition_summary"), dict):
@@ -8076,11 +8090,69 @@ async def conclude_investigation_activity(
                         inv = _stamp_failure(inv, failure_code, reason)
                     # C-2: loop telemetry (workflow counters + derived repo
                     # counts) stamped for every terminal status, same ride.
+                    # D3 T3 conclude-gate pairing: pair the gate notes here,
+                    # at the conclude return, with the gate outcome as the
+                    # native outcome — the workflow never sees these notes
+                    # otherwise, and an unpaired observation is a silent
+                    # loss. Envelopes continue the run's receipt chain from
+                    # the workflow-passed index; the recomputed summary
+                    # covers verify + conclude turns together.
+                    _loop_telemetry_input = data.get("loop_telemetry")
+                    try:
+                        _t3_candidates = [
+                            o for o in _conclude_shadow_notes if isinstance(o, dict)
+                        ]
+                        if _t3_candidates and isinstance(_loop_telemetry_input, dict):
+                            _t3_native = {
+                                "verified": False,
+                                "status": str(target.value),
+                                "confidence": None,
+                                "hypothesis_id": "",
+                                "producing_path": "conclude-gate",
+                            }
+                            _t3_identity: dict[str, Any] = {}
+                            _t3_envs, _t3_dups = pair_receipt(
+                                _t3_candidates,
+                                int(data.get("conclude_iteration", 0) or 0),
+                                int(data.get("definition_receipt_start", 0) or 0),
+                                _t3_native,
+                                _t3_identity,
+                            )
+                            _combined = list(
+                                _loop_telemetry_input.get("definition_shadow_trace", [])
+                                or []
+                            ) + _t3_envs
+                            _combined_obs = [
+                                e.get("observation", e)
+                                for e in _combined
+                                if isinstance(e, dict)
+                            ]
+                            _prior_summary = _loop_telemetry_input.get(
+                                "shadow_definition_summary", {}
+                            )
+                            _prior_dups = (
+                                _prior_summary.get("duplicate_count", 0)
+                                if isinstance(_prior_summary, dict)
+                                else 0
+                            )
+                            _loop_telemetry_input = {
+                                **_loop_telemetry_input,
+                                "definition_shadow_trace": _combined,
+                                "shadow_definition_summary": summarize_shadow_definitions(
+                                    _combined_obs,
+                                    0,
+                                    int(_prior_dups or 0) + int(_t3_dups or 0),
+                                    0,
+                                ),
+                            }
+                    except Exception:
+                        logger.exception(
+                            "conclude T3 shadow pairing failed; verify-turn capture kept"
+                        )
                     # D3 omission accounting (C5): if derivation yields None
                     # despite non-empty input, record the in-band flag so the
                     # harness can count the omission (Path A); harness-side
                     # absence detection is Path B.
-                    _loop_telemetry_input = data.get("loop_telemetry")
                     _loop_telemetry_derived = _derive_loop_telemetry(
                         _loop_telemetry_input,
                         await _count_hypothesis_lifecycle(ctx, tenant_id, investigation_id),

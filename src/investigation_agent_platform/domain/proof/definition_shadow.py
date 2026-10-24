@@ -577,8 +577,8 @@ def summarize_shadow_definitions(
             summary["abstained"] += 1
         elif outcome == "UNAVAILABLE":
             summary["unavailable"] += 1
-        elif isinstance(obs.get("tap"), str) and obs.get("tap") in ("T2a", "T2b"):
-            # T2 mirror note (gate-note shape carries no outcome
+        elif isinstance(obs.get("tap"), str) and obs.get("tap") in MIRROR_NOTE_TAPS:
+            # T2/T3 mirror note (gate-note shape carries no outcome
             # vocabulary): a recorded coverage note, never a capture
             # error. Counted in turns/by_input_set/by_reason above.
             summary["mirror_notes"] += 1
@@ -699,6 +699,14 @@ def attach_shadow_observations(
 
 
 _FLOAT_FORMAT_SPEC = ".6f"
+
+
+MIRROR_NOTE_TAPS = ("T2a", "T2b", "T3")
+"""Tap tags whose gate-note shape carries no outcome vocabulary.
+
+T2a/T2b verify-side mirror notes and T3 conclude-side retagged notes are
+recorded coverage, never capture errors.
+"""
 
 
 def _canonicalizable(value: Any, where: str) -> Any:

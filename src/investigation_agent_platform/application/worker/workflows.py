@@ -2059,6 +2059,11 @@ class RunInvestigationWorkflow:
                 # D5: triage route selects the runtime preset at verify +
                 # conclude for failure-shaped runs.
                 triage_route=triage_route,
+                # D3 T3 receipt pairing: continue the run's ordered
+                # receipt chain so conclude-gate envelopes pair at the
+                # conclude return and ride the stamped telemetry.
+                definition_receipt_start=definition_receipt_index,
+                conclude_iteration=iteration,
                 # C-2: loop counters ride into metadata["loop_telemetry"]
                 # at conclude (plain scalars — replay-safe).
                 loop_telemetry={
@@ -2082,9 +2087,10 @@ class RunInvestigationWorkflow:
                     "shadow_summary": summarize_trace(shadow_trace),
                     # D3 Phase 0: verify-turn shadow-definition envelopes
                     # (paired at receipt) + summary counts. T3 conclude-gate
-                    # observations travel co-located in the conclude
-                    # activity result (paired analysis-side); they cannot
-                    # ride this run's telemetry (built before conclude).
+                    # envelopes pair at the conclude return inside the
+                    # conclude activity (it alone holds the gate notes) and
+                    # merge into the stamped telemetry there, continuing
+                    # the same receipt chain.
                     "definition_shadow_trace": list(definition_shadow_trace),
                     "shadow_definition_summary": summarize_shadow_definitions(
                         [

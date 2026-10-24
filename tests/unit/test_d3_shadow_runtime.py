@@ -365,7 +365,7 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
     passed = {
         "shadow_definition_summary": {
             "turns": 1, "admissible": 0, "abstained": 1, "unavailable": 0,
-            "capture_errors": 0, "dropped_count": 0, "duplicate_count": 0,
+            "capture_errors": 0, "mirror_notes": 3, "dropped_count": 0, "duplicate_count": 0,
             "telemetry_omissions": 0, "rogue": 999,
             "by_input_set": {"BOUND_FULL": 1, "EVIL": "x", 42: 1},
             "by_reason": {"unbound-repository": 1, "rogue": "y"},
@@ -376,6 +376,7 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
     out = _derive_loop_telemetry(passed, {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0}, 0)
     assert out is not None
     assert out["shadow_definition_summary"]["abstained"] == 1
+    assert out["shadow_definition_summary"]["mirror_notes"] == 3
     assert "rogue" not in out["shadow_definition_summary"]
     assert out["shadow_definition_summary"]["by_input_set"] == {"BOUND_FULL": 1}
     assert out["shadow_definition_summary"]["by_reason"] == {"unbound-repository": 1}
@@ -383,6 +384,30 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
     assert out["definition_shadow_trace"][0]["iteration"] == 1
     assert "rule_trace" not in out["definition_shadow_trace"][0]
     assert out["shadow_definition_summary"]["dropped_count"] == 2
+
+
+def test_d3p_n21_empty_trace_stamps_no_shadow_keys() -> None:
+    """N21 additive-key rule at the telemetry layer: an empty envelope
+    trace stamps neither the trace nor the summary — a zeroed shadow
+    block would fake a presence the control arm must prove absent."""
+    from investigation_agent_platform.application.worker.activities import _derive_loop_telemetry
+
+    out = _derive_loop_telemetry(
+        {
+            "shadow_definition_summary": {
+                "turns": 0, "admissible": 0, "abstained": 0, "unavailable": 0,
+                "capture_errors": 0, "mirror_notes": 0, "dropped_count": 0,
+                "duplicate_count": 0, "telemetry_omissions": 0,
+                "by_input_set": {}, "by_reason": {},
+            },
+            "definition_shadow_trace": [],
+        },
+        {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0},
+        0,
+    )
+    assert out is not None
+    assert "shadow_definition_summary" not in out
+    assert "definition_shadow_trace" not in out
 
 
 def test_d3p_conclude_gate_input_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,11 +602,14 @@ def test_d3p_summarize_mirror_notes_are_coverage_not_capture_errors() -> None:
              "ok": True, "reason": ""},
             {"tap": "T2b", "input_set": "BOUND_FULL", "kind": "DEFINITION",
              "ok": False, "reason": "definition-backstop-no-range-read"},
+            {"tap": "T3", "input_set": "CONCLUDE_GATE", "kind": "DEFINITION",
+             "ok": True, "reason": ""},
             {"bogus": True},
         ]
     )
-    assert summary["turns"] == 3
-    assert summary["mirror_notes"] == 2
+    assert summary["turns"] == 4
+    assert summary["mirror_notes"] == 3
     assert summary["capture_errors"] == 1  # only the bogus record
     assert summary["by_reason"]["mirror:T2a"] == 1
     assert summary["by_reason"]["mirror:T2b"] == 1
+    assert summary["by_reason"]["mirror:T3"] == 1
