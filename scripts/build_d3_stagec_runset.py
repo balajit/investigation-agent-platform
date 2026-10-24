@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Build Stage C live run-set artifacts for a frozen §6.2i record.
 
-Run-set: d3-stagec-2026-10-24-r1 under freeze record hash 9be13fa7...
-(owner-signed 2026-10-24, commit fdb9e4a).
-
 Creates artifacts/<RS>/ with rule texts (verbatim frozen sections),
 decision records, key_list.json, freeze.json (registry freeze/v4),
 ledger.json (6 reservations, one per live fixture), and RUN_LOG.md.
@@ -12,7 +9,13 @@ All *_hash/digest fields are `sha256:<hex>` over exact artifact bytes.
 freeze_hash is the harness freeze_digest (canonical JSON minus self field).
 
 Usage:
-    uv run python scripts/build_d3_stagec_runset.py
+    uv run python scripts/build_d3_stagec_runset.py [RUN_SET_ID [FREEZE_RECORD_HASH]]
+
+Defaults reproduce the r1 invocation. For a new run set, pass the new
+run-set id and the freeze record hash (or TO-BE-HASHED, patched into
+RUN_LOG.md after the record is hashed). Refuses to overwrite an existing
+run-set directory. The frozen code revision is always the current HEAD;
+governed paths must be worktree-clean.
 """
 
 from __future__ import annotations
@@ -35,16 +38,21 @@ from investigation_agent_platform.harness.freeze import (
 )
 from investigation_agent_platform.harness.ledger import AttemptLedger
 
-RS = "d3-stagec-2026-10-24-r1"
+RS = sys.argv[1] if len(sys.argv) > 1 else "d3-stagec-2026-10-24-r1"
 ART = ROOT / "artifacts" / RS
 DEC = ART / "decisions"
 
 V19 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-approval-package-v1.9.md"
 A1 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-amendment-A1.md"
 MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v1.json"
-FREEZE_RECORD_HASH = "9be13fa7b9f730655aac28797218dca06f076c499feb802dcb0de57e95b99dc1"
-FREEZE_COMMIT = "fdb9e4a121339f8fad49f23f977d32b43de55c2e"
-GOVERNED_BASE = "0403a341421b82419fdd83239cf1acb73ccdd8ed"
+FREEZE_RECORD_HASH = (
+    sys.argv[2] if len(sys.argv) > 2 else "9be13fa7b9f730655aac28797218dca06f076c499feb802dcb0de57e95b99dc1"
+)
+FREEZE_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+    cwd=ROOT, check=True,
+).stdout.strip()
+GOVERNED = ["src", "tests", "config", "pyproject.toml"]
 
 # Fixture -> expected cell (a priori, from fixture `expect` + §6.1 taxonomy).
 # L1-L5 expect ANSWERED terminals; L8 expects a clean ABSTAIN terminal.
@@ -108,13 +116,17 @@ def main() -> None:
         "sha256:c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f"
     ), a1_hash
 
-    # Governed code bytes unchanged since the frozen base commit.
-    diff = subprocess.run(
-        ["git", "diff", GOVERNED_BASE, "HEAD", "--", "src", "tests", "config",
-         "pyproject.toml"],
-        capture_output=True, text=True, cwd=ROOT, check=True,
-    ).stdout
-    assert diff == "", "governed paths differ from frozen base"
+    if ART.exists():
+        raise SystemExit(f"refusing to overwrite existing run-set dir: {ART}")
+
+    # Governed code bytes are exactly the frozen HEAD: no diff, no
+    # worktree modifications under governed paths.
+    for args in (["diff", "HEAD", "--"] + GOVERNED,
+                 ["status", "--porcelain", "--"] + GOVERNED):
+        out = subprocess.run(
+            ["git"] + args, capture_output=True, text=True, cwd=ROOT, check=True,
+        ).stdout.strip()
+        assert out == "", f"governed paths not clean (git {' '.join(args)}): {out[:200]}"
 
     ART.mkdir(parents=True, exist_ok=True)
     DEC.mkdir(parents=True, exist_ok=True)
