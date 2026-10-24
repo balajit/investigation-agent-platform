@@ -1,5 +1,6 @@
 # src/investigation_agent_platform/application/investigation/verification.py
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
@@ -24,6 +25,23 @@ from investigation_agent_platform.domain.hypothesis.models import (
     HypothesisStatus,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
+
+
+def _record_gate_note(
+    observer: Callable[[dict], None] | None, note: dict[str, Any]
+) -> None:
+    """D3 Phase 0 mirror tap: record-only, never feeds back (package §1.2).
+
+    The observer appends a note to the activity's per-execution list.
+    Any observer failure is swallowed: a shadow-recording fault must
+    never alter the native verdict, branch, or exception path.
+    """
+    if observer is None:
+        return
+    try:
+        observer(dict(note))
+    except Exception:
+        pass
 
 
 class ContradictionSeverity(str, Enum):
@@ -373,6 +391,80 @@ class VerificationLimitation(BaseModel):
     detail: str = Field(default="", max_length=500)
 
 
+class DiagnosticReasonCode(str, Enum):
+    """Stable reason-code vocabulary for WP-A2 verification diagnostics.
+
+    Values are frozen API: never rename or remove a code, only append new
+    ones. Persisted diagnostics and assessments store the string value so
+    old rows stay readable when new codes are added.
+    """
+
+    CITED_ID_EVAPORATED = "CITED_ID_EVAPORATED"
+    TIER_DEMOTED = "TIER_DEMOTED"
+    OBLIGATION_MISSING = "OBLIGATION_MISSING"
+
+
+class EvaporatedId(BaseModel):
+    """A cited evidence ID that resolves to no bound evidence row.
+
+    The citation is preserved here instead of being silently dropped, so
+    per-claim retrieved/bound IDs stay auditable (I2: no silent
+    evaporation). Diagnostics-only: never affects the verdict.
+    """
+
+    cited_id: str = Field(..., max_length=64)
+    cited_by: str = Field(default="", max_length=64)
+    reason_code: DiagnosticReasonCode = DiagnosticReasonCode.CITED_ID_EVAPORATED
+
+
+class Demotion(BaseModel):
+    """An established-to-likely tier demotion with its causes.
+
+    ``cause_codes`` holds the LimitationCode values that forced the
+    demotion (empty when the heuristic score alone fell below the
+    established floor). Diagnostics-only: recorded, never re-decided.
+    """
+
+    hypothesis_id: UUID
+    from_tier: str = Field(default="established", max_length=16)
+    to_tier: str = Field(default="likely", max_length=16)
+    reason_code: DiagnosticReasonCode = DiagnosticReasonCode.TIER_DEMOTED
+    cause_codes: list[str] = Field(default_factory=list, max_length=10)
+    detail: str = Field(default="", max_length=500)
+
+
+class MissingObligation(BaseModel):
+    """A claim that formed no dischargeable obligation.
+
+    ``claim`` is the hypothesis statement (truncated), ``claim_kind`` the
+    effective kind value when typed, and ``next_action`` the single
+    re-verify directive that would discharge it. Diagnostics-only:
+    ambiguous claims stay exactly as evaluated.
+    """
+
+    claim: str = Field(..., max_length=1024)
+    claim_kind: str | None = Field(default=None, max_length=32)
+    reason_code: DiagnosticReasonCode = DiagnosticReasonCode.OBLIGATION_MISSING
+    next_action: str | None = Field(default=None, max_length=1024)
+
+
+class VerificationDiagnostics(BaseModel):
+    """Diagnostics-only annotations attached to a VerificationResult.
+
+    Never alters status, tier, explanation, confidence, or corroborating
+    IDs. ``schema_version`` versions the diagnostics payload itself;
+    ``reason_codes`` is the sorted unique snapshot of codes present.
+    """
+
+    schema_version: str = Field(default="v1", max_length=16)
+    evaporated_ids: list[EvaporatedId] = Field(default_factory=list, max_length=100)
+    demotions: list[Demotion] = Field(default_factory=list, max_length=10)
+    missing_obligations: list[MissingObligation] = Field(
+        default_factory=list, max_length=10
+    )
+    reason_codes: list[str] = Field(default_factory=list, max_length=20)
+
+
 class VerificationResult(BaseModel):
     hypothesis_id: UUID
     status: VerificationStatus
@@ -400,6 +492,154 @@ class VerificationResult(BaseModel):
     # IDs as strings + unresolved non-blocking contradiction statements).
     best_reason: str = ""
     against_evidence: list[str] = Field(default_factory=list)
+    # WP-A2: diagnostics-only annotations (evaporated IDs, demotions,
+    # missing obligations). None = clean evaluation or flag off. Never
+    # influences verdicts, gates, or conclusions.
+    diagnostics: "VerificationDiagnostics | None" = None
+
+
+# WP-A2: stable per-kind re-verify directives for missing obligations.
+# Wording mirrors next_check_for_abstention (unblock-neutral, never
+# "promote"); the mapping is frozen alongside DiagnosticReasonCode.
+_MISSING_OBLIGATION_DIRECTIVES = {
+    "DEFINITION": "Read the file (range read) showing the defined symbol, then re-verify.",
+    "CALL_EDGE": "Bind the range-read row showing the call expression, then re-verify.",
+    "BEHAVIOR": "Observe the behavior at runtime (log, trace, state, or probe), then re-verify.",
+    "ABSENCE": "Narrow or re-scope the empty-search proof to the claimed scope, then re-verify.",
+    "HISTORY": "Bind the commit-history row matching the claimed file and commit, then re-verify.",
+    "CAUSAL": "Bind supporting evidence to each causal step, then re-verify.",
+}
+_DEFAULT_MISSING_OBLIGATION_DIRECTIVE = "Bind supporting evidence to the claim, then re-verify."
+
+
+def collect_verification_diagnostics(
+    hypothesis: Any, evidence_items: list[Any], result: "VerificationResult"
+) -> "VerificationDiagnostics | None":
+    """Build diagnostics-only annotations for an evaluated hypothesis.
+
+    Pure function of (hypothesis citations, bound evidence, result): it
+    reads IDs and verdict fields but never mutates them. Returns None
+    when there is nothing to report. Fail-open by contract — callers
+    must additionally guard with try/except so persistence never blocks
+    on diagnostics.
+    """
+    try:
+        bound: set[str] = set()
+        for item in evidence_items or []:
+            try:
+                key = str(getattr(item, "evidence_id", "") or "").strip()
+            except Exception:
+                continue
+            if key:
+                bound.add(key)
+        cited: list[str] = []
+        seen: set[str] = set()
+
+        def _cite(raw: Any) -> None:
+            try:
+                key = str(raw or "").strip()
+            except Exception:
+                return
+            if key and key not in seen:
+                seen.add(key)
+                cited.append(key)
+
+        try:
+            for raw in getattr(hypothesis, "supporting_evidence_ids", []) or []:
+                _cite(raw)
+            for raw in getattr(hypothesis, "refuting_evidence_ids", []) or []:
+                _cite(raw)
+            for asm in getattr(hypothesis, "assessments", []) or []:
+                _cite(getattr(asm, "evidence_id", None))
+            for step in getattr(hypothesis, "causal_steps", []) or []:
+                for raw in getattr(step, "evidence_ids", []) or []:
+                    _cite(raw)
+        except Exception:
+            pass
+        try:
+            cited_by = str(getattr(hypothesis, "id", "") or "")
+        except Exception:
+            cited_by = ""
+        evaporated = [
+            EvaporatedId(cited_id=c, cited_by=cited_by[:64]) for c in cited if c not in bound
+        ]
+        demotions: list[Demotion] = []
+        try:
+            tier = str(getattr(result, "tier", "") or "")
+            if tier == "likely":
+                cause_codes: list[str] = []
+                details: list[str] = []
+                for lim in getattr(result, "limitations", []) or []:
+                    try:
+                        code = getattr(getattr(lim, "code", ""), "value", getattr(lim, "code", ""))
+                        if str(code or "").strip():
+                            cause_codes.append(str(code))
+                    except Exception:
+                        continue
+                    try:
+                        detail = str(getattr(lim, "detail", "") or "").strip()
+                        if detail:
+                            details.append(detail)
+                    except Exception:
+                        continue
+                demotions.append(
+                    Demotion(
+                        hypothesis_id=hypothesis.id,
+                        cause_codes=cause_codes[:10],
+                        detail=(
+                            "; ".join(details)[:500]
+                            if details
+                            else "heuristic score below the established floor"
+                        ),
+                    )
+                )
+        except Exception:
+            pass
+        missing: list[MissingObligation] = []
+        try:
+            status = getattr(result, "status", None)
+            corroborating = getattr(result, "corroborating_evidence_ids", []) or []
+            if status == VerificationStatus.INCONCLUSIVE and not corroborating:
+                kind_value: str | None = None
+                try:
+                    kind = VerificationEngine.effective_claim_kind(hypothesis)
+                    if kind is not None:
+                        kind_value = str(
+                            getattr(kind, "value", kind) or ""
+                        ).strip() or None
+                except Exception:
+                    kind_value = None
+                try:
+                    statement = str(getattr(hypothesis, "statement", "") or "").strip()
+                except Exception:
+                    statement = ""
+                missing.append(
+                    MissingObligation(
+                        claim=statement[:1024],
+                        claim_kind=kind_value,
+                        next_action=(
+                            _MISSING_OBLIGATION_DIRECTIVES.get(kind_value or "")
+                            or _DEFAULT_MISSING_OBLIGATION_DIRECTIVE
+                        ),
+                    )
+                )
+        except Exception:
+            pass
+        codes = sorted(
+            {e.reason_code.value for e in evaporated}
+            | {d.reason_code.value for d in demotions}
+            | {m.reason_code.value for m in missing}
+        )
+        if not (evaporated or demotions or missing):
+            return None
+        return VerificationDiagnostics(
+            evaporated_ids=evaporated[:100],
+            demotions=demotions[:10],
+            missing_obligations=missing[:10],
+            reason_codes=codes[:20],
+        )
+    except Exception:
+        return None
 
 
 def _verification_extra(result: Any) -> dict[str, Any]:
@@ -508,6 +748,54 @@ def category_proof_rule(category: JavaFactCategory) -> CategoryProofRule | None:
         return CATEGORY_PROOF_RULES.get(category)
     except Exception:
         return None
+
+
+#: Current verifier behavior version. Pinned on every new investigation
+#: (``metadata["verifier_version"]``) so rows keep the semantics they
+#: started with when the engine evolves. Routing is by recorded version,
+#: never by environment switch.
+VERIFIER_VERSION_CURRENT = "v2"
+#: Pre-P0-3 semantics (first hypothesis, whole corpus, empty
+#: contradiction/causal lists, best-effort persistence). Only rows
+#: explicitly pinned here run it.
+VERIFIER_VERSION_LEGACY = "v1"
+#: Verifier versions with defined semantics. Anything else pinned is
+#: rejected — an unknown contract must never silently select one.
+KNOWN_VERIFIER_VERSIONS = frozenset({VERIFIER_VERSION_CURRENT, VERIFIER_VERSION_LEGACY})
+
+
+class UnknownVerifierVersion(ValueError):
+    """A pinned verifier version with no defined semantics (fail closed)."""
+
+
+class VerifierVersionUnavailable(ValueError):
+    """Version information could not be obtained (fail closed)."""
+
+
+def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
+    """Resolve the recorded verifier version for an investigation.
+
+    Returns ``(version, source)`` where source is ``"pinned"`` (row
+    carries an explicit pin) or ``"unmarked"`` (successfully loaded row
+    or row-equivalent metadata without a pin — these ran current-path
+    semantics by default under the documented migration policy, so they
+    stay on current). Raises :class:`UnknownVerifierVersion` for pins
+    outside :data:`KNOWN_VERIFIER_VERSIONS` and
+    :class:`VerifierVersionUnavailable` when version information could
+    not be obtained at all (missing row, missing repository read,
+    malformed metadata). Callers must fail closed on either exception:
+    never guess a contract.
+    """
+    if metadata is None or not isinstance(metadata, dict):
+        raise VerifierVersionUnavailable(
+            f"no version metadata: {type(metadata).__name__}"
+        )
+    pinned = str(metadata.get("verifier_version") or "").strip()
+    if not pinned:
+        return VERIFIER_VERSION_CURRENT, "unmarked"
+    if pinned not in KNOWN_VERIFIER_VERSIONS:
+        raise UnknownVerifierVersion(f"unrecognized pin: {pinned!r}")
+    return pinned, "pinned"
 
 
 class VerificationEngine:
@@ -2342,6 +2630,7 @@ class VerificationEngine:
         hypothesis: Any,
         evidence_items: list,
         contradictions: list,
+        observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any | None:
         """G1 location-answer validation. Returns a VERIFIED result with
         location_validated=True when eligible, else None (normal path).
@@ -2406,6 +2695,16 @@ class VerificationEngine:
         # edge needs a row showing the call. Existence of a location-bearing
         # row (including a search hit) is no longer enough.
         kind_gate = self.check_claim_kind(hypothesis, cited)
+        _record_gate_note(
+            observer,
+            {
+                "tap": "T2a",
+                "input_set": "CITED_LOCATION",
+                "kind": str(getattr(kind, "value", kind)) if (kind := VerificationEngine.effective_claim_kind(hypothesis)) is not None else "UNKNOWN",
+                "ok": None if kind_gate is None else bool(kind_gate[0]),
+                "reason": "" if kind_gate is None else str(kind_gate[1]),
+            },
+        )
         if kind_gate is not None and not kind_gate[0]:
             return None
         # T1-2: subject grounding — the claim must be ABOUT the cited
@@ -3529,6 +3828,46 @@ class VerificationEngine:
         causal_chain: list[CausalRelationship],
         policy: RootCauseVerificationPolicy,
         sibling_hypotheses: list[Any] | None = None,
+        observer: Callable[[dict[str, Any]], None] | None = None,
+    ) -> VerificationResult:
+        """Public verdict entry point (WP-A2 wrapper): verdicts unchanged.
+
+        Runs the inner evaluator, then attaches diagnostics-only
+        annotations (evaporated IDs, demotions, missing obligations).
+        Diagnostics never alter status, tier, explanation, confidence, or
+        corroborating IDs — ambiguous results stay exactly as evaluated.
+        The optional observer carries the T2b mirror note through to the
+        inner gate; ``None`` (all existing callers) preserves the exact
+        legacy call shape.
+        """
+        result = self._evaluate_hypothesis_inner(
+            hypothesis,
+            evidence_items,
+            contradictions,
+            causal_chain,
+            policy,
+            sibling_hypotheses,
+            observer,
+        )
+        try:
+            diagnostics = collect_verification_diagnostics(
+                hypothesis, evidence_items, result
+            )
+            if diagnostics is not None:
+                result = result.model_copy(update={"diagnostics": diagnostics})
+        except Exception:
+            pass
+        return result
+
+    def _evaluate_hypothesis_inner(
+        self,
+        hypothesis: Hypothesis,
+        evidence_items: list[Evidence],
+        contradictions: list[Contradiction],
+        causal_chain: list[CausalRelationship],
+        policy: RootCauseVerificationPolicy,
+        sibling_hypotheses: list[Any] | None = None,
+        observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> VerificationResult:
         if VerificationEngine.concedes_claim(getattr(hypothesis, "statement", "")):
             confidence = InvestigationConfidence(
@@ -3618,6 +3957,18 @@ class VerificationEngine:
             )
         kind_gate = self.check_claim_kind(hypothesis, evidence_items)
         behavior_likely_only = False
+        _gate_kind = VerificationEngine.effective_claim_kind(hypothesis)
+        _record_gate_note(
+            observer,
+            {
+                "tap": "T2b",
+                "input_set": "BOUND_FULL",
+                "kind": str(getattr(_gate_kind, "value", _gate_kind)) if _gate_kind is not None else "UNKNOWN",
+                "ok": None if kind_gate is None else bool(kind_gate[0]),
+                "reason": "" if kind_gate is None else str(kind_gate[1]),
+                "behavior_likely_only": False,
+            },
+        )
         if kind_gate is not None and not kind_gate[0]:
             kind = VerificationEngine.effective_claim_kind(hypothesis)
             if (
@@ -3630,6 +3981,17 @@ class VerificationEngine:
                 # scoring, then cap at likely with NO_RUNTIME_OBSERVATION.
                 # Demote-only — never established, never blocked.
                 behavior_likely_only = True
+                _record_gate_note(
+                    observer,
+                    {
+                        "tap": "T2b",
+                        "input_set": "BOUND_FULL",
+                        "kind": "BEHAVIOR",
+                        "ok": False,
+                        "reason": "behavior-likely-only",
+                        "behavior_likely_only": True,
+                    },
+                )
             else:
                 return VerificationResult(
                     hypothesis_id=hypothesis.id,
@@ -3654,6 +4016,17 @@ class VerificationEngine:
                 reliability_score=0.5,
                 causal_score=0.0,
                 contradiction_penalty=0.0,
+            )
+            _record_gate_note(
+                observer,
+                {
+                    "tap": "T2b",
+                    "input_set": "BOUND_FULL",
+                    "kind": "DEFINITION",
+                    "ok": False,
+                    "reason": "definition-backstop-no-range-read",
+                    "backstop_triggered": True,
+                },
             )
             return VerificationResult(
                 hypothesis_id=hypothesis.id,

@@ -97,6 +97,14 @@ with workflow.unsafe.imports_passed_through():
         verification_state,
     )
 
+    # D3 Phase 0 shadow definitions: pure receipt pairing + summary
+    # (canonical digests only — deterministic, replay-safe). The
+    # workflow never branches on the paired output.
+    from investigation_agent_platform.domain.proof.definition_shadow import (
+        pair_receipt,
+        summarize_shadow_definitions,
+    )
+
 
 @dataclass
 class RunInvestigationInput:
@@ -1348,6 +1356,15 @@ class RunInvestigationWorkflow:
         # per-turn (recorded, shadow-selected) record appended by the
         # capture hook. Compute-only; the loop never reads this list.
         shadow_trace: list[dict[str, Any]] = []
+        # D3 Phase 0 definition-shadow envelopes (plain JSON scalars,
+        # replay-safe): verify-turn observations paired at receipt.
+        # Compute-only; the loop never branches on this list. T3
+        # (conclude-gate) observations travel co-located in the conclude
+        # activity result and are paired analysis-side; they cannot ride
+        # this run's loop_telemetry (built before conclude runs).
+        definition_shadow_trace: list[dict[str, Any]] = []
+        definition_receipt_index = 0
+        definition_shadow_duplicates = 0
         # Cumulative LLM spend across iterations (plain scalars, replay-safe).
         # Fed into each checkpoint so token/cost totals survive worker
         # restarts; the reason activity enforces the per-investigation cap.
@@ -1455,6 +1472,11 @@ class RunInvestigationWorkflow:
                 break
             # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
+            # G6-measure: freeze the model's pre-override proposal for the
+            # shadow owed recomputation below. Trigger helpers read the
+            # proposed action; after the cascade _reason_data carries the
+            # override, which would mask the debt the cascade itself saw.
+            _shadow_proposal = dict(_reason_data)
             _value_target = _source_value_target(
                 _reason_data, action_history, forced_value_read_count
             )
@@ -1609,12 +1631,21 @@ class RunInvestigationWorkflow:
             # G6-measure shadow capture (Option A): compute-only, never acts.
             # Replays the frozen turn snapshot through the shadow policy and
             # appends the (recorded, shadow) pair to shadow_trace. Owed
-            # flags re-evaluate the pure trigger helpers with the cap
-            # bypassed (count=0) — same functions, no drift. Any failure
-            # records a marker; the loop proceeds identically either way.
+            # flags re-evaluate the pure trigger helpers against the
+            # pre-override proposal with caps bypassed (count=0) — same
+            # functions, same proposal the cascade decided on, no drift.
+            # Any failure records a marker; the loop proceeds identically
+            # either way.
             try:
                 _unverified_count, _verified_present = verification_state(
                     _reason_data.get("hypotheses_evaluated")
+                )
+                _formulate_owed_now = _should_force_formulate(
+                    iteration,
+                    formulated_count,
+                    _reason_data.get("hypotheses_evaluated"),
+                    evidence_banked_total,
+                    0,
                 )
                 _shadow_snapshot = build_shadow_snapshot(
                     iteration=iteration,
@@ -1628,14 +1659,14 @@ class RunInvestigationWorkflow:
                     unverified_count=_unverified_count,
                     verified_present=_verified_present,
                     reasoning_available=True,
-                    value_target_present=_source_value_target(_reason_data, action_history, 0)
+                    value_target_present=_source_value_target(_shadow_proposal, action_history, 0)
                     is not None,
                     stack_walk_owed=_should_force_walk_stack(
-                        knowledge_seed, _reason_data, action_history, 0
+                        knowledge_seed, _shadow_proposal, action_history, 0
                     )
                     is not None,
                     below_evidence_floor=_explore_floor_target(
-                        _reason_data,
+                        _shadow_proposal,
                         evidence_banked_total,
                         triage_route,
                         input_data.description,
@@ -1643,22 +1674,17 @@ class RunInvestigationWorkflow:
                         0,
                     )
                     is not None,
-                    formulate_owed=_should_force_formulate(
-                        iteration,
-                        formulated_count,
-                        _reason_data.get("hypotheses_evaluated"),
-                        evidence_banked_total,
-                        0,
-                    ),
+                    formulate_owed=_formulate_owed_now,
                     synthesis_owed=_should_force_synthesis(
                         action_history,
                         evidence_banked_total,
                         formulated_count,
                         0,
-                        _reason_data,
+                        _shadow_proposal,
                     ),
-                    reread_path_present=_reread_target(_reason_data, action_history, 0) is not None,
-                    callsite_owed=_callsite_target(_reason_data, action_history, 0) is not None,
+                    reread_path_present=_reread_target(_shadow_proposal, action_history, 0)
+                    is not None,
+                    callsite_owed=_callsite_target(_shadow_proposal, action_history, 0) is not None,
                     forcing_used={
                         "value_read": forced_value_read_count,
                         "walk_stack": forced_walk_stack_count,
@@ -1693,6 +1719,35 @@ class RunInvestigationWorkflow:
                     if isinstance(_raw_params, dict)
                     else {}
                 )
+                _shadow_turn["forced"] = sorted(
+                    short
+                    for key, short in (
+                        ("forced_source_value_read", "value_read"),
+                        ("forced_walk_stack", "walk_stack"),
+                        ("forced_floor", "floor"),
+                        ("forced_formulate", "formulate"),
+                        ("forced_reread", "reread"),
+                        ("forced_callsite", "callsite"),
+                        ("forced_log_search", "log_search"),
+                        ("forced_replan", "replan"),
+                    )
+                    if _reason_data.get(key)
+                )
+                # Synthesis shares the loop's formulate counter and flag:
+                # a set forced_formulate with formulate_owed False means
+                # the synthesis rule fired it (the only other setter).
+                if _reason_data.get("forced_formulate") and not _formulate_owed_now:
+                    _shadow_turn["forced"].append("synthesis")
+                    _shadow_turn["forced"] = sorted(_shadow_turn["forced"])
+                _shadow_turn["owed"] = {
+                    "value_read": bool(_value_target is not None),
+                    "walk_stack": _shadow_snapshot.stack_walk_owed,
+                    "floor": _shadow_snapshot.below_evidence_floor,
+                    "formulate": _shadow_snapshot.formulate_owed,
+                    "synthesis": _shadow_snapshot.synthesis_owed,
+                    "reread": _shadow_snapshot.reread_path_present,
+                    "callsite": _shadow_snapshot.callsite_owed,
+                }
                 shadow_trace.append(_shadow_turn)
             except Exception:
                 shadow_trace.append({"iteration": iteration, "capture_error": True})
@@ -1865,6 +1920,37 @@ class RunInvestigationWorkflow:
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=retry_policy,
             )
+            # D3 Phase 0 shadow receipt pairing (compute-only; the loop
+            # never branches on the result). T1 observations ride the
+            # additive result key; each is paired with this turn's native
+            # outcome into a tamper-evident envelope. Failures append a
+            # capture-error envelope, never alter control flow.
+            try:
+                _verify_data = verify_res.data if isinstance(verify_res.data, dict) else {}
+                _shadow_obs = _verify_data.get("shadow_definitions", [])
+                if isinstance(_shadow_obs, list) and _shadow_obs:
+                    _native_outcome = {
+                        "verified": bool(_verify_data.get("verified", False)),
+                        "status": str(_verify_data.get("status", "") or ""),
+                        "confidence": _verify_data.get("confidence"),
+                        "hypothesis_id": str(_verify_data.get("hypothesis_id", "") or ""),
+                        "producing_path": str(_verify_data.get("producing_path", "") or ""),
+                    }
+                    _shadow_identity = _verify_data.get("shadow_activity_identity", {})
+                    if not isinstance(_shadow_identity, dict):
+                        _shadow_identity = {}
+                    _new_envelopes, _new_duplicates = pair_receipt(
+                        [o for o in _shadow_obs if isinstance(o, dict)],
+                        iteration,
+                        definition_receipt_index,
+                        _native_outcome,
+                        _shadow_identity,
+                    )
+                    definition_shadow_trace.extend(_new_envelopes)
+                    definition_receipt_index += len(_new_envelopes)
+                    definition_shadow_duplicates += int(_new_duplicates or 0)
+            except Exception:
+                pass
 
             input_state = await _maybe_handle_input_required(verify_res.data, "VERIFYING")
             if input_state == "cancelled":
@@ -1965,6 +2051,22 @@ class RunInvestigationWorkflow:
                     # summary; consumed by the operator, never by the loop.
                     "shadow_trace": list(shadow_trace),
                     "shadow_summary": summarize_trace(shadow_trace),
+                    # D3 Phase 0: verify-turn shadow-definition envelopes
+                    # (paired at receipt) + summary counts. T3 conclude-gate
+                    # observations travel co-located in the conclude
+                    # activity result (paired analysis-side); they cannot
+                    # ride this run's telemetry (built before conclude).
+                    "definition_shadow_trace": list(definition_shadow_trace),
+                    "shadow_definition_summary": summarize_shadow_definitions(
+                        [
+                            e.get("observation", e)
+                            for e in definition_shadow_trace
+                            if isinstance(e, dict)
+                        ],
+                        0,
+                        definition_shadow_duplicates,
+                        0,
+                    ),
                 },
             ),
             start_to_close_timeout=timedelta(seconds=60),

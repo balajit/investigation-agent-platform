@@ -33,6 +33,8 @@ ENTRY_SECTIONS = [
     ("cert_valid_examples.json", "valid", "id", "cert/v1"),
     ("cert_valid_examples.json", "provisional_valid", "id", "cert/v1"),
     ("cert_invalid_examples.json", "invalid", "id", "cert/v1"),
+    ("definition_golden_vectors.json", "vectors", "id", "definition/v1"),
+    ("definition_invalid_vectors.json", "invalid", "id", "definition/v1"),
 ]
 
 # Entries that MUST fail Layer-1 schema validation. A layer-1 example that
@@ -141,6 +143,10 @@ DECLARED_FILES = (
         # test_d1_mapping_artifact_validates + dispatch tests,
         # not by ledger record generation).
         "dispatch_mapping.json",
+        # D3 mapping artifact (validated by
+        # test_d3_mapping_artifact_validates + definition tests,
+        # not by ledger record generation).
+        "definition_dispatch_mapping.json",
     }
 )
 

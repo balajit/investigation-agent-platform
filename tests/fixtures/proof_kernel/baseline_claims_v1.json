@@ -1,0 +1,185 @@
+{
+  "abstentions": [
+    {
+      "case_id": "L11",
+      "expected_terminal": "ABSTAIN",
+      "live": false,
+      "note": "abstention shape: no provable claim expected"
+    },
+    {
+      "case_id": "L8",
+      "expected_terminal": "ABSTAIN",
+      "live": true,
+      "note": "abstention shape: no provable claim expected"
+    }
+  ],
+  "claims": [
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L1",
+      "claim_id": "L1.definition",
+      "claim_kind": "DEFINITION",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "range read window containing the symbol, same file+revision"
+      ],
+      "target": {
+        "cited_path": "SampleOrderFilter.java",
+        "expect_symbol": "SampleOrderFilter"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "offline-gradable"
+      },
+      "case_id": "L10",
+      "claim_id": "L10.definition",
+      "claim_kind": "DEFINITION",
+      "expected_terminal": "ANSWERED",
+      "live": false,
+      "proof_requirements": [
+        "range read window containing the symbol, same file+revision"
+      ],
+      "target": {
+        "cited_path": "SampleOrderFilter.java",
+        "expect_symbol": "SampleOrderFilter"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "offline-gradable"
+      },
+      "case_id": "L12",
+      "claim_id": "L12.absence",
+      "claim_kind": "ABSENCE",
+      "expected_terminal": "ANSWERED",
+      "live": false,
+      "proof_requirements": [
+        "scoped empty-search proof (COMPLETE_EMPTY within declared universe)"
+      ],
+      "target": {
+        "scope": "audit_log/order-9"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L2",
+      "claim_id": "L2.caller[OrderQualifyHelper]",
+      "claim_kind": "CALL_EDGE",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "shown call site for the named caller",
+        "same file+revision binding"
+      ],
+      "target": {
+        "caller": "OrderQualifyHelper"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L2",
+      "claim_id": "L2.caller[OrderServiceRestProxy]",
+      "claim_kind": "CALL_EDGE",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "shown call site for the named caller",
+        "same file+revision binding"
+      ],
+      "target": {
+        "caller": "OrderServiceRestProxy"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L3",
+      "claim_id": "L3.history",
+      "claim_kind": "HISTORY",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "matching COMMIT_HISTORY row: file+commit+subject"
+      ],
+      "target": {
+        "cited_path": "OrderServiceImpl.java"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L4",
+      "claim_id": "L4.definition",
+      "claim_kind": "DEFINITION",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "range read window containing the symbol, same file+revision"
+      ],
+      "target": {
+        "cited_path": "SampleOrderFilter.java",
+        "expect_symbol": "SampleOrderFilter"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "live-pending"
+      },
+      "case_id": "L5",
+      "claim_id": "L5.behavior",
+      "claim_kind": "BEHAVIOR",
+      "expected_terminal": "ANSWERED",
+      "live": true,
+      "proof_requirements": [
+        "code path + runtime observation; code-only demotes"
+      ],
+      "target": {}
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "offline-gradable"
+      },
+      "case_id": "L9",
+      "claim_id": "L9.definition",
+      "claim_kind": "DEFINITION",
+      "expected_terminal": "ANSWERED",
+      "live": false,
+      "proof_requirements": [
+        "range read window containing the symbol, same file+revision"
+      ],
+      "target": {
+        "cited_path": "OrderServiceImpl.java",
+        "expect_symbol": "isEligible"
+      }
+    }
+  ],
+  "version": "baseline/v1"
+}

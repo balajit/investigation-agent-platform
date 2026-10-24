@@ -24,7 +24,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
 from investigation_agent_platform.domain.investigation.models import ActionType
+from investigation_agent_platform.domain.proof.definition_dispatch import (
+    load_reviewed_definition_table,
+)
+from investigation_agent_platform.domain.proof.definition_shadow import (
+    ShadowError,
+    attach_shadow_observations,
+    resolve_definition_mode,
+    run_shadow_turn,
+    telemetry_omission_flagged,
+)
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 # Log evidence types bypass the persistence room (uncapped raw banking for
@@ -1209,7 +1220,7 @@ def _derive_loop_telemetry(
             telemetry["evidence_banked_repo"] = max(0, int(evidence_banked or 0))
         except (TypeError, ValueError):
             pass
-# G6-measure: pass the shadow trace/summary through (capped,
+        # G6-measure: pass the shadow trace/summary through (capped,
         # shape-checked; anything malformed is dropped, never fatal).
         # Existing keys above are untouched.
         try:
@@ -1232,16 +1243,58 @@ def _derive_loop_telemetry(
                         k: turn.get(k)
                         for k in (
                             "iteration", "recorded", "selected", "match",
-                            "cause", "shadow_terminal", "capture_error",
-                            "evidence_banked_total", "prev_outcome", "params",
-                        )
+                        "cause", "shadow_terminal", "capture_error",
+                        "evidence_banked_total", "prev_outcome", "params",
+                        "forced", "owed",
+                    )
                     }
                     if isinstance(entry.get("iteration"), bool):
                         continue
+                    # Optional fields are shape-checked, never turn-dropping:
+                    # coerce malformed values to empty so a bad optional
+                    # cannot silently remove a comparable turn (capture
+                    # health tracks missing turns, never silent drops).
+                    if not isinstance(entry.get("params", {}), dict):
+                        entry["params"] = {}
+                    if "forced" in entry and not isinstance(entry["forced"], list):
+                        entry["forced"] = []
+                    if "owed" in entry and not isinstance(entry["owed"], dict):
+                        entry["owed"] = {}
                     if not isinstance(entry.get("params"), (dict, type(None))):
                         continue
                     kept.append(entry)
                 telemetry["shadow_trace"] = kept
+        except Exception:
+            pass
+        # D3 Phase 0: shadow-definition summary + bounded projected trace
+        # (counts and allowlisted scalar keys only — same shape-checking,
+        # caps, and fail-open isolation as the G6 block above; the
+        # projection helper is the single implementation, tested in
+        # test_d3_shadow_bundle/test_d3_shadow_runtime. G6 keys above are
+        # untouched.)
+        try:
+            from investigation_agent_platform.domain.proof.definition_shadow import (
+                project_trace_for_telemetry as _project_d3_trace,
+            )
+
+            dsummary = passed.get("shadow_definition_summary")
+            if isinstance(dsummary, dict):
+                telemetry["shadow_definition_summary"] = {
+                    k: max(0, int(dsummary.get(k, 0) or 0))
+                    for k in (
+                        "turns", "admissible", "abstained", "unavailable",
+                        "capture_errors", "dropped_count", "duplicate_count",
+                        "telemetry_omissions",
+                    )
+                }
+            dtrace = passed.get("definition_shadow_trace")
+            if isinstance(dtrace, list):
+                projected, health = _project_d3_trace(dtrace)
+                telemetry["definition_shadow_trace"] = projected
+                if isinstance(telemetry.get("shadow_definition_summary"), dict):
+                    telemetry["shadow_definition_summary"]["dropped_count"] = health[
+                        "dropped_count"
+                    ]
         except Exception:
             pass
         return telemetry or None
@@ -2891,6 +2944,13 @@ async def execute_action_activity(
                         dropped=len(items) - len(kept),
                     ),
                 )
+            # WP-A3: budget truncation is a partial-result signal, not
+            # just a log line — the ledger must not read truncated
+            # banking as ordinary success. Fail-open: never break banking.
+            try:
+                outcome_detail["truncated_rows"] = len(items) - len(kept)
+            except Exception:
+                pass
             return kept
 
         try:
@@ -5485,6 +5545,7 @@ async def execute_action_activity(
                             assessments=assessments,
                         ),
                         investigation_id,
+                        0,
                     )
                     saved += 1
                 except Exception as exc:
@@ -5553,7 +5614,9 @@ async def execute_action_activity(
                                     updated = updated.transition_status(
                                         HypothesisStatus.UNDER_INVESTIGATION
                                     )
-                                await hypothesis_repo.save(tenant_id, updated, investigation_id)
+                                await hypothesis_repo.save(
+                                    tenant_id, updated, investigation_id, target.version
+                                )
                 except Exception as exc:
                     logger.warning(
                         "causal step attachment failed; continuing",
@@ -5621,6 +5684,40 @@ async def execute_action_activity(
             _outcome_status = outcome_detail.get("status") or (
                 "SUCCEEDED" if items_count > 0 else "EMPTY"
             )
+            # WP-A3: retrieval attempt ledger (diagnostics-only,
+            # fail-open). Records the query/attempt with a distinct
+            # outcome plus novelty/lift against earlier attempts in
+            # this investigation. Never blocks or alters the outcome.
+            try:
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    record_retrieval_attempt as _record_retrieval_attempt,
+                )
+
+                _retrieval_attempt = _record_retrieval_attempt(
+                    investigation_id=inv_id_str,
+                    action_type=str(
+                        getattr(resolved_action_type, "value", resolved_action_type)
+                    ),
+                    parameters=parameters if isinstance(parameters, dict) else {},
+                    status=str(_outcome_status),
+                    miss_reason=outcome_detail.get("miss_reason"),
+                    row_ids=[
+                        str(e) for e in (outcome_detail.get("evidence_ids") or [])
+                    ],
+                    rows_returned=int(items_count or 0),
+                    truncated_rows=int(outcome_detail.get("truncated_rows") or 0),
+                    source_statuses=[
+                        str(s.get("status"))
+                        for s in (outcome_detail.get("sources") or [])
+                        if isinstance(s, dict) and s.get("status") is not None
+                    ],
+                )
+                if _retrieval_attempt is not None:
+                    outcome_detail["retrieval_attempt"] = (
+                        _retrieval_attempt.model_dump(mode="json")
+                    )
+            except Exception:
+                pass
             action_outcome = ActionOutcome(
                 action_id=inv_action.action_id,
                 action_type=resolved_action_type,
@@ -5630,6 +5727,11 @@ async def execute_action_activity(
                 error_code=outcome_detail.get("error_code"),
                 miss_reason=outcome_detail.get("miss_reason"),
                 duration_ms=_dispatch_ms,
+                retrieval_attempt=(
+                    outcome_detail.get("retrieval_attempt")
+                    if isinstance(outcome_detail.get("retrieval_attempt"), dict)
+                    else None
+                ),
                 fuzzy_orientation=(
                     outcome_detail.get("fuzzy_orientation")
                     if isinstance(outcome_detail.get("fuzzy_orientation"), dict)
@@ -5777,10 +5879,24 @@ async def execute_action_activity(
         raise _application_failure_from_exc(exc) from exc
 
 
+_DEFINITION_DISPATCH_TABLE: Any = None
+_DEFINITION_DISPATCH_REGISTRY: Any = None
+
+
+def _load_definition_dispatch_table() -> tuple[Any, Any]:
+    """Cached reviewed table (loads via definition_dispatch; see it)."""
+    global _DEFINITION_DISPATCH_TABLE, _DEFINITION_DISPATCH_REGISTRY
+    if _DEFINITION_DISPATCH_TABLE is not None and _DEFINITION_DISPATCH_REGISTRY is not None:
+        return _DEFINITION_DISPATCH_TABLE, _DEFINITION_DISPATCH_REGISTRY
+    table, registry = load_reviewed_definition_table()
+    _DEFINITION_DISPATCH_TABLE = table
+    _DEFINITION_DISPATCH_REGISTRY = registry
+    return table, registry
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
-async def verify_root_cause_activity(
-    params: VerifyRootCauseInput,
+async def verify_root_cause_activity(    params: VerifyRootCauseInput,
 ) -> GenericActivityResult:
     # TO_DO-011: not idempotency-wired — pure compute over persisted state,
     # no durable writes of its own; re-execution is safe by construction.
@@ -5803,6 +5919,23 @@ async def verify_root_cause_activity(
                 success=False, error="tenant_id and investigation_id required"
             )
         investigation_id = UUID(inv_id_str)
+        _inv: Any = None
+        try:
+            definition_shadow_mode = resolve_definition_mode()
+        except ShadowError as exc:
+            # Authority flag without Phase 1 authorization: hard refusal of
+            # the governed path (non-retryable config error, loud). The
+            # native path is not silently continued under a forbidden flag.
+            logger.error(
+                "verify_root_cause_activity refusing governed path",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="verify_root_cause_activity refusing governed path",
+                    error=str(exc),
+                ),
+            )
+            raise PlatformConfigurationError(f"definition shadow refused: {exc}") from exc
         ctx = _get_ctx()
         evidence_repo: Any = getattr(ctx, "evidence_repo", None)
         hypothesis_repo: Any = getattr(ctx, "hypothesis_repo", None)
@@ -5849,21 +5982,52 @@ async def verify_root_cause_activity(
                 success=True, data={"verified": False, "reason": "no_hypotheses"}
             )
 
-        if not hypotheses:
-            return GenericActivityResult(
-                success=True, data={"verified": False, "reason": "no_hypotheses"}
-            )
-
-        import os as _os
-
         from investigation_agent_platform.application.investigation.verification import (
+            VERIFIER_VERSION_CURRENT,
+            VERIFIER_VERSION_LEGACY,
             CausalRelationship,
+            UnknownVerifierVersion,
             VerificationEngine,
+            VerifierVersionUnavailable,
             rank_hypotheses,
+            resolve_verifier_version,
             select_verifiable_candidate,
         )
 
-        verifier_mode = str(_os.environ.get("IAP_VERIFIER_V2", "new")).lower()
+        # Version-contained routing: the investigation's recorded
+        # verifier version decides the semantics — never an env switch.
+        # Unmarked rows ran current-path semantics by default, so they
+        # resolve to current; only rows explicitly pinned v1 run legacy.
+        # Anything else fails closed (established error result, no
+        # evaluation under an assumed version).
+        investigation_repo: Any = getattr(ctx, "investigation_repo", None)
+        if investigation_repo is None:
+            # No repository wired (tests/dev): no persisted row exists to
+            # misinterpret, so unmarked current semantics apply.
+            verifier_version = VERIFIER_VERSION_CURRENT
+        else:
+            try:
+                _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
+            except Exception as exc:
+                return GenericActivityResult(
+                    success=False,
+                    error="verifier version unavailable: "
+                    f"repository read failed ({type(exc).__name__})",
+                )
+            if _inv is None:
+                return GenericActivityResult(
+                    success=False,
+                    error="verifier version unavailable: investigation not found",
+                )
+            try:
+                verifier_version, _version_source = resolve_verifier_version(
+                    getattr(_inv, "metadata", None)
+                )
+            except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
+                return GenericActivityResult(
+                    success=False,
+                    error=f"verifier version unavailable: {exc}",
+                )
         contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
         contradictions: list[Any] = []
         if contradiction_repo is not None:
@@ -5876,8 +6040,8 @@ async def verify_root_cause_activity(
         evidence_by_id = {getattr(e, "evidence_id", None): e for e in evidence_items}
 
         # P0-3: ranked candidates, bound evidence, real contradictions and
-        # causal chain. Legacy mode preserves the old first-hypothesis /
-        # whole-corpus / empty-lists behavior for rollback.
+        # causal chain. Rows pinned to v1 keep the old first-hypothesis /
+        # whole-corpus / empty-lists behavior they started with.
         ranked = rank_hypotheses(list(hypotheses))
         # G9: prefer the candidate whose citations resolve — a reprocess-
         # carried copy with purged supporting rows must not shadow a live
@@ -5888,7 +6052,11 @@ async def verify_root_cause_activity(
         if candidate is None:
             return GenericActivityResult(
                 success=True,
-                data={"verified": False, "reason": "no_eligible_hypothesis"},
+                data={
+                    "verified": False,
+                    "reason": "no_eligible_hypothesis",
+                    "producing_path": "no-candidate",
+                },
             )
 
         def _resolve(ids: list[Any]) -> list[Any]:
@@ -5905,7 +6073,17 @@ async def verify_root_cause_activity(
 
         engine = VerificationEngine()
         policy = _select_verification_policy(data.get("triage_route", ""))
-        if verifier_mode == "legacy":
+        # D3 Phase 0 shadow state: initialized on every path (legacy included)
+        # so the read-only tap can never introduce an unbound name into the
+        # native return. Legacy rows keep version-pinned semantics with no
+        # shadow tap — the list stays empty there.
+        definition_shadow_observations: list[dict[str, Any]] = []
+        producing_path: str | None = None
+        _shadow_identity: dict[str, Any] = {}
+        if verifier_version == VERIFIER_VERSION_LEGACY:
+            # Rows pinned to v1 keep the semantics they started with:
+            # first hypothesis, whole corpus, empty contradiction/causal
+            # lists. Falls through to the shared tail below.
             hypothesis = hypotheses[0]
             result = engine.evaluate_hypothesis(
                 hypothesis,
@@ -5915,8 +6093,9 @@ async def verify_root_cause_activity(
                 policy,
                 sibling_hypotheses=list(hypotheses[1:]),
             )
+            producing_path = "legacy"
             verified = result.status.value == "VERIFIED"
-            # Phase 4.2: legacy-mode decisions are observed too.
+            # Phase 4.2: pinned-v1 decisions are observed too.
             _emit_verify_telemetry(
                 ctx,
                 tenant_id,
@@ -5943,6 +6122,62 @@ async def verify_root_cause_activity(
                         bound.append(_extra)
             except Exception:
                 pass
+            # D3 Phase 0 shadow tap T1 (read-only; never feeds back).
+            # Observes the already-loaded candidate/bound rows through the
+            # pure shadow evaluator. Fail-closed for the shadow (any fault
+            # records a SHADOW_FAILED marker); fail-open for native (the
+            # native path below is untouched by whatever happens here).
+            # T1 observes only the general (non-legacy) branch: legacy
+            # rows keep version-pinned semantics with no shadow tap, and
+            # ``definition_shadow_observations`` (initialized above) simply
+            # stays empty there.
+            if definition_shadow_mode == "shadow":
+                try:
+                    _shadow_info = activity.info()
+                    _shadow_identity = {
+                        "namespace": _shadow_info.namespace,
+                        "workflow_id": _shadow_info.workflow_id,
+                        "workflow_run_id": _shadow_info.workflow_run_id,
+                        "activity_id": _shadow_info.activity_id,
+                        "attempt": _shadow_info.attempt,
+                    }
+                except Exception:
+                    pass
+                try:
+                    _shadow_table, _shadow_registry = _load_definition_dispatch_table()
+                    _shadow_obs = run_shadow_turn(
+                        candidate=candidate,
+                        bound=list(bound),
+                        refuting_ids=[
+                            str(getattr(e, "evidence_id", "") or "") for e in (refuting or [])
+                        ],
+                        triage_route=str(data.get("triage_route", "") or ""),
+                        verifier_version=str(verifier_version),
+                        investigation_id=str(inv_id_str),
+                        hypothesis_id=str(getattr(candidate, "id", "") or ""),
+                        application_id=str(getattr(_inv, "application_id", "") or ""),
+                        input_set="BOUND_FULL",
+                        table=_shadow_table,
+                        registry=_shadow_registry,
+                    )
+                    if _shadow_obs is not None:
+                        _shadow_obs.setdefault("activity_identity", _shadow_identity)
+                        definition_shadow_observations.append(_shadow_obs)
+                except Exception:
+                    definition_shadow_observations.append(
+                        {"capture_error": True, "reason": "tap-fault", "input_set": "BOUND_FULL"}
+                    )
+
+            def _definition_observe(note: dict[str, Any]) -> None:
+                """T2 mirror-note sink (record-only; never feeds back)."""
+                try:
+                    if isinstance(note, dict):
+                        stamped = dict(note)
+                        stamped.setdefault("activity_identity", dict(_shadow_identity))
+                        definition_shadow_observations.append(stamped)
+                except Exception:
+                    pass
+
             code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
             code_value_claim = VerificationEngine.claims_field_value(
                 str(getattr(candidate, "statement", "") or "")
@@ -5958,14 +6193,18 @@ async def verify_root_cause_activity(
             causal_chain: list = []
             if code_value_answered:
                 result = code_value_result
+                producing_path = "code-value"
                 causal_chain = []
             elif history_answered:
                 result = history_result
+                producing_path = "history"
                 causal_chain = []
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
-            location_result = engine.validate_location_claim(candidate, bound, contradictions)
+            location_result = engine.validate_location_claim(
+                candidate, bound, contradictions, _definition_observe
+            )
             location_answered = (
                 location_result is not None
                 and not refuting
@@ -5974,6 +6213,7 @@ async def verify_root_cause_activity(
             )
             if location_answered:
                 result = location_result
+                producing_path = "location"
                 causal_chain = []
             # T1-1: doc-answer fast path (mirrors location). Skipped under
             # legacy verifier mode like the location path.
@@ -5990,6 +6230,7 @@ async def verify_root_cause_activity(
                     doc_answered = doc_result is not None and not refuting
                     if doc_answered:
                         result = doc_result
+                        producing_path = "doc"
                         causal_chain = []
                     elif doc_result is not None and refuting:
                         logger.info(
@@ -6053,6 +6294,7 @@ async def verify_root_cause_activity(
                     )
                     if state_answered:
                         result = state_result
+                        producing_path = "state"
                         causal_chain = []
                     elif state_result is not None and refuting:
                         logger.info(
@@ -6123,11 +6365,14 @@ async def verify_root_cause_activity(
                         contradiction_penalty=0.0,
                     ),
                 )
+                producing_path = "blocked"
             elif code_value_answered:
                 result = code_value_result
+                producing_path = "code-value"
                 causal_chain = []
             elif history_answered:
                 result = history_result
+                producing_path = "history"
                 causal_chain = []
             elif (
                 not code_value_claim
@@ -6137,6 +6382,7 @@ async def verify_root_cause_activity(
                 and not state_answered
             ):
                 _candidate_id = getattr(candidate, "id", None)
+                producing_path = "general"
                 result = engine.evaluate_hypothesis(
                     candidate,
                     bound,
@@ -6146,6 +6392,7 @@ async def verify_root_cause_activity(
                     sibling_hypotheses=[
                         h for h in (hypotheses or []) if getattr(h, "id", None) != _candidate_id
                     ],
+                    observer=_definition_observe,
                 )
             # Phase 4.2: verification decision + location-exemption counters.
             _emit_verify_telemetry(
@@ -6195,7 +6442,9 @@ async def verify_root_cause_activity(
 
                 updated = apply_verification_outcome(candidate, result)
                 if updated != candidate and hypothesis_repo is not None:
-                    await hypothesis_repo.save(tenant_id, updated, investigation_id)
+                    await hypothesis_repo.save(
+                        tenant_id, updated, investigation_id, candidate.version
+                    )
             except Exception:
                 pass
         logger.info(
@@ -6210,14 +6459,19 @@ async def verify_root_cause_activity(
         )
         return GenericActivityResult(
             success=True,
-            data={
-                "verified": verified,
-                "status": result.status.value,
-                "confidence": result.confidence.overall_confidence,
-                "hypothesis_id": str(result.hypothesis_id),
-                "answer_mode": bool(getattr(result, "location_validated", False)),
-                "code_value_validated": bool(getattr(result, "code_value_validated", False)),
-            },
+            data=attach_shadow_observations(
+                {
+                    "verified": verified,
+                    "status": result.status.value,
+                    "confidence": result.confidence.overall_confidence,
+                    "hypothesis_id": str(result.hypothesis_id),
+                    "answer_mode": bool(getattr(result, "location_validated", False)),
+                    "code_value_validated": bool(getattr(result, "code_value_validated", False)),
+                    "producing_path": producing_path,
+                    "shadow_activity_identity": dict(_shadow_identity),
+                },
+                definition_shadow_observations,
+            ),
         )
     except ApplicationFailure:
         raise
@@ -6791,7 +7045,13 @@ async def transition_investigation_activity(
         raise _application_failure_from_exc(exc) from exc
 
 
-async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: Any) -> Any:
+async def _gate_conclusion_or_fail(
+    tenant_id: str,
+    investigation_id: UUID,
+    ctx: Any,
+    shadow_notes: list[dict[str, Any]] | None = None,
+    triage_route: str = "",
+) -> Any:
     """Evaluate ConclusionGate for a requested COMPLETED conclusion (F-051).
 
     Returns ``InvestigationStatus.COMPLETED`` only when the gate approves;
@@ -6802,10 +7062,15 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     (Part 11.7+) depend on this corpus actually existing.
     """
     from investigation_agent_platform.application.investigation.verification import (
+        VERIFIER_VERSION_CURRENT,
+        VERIFIER_VERSION_LEGACY,
         ConclusionGate,
         RootCauseVerificationPolicy,
+        UnknownVerifierVersion,
         VerificationEngine,
         VerificationStatus,
+        VerifierVersionUnavailable,
+        resolve_verifier_version,
     )
     from investigation_agent_platform.domain.finding.models import (
         ConclusionStatus,
@@ -6896,6 +7161,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 next_check=VerificationEngine.next_check_for_abstention(
                     kind, list(limitations or [])
                 ),
+                verifier_version=verifier_version,
             ),
         )
         # Phase 4.2: abstention volume with limitations (closed kind).
@@ -6931,11 +7197,60 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
 
     engine = VerificationEngine()
     policy = RootCauseVerificationPolicy()
-    import os as _os
 
-    if str(_os.environ.get("IAP_VERIFIER_V2", "new")).lower() == "legacy":
-        # P0-4 rollback: pre-P0-3 semantics (first hypothesis, whole corpus,
-        # no causal requirement, best-effort persistence).
+    # Version-contained routing: rows pinned to v1 keep the pre-P0-3
+    # semantics they started with (first hypothesis, whole corpus, no
+    # causal requirement, best-effort persistence); everything else runs
+    # the current path below. Never an env switch. Unresolvable versions
+    # deny publication (FAILED is the designated platform-error outcome).
+    investigation_repo: Any = getattr(ctx, "investigation_repo", None)
+    _inv: Any = None
+    if investigation_repo is None:
+        verifier_version = VERIFIER_VERSION_CURRENT
+    else:
+        try:
+            _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
+        except Exception as exc:
+            logger.warning(
+                "ConclusionGate: verifier version unreadable; denying COMPLETED",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    event="ConclusionGate denied COMPLETED",
+                    reason="version_unavailable",
+                    error_type=type(exc).__name__,
+                ),
+            )
+            return InvestigationStatus.FAILED
+        if _inv is None:
+            logger.warning(
+                "ConclusionGate: investigation not found; denying COMPLETED",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    event="ConclusionGate denied COMPLETED",
+                    reason="investigation_not_found",
+                ),
+            )
+            return InvestigationStatus.FAILED
+        try:
+            verifier_version, _version_source = resolve_verifier_version(
+                getattr(_inv, "metadata", None)
+            )
+        except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
+            logger.warning(
+                "ConclusionGate: verifier version unresolvable; denying COMPLETED",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    event="ConclusionGate denied COMPLETED",
+                    reason="version_unresolvable",
+                    error=str(exc),
+                ),
+            )
+            return InvestigationStatus.FAILED
+
+    if verifier_version == VERIFIER_VERSION_LEGACY:
         verification = engine.evaluate_hypothesis(
             hypotheses[0],
             evidence_items,
@@ -6987,15 +7302,16 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                         supporting_evidence_ids=_legacy_ids,
                         supporting_hypothesis_ids=[_legacy_hyp.id],
                         confidence=verification.confidence.overall_confidence,
+                        verifier_version=VERIFIER_VERSION_LEGACY,
                     ),
                 )
             except Exception as exc:
                 logger.exception(
-                    "Legacy finding/conclusion persist failed",
+                    "Pinned-v1 finding/conclusion persist failed",
                     extra=_log_extra(
                         tenant_id=tenant_id,
                         investigation_id=investigation_id,
-                        event="legacy finding persist failed",
+                        event="pinned-v1 finding persist failed",
                         error=str(exc),
                         error_type=type(exc).__name__,
                     ),
@@ -7021,6 +7337,70 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
                 bound.append(_extra)
     except Exception:
         pass
+    # D3 Phase 0 shadow tap T3 (read-only; never feeds back). Mirrors T1
+    # on conclude-time loaded rows; observations join the conclude gate
+    # outcome as CONCLUDE_GATE. Same isolation: any fault records a
+    # SHADOW_FAILED marker; the native path continues unchanged.
+    _conclude_shadow_notes: list[dict[str, Any]] = shadow_notes if shadow_notes is not None else []
+    try:
+        _conclude_shadow_mode = resolve_definition_mode()
+    except ShadowError as exc:
+        logger.error(
+            "conclude gate refusing governed path",
+            extra=_log_extra(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                event="conclude gate refusing governed path",
+                error=str(exc),
+            ),
+        )
+        raise PlatformConfigurationError(f"definition shadow refused: {exc}") from exc
+    if _conclude_shadow_mode == "shadow":
+        try:
+            try:
+                _shadow_info_c = activity.info()
+                _shadow_identity_c = {
+                    "namespace": _shadow_info_c.namespace,
+                    "workflow_id": _shadow_info_c.workflow_id,
+                    "workflow_run_id": _shadow_info_c.workflow_run_id,
+                    "activity_id": _shadow_info_c.activity_id,
+                    "attempt": _shadow_info_c.attempt,
+                }
+            except Exception:
+                _shadow_identity_c = {}
+            _shadow_table_c, _shadow_registry_c = _load_definition_dispatch_table()
+            _shadow_obs_c = run_shadow_turn(
+                candidate=candidate,
+                bound=list(bound),
+                refuting_ids=[str(getattr(e, "evidence_id", "") or "") for e in (refuting or [])],
+                triage_route=str(triage_route or ""),
+                verifier_version=str(verifier_version),
+                investigation_id=str(investigation_id),
+                hypothesis_id=str(getattr(candidate, "id", "") or ""),
+                application_id=str(getattr(_inv, "application_id", "") or ""),
+                input_set="CONCLUDE_GATE",
+                table=_shadow_table_c,
+                registry=_shadow_registry_c,
+            )
+            if _shadow_obs_c is not None:
+                _shadow_obs_c["activity_identity"] = _shadow_identity_c
+                _conclude_shadow_notes.append(_shadow_obs_c)
+        except Exception:
+            _conclude_shadow_notes.append(
+                {"capture_error": True, "reason": "tap-fault", "input_set": "CONCLUDE_GATE"}
+            )
+
+    def _conclude_observe(note: dict[str, Any]) -> None:
+        """T3 mirror-note sink: retags engine notes as CONCLUDE_GATE."""
+        try:
+            if isinstance(note, dict):
+                tagged = dict(note)
+                tagged["tap"] = "T3"
+                tagged["input_set"] = "CONCLUDE_GATE"
+                _conclude_shadow_notes.append(tagged)
+        except Exception:
+            pass
+
     causal_chain = [
         CausalRelationship(
             cause=s.cause,
@@ -7051,7 +7431,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         )
         return InvestigationStatus.COMPLETED
     location_verification = _verify_engine.validate_location_claim(
-        candidate, bound, contradictions
+        candidate, bound, contradictions, _conclude_observe
     )
     location_answered = (
         location_verification is not None
@@ -7142,6 +7522,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
             sibling_hypotheses=[
                 h for h in (hypotheses or []) if getattr(h, "id", None) != _gate_candidate_id
             ],
+            observer=_conclude_observe,
         )
     gate = ConclusionGate()
     decision = await gate.evaluate(
@@ -7206,7 +7587,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
     causal_ids = [eid for c in causal_chain for eid in c.evidence_ids]
     if hyp.status == _HStatus.SUPPORTED and hypothesis_repo is not None:
         hyp = hyp.transition_status(_HStatus.VERIFIED)
-        await hypothesis_repo.save(tenant_id, hyp, investigation_id)
+        await hypothesis_repo.save(tenant_id, hyp, investigation_id, hyp.version)
     finding = Finding(
         tenant_id=tenant_id,
         investigation_id=investigation_id,
@@ -7368,6 +7749,7 @@ async def _gate_conclusion_or_fail(tenant_id: str, investigation_id: UUID, ctx: 
         ],
         provisional=getattr(verification, "tier", "established") == "likely",
         ranked_alternatives=_alternatives,
+        verifier_version=verifier_version,
     )
     await finding_repo.save_conclusion(tenant_id, conclusion)
     evidence_ids = supporting_ids
@@ -7454,6 +7836,9 @@ async def conclude_investigation_activity(
         inv_id_str = str(data.get("investigation_id", ""))
         status = str(data.get("status", "COMPLETED"))
         reason = str(data.get("reason", "") or "")
+        # D3 Phase 0 T3 notes: initialized on every path so the read-only
+        # tap can never introduce an unbound name into the native return.
+        _conclude_shadow_notes: list[dict[str, Any]] = []
         if not tenant_id or not inv_id_str:
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
@@ -7478,7 +7863,14 @@ async def conclude_investigation_activity(
                         # approval — the workflow's requested status alone is not
                         # authority. Denied conclusions become FAILED with the
                         # blockers recorded, never silent COMPLETED.
-                        target = await _gate_conclusion_or_fail(tenant_id, investigation_id, ctx)
+                        _conclude_shadow_notes = []
+                        target = await _gate_conclusion_or_fail(
+                            tenant_id,
+                            investigation_id,
+                            ctx,
+                            shadow_notes=_conclude_shadow_notes,
+                            triage_route=str(data.get("triage_route", "") or ""),
+                        )
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"
                     if target == InvestigationStatus.FAILED:
@@ -7491,6 +7883,9 @@ async def conclude_investigation_activity(
                             "budget_exceeded",
                         )
                         if epistemic:
+                            from investigation_agent_platform.application.investigation.verification import (
+                                resolve_verifier_version,
+                            )
                             from investigation_agent_platform.domain.finding.models import (
                                 ConclusionStatus,
                                 InvestigationConclusion,
@@ -7525,8 +7920,11 @@ async def conclude_investigation_activity(
                                                     "verification bar within budget."
                                                 )
                                             ],
-                                            next_check=_epistemic_check,
-                                        ),
+                                        next_check=_epistemic_check,
+                                        verifier_version=resolve_verifier_version(
+                                            getattr(inv, "metadata", None)
+                                        )[0],
+                                    ),
                                     )
                                     # Phase 4.2: abstention volume counter.
                                     try:
@@ -7564,14 +7962,20 @@ async def conclude_investigation_activity(
                         inv = _stamp_failure(inv, failure_code, reason)
                     # C-2: loop telemetry (workflow counters + derived repo
                     # counts) stamped for every terminal status, same ride.
-                    inv = _stamp_loop_telemetry(
-                        inv,
-                        _derive_loop_telemetry(
-                            data.get("loop_telemetry"),
-                            await _count_hypothesis_lifecycle(ctx, tenant_id, investigation_id),
-                            await _count_evidence_banked(ctx, tenant_id, investigation_id),
-                        ),
+                    # D3 omission accounting (C5): if derivation yields None
+                    # despite non-empty input, record the in-band flag so the
+                    # harness can count the omission (Path A); harness-side
+                    # absence detection is Path B.
+                    _loop_telemetry_input = data.get("loop_telemetry")
+                    _loop_telemetry_derived = _derive_loop_telemetry(
+                        _loop_telemetry_input,
+                        await _count_hypothesis_lifecycle(ctx, tenant_id, investigation_id),
+                        await _count_evidence_banked(ctx, tenant_id, investigation_id),
                     )
+                    _loop_telemetry_omitted = telemetry_omission_flagged(
+                        _loop_telemetry_input, _loop_telemetry_derived
+                    )
+                    inv = _stamp_loop_telemetry(inv, _loop_telemetry_derived)
                     if inv.status != target:
                         # TO_DO-011: idempotency-wired — (investigation_id,
                         # target, version) is deterministic; see transition
@@ -7635,7 +8039,17 @@ async def conclude_investigation_activity(
                                 audit_degraded=audit_degraded,
                             ),
                         )
-                    return GenericActivityResult(success=True, data={"status": target.value})
+                    return GenericActivityResult(
+                        success=True,
+                        data=attach_shadow_observations(
+                            {
+                                "status": target.value,
+                                "producing_path": "conclude-gate",
+                                "loop_telemetry_omitted": _loop_telemetry_omitted,
+                            },
+                            _conclude_shadow_notes,
+                        ),
+                    )
             except ApplicationFailure:
                 raise
             except Exception as exc:

@@ -1,0 +1,39 @@
+{
+  "attribution_buckets": [
+    "never_retrieved",
+    "retrieved_but_unbound",
+    "bound_but_wrong_type",
+    "withheld_by_refuting",
+    "provider_or_analyzer_failed",
+    "genuinely_insufficient",
+    "wrong_revision_or_scope"
+  ],
+  "battery_case_digests": {
+    "L1.json": "09dd745d8620fb67524c2f677b361e23c5c5c2446b26e44fb71f2ac0f952bab3",
+    "L10.json": "54ec6acc663cb5470d2a67cdaaa0b454fa8cdd9e37aad681ab0816631c91d621",
+    "L11.json": "046bd1ddcfa2722b47a192e6006cbf17e6c152f4255cc79cb4f7aab2d230ba29",
+    "L12.json": "f0bb74495929c161282ddd5a5b01663cab7d5f28d2dad9136fbf0fcbc9ff21fb",
+    "L2.json": "23b26c867b0230ce251fff8b3fd3b793af713a40600c6cea3aa09bb0a9e62b75",
+    "L3.json": "658a364e931bc732183aa7c0e7ea432f594c3390a0a50176f54dee59cd8e45d7",
+    "L4.json": "3e24c2eddfa2112187f8ae49d530a16d3d86e9a9618e1702318feeef48d6cff6",
+    "L5.json": "d5c1cbd6cc5a11fd953a1d6078d6815513b6ef836e10549f4abf33afa897b183",
+    "L8.json": "3dd8dd562a60c4ea298ae79ae466fcfe358ac57e6bc54c373c76ac973e476c81",
+    "L9.json": "b9a3c6572c4a7420917c681984a867ddd96ca06f167f593d0e10481a5d5e4704"
+  },
+  "battery_cases": [
+    "L1.json",
+    "L10.json",
+    "L11.json",
+    "L12.json",
+    "L2.json",
+    "L3.json",
+    "L4.json",
+    "L5.json",
+    "L8.json",
+    "L9.json"
+  ],
+  "git_rev": "1389471dd566039e5433fab3df2fd226d0ca4c8a",
+  "live_trace_status": "pending: per-claim retrieved/bound IDs attach here after a live run",
+  "note": "TEST-ONLY frozen baseline. No production code reads these files.",
+  "version": "baseline/v1"
+}

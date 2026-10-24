@@ -130,10 +130,19 @@ def _importing_modules() -> dict[str, set[str]]:
 
 
 def test_d1_h01_no_kernel_consumer_imports_d1() -> None:
+    # D1-H as amended by the D3 owner decision (shared primitives where
+    # contracts match): the ONLY sanctioned consumers of the D1 proof
+    # modules are the D3 definition modules plus the Phase 0 tap host.
+    # The verifier, publication path, and every other kernel module
+    # remain walled off — any new importer fails this test.
     hits = _importing_modules()
-    assert hits["investigation_agent_platform.domain.proof.dispatch"] == set()
+    assert hits["investigation_agent_platform.domain.proof.dispatch"] == {
+        "src/investigation_agent_platform/domain/proof/definition_dispatch.py",
+        "src/investigation_agent_platform/domain/proof/definition_shadow.py",
+    }, hits
     assert hits["investigation_agent_platform.domain.proof.edge_observation"] == {
-        "src/investigation_agent_platform/domain/proof/dispatch.py"
+        "src/investigation_agent_platform/domain/proof/dispatch.py",
+        "src/investigation_agent_platform/domain/proof/definition_observation.py",
     }, hits
 
 

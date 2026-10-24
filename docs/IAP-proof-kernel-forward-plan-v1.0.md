@@ -21,8 +21,21 @@ matrix; `IAP_TYPED_EDGES` created, off). G5-formal PASS 2026-10-23:
 live-DB interleave + role review executed via `scripts/g5_formal_driver.py`
 against a fresh `g5_gate` database (alembic head 032, iap_test1
 least-privilege case-runner) — 22/22 green, verdict JSON `/tmp/g5_verdict.json`
-(operator-held). Open gates: G4 PARTIAL, G6-measure (operator),
-G7/G8 not started. No future-behavior flags exist in the tree beyond
+(operator-held). G6 ACCEPTED WITH OBSERVATIONS 2026-10-24 (owner
+decision; not a clean PASS): shadow capture hook live on 20 dev-loop
+runs (83 turns, 0 capture errors) with per-turn forced/owed stamping;
+D/T 0.952 single set (INVESTIGATE trigger; sustained-HOLD needs a
+second set), explained share 0.354, recovery agreement 0.778 with 0
+reckless retries, no terminal turns observed, all runs abstained
+(no verified PASS, no FAILED). Mechanism understood: shadow lacks
+information-gain ordering (gathering-rank arbitrariness), loop
+log_search/replan forcing is outside the shadow vocabulary, shadow
+forcing is coarser than the loop's. Production launch still requires
+the larger-sample gate (ledger OPEN item). D3-proceeding under these
+observations: shadow stays advisory-only; per-family parity +
+rollback required before any authoritative typed-edge use.
+Open gates: G4 PARTIAL, G6-measure execution (larger sample;
+operator), G7/G8 not started. No future-behavior flags exist in the tree beyond
 the off-by-default `IAP_TYPED_EDGES` (`IAP_PROOF_KERNEL`,
 `IAP_SHADOW_PLANNER`, `IAP_WITNESS_*` remain proposals, not code).
 
@@ -114,6 +127,32 @@ Operator measures shadow-vs-live divergence, budget, and recovery on
 real runs → G6 PASS. Then migrate the definition family: parity with
 the native path + rollback + retry/pause/resume/budget tests. Exit:
 definition family at parity with rollback proven; G6 PASS recorded.
+
+Status 2026-10-24 (GO update): owner GO for D3 Phase 0
+implementation and tests ONLY (Stage A closed: §9.2 audit
+attached, §9.4 baseline 3058/4/6 exit 0, §6.2 probe plan;
+package v1.5 governs — decision header cites v1.4 but its basis
+exists only in v1.5). Boundary: shadow-only, both flags
+default-off strict `"1"`, no Phase 1, no authoritative
+consumption, no verdict/persistence changes beyond listed
+additive keys, no migrations, no resolvers, no rollout;
+authority flag incapable of activating a consumer, hard startup
+refusal intact. Stage B (tests, differentials, ledger/baseline,
+§9.0 suites) gates merge/acceptance; Stage C (live evidence +
+separate decision) gates rollout/authority. Implementation
+complete 2026-10-24 (88 new D3 unit tests green; full suite
+3146 passed; flag-matrix identical both settings; integration,
+contract, evaluation, benchmarks green or clean-skipped with
+evidence-based exception for the live-stack system_api suite).
+Stage B update 2026-10-24: CONDITIONAL GO for merge/acceptance
+on reported evidence (owner decision). v1.6 is the as-built
+clarification + acceptance record (v1.5 remains the
+authorization basis). Conditions hold: system_api exception
+explicit and bounded; dedup distinctions, T3 separate
+attribution, shadow-only boundary, baseline and pre-existing
+work protected. Merge itself still requires an explicit owner
+instruction (not given); Stage C, Phase 1/authority, and
+rollout remain unauthorized. Nothing committed.
 
 ### Step 7 — D3 remaining families, one at a time (each needs owner auth)
 

@@ -1,0 +1,657 @@
+{
+ "invalid": [
+  {
+   "expects": "VERIFY-REJECT:unknown-variant",
+   "id": "DX-UNKNOWN-VARIANT",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_EDGE"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:bad-revision",
+   "id": "DX-BAD-REVISION",
+   "maps_to": [
+    "D3P-N01",
+    "D3P-N02"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "main",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:unknown-field",
+   "id": "DX-UNKNOWN-FIELD",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "bogus": 1,
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:missing-taxonomy",
+   "id": "DX-MISSING-REPO-VALUE",
+   "maps_to": [
+    "D3P-N01",
+    "D3P-N12"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [
+      "MISSING_INPUT"
+     ],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "missing": [
+      "repository"
+     ],
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": null
+    },
+    "record_version": "definition/v1",
+    "variant": "PARTIAL_OBSERVATION"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:code-mapping",
+   "id": "DX-CODE-MISMATCH",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [
+      "INPUT_NOT_FOUND"
+     ],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "missing": [
+      "target"
+     ],
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": null
+    },
+    "record_version": "definition/v1",
+    "variant": "PARTIAL_OBSERVATION"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:resolved-with-codes",
+   "id": "DX-RESOLVED-WITH-CODES",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [
+      "MISSING_INPUT"
+     ],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:partial-without-codes",
+   "id": "DX-PARTIAL-NO-CODES",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "missing": [
+      "target"
+     ],
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": null
+    },
+    "record_version": "definition/v1",
+    "variant": "PARTIAL_OBSERVATION"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:hash-mismatch",
+   "id": "DX-HASH-MISMATCH",
+   "maps_to": [
+    "D3P-N06"
+   ],
+   "record": {
+    "observation_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:duplicate-source",
+   "id": "DX-DUPLICATE-SOURCE",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       },
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:repo-mismatch",
+   "id": "DX-REPO-MISMATCH",
+   "maps_to": [
+    "D3P-N01",
+    "D3P-N11"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "other/repo",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:revision-mismatch",
+   "id": "DX-ENTRY-REV-MISMATCH",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  },
+  {
+   "expects": "VERIFY-REJECT:unknown-assumption",
+   "id": "DX-UNKNOWN-ASSUMPTION",
+   "maps_to": [
+    "D3P-N01"
+   ],
+   "record": {
+    "observation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "payload": {
+     "assumptions": [
+      "execute-anything"
+     ],
+     "limitation_codes": [],
+     "lineage": {
+      "analyzer_run_id": "an-001",
+      "execution_identity": "ex-001",
+      "sources": [
+       {
+        "artifact_digest": "sha256:a1",
+        "evidence_digest": "sha256:e1",
+        "evidence_id": "ev-001",
+        "repository": {
+         "name": "acme/app",
+         "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "file"
+       }
+      ]
+     },
+     "repository": {
+      "name": "acme/app",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     },
+     "resolver": {
+      "analysis_model": "evidence-rebinding",
+      "artifact_digest": "sha256:test-artifact-normalizer-v1",
+      "bundle": "evidence-rebinding-normalizer",
+      "bundle_version": "v1",
+      "contract_digest": "sha256:test-contract-normalizer-v1",
+      "language": "python",
+      "language_version": "3.13",
+      "parser_version": "1.0"
+     },
+     "target": {
+      "declaring_type": "Handler",
+      "file_path": "src/app.py",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "symbol": "serve"
+     }
+    },
+    "record_version": "definition/v1",
+    "variant": "RESOLVED_TARGET_BINDING"
+   }
+  }
+ ]
+}
