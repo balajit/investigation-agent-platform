@@ -1,13 +1,15 @@
 # src/investigation_agent_platform/infrastructure/persistence/hypothesis_repository.py
-"""SQLAlchemy hypothesis repository."""
+"""SQLAlchemy hypothesis repository with optimistic concurrency (WP-C2)."""
 
 import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from investigation_agent_platform.api.errors import sanitize_extra
+from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
 from investigation_agent_platform.domain.hypothesis.models import (
     Hypothesis,
     HypothesisCausalStep,
@@ -92,42 +94,91 @@ class SqlAlchemyHypothesisRepository:
             ],
             required_verification=row.required_verification or [],
             causal_steps=causal_steps,
+            version=int(getattr(row, "version", 1) or 1),
         )
 
     async def save(
-        self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
+        self,
+        tenant_id: str,
+        hypothesis: Hypothesis,
+        investigation_id: UUID | None,
+        expected_version: int,
     ) -> None:
+        """Guarded write: 0 = insert-at-1 (row must not exist), N = update N→N+1.
+
+        Version-check-then-unguarded-write is prohibited: the update is a
+        single conditional statement and the rowcount decides. Last-write-wins
+        is gone — any mismatch raises ConcurrencyError.
+        """
         orm = self._to_orm(hypothesis, tenant_id, investigation_id)
         try:
             async with rls_session(self._session_factory, tenant_id) as session:
-                if orm.id is not None:
-                    existing = await session.scalars(
-                        select(HypothesisORM).where(
-                            HypothesisORM.tenant_id == tenant_id,
+                if expected_version > 0:
+                    result = await session.execute(
+                        update(HypothesisORM)
+                        .where(
                             HypothesisORM.id == hypothesis.id,
+                            HypothesisORM.tenant_id == tenant_id,
                             HypothesisORM.investigation_id == investigation_id,
+                            HypothesisORM.version == expected_version,
+                        )
+                        .values(
+                            title=orm.title,
+                            description=orm.description,
+                            statement=orm.statement,
+                            status=orm.status,
+                            confidence_score=orm.confidence_score,
+                            support_score=orm.support_score,
+                            supporting_evidence_ids=orm.supporting_evidence_ids,
+                            refuting_evidence_ids=orm.refuting_evidence_ids,
+                            assessments_json=orm.assessments_json,
+                            causal_steps_json=orm.causal_steps_json,
+                            updated_at=orm.updated_at,
+                            version=expected_version + 1,
                         )
                     )
-                    row = existing.first()
-                    if row is not None:
-                        row.title = orm.title
-                        row.description = orm.description
-                        row.statement = orm.statement
-                        row.status = orm.status
-                        row.confidence_score = orm.confidence_score
-                        row.support_score = orm.support_score
-                        row.supporting_evidence_ids = orm.supporting_evidence_ids
-                        row.refuting_evidence_ids = orm.refuting_evidence_ids
-                        row.assessments_json = orm.assessments_json
-                        row.causal_steps_json = orm.causal_steps_json
-                        row.updated_at = orm.updated_at
-                        outcome = "updated"
-                    else:
-                        session.add(orm)
-                        outcome = "inserted"
+                    if result.rowcount == 0:  # type: ignore[attr-defined]
+                        await session.rollback()
+                        raise ConcurrencyError(
+                            f"Hypothesis {hypothesis.id} was modified concurrently or tenant/investigation mismatch; "
+                            f"expected version {expected_version}.",
+                            details={
+                                "hypothesis_id": str(hypothesis.id),
+                                "expected_version": expected_version,
+                                "tenant_id": tenant_id,
+                            },
+                        )
+                    outcome = "updated"
                 else:
+                    orm.version = 1
                     session.add(orm)
+                    try:
+                        await session.flush()
+                    except IntegrityError:
+                        await session.rollback()
+                        raise ConcurrencyError(
+                            f"Hypothesis {hypothesis.id} already exists; concurrent insert won.",
+                            details={
+                                "hypothesis_id": str(hypothesis.id),
+                                "tenant_id": tenant_id,
+                            },
+                        )
                     outcome = "inserted"
+        except ConcurrencyError:
+            logger.exception(
+                "hypothesis save version conflict",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "event": "hypothesis.save",
+                        "outcome": "version_conflict",
+                        "hypothesis_id": str(hypothesis.id),
+                        "expected_version": expected_version,
+                    }
+                ),
+            )
+            raise
         except Exception as exc:
             logger.exception(
                 "hypothesis save failed",

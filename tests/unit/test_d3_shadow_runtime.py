@@ -367,6 +367,8 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
             "turns": 1, "admissible": 0, "abstained": 1, "unavailable": 0,
             "capture_errors": 0, "dropped_count": 0, "duplicate_count": 0,
             "telemetry_omissions": 0, "rogue": 999,
+            "by_input_set": {"BOUND_FULL": 1, "EVIL": "x", 42: 1},
+            "by_reason": {"unbound-repository": 1, "rogue": "y"},
         },
         "definition_shadow_trace": [env, "not-a-dict", {**env, "iteration": True}],
         "loop_telemetry": {"x": 1},
@@ -375,6 +377,8 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
     assert out is not None
     assert out["shadow_definition_summary"]["abstained"] == 1
     assert "rogue" not in out["shadow_definition_summary"]
+    assert out["shadow_definition_summary"]["by_input_set"] == {"BOUND_FULL": 1}
+    assert out["shadow_definition_summary"]["by_reason"] == {"unbound-repository": 1}
     assert len(out["definition_shadow_trace"]) == 1
     assert out["definition_shadow_trace"][0]["iteration"] == 1
     assert "rule_trace" not in out["definition_shadow_trace"][0]
@@ -438,3 +442,42 @@ def test_d3p_n24_candidate_mismatch_voids() -> None:
     assert native_ok["hypothesis_id"] == "hyp-001"
     env_ok = build_correlation_envelope(obs, 5, 0, native_ok, IDENT)
     assert audit_envelope_join(env_ok) == "ok"
+
+
+# --- reload re-verification (§3.2) ---------------------------------------------------
+
+
+def test_d3p_reload_reverifies_before_further_construction() -> None:
+    """§3.2 reload row: reload drops the cache and re-derives a verified
+    table (rows re-sealed, digests stable); a plain load reuses the
+    cache. Malformed fixtures refuse at load — no half-loaded cache."""
+    from investigation_agent_platform.application.worker import activities as act
+
+    first = act.reload_definition_dispatch_table()
+    assert first[0].policy_digest().startswith("sha256:")
+    for row in first[0].rows:
+        row.verify()
+    second = act._load_definition_dispatch_table()
+    assert second[0] is first[0]  # cached, no re-derivation
+    third = act.reload_definition_dispatch_table()
+    assert third[0] is not first[0]  # re-derived
+    assert third[0].policy_digest() == first[0].policy_digest()
+    for row in third[0].rows:
+        row.verify()
+
+
+def test_d3p_reload_refuses_malformed_fixture(tmp_path) -> None:
+    """A tampered/unreadable mapping refuses at load (fail closed)."""
+    from pydantic import ValidationError
+
+    from investigation_agent_platform.domain.proof.definition_dispatch import (
+        load_reviewed_definition_table,
+    )
+
+    bad = tmp_path / "mapping.json"
+    bad.write_text('{"definition_rows": [{"profile_id": 1}]}')
+    with pytest.raises(ValidationError):
+        load_reviewed_definition_table(bad)
+    missing = tmp_path / "absent.json"
+    with pytest.raises(OSError):
+        load_reviewed_definition_table(missing)

@@ -548,7 +548,7 @@ class TestMigrationChainFinal:
 
     def test_chain_is_linear_ending_at_head(self) -> None:
         chain, _ = self._versions()
-        assert chain[-1] == "031_onboarding_deletion"
+        assert chain[-1] == "034_proof_tables_grants"
         assert len(chain) == len(set(chain))
         assert "016_profile_v2_columns" in chain
         assert "015_batch_intake" in chain
@@ -561,7 +561,7 @@ class TestMigrationChainFinal:
 
         cfg = Config(Path(__file__).resolve().parents[2] / "alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["031_onboarding_deletion"]
+        assert script.get_heads() == ["034_proof_tables_grants"]
 
     def test_every_revision_has_upgrade_and_downgrade(self) -> None:
         _, modules = self._versions()
@@ -571,7 +571,7 @@ class TestMigrationChainFinal:
 
     def test_onboarding_v01_migration_declares_exact_three_tables_and_rls(self) -> None:
         chain, modules = self._versions()
-        assert chain[-1] == "031_onboarding_deletion"
+        assert chain[-1] == "034_proof_tables_grants"
         migration = modules["023_onboarding_control_store"]
         assert migration._TABLES == (
             "tenant_registry",

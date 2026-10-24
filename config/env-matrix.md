@@ -87,6 +87,7 @@ Source of truth for every `IAP_*` variable read in `src/` (see `infrastructure/c
 | IAP_KNOWLEDGE_MAX_REVERIFY_ATTEMPTS | O (`3`) | O | O | O | no | — | no |
 | IAP_KNOWLEDGE_MAX_EPISODES | O (`50`) | O | O | O | no | — | no |
 | IAP_KNOWLEDGE_EVIDENCE_TTL_DAYS | O (`90`) | O | O | O | no | — | no |
+| IAP_WP_A3_MAX_ATTEMPTS | O (`3`) | O | O | O | no | — | no (recorded as `over_budget` only, never enforced; read directly via `os.environ`, not the config builders) |
 | IAP_KNOWLEDGE_MAX_EPISODE_BYTES | O (`8192`) | O | O | O | no | — | no |
 | IAP_KNOWLEDGE_MEM0_ENABLED | O (`false`) | O | O | O | no | — | no |
 | IAP_KNOWLEDGE_MEM0_MODEL | O | O | O | O | no | — | no |

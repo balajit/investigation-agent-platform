@@ -363,6 +363,7 @@ class HypothesisORM(Base):
     causal_steps_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -2037,4 +2038,79 @@ class OnboardingDeletionOutcomeORM(Base):
             name="ck_deletion_outcome_state",
         ),
         Index("ix_deletion_outcome_manifest", "tenant_id", "manifest_id", "state"),
+    )
+
+
+class ProofDerivationORM(Base):
+    """Persisted derivation-graph node (Review Stage C1).
+
+    Storage only: invalidation closure is recomputed from these rows with
+    the pure ``composition`` module on every read, never stored as state.
+    Test-only writers (the commit service); no production write path.
+    """
+
+    __tablename__ = "proof_derivations"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    derivation_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    proposition_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    context_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(64), nullable=False, default="v1")
+    premise_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    depends_on: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    route: Mapped[str] = mapped_column(String(64), nullable=False, default="mandatory")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "derivation_id", name="uq_proof_derivation_tenant_der"),
+        Index("idx_proof_derivation_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class ProofPublicationCommitORM(Base):
+    """Persisted publication commit (Review Stage C2).
+
+    One row per accepted commit: the exact derivation + context binding the
+    gate approved. A derivation commits at most once per tenant per policy
+    version; a new policy version yields a new decision row, never a mutated
+    commit. Test-only writers (the commit service); no production write path.
+    """
+
+    __tablename__ = "proof_publication_commits"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    derivation_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    context_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    gate_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    reconciliation_state: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, default="COMMIT")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "derivation_id",
+            "gate_policy_version",
+            name="uq_proof_commit_tenant_der_policy",
+        ),
+        Index("idx_proof_commit_tenant_inv", "tenant_id", "investigation_id"),
     )

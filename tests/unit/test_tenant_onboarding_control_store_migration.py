@@ -413,10 +413,10 @@ def test_request_job_reference_is_nullable_and_tenant_composite_fk() -> None:
 def test_migration_chain_has_single_v01_head() -> None:
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["031_onboarding_deletion"]
-    revision = script.get_revision("031_onboarding_deletion")
+    assert script.get_heads() == ["034_proof_tables_grants"]
+    revision = script.get_revision("034_proof_tables_grants")
     assert revision is not None
-    assert revision.down_revision == "030_onboarding_request_activate"
+    assert revision.down_revision == "033_proof_publication_commit"
 
 
 def test_phase026_request_audit_contract_is_additive_and_app_callable() -> None:

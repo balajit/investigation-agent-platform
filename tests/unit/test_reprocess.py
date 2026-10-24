@@ -119,7 +119,7 @@ class _HypRepo:
     async def find_by_investigation_id(self, tenant_id, inv_id):
         return [h for h in self.rows if h.tenant_id == tenant_id and h.investigation_id == inv_id]
 
-    async def save(self, tenant_id, hyp, inv_id=None):
+    async def save(self, tenant_id, hyp, inv_id=None, expected_version=0):
         self.rows.append(hyp)
 
 

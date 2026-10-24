@@ -296,6 +296,57 @@ def test_d3p_n13_partial_record_stage1_abstains() -> None:
     assert decision.declaration_requirement_satisfied is False
 
 
+def test_d3p_n12_partial_presented_for_authorization_abstains() -> None:
+    """D3P-N12: a PARTIAL record (missing target) presented for
+    authorization abstains — it never binds, never satisfies, and the
+    machine-readable declaration field stays false."""
+    repo = _repo()
+    record = make_definition_observation(
+        DefinitionVariant.PARTIAL_OBSERVATION,
+        PartialDefinitionPayload(
+            target=None,
+            limitation_codes=[LimitationCode.MISSING_INPUT],
+            missing=["target"],
+            repository=repo,
+            resolver=_resolver(),
+            lineage=_lineage(repo),
+            assumptions=[],
+        ),
+    )
+    table = _table(_row())
+    decision = authorize_definition_use(
+        _binding(table.rows[0], table, record), record, table, _registry(), _premise(record)
+    )
+    assert decision.stage1 == DefinitionStage.ABSTAINED
+    assert decision.observation == "ABSTAINED"
+    assert requires_declaration_proof(decision) is False
+    assert decision.dispatch_row_digest == ""  # no row bound
+
+
+def test_d3p_n07_lineage_gap_never_binds() -> None:
+    """D3P-N07 authorize half: a partial record whose lineage names a gap
+    (DG-PARTIAL-03-LINEAGE shape) abstains at authorization — the gap
+    named in ``missing`` is carried through, never silently completed
+    into a bound association."""
+    import json as _json
+
+    doc = _json.loads((FIXDIR / "definition_golden_vectors.json").read_text())
+    entry = next(v for v in doc["vectors"] if v["id"] == "DG-PARTIAL-03-LINEAGE")
+    from investigation_agent_platform.domain.proof.definition_observation import (
+        verify_definition_observation,
+    )
+
+    record = verify_definition_observation(entry["record"])
+    assert list(record.payload.missing) == ["lineage-source"]  # type: ignore[union-attr]
+    table = _table(_row())
+    decision = authorize_definition_use(
+        _binding(table.rows[0], table, record), record, table, _registry(), _premise(record)
+    )
+    assert decision.stage1 == DefinitionStage.ABSTAINED
+    assert decision.reason_code == "variant-not-resolved"
+    assert decision.declaration_requirement_satisfied is False
+
+
 # --- Stage 2 stub pin (F-B6/C9) -------------------------------------------------
 
 

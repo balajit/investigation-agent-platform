@@ -30,7 +30,9 @@ than claiming unmeasured coverage.
 
 ## 1. Capture: how real histories become replayable (decision required)
 
-### Option A — shadow-computation hook (recommended, needs owner auth)
+### Option A — shadow-computation hook (recommended, needs owner auth; authorized and implemented 2026-10-24)
+
+As-built note 2026-10-24: the implemented hook has no capture flag and runs unconditionally under the Step-1 authorization; there is no flag-off run mode, so flag-off equivalence for G6 capture is open (tracked in docs/IAP-CurrentGaps-Fixes-impl-plan.md).
 
 At each loop turn, beside (never inside) the forcing cascade, build the
 frozen `PlannerSnapshot` from already-available loop state, run
@@ -82,7 +84,7 @@ judgment; suggested floor: 20 runs spanning PASS/PARTIAL/FAIL outcomes):
 ```text
 runs measured: N (ids or redacted refs)
 turns replayed: T, matched: M, diverged: D (divergence rate D/T)
-divergence causes: {forcing-rule: n, recorded-withheld: m, shadow-terminal: k, rank-disagreement: j}
+divergence causes: {forcing-rule: n, recorded-withheld: m, shadow-terminal: k, unmodeled-loop-forcing: u, rank-disagreement: j}
 early-conclude opportunities: k turns | late-conclude: l turns
 recovery agreement: x/y post-failure turns
 baseline equivalence: identical outputs yes/no (diff attached if no)
@@ -123,7 +125,16 @@ make a run-set pass.
 - **Explained divergence**: cause from the frozen vocabulary
   (forcing-rule, recorded-withheld, shadow-terminal, rank-disagreement
   per the harness), supported by recorded evidence. Generic labels and
-  post-hoc explanations do not count.
+  post-hoc explanations do not count. One further explained category:
+  **unmodeled-loop-forcing** — the turn's recorded `forced` list
+  contains a loop rule outside the shadow's seven-rule vocabulary
+  (`log_search`, `replan`): the loop was compelled by a rule the shadow
+  cannot model, so the disagreement evidences a vocabulary gap, not a
+  routing error. Counted separately from shadow-modeled forcing
+  agreement; a high unmodeled share is a design finding (extend the
+  shadow vocabulary vs accept the blind spot), never a quality failure
+  of either side. All other divergences (`rank-disagreement` with no
+  forcing on either side) are unexplained.
 - **Blind retry** (frozen): a retry without new evidence, a changed
   input, a changed execution context, or a specific remediation. A
   retry with a documented, relevant change is not blind. Agreement

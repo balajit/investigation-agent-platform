@@ -129,6 +129,11 @@ class ActionOutcome(BaseModel):
     # handler copies the latest one here so the workflow can carry it into
     # the next turn's history. Direction only, like hub orientation.
     fuzzy_orientation: dict[str, Any] | None = Field(default=None)
+    # WP-A3: retrieval attempt for this action (search query + distinct
+    # outcome + novelty/lift/bound flags). JSON scalars only
+    # (RetrievalAttempt dump); None = legacy row or non-retrieval
+    # action. Diagnostics-only — never branched on.
+    retrieval_attempt: dict[str, Any] | None = Field(default=None)
 
 
 class ActorType(StrEnum):

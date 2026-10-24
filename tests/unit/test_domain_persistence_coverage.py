@@ -683,7 +683,9 @@ class TestHealthAndRouters:
 
         _asyncio.run(ctx.investigation_repo.create("tenant-a", inv))
         h = _make_hypothesis("tenant-a", inv.id)
-        _asyncio.run(ctx.hypothesis_repo.save("tenant-a", h, investigation_id=inv.id))
+        _asyncio.run(
+            ctx.hypothesis_repo.save("tenant-a", h, investigation_id=inv.id, expected_version=0)
+        )
         resp = client.get(
             f"/api/v1/investigations/{inv.id}/hypotheses", headers={"X-Tenant-ID": "tenant-a"}
         )

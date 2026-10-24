@@ -48,6 +48,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "redis>=5.0.0",
     "opentelemetry-exporter-otlp>=1.44.0,<2",
+    "jsonschema>=4.26.0",
+    "cryptography>=50.0.1",
 ]
 
 [dependency-groups]

@@ -879,9 +879,34 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         self._store: dict[tuple[str, UUID], tuple[Hypothesis, UUID | None]] = {}
 
     async def save(
-        self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
+        self,
+        tenant_id: str,
+        hypothesis: Hypothesis,
+        investigation_id: UUID | None,
+        expected_version: int,
     ) -> None:
-        self._store[(tenant_id, hypothesis.id)] = (hypothesis, investigation_id)
+        from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+
+        if hypothesis.tenant_id != tenant_id:
+            raise ConcurrencyError("Hypothesis tenant mismatch")
+        current = self._store.get((tenant_id, hypothesis.id))
+        if expected_version == 0:
+            if current is not None:
+                raise ConcurrencyError("Hypothesis already exists; concurrent insert won")
+            self._store[(tenant_id, hypothesis.id)] = (
+                hypothesis.model_copy(update={"version": 1}),
+                investigation_id,
+            )
+            return
+        if current is None:
+            raise ConcurrencyError("Hypothesis version mismatch")
+        stored, _ = current
+        if stored.version != expected_version:
+            raise ConcurrencyError("Hypothesis version mismatch")
+        self._store[(tenant_id, hypothesis.id)] = (
+            hypothesis.model_copy(update={"version": expected_version + 1}),
+            investigation_id,
+        )
 
     async def get_by_id(self, tenant_id: str, hypothesis_id: UUID) -> Hypothesis | None:
         entry = self._store.get((tenant_id, hypothesis_id))

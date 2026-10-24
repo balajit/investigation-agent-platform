@@ -74,6 +74,201 @@ def test_help_lists_commands() -> None:
     assert "command" in actions
 
 
+def _mini_java_repo(path: Any, classname: str = "Main") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "build.gradle").write_text("plugins { id 'java' }\n")
+    src = path / "src"
+    src.mkdir(exist_ok=True)
+    (src / f"{classname}.java").write_text(f"public class {classname} {{}}\n")
+
+
+def test_generate_profile_single_repo_offline(tmp_path: Any) -> None:
+    repo = tmp_path / "svc"
+    _mini_java_repo(repo)
+    out = tmp_path / "profile.json"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--repo-dir",
+            str(repo),
+            "--app-name",
+            "testapp",
+            "--output",
+            str(out),
+        ]
+    )
+    assert code == 0
+    data = json.loads(out.read_text())
+    assert data["profile"]["id"] == "testapp"
+    assert data["profile"]["tenant_id"] == "t"
+
+
+def test_generate_profile_batch_org_dir(tmp_path: Any) -> None:
+    org = tmp_path / "org"
+    _mini_java_repo(org / "svc-a")
+    _mini_java_repo(org / "svc-b")
+    outdir = tmp_path / "profiles"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--org-dir",
+            str(org),
+            "--app-prefix",
+            "pfx",
+            "--output-dir",
+            str(outdir),
+        ]
+    )
+    assert code == 0
+    assert {p.name for p in outdir.glob("*.json")} == {"pfx-svc-a.json", "pfx-svc-b.json"}
+
+
+def test_generate_profile_needs_exactly_one_source(tmp_path: Any) -> None:
+    code = main(["--tenant", "t", "generate-profile"])
+    assert code == 2
+
+
+def test_generate_profile_single_dry_run_writes_nothing(tmp_path: Any) -> None:
+    repo = tmp_path / "svc"
+    _mini_java_repo(repo)
+    out = tmp_path / "profile.json"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--repo-dir",
+            str(repo),
+            "--app-name",
+            "testapp",
+            "--output",
+            str(out),
+            "--dry-run",
+        ]
+    )
+    assert code == 0
+    assert not out.exists()
+
+
+def test_generate_profile_single_refuses_overwrite(tmp_path: Any) -> None:
+    repo = tmp_path / "svc"
+    _mini_java_repo(repo)
+    out = tmp_path / "profile.json"
+    out.write_text("sentinel")
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--repo-dir",
+            str(repo),
+            "--app-name",
+            "testapp",
+            "--output",
+            str(out),
+        ]
+    )
+    assert code == 2
+    assert out.read_text() == "sentinel"
+
+
+def test_generate_profile_batch_dry_run_writes_nothing(tmp_path: Any) -> None:
+    org = tmp_path / "org"
+    _mini_java_repo(org / "svc-a")
+    _mini_java_repo(org / "svc-b")
+    outdir = tmp_path / "profiles"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--org-dir",
+            str(org),
+            "--app-prefix",
+            "pfx",
+            "--output-dir",
+            str(outdir),
+            "--dry-run",
+        ]
+    )
+    assert code == 0
+    assert list(outdir.glob("*.json")) == [] if outdir.exists() else True
+
+
+def test_generate_profile_batch_duplicate_ids_fail_closed(tmp_path: Any) -> None:
+    org = tmp_path / "org"
+    _mini_java_repo(org / "My App")
+    _mini_java_repo(org / "my-app")
+    outdir = tmp_path / "profiles"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--org-dir",
+            str(org),
+            "--app-prefix",
+            "pfx",
+            "--output-dir",
+            str(outdir),
+        ]
+    )
+    assert code == 2
+    assert not outdir.exists()
+
+
+def test_generate_profile_batch_existing_output_skipped(tmp_path: Any) -> None:
+    org = tmp_path / "org"
+    _mini_java_repo(org / "svc-a")
+    _mini_java_repo(org / "svc-b")
+    outdir = tmp_path / "profiles"
+    outdir.mkdir(parents=True)
+    sentinel = outdir / "pfx-svc-a.json"
+    sentinel.write_text("sentinel")
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--org-dir",
+            str(org),
+            "--app-prefix",
+            "pfx",
+            "--output-dir",
+            str(outdir),
+        ]
+    )
+    assert code == 1
+    assert sentinel.read_text() == "sentinel"
+    assert (outdir / "pfx-svc-b.json").exists()
+
+
+def test_generate_profile_persist_requires_db_uri(tmp_path: Any, monkeypatch: Any) -> None:
+    monkeypatch.delenv("IAP_DATABASE_URI", raising=False)
+    repo = tmp_path / "svc"
+    _mini_java_repo(repo)
+    out = tmp_path / "profile.json"
+    code = main(
+        [
+            "--tenant",
+            "t",
+            "generate-profile",
+            "--repo-dir",
+            str(repo),
+            "--app-name",
+            "testapp",
+            "--output",
+            str(out),
+            "--persist",
+        ]
+    )
+    assert code == 2
+
+
 def test_capture_rejects_oversize_artifact(tmp_path: Any) -> None:
     from investigation_agent_platform.cli.onboard import MAX_ARTIFACT_BYTES
 

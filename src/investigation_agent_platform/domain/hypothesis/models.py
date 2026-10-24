@@ -97,6 +97,14 @@ class HypothesisEvidenceAssessment(BaseModel):
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
+    # WP-A2: diagnostics schema version that wrote this assessment
+    # (None = legacy/pre-diagnostics row). Readers must treat None as
+    # "unknown" — never fabricate a version for old rows.
+    schema_version: str | None = Field(default=None, max_length=16)
+    # WP-A2: stable DiagnosticReasonCode value explaining this
+    # assessment's role (None = legacy/untyped). Free-form str, not the
+    # enum, so persisted rows never fail on unknown future codes.
+    reason_code: str | None = Field(default=None, max_length=64)
 
 
 class HypothesisCausalStep(BaseModel):
@@ -136,6 +144,12 @@ class Hypothesis(BaseModel):
     parent_hypothesis_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    version: int = Field(
+        default=1,
+        ge=1,
+        description="Optimistic-concurrency version (WP-C2). Saves compare against "
+        "expected_version and bump by exactly one; new rows start at 1.",
+    )
 
     @property
     def claim_kind(self) -> ClaimKind | None:

@@ -67,7 +67,7 @@ class TestClaimKeying:
         rows = [SimpleNamespace(evidence_id=e1), SimpleNamespace(evidence_id=e2)]
         saved_hyps = []
 
-        async def _save_hyp(tenant_id, hyp, investigation_id):  # type: ignore[no-untyped-def]
+        async def _save_hyp(tenant_id, hyp, investigation_id, expected_version=0):  # type: ignore[no-untyped-def]
             saved_hyps.append(hyp)
 
         hyp_repo = SimpleNamespace(
@@ -107,7 +107,7 @@ class TestClaimKeying:
         evidence_id = uuid4()
         saved_hyps = []
 
-        async def _save_hyp(tenant_id, hyp, investigation_id):  # type: ignore[no-untyped-def]
+        async def _save_hyp(tenant_id, hyp, investigation_id, expected_version=0):  # type: ignore[no-untyped-def]
             saved_hyps.append(hyp)
 
         hyp_repo = SimpleNamespace(
@@ -148,7 +148,7 @@ class TestClaimKeying:
         e1, e2 = uuid4(), uuid4()
         saved_hyps = []
 
-        async def _save_hyp(tenant_id, hyp, investigation_id):  # type: ignore[no-untyped-def]
+        async def _save_hyp(tenant_id, hyp, investigation_id, expected_version=0):  # type: ignore[no-untyped-def]
             saved_hyps.append(hyp)
 
         hyp_repo = SimpleNamespace(

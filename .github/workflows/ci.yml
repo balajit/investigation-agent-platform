@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --group dev
-      - run: uv run mypy src/investigation_agent_platform
+      - run: uv run mypy src/investigation_agent_platform tests/unit/test_onboarding_agent_contracts.py
 
   test:
     name: pytest + coverage (≥70%)

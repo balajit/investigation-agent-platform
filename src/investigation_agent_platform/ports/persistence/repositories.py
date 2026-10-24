@@ -114,10 +114,19 @@ class EvidenceRepository(Protocol):
 
 @runtime_checkable
 class HypothesisRepository(Protocol):
-    """Repository protocol for Hypotheses persistence."""
+    """Repository protocol for Hypotheses persistence with OCC (WP-C2).
+
+    ``expected_version`` is required: 0 means the row must not exist yet
+    (insert, stored at version 1); N > 0 means a guarded update from N to
+    N+1. Any mismatch raises ConcurrencyError — last-write-wins is gone.
+    """
 
     async def save(
-        self, tenant_id: str, hypothesis: Hypothesis, investigation_id: UUID | None = None
+        self,
+        tenant_id: str,
+        hypothesis: Hypothesis,
+        investigation_id: UUID | None,
+        expected_version: int,
     ) -> None: ...
 
     async def get_by_id(self, tenant_id: str, hypothesis_id: UUID) -> Hypothesis | None: ...

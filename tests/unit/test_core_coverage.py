@@ -357,7 +357,7 @@ class TestInMemoryHypothesisRepository:
         repo = InMemoryHypothesisRepository()
         iid = uuid.uuid4()
         h = _make_hypothesis("tenant-a", iid)
-        await repo.save("tenant-a", h, investigation_id=iid)
+        await repo.save("tenant-a", h, investigation_id=iid, expected_version=0)
         assert await repo.get_by_id("tenant-a", h.id) is not None
         assert await repo.get_by_id("tenant-b", h.id) is None
         assert len(await repo.find_by_investigation_id("tenant-a", iid)) == 1
@@ -369,7 +369,7 @@ class TestInMemoryHypothesisRepository:
         iid = uuid.uuid4()
         for i in range(3):
             h = _make_hypothesis("tenant-a", iid)
-            await repo.save("tenant-a", h, investigation_id=iid)
+            await repo.save("tenant-a", h, investigation_id=iid, expected_version=0)
         page, total = await repo.find_by_investigation_and_tenant(
             iid, "tenant-a", offset=0, limit=2
         )

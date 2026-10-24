@@ -112,8 +112,9 @@ Controlled interleaving test against the real DB/RLS path (concurrent
 premise change vs publication commit denies or reevaluates, never a
 mixed snapshot) + migration/role review of the commit path. Exit: G5
 PASS declared by the gate owner, or HOLD with named gaps.
+Scope note 2026-10-24: the executed G5 protocol covered the hypothesis-save CAS path only; the protocol itself states no persisted publication record exists yet, so publication-commit atomicity remains open — see the G5 protocol §4 residual and docs/IAP-CurrentGaps-Fixes-impl-plan.md.
 
-### Step 5 — D1-impl (requires Step 4 + owner auth) — DONE 2026-10-24, reviewed PASS
+### Step 5 — D1-impl (requires Step 4 + owner auth) — DONE 2026-10-24, reviewed PASS (authorization-basis note 2026-10-24: the D1 spec sections 0/8-10 records D1-impl as not authorized pending explicit owner go-ahead plus entry conditions; that basis question is tracked in docs/IAP-CurrentGaps-Fixes-impl-plan.md and is not settled by this DONE line, which records build/verification state only)
 
 Implement the Step-2 spec behind `IAP_TYPED_EDGES` (off): orthogonal
 record, dispatch table, soundness boundaries, resolver goldens.

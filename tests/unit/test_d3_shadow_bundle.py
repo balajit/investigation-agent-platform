@@ -285,6 +285,28 @@ def test_d3p_summarize_counts_only() -> None:
     assert summary["admissible"] == 0
 
 
+def test_d3p_summarize_breaks_down_input_set_and_reason() -> None:
+    """§1.6 frozen inventory: the summary carries per-input-set counts
+    and a reason-code breakdown (additive dicts, §7 Observability)."""
+    summary = summarize_shadow_definitions(
+        [
+            {"outcome": "ABSTAINED", "input_set": "BOUND_FULL", "reason_code": "unbound-repository"},
+            {"outcome": "ABSTAINED", "input_set": "CITED_LOCATION", "reason_code": "unbound-repository"},
+            {"outcome": "UNAVAILABLE", "input_set": "BOUND_FULL", "reason_code": "no-candidate-rows"},
+            {"capture_error": True, "reason": "tap-fault", "input_set": "CONCLUDE_GATE"},
+        ]
+    )
+    assert summary["by_input_set"] == {"BOUND_FULL": 2, "CITED_LOCATION": 1, "CONCLUDE_GATE": 1}
+    assert summary["by_reason"] == {
+        "unbound-repository": 2,
+        "no-candidate-rows": 1,
+        "tap-fault": 1,
+    }
+    assert summary["turns"] == 4
+    assert summary["abstained"] == 2 and summary["unavailable"] == 1
+    assert summary["capture_errors"] == 1
+
+
 def test_d3p_bundle_digest_tamper_evident() -> None:
     bundle = _bundle()
     tampered = bundle.model_copy(update={"triage_route": "runtime"})

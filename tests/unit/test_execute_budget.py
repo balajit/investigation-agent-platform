@@ -223,7 +223,7 @@ class TestBudgetAssignment:
         )
         ctx.hypothesis_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=existing),
-            save=AsyncMock(side_effect=lambda t, h, i: saved.append(h)),
+            save=AsyncMock(side_effect=lambda t, h, i, v: saved.append(h)),
         )
         set_app_context(ctx)
         # Default limits cap at 10 total; 4 exist so only 6 of 20 proposed persist.

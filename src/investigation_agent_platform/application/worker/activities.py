@@ -1287,6 +1287,22 @@ def _derive_loop_telemetry(
                         "telemetry_omissions",
                     )
                 }
+                # §1.6 frozen-inventory breakdowns (additive dicts, key/value
+                # capped and shape-checked like the counts above).
+                for dict_key in ("by_input_set", "by_reason"):
+                    try:
+                        raw_breakdown = dsummary.get(dict_key)
+                        if isinstance(raw_breakdown, dict):
+                            clean: dict[str, int] = {}
+                            for bk, bv in list(raw_breakdown.items())[:64]:
+                                if isinstance(bk, str) and bk and not isinstance(bv, bool):
+                                    try:
+                                        clean[bk[:128]] = max(0, int(bv or 0))
+                                    except (TypeError, ValueError):
+                                        continue
+                            telemetry["shadow_definition_summary"][dict_key] = clean
+                    except Exception:
+                        pass
             dtrace = passed.get("definition_shadow_trace")
             if isinstance(dtrace, list):
                 projected, health = _project_d3_trace(dtrace)
@@ -5894,6 +5910,24 @@ def _load_definition_dispatch_table() -> tuple[Any, Any]:
     return table, registry
 
 
+def reload_definition_dispatch_table() -> tuple[Any, Any]:
+    """Reload entry point (package §3.2, reload row).
+
+    Drops the cached table and re-derives it from the reviewed
+    fixture: rows are re-sealed (digests recomputed) and re-verified
+    before any further construction. A tampered or unreadable
+    fixture raises (fail closed) and leaves no half-loaded cache
+    behind — further construction is refused until digests match
+    again. Nothing in the native path calls this; it exists so the
+    reload path has a single governed mechanism to test.
+    """
+    global _DEFINITION_DISPATCH_TABLE, _DEFINITION_DISPATCH_REGISTRY
+    table, registry = load_reviewed_definition_table()
+    _DEFINITION_DISPATCH_TABLE = table
+    _DEFINITION_DISPATCH_REGISTRY = registry
+    return table, registry
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def verify_root_cause_activity(    params: VerifyRootCauseInput,
@@ -6003,8 +6037,19 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
         investigation_repo: Any = getattr(ctx, "investigation_repo", None)
         if investigation_repo is None:
             # No repository wired (tests/dev): no persisted row exists to
-            # misinterpret, so unmarked current semantics apply.
+            # misinterpret, so unmarked current semantics apply. Loud, not
+            # silent: the provenance reads "no-repository", never "pinned".
+            logger.warning(
+                "verify proceeding without investigation repository; "
+                "unmarked current verifier semantics apply",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="verify no-repository fallback",
+                ),
+            )
             verifier_version = VERIFIER_VERSION_CURRENT
+            _version_source = "no-repository"
         else:
             try:
                 _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
@@ -6169,8 +6214,16 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     )
 
             def _definition_observe(note: dict[str, Any]) -> None:
-                """T2 mirror-note sink (record-only; never feeds back)."""
+                """T2 mirror-note sink (record-only; never feeds back).
+
+                Mode-gated: with the shadow flag off no note is recorded,
+                so the additive result key stays absent (per-flag table
+                Off/Off, D3P-N21/F01/F09). The gate lives here — one point
+                covering every engine call site in this activity.
+                """
                 try:
+                    if definition_shadow_mode != "shadow":
+                        return
                     if isinstance(note, dict):
                         stamped = dict(note)
                         stamped.setdefault("activity_identity", dict(_shadow_identity))
@@ -6435,18 +6488,70 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             verified = result.status.value == "VERIFIED"
             # Persist the verdict back onto the candidate (scores, bindings,
             # lifecycle) so the next ranking sorts on maintained fields.
+            # Remediation plan ARCH-HIGH-008: a failed persistence write is a
+            # typed denial, never silent. The evaluated verdict must not
+            # return success-shaped when the row was not actually updated —
+            # the loop keys off data["verified"], which stays False here, so
+            # an unpersisted VERIFIED can never drive the run to COMPLETED.
             try:
                 from investigation_agent_platform.application.investigation.verification import (
                     apply_verification_outcome,
                 )
 
                 updated = apply_verification_outcome(candidate, result)
-                if updated != candidate and hypothesis_repo is not None:
+            except Exception:
+                logger.exception(
+                    "verify verdict materialization failed",
+                    extra=_log_extra(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="verify verdict materialization failed",
+                        hypothesis_id=str(candidate.id),
+                    ),
+                )
+                return GenericActivityResult(
+                    success=False,
+                    error="verify verdict materialization failed",
+                data={
+                    "verified": False,
+                    "status": result.status.value,
+                    "hypothesis_id": str(result.hypothesis_id),
+                    "reason": "outcome_materialization_failed",
+                    "persisted": False,
+                    "verifier_version": str(verifier_version),
+                    "verifier_version_source": _version_source,
+                },
+                )
+            if updated != candidate and hypothesis_repo is not None:
+                try:
                     await hypothesis_repo.save(
                         tenant_id, updated, investigation_id, candidate.version
                     )
-            except Exception:
-                pass
+                except Exception as exc:
+                    logger.exception(
+                        "verify verdict persistence failed",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="verify verdict persistence failed",
+                            hypothesis_id=str(candidate.id),
+                        ),
+                    )
+                    return GenericActivityResult(
+                        success=False,
+                        error="verify verdict persistence conflict "
+                        f"({type(exc).__name__})",
+                    data={
+                        "verified": False,
+                        "status": result.status.value,
+                        "confidence": result.confidence.overall_confidence,
+                        "hypothesis_id": str(result.hypothesis_id),
+                        "reason": "persistence_conflict",
+                        "persisted": False,
+                        "verifier_version": str(verifier_version),
+                        "verifier_version_source": _version_source,
+                    },
+                    )
         logger.info(
             "verify_root_cause_activity completed",
             extra=_log_extra(
@@ -6469,6 +6574,8 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     "code_value_validated": bool(getattr(result, "code_value_validated", False)),
                     "producing_path": producing_path,
                     "shadow_activity_identity": dict(_shadow_identity),
+                    "verifier_version": str(verifier_version),
+                    "verifier_version_source": _version_source,
                 },
                 definition_shadow_observations,
             ),
@@ -7391,8 +7498,15 @@ async def _gate_conclusion_or_fail(
             )
 
     def _conclude_observe(note: dict[str, Any]) -> None:
-        """T3 mirror-note sink: retags engine notes as CONCLUDE_GATE."""
+        """T3 mirror-note sink: retags engine notes as CONCLUDE_GATE.
+
+        Mode-gated like the verify-side sink: shadow-off records
+        nothing, so the conclude result carries no additive shadow
+        key (D3P-N21/F09).
+        """
         try:
+            if _conclude_shadow_mode != "shadow":
+                return
             if isinstance(note, dict):
                 tagged = dict(note)
                 tagged["tap"] = "T3"

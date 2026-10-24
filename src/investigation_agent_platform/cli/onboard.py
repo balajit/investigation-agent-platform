@@ -1,5 +1,5 @@
 # src/investigation_agent_platform/cli/onboard.py
-"""``onboard`` command: capture/apply/attach/status and lifecycle actions."""
+"""``onboard`` command: capture/apply/attach/status, lifecycle actions, and profile generation."""
 
 from __future__ import annotations
 
@@ -235,6 +235,242 @@ def cmd_cleanup_approve(args: argparse.Namespace, transport: Transport | None) -
     return _emit(args, status, response)
 
 
+def cmd_generate_profile(args: argparse.Namespace, transport: Transport | None) -> int:
+    """Generate DRAFT application profile(s) from local repo checkout(s), offline.
+
+    Single mode (--repo-dir + --app-name) writes one profile JSON; batch mode
+    (--org-dir + --app-prefix) writes one JSON per repo directory into
+    --output-dir. --persist saves DRAFT revision(s) DB-direct: the profiles
+    API is read-only, so this is the supported write path.
+    """
+    from investigation_agent_platform.integrations.profile_gen.assembler import (
+        assemble_profile,
+    )
+    from investigation_agent_platform.integrations.profile_gen.detect import (
+        detect_repo_type,
+    )
+    from investigation_agent_platform.integrations.profile_gen.generate import (
+        dominant_language,
+        list_files,
+        parse_checkout,
+    )
+    from investigation_agent_platform.integrations.profile_gen.generators import (
+        get_generator,
+    )
+    from investigation_agent_platform.integrations.profile_gen.github import (
+        detect_modules as _detect_modules,
+    )
+    from investigation_agent_platform.integrations.profile_gen.identity import (
+        derive_app_id,
+        slugify_app_name,
+    )
+    from investigation_agent_platform.integrations.profile_gen.precedence import (
+        merge_configs,
+    )
+
+    def generate_one(checkout: Path, app_id: str, org: str, repo: str) -> dict[str, Any]:
+        if not checkout.is_dir():
+            raise ValueError(f"checkout missing: {checkout}")
+        files = list_files(checkout)
+        modules = [{"path": m.path, "build_system": m.build_system} for m in _detect_modules(files)]
+        samples: dict[str, str] = {}
+        for rel in files:
+            base = rel.rsplit("/", 1)[-1]
+            if base in (
+                "pom.xml",
+                "build.gradle",
+                "pyproject.toml",
+                "manage.py",
+                "main.py",
+                "app.py",
+            ) or base.endswith("Application.java"):
+                try:
+                    samples[rel] = (checkout / rel).read_text(encoding="utf-8", errors="replace")[
+                        :20000
+                    ]
+                except OSError:
+                    continue
+                if len(samples) >= 20:
+                    break
+        detection = detect_repo_type(files, samples)
+        repo_type = str(detection.get("repo_type", "") or "")
+        generator = get_generator(repo_type)
+        if generator is None:
+            from investigation_agent_platform.integrations.profile_gen.generators import (
+                java_spring as _java_spring_fallback,
+            )
+
+            generator = _java_spring_fallback
+            repo_type = "java-spring"
+        parsed = parse_checkout(checkout, files, generator)
+        merged, overridden = merge_configs({}, parsed.get("spring_files", {}) or {})
+        profile, report = assemble_profile(
+            tenant_id=args.tenant,
+            app_id=app_id,
+            org=org,
+            repo=repo,
+            default_branch=args.branch or "main",
+            modules=modules,
+            controllers=parsed.get("controllers", []),
+            validations=parsed.get("validations", []),
+            feign_clients=parsed.get("feign_clients", []),
+            config=merged,
+            overridden_keys=overridden,
+            operator={},
+            language=dominant_language(files),
+            repo_type=repo_type,
+        )
+        report["detection"] = detection
+        return {"profile": profile, "report": report}
+
+    def persist(items: list[dict[str, Any]]) -> None:
+        import asyncio
+        import os as _os
+
+        from investigation_agent_platform.domain.profile.models import (
+            ApplicationProfile,
+            ProfileStatus,
+        )
+        from investigation_agent_platform.infrastructure.persistence.profile_repository import (
+            SqlAlchemyApplicationProfileRepository,
+        )
+
+        uri = args.db_uri or _os.environ.get("IAP_DATABASE_URI", "")
+        if not uri:
+            raise ValueError("generate-profile --persist needs --db-uri or IAP_DATABASE_URI")
+        if uri.startswith("postgresql://"):
+            uri = "postgresql+asyncpg://" + uri[len("postgresql://") :]
+
+        async def _save() -> None:
+            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+            engine = create_async_engine(uri)
+            try:
+                repo = SqlAlchemyApplicationProfileRepository(
+                    async_sessionmaker(engine, expire_on_commit=False)
+                )
+                for item in items:
+                    validated = ApplicationProfile.model_validate(item["profile"])
+                    draft = validated.model_copy(update={"status": ProfileStatus.DRAFT})
+                    existing = await repo.list_revisions(draft.tenant_id, draft.id)
+                    taken = {r.version for r in existing or []}
+                    version = draft.version
+                    while version in taken:
+                        version += 1
+                    draft = draft.model_copy(update={"version": version})
+                    await repo.save(draft.tenant_id, draft)
+                    print(
+                        f"persisted: id={draft.id} tenant={draft.tenant_id} "
+                        f"version={draft.version} status=DRAFT"
+                    )
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_save())
+
+    if bool(args.repo_dir) == bool(args.org_dir):
+        raise ValueError("generate-profile needs exactly one of --repo-dir or --org-dir")
+    if args.repo_dir:
+        if not args.app_name:
+            raise ValueError("single mode needs --app-name")
+        if not args.output:
+            raise ValueError("single mode needs --output")
+        try:
+            app_id = derive_app_id(args.tenant, args.app_name)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        checkout = Path(args.repo_dir).expanduser()
+        item = generate_one(checkout, app_id, args.org_label or "local", checkout.name)
+        services = len(item["profile"].get("services", []))
+        if args.dry_run:
+            print(
+                f"dry-run: would write {args.output} (app_id={app_id}, "
+                f"services={services}); nothing written, nothing persisted"
+            )
+            return 0
+        output_path = Path(args.output)
+        if output_path.exists():
+            raise ValueError(f"refusing to overwrite existing output: {output_path}")
+        output_path.write_text(json.dumps(item, indent=1, default=str) + "\n", encoding="utf-8")
+        print(f"generated: {app_id} services={services} -> {args.output}")
+        if args.persist:
+            persist([item])
+        return 0
+    if not args.app_prefix:
+        raise ValueError("batch mode needs --app-prefix")
+    if not args.output_dir:
+        raise ValueError("batch mode needs --output-dir")
+    org_dir = Path(args.org_dir).expanduser()
+    if not org_dir.is_dir():
+        raise ValueError(f"org dir missing: {org_dir}")
+    only = {s.strip() for s in (args.only or "").split(",") if s.strip()}
+    skip = {s.strip() for s in (args.skip or "").split(",") if s.strip()}
+    repos = sorted(
+        d
+        for d in org_dir.iterdir()
+        if d.is_dir()
+        and d.name != ".github"
+        and (not only or d.name in only)
+        and d.name not in skip
+    )
+    out_dir = Path(args.output_dir)
+    # Remediation plan ARCH-MED-014/015: generate everything first, then
+    # decide. No file is written and no DB row is persisted before the
+    # duplicate/pre-existing/dry-run gates below have all passed, so a
+    # skewed batch can never leave a half-written directory behind.
+    ok: list[dict[str, Any]] = []
+    failed: list[str] = []
+    pending: list[tuple[Any, str, dict[str, Any]]] = []
+    seen_ids: dict[str, str] = {}
+    for repo_dir in repos:
+        slug = slugify_app_name(repo_dir.name)
+        if not slug:
+            print(f"FAILED: {repo_dir.name}: empty slug (nothing to derive an ID from)")
+            failed.append(repo_dir.name)
+            continue
+        app_id = f"{args.app_prefix}-{slug}"
+        if app_id in seen_ids:
+            raise ValueError(
+                f"duplicate app_id {app_id!r} from {seen_ids[app_id]!r} and "
+                f"{repo_dir.name!r}: refusing batch before any write"
+            )
+        seen_ids[app_id] = repo_dir.name
+        try:
+            item = generate_one(repo_dir, app_id, org_dir.name, repo_dir.name)
+        except Exception as exc:
+            print(f"FAILED: {repo_dir.name}: {type(exc).__name__}: {exc}")
+            failed.append(repo_dir.name)
+            continue
+        target = out_dir / f"{app_id}.json"
+        if target.exists():
+            print(f"FAILED: {repo_dir.name}: refusing to overwrite {target}")
+            failed.append(repo_dir.name)
+            continue
+        pending.append((repo_dir, app_id, item))
+    if args.dry_run:
+        print(
+            f"dry-run: would write {len(pending)} profiles to {out_dir}; "
+            f"{len(failed)} failed; nothing written, nothing persisted"
+        )
+        return 1 if failed else 0
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for repo_dir, app_id, item in pending:
+        (out_dir / f"{app_id}.json").write_text(
+            json.dumps(item, indent=1, default=str) + "\n", encoding="utf-8"
+        )
+        print(
+            f"generated: {repo_dir.name} -> {app_id} "
+            f"services={len(item['profile'].get('services', []))}"
+        )
+        ok.append(item)
+    print(f"done: {len(ok)} generated, {len(failed)} failed")
+    if failed:
+        print(f"failed repos: {failed}")
+    if args.persist and ok:
+        persist(ok)
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="onboard", description="IAP tenant onboarding thin client"
@@ -308,6 +544,25 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_approve.add_argument("--expires-at", default="")
     cleanup_approve.add_argument("--token-value", default="")
     cleanup_approve.set_defaults(func=cmd_cleanup_approve)
+
+    generate = sub.add_parser(
+        "generate-profile",
+        help="Generate DRAFT application profile(s) from local checkout(s), offline",
+    )
+    generate.add_argument("--repo-dir", default="", help="Single repo checkout path")
+    generate.add_argument("--org-dir", default="", help="Org directory of repo checkouts")
+    generate.add_argument("--app-name", default="", help="Single mode: application name")
+    generate.add_argument("--app-prefix", default="", help="Batch mode: app-id prefix")
+    generate.add_argument("--org-label", default="local", help="Provenance org label")
+    generate.add_argument("--branch", default="main")
+    generate.add_argument("--only", default="", help="Batch mode: comma-separated repo dirs")
+    generate.add_argument("--skip", default="", help="Batch mode: comma-separated repo dirs")
+    generate.add_argument("--output", default="", help="Single mode: profile JSON path")
+    generate.add_argument("--output-dir", default="", help="Batch mode: profile JSON dir")
+    generate.add_argument("--persist", action="store_true", help="Save DRAFT revision(s) DB-direct")
+    generate.add_argument("--db-uri", default="", help="DB URI (or IAP_DATABASE_URI)")
+    generate.add_argument("--dry-run", action="store_true")
+    generate.set_defaults(func=cmd_generate_profile)
     return parser
 
 

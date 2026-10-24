@@ -223,6 +223,13 @@ class CreateInvestigationService:
             status = InvestigationStatus.CANCELLED
             completed_at = now
 
+        # Pin the verifier behavior version: rows keep the semantics they
+        # started with when the engine evolves. (Function-level import per
+        # C13: keeps the worker import graph light.)
+        from investigation_agent_platform.application.investigation.verification import (
+            VERIFIER_VERSION_CURRENT,
+        )
+
         investigation = Investigation(
             session_id=request.session_id,
             application_id=request.application_id,
@@ -237,7 +244,11 @@ class CreateInvestigationService:
             code_issue_fingerprint=fingerprint,
             # Part 11.2: pin the exact profile revision this investigation
             # was created against, for reproducibility as profiles evolve.
-            metadata={"profile_version": profile.version, "disposition": disposition.to_metadata()},
+            metadata={
+                "profile_version": profile.version,
+                "disposition": disposition.to_metadata(),
+                "verifier_version": VERIFIER_VERSION_CURRENT,
+            },
         )
 
         await self.investigation_repo.create(tenant_id, investigation)
@@ -924,6 +935,7 @@ class ReprocessInvestigationService:
                         tenant_id,
                         hyp.model_copy(update=updates),
                         new_investigation.id,
+                        0,
                     )
                 except Exception:
                     continue

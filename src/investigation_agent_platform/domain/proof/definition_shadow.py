@@ -533,9 +533,14 @@ def summarize_shadow_definitions(
     dropped_count: int = 0,
     duplicate_count: int = 0,
     telemetry_omissions: int = 0,
-) -> dict[str, int]:
-    """Pure per-turn summary (mirrors summarize_trace): counts only."""
-    summary: dict[str, int] = {
+) -> dict[str, Any]:
+    """Pure per-turn summary (mirrors summarize_trace): counts only.
+
+    ``by_input_set`` / ``by_reason`` are the §1.6 frozen-inventory
+    per-input-set counts and reason-code breakdown (additive dicts;
+    keys bounded by the closed input-set and reason vocabularies).
+    """
+    summary: dict[str, Any] = {
         "turns": 0,
         "admissible": 0,
         "abstained": 0,
@@ -544,12 +549,22 @@ def summarize_shadow_definitions(
         "dropped_count": max(0, int(dropped_count or 0)),
         "duplicate_count": max(0, int(duplicate_count or 0)),
         "telemetry_omissions": max(0, int(telemetry_omissions or 0)),
+        "by_input_set": {},
+        "by_reason": {},
     }
+    by_input_set: dict[str, int] = summary["by_input_set"]
+    by_reason: dict[str, int] = summary["by_reason"]
     for obs in observations:
         if not isinstance(obs, dict):
             summary["capture_errors"] += 1
             continue
         summary["turns"] += 1
+        input_set = obs.get("input_set")
+        if isinstance(input_set, str) and input_set:
+            by_input_set[input_set[:64]] = by_input_set.get(input_set[:64], 0) + 1
+        reason = obs.get("reason_code", obs.get("reason", ""))
+        if isinstance(reason, str) and reason:
+            by_reason[reason[:128]] = by_reason.get(reason[:128], 0) + 1
         outcome = obs.get("outcome")
         if outcome == "OBSERVATION_ADMISSIBLE":
             summary["admissible"] += 1

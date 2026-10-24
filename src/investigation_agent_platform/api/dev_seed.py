@@ -100,6 +100,13 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         status: InvestigationStatus,
         age_hours: int,
     ) -> Investigation:
+        # Version pin (remediation plan ARCH-HIGH-006): seed rows carry the
+        # verifier version like production-created rows. Function-level
+        # import keeps the seed module import-cheap.
+        from investigation_agent_platform.application.investigation.verification import (
+            VERIFIER_VERSION_CURRENT,
+        )
+
         start = now - timedelta(hours=age_hours)
         req = InvestigationRequest(
             application_id=SEED_APP_ID,
@@ -124,6 +131,7 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             created_at=start,
             updated_at=now,
             version=1,
+            metadata={"verifier_version": VERIFIER_VERSION_CURRENT},
         )
 
     showcase = _make_inv(
@@ -294,6 +302,7 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
                     supporting_evidence_ids=[evidence_ids[0]],
                 ),
                 showcase.id,
+                0,
                 ),
                 counts,
                 f"hypothesis/{title}",

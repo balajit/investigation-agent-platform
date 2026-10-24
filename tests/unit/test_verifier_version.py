@@ -356,6 +356,152 @@ async def test_verify_fails_closed_without_version(monkeypatch: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_verify_persistence_conflict_is_typed_denial(monkeypatch: Any) -> None:
+    """Remediation plan ARCH-HIGH-008: a failed verdict-state write must
+    not return success-shaped. The evaluated verdict is preserved for
+    forensics, but verified stays False so the loop can never treat an
+    unpersisted VERIFIED as verified."""
+    from investigation_agent_platform.application.investigation.verification import (
+        InvestigationConfidence,
+        VerificationEngine,
+        VerificationResult,
+        VerificationStatus,
+    )
+    from investigation_agent_platform.application.worker.activities import (
+        VerifyRootCauseInput,
+        verify_root_cause_activity,
+    )
+
+    inv_id = uuid4()
+    h1, h2, rows, _ = _hyps(inv_id)
+    ctx = _harness({"verifier_version": "v2"})
+    new_id = uuid4()
+
+    def _verified(
+        self: Any,
+        hypothesis: Any,
+        evidence_items: Any,
+        contradictions: Any,
+        causal_chain: Any,
+        policy: Any,
+        sibling_hypotheses: Any = None,
+        observer: Any = None,
+    ) -> Any:
+        return VerificationResult(
+            hypothesis_id=hypothesis.id,
+            status=VerificationStatus.VERIFIED,
+            corroborating_evidence_ids=[new_id],
+            explanation="verified",
+            confidence=InvestigationConfidence(
+                coverage_score=0.5,
+                reliability_score=0.5,
+                causal_score=0.5,
+                contradiction_penalty=0.0,
+            ),
+        )
+
+    monkeypatch.setattr(VerificationEngine, "evaluate_hypothesis", _verified)
+    ctx.evidence_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=list(rows))
+    )
+
+    async def _conflict(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("rowcount 0")
+
+    ctx.hypothesis_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=[h1, h2]),
+        save=_conflict,
+    )
+    result = await verify_root_cause_activity(
+        VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+    )
+    assert result.success is False
+    assert result.data.get("reason") == "persistence_conflict"
+    assert result.data.get("verified") is False
+    assert result.data.get("persisted") is False
+    assert result.data.get("status") == "VERIFIED"
+    assert result.data.get("verifier_version_source") == "pinned"
+
+
+@pytest.mark.asyncio
+async def test_verify_materialization_failure_is_typed_denial(monkeypatch: Any) -> None:
+    """Same bar for the outcome-application step: if the verdict cannot be
+    materialized onto the candidate, the activity reports failure, not a
+    success-shaped verification."""
+    from investigation_agent_platform.application.investigation import verification as vmod
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine,
+    )
+    from investigation_agent_platform.application.worker.activities import (
+        VerifyRootCauseInput,
+        verify_root_cause_activity,
+    )
+
+    inv_id = uuid4()
+    h1, h2, rows, _ = _hyps(inv_id)
+    ctx = _harness({"verifier_version": "v2"})
+
+    def _boom(candidate: Any, result: Any) -> Any:
+        raise RuntimeError("materialization down")
+
+    monkeypatch.setattr(vmod, "apply_verification_outcome", _boom)
+    monkeypatch.setattr(
+        VerificationEngine, "evaluate_hypothesis", lambda *a, **k: _spy_result(h1.id)
+    )
+    ctx.evidence_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=list(rows))
+    )
+    ctx.hypothesis_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=[h1, h2]),
+        save=AsyncMock(),
+    )
+    result = await verify_root_cause_activity(
+        VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+    )
+    assert result.success is False
+    assert result.data.get("reason") == "outcome_materialization_failed"
+    assert result.data.get("verified") is False
+    assert result.data.get("verifier_version_source") == "pinned"
+
+
+@pytest.mark.asyncio
+async def test_no_repository_marks_version_source(monkeypatch: Any) -> None:
+    """Repo-less execution keeps working (tests/dev) but its provenance
+    reads "no-repository", never "pinned": the fallback is loud, not
+    silent."""
+    from investigation_agent_platform.api.dependencies import AppContext, set_app_context
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine,
+    )
+    from investigation_agent_platform.application.worker.activities import (
+        VerifyRootCauseInput,
+        verify_root_cause_activity,
+    )
+
+    inv_id = uuid4()
+    h1, h2, rows, _ = _hyps(inv_id)
+    ctx = AppContext()
+    ctx.investigation_repo = None  # type: ignore[attr-defined]
+    ctx.evidence_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=list(rows))
+    )
+    ctx.hypothesis_repo = SimpleNamespace(  # type: ignore[attr-defined]
+        find_by_investigation_id=AsyncMock(return_value=[h1, h2]),
+        save=AsyncMock(),
+    )
+    set_app_context(ctx)
+    monkeypatch.setattr(
+        VerificationEngine, "evaluate_hypothesis", lambda *a, **k: _spy_result(h1.id)
+    )
+    result = await verify_root_cause_activity(
+        VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+    )
+    assert result.success is True
+    assert result.data.get("verifier_version") == VERIFIER_VERSION_CURRENT
+    assert result.data.get("verifier_version_source") == "no-repository"
+
+
+@pytest.mark.asyncio
 async def test_conclude_denies_failed_without_version() -> None:
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
 

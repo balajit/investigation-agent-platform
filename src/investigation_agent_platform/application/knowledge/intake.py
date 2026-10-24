@@ -402,6 +402,15 @@ class ErrorIntakeService:
         )
         seed = dict(intake_seed or {})
         metadata: dict[str, Any] = {}
+        # Version pin (remediation plan ARCH-HIGH-006): every persisted
+        # investigation carries the verifier version it started with, so
+        # rows keep their semantics when the engine evolves. (Function-level
+        # import keeps the knowledge import graph light, same as services.py.)
+        from investigation_agent_platform.application.investigation.verification import (
+            VERIFIER_VERSION_CURRENT,
+        )
+
+        metadata["verifier_version"] = VERIFIER_VERSION_CURRENT
         if seed:
             metadata["intake_seed"] = seed
         # Phase 0.5: target identity lives on the investigation, not only

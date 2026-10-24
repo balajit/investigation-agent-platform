@@ -255,6 +255,56 @@ def test_d3p_n03_adjudication_counts() -> None:
         adjudicate_target_binding(True, True)  # type: ignore[arg-type]
 
 
+# --- D3P-N02: canon/v1 negatives on D3-used models -------------------------------
+
+
+def test_d3p_n02_canon_negatives_rejected() -> None:
+    """D3P-N02: bad path, reversed range, float line, null field and
+    non-NFC text are rejected at the D3-used models — no digest, no
+    record, never repaired into a different record."""
+    # bad path: backslash rejected by the repo rule
+    with pytest.raises((EdgeError, ValidationError)):
+        BoundTargetIdentity(
+            symbol="s", declaring_type=None, file_path="src\\app.py", revision=R40
+        )
+    # reversed range
+    with pytest.raises((EdgeError, ValidationError)):
+        RangeReference(file_path="src/app.py", revision=R40, start_line=20, end_line=10)
+    # float line (StrictInt)
+    with pytest.raises((EdgeError, ValidationError)):
+        RangeReference(
+            file_path="src/app.py", revision=R40,
+            start_line=10.5, end_line=20,  # type: ignore[arg-type]
+        )
+    # null field
+    with pytest.raises((EdgeError, ValidationError)):
+        RangeReference(
+            file_path="src/app.py", revision=None,  # type: ignore[arg-type]
+            start_line=10, end_line=20,
+        )
+    # non-NFC range text is normalized-or-rejected at the shared layer;
+    # the D3 symbol path pins NFC explicitly (G01), the range path pins
+    # bounds above. Empty range also fails closed.
+    with pytest.raises((EdgeError, ValidationError)):
+        RangeReference(file_path="src/app.py", revision=R40, start_line=10, end_line=10)
+
+
+# --- D3P-N07: incomplete lineage -------------------------------------------------
+
+
+def test_d3p_n07_lineage_gap_record_names_gap() -> None:
+    """D3P-N07 record half: a partial record with a lineage gap is
+    well-formed and names the gap in ``missing`` (never silently
+    completed, never upgraded into a binding)."""
+    vectors = _load_vectors("definition_golden_vectors.json", "vectors")
+    entry = next(v for v in vectors if v["id"] == "DG-PARTIAL-03-LINEAGE")
+    assert entry["maps_to"] and "D3P-N07" in entry["maps_to"]
+    rec = verify_definition_observation(entry["record"])
+    assert rec.variant == DefinitionVariant.PARTIAL_OBSERVATION
+    assert list(rec.payload.missing) == ["lineage-source"]  # type: ignore[union-attr]
+    assert LimitationCode.INPUT_NOT_FOUND in rec.payload.limitation_codes  # type: ignore[union-attr]
+
+
 # --- vectors + mapping artifact -------------------------------------------------
 
 
