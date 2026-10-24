@@ -1,0 +1,71 @@
+{
+ "format": "stagec-freeze-manifest/v1",
+ "status": "SIGNED 2026-10-24 (owner go to next phase); run set d3-stagec-2026-10-24-r2. Supersedes v1 (aborted r1 retained as evidence).",
+ "git_rev": "8d3f5f192f17114ef155b7e9702955dde3ddc96e",
+ "porcelain": [],
+ "generated_by": "python3 -c <inline>; fixtures hashed as exact file bytes; see freeze record \u00a76.2i item 3",
+ "battery_cases": [
+  "L1.json",
+  "L10.json",
+  "L11.json",
+  "L12.json",
+  "L2.json",
+  "L3.json",
+  "L4.json",
+  "L5.json",
+  "L8.json",
+  "L9.json"
+ ],
+ "battery_case_digests": {
+  "L1.json": "sha256:09dd745d8620fb67524c2f677b361e23c5c5c2446b26e44fb71f2ac0f952bab3",
+  "L10.json": "sha256:54ec6acc663cb5470d2a67cdaaa0b454fa8cdd9e37aad681ab0816631c91d621",
+  "L11.json": "sha256:046bd1ddcfa2722b47a192e6006cbf17e6c152f4255cc79cb4f7aab2d230ba29",
+  "L12.json": "sha256:f0bb74495929c161282ddd5a5b01663cab7d5f28d2dad9136fbf0fcbc9ff21fb",
+  "L2.json": "sha256:23b26c867b0230ce251fff8b3fd3b793af713a40600c6cea3aa09bb0a9e62b75",
+  "L3.json": "sha256:658a364e931bc732183aa7c0e7ea432f594c3390a0a50176f54dee59cd8e45d7",
+  "L4.json": "sha256:3e24c2eddfa2112187f8ae49d530a16d3d86e9a9618e1702318feeef48d6cff6",
+  "L5.json": "sha256:d5c1cbd6cc5a11fd953a1d6078d6815513b6ef836e10549f4abf33afa897b183",
+  "L8.json": "sha256:3dd8dd562a60c4ea298ae79ae466fcfe358ac57e6bc54c373c76ac973e476c81",
+  "L9.json": "sha256:b9a3c6572c4a7420917c681984a867ddd96ca06f167f593d0e10481a5d5e4704"
+ },
+ "protocol": {
+  "approval_package_v1.9": "sha256:547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3",
+  "amendment_A1": "sha256:c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f"
+ },
+ "harness": {
+  "proposal": "v1.15",
+  "registry_id": "iap:d3-stagec:registry/v12",
+  "registry_file": "docs/IAP-proof-kernel-d3-stageC-harness-schemas-v1.13.json",
+  "registry_sha256": "sha256:b1142ed9db57625762667685a416f95c9cd5014993bb025cfa8652df16093546",
+  "vectors_file": "docs/IAP-proof-kernel-d3-stageC-schema-vectors-v1.15.json",
+  "vectors_sha256": "sha256:810125cc87198a7f68eb88bd8ac959b6b77264d581c2f34c1362136ada2bfcf2"
+ },
+ "prompts": {
+  "status": "pinned by file hash (template lives in code; exact bytes covered)",
+  "reasoner_prompt_version": "v3-claim-grounded-014",
+  "reasoner_source": {
+   "path": "src/investigation_agent_platform/application/investigation/reasoning.py",
+   "sha256": "sha256:3a79b37e2b29dc994255be081469926d9a59459e02a692f6ab688862c9ab9609"
+  },
+  "compiler_prompt_version": "v3-claim-grounded-015",
+  "compiler_source": {
+   "path": "src/investigation_agent_platform/application/investigation/context_compiler.py",
+   "sha256": "sha256:df9e3728234bf169137de3f2c723c8062df741bd497638607b8556a4ee22ad6e"
+  },
+  "note": "formulate-definition prompt template lives in code (pinned by git_rev and per-file hashes); no standalone prompt file exists"
+ },
+ "tenant_database": {
+  "host": "localhost",
+  "port": 5452,
+  "database": "iap",
+  "image": "pgvector/pgvector:pg16",
+  "server_version": "PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2) on aarch64-unknown-linux-gnu",
+  "probe_tenant_namespace": "iap-probe-2026-10-24-r2",
+  "namespace_verification": "2026-10-24: 0 rows for the candidate across action_executions/evidence/investigations/hypotheses/findings; no such schema in pg_namespace (fresh namespace; r1 rows remain under iap-probe-2026-10-24, retained as aborted-run evidence). Isolation is by tenant_id scoping, not a separate database"
+ },
+ "owner_operator": {
+  "decision_owner": "Balaji",
+  "executing_operator": "Lead Engineer (muse)",
+  "powers": "operator may execute and abort; only the owner classifies results, authorizes further collection, or closes the probe as complete"
+ }
+}

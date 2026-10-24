@@ -1,0 +1,312 @@
+# Stage C run-set d3-stagec-2026-10-24-r2 rule file: capture
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 478-755
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §1.4 observation channel and persistence lifecycle)
+
+### 1.4 Observation channel and persistence lifecycle (R3)
+
+Stated precisely, because "no persistence change" was ambiguous in
+v1.0. Phase 0 makes **no new persistence behavior**: no new table,
+no new save call, no new write transaction. It does add bounded,
+additive keys to payloads that are already persisted today. The
+exact lifecycle of one observation:
+
+1. *Residence before summarization*: the per-turn observation
+   lives in memory only — first in the activity-return dict key
+   `data["shadow_definitions"]`, then appended to the
+   workflow-local list `definition_shadow_trace`. Neither is read
+   by any branch, dispatch, transition, or verdict path.
+2. *Summarization*: the pure `summarize_definition_shadow`
+   (mirroring `summarize_trace`) reduces the trace to counts,
+   labels, digests, and reason codes. Full per-turn entries are
+   carried forward only inside the existing bounded trace shape
+   (ids, digests, labels, reason codes — no snippets, no source
+   text, same redaction rule as the G6 capture).
+3. *Stamping*: summary + bounded trace flow through the existing
+   conclude-time path (`workflows.py:1985-2006` →
+   `_derive_loop_telemetry` → `_stamp_loop_telemetry` at
+   `activities.py:7723-7732`) into the already-persisted
+   `investigation.metadata["loop_telemetry"]`. The write is the
+   same save call on the same transaction as today
+   (`activities.py:1069-1071,7714-7722`); shadow adds zero new
+   save calls and shares no new transaction — it rides the normal
+   save path or is omitted by the existing fail-open guards.
+4. *Overflow* (C7 — retention policy defined, not assumed):
+   per-entry size capped; per-turn detail retains the FIRST 256
+   entries (prefix, matching the existing `trace[:256]` slice
+   pattern at `activities.py:1228`, which keeps the oldest and
+   drops the newest). Later entries are dropped with a
+   monotonic `dropped_count` plus a `trace_truncated: true`
+   marker (never silent). Running counts are computed over ALL
+   turns before truncation, so the summary stays complete while
+   per-turn detail is prefix-bounded. Effect on correlation:
+   dropped turns have no retained observation → they cannot
+   join → they are excluded as *truncation exclusions*
+   (capture-health class, counted separately); if truncation
+   removes turns the floor needs, the run set fails the floor
+   (fail closed, never back-filled). Dropped detail is never
+   reconstructed from counts. Actual overflow behavior —
+   prefix order, counters, marker, and exclusion effect — is
+   pinned by D3P-N26.
+5. *Telemetry/persistence failure*: the three-layer isolation
+   already in `_derive_loop_telemetry` / `_stamp_loop_telemetry`
+   / count helpers (`activities.py:1157-1260`, fail-open to `None`
+   / zeros with warnings) applies unchanged to the new keys. A
+   derivation throw or a stamper no-op yields omission, never a
+   native-path effect — pinned by D3P-N17, which asserts the
+   native path is unaffected AND the omission is counted.
+6. *Rollback*: with both flags off, the additive key is absent,
+   the new lists are never created, and `loop_telemetry` contains
+   no shadow-definition keys — the persisted payload and the
+   write-call sequence are identical to the pre-Phase-0 shape.
+   Pinned by D3P-F09, which compares persisted metadata payloads
+   and save-call counts flag-off vs the pre-implementation
+   baseline, not just returned verdicts.
+7. *Live-sample detail*: per-turn detail for §6 analysis is
+   retained *only* inside the bounded metadata trace above. No
+   other store is written. If detail exceeds the bound, the
+   excess is dropped-with-counter (a capture-health event, §6),
+   never spilled elsewhere.
+
+Normative per-flag lifecycle (RV03 — the exact activation
+boundary for each behavior; "persistence-invariant" is claimed
+only where the table says so):
+
+| Behavior | Off/Off | On/Off (shadow mode) |
+|---|---|---|
+| Shadow list allocation (`definition_shadow_trace`, per-turn observation lists) | never allocated | allocated; workflow-local only, never branched on |
+| Activity result key `data["shadow_definitions"]` | absent (D3P-N21) | present, additive; ignored by all native readers |
+| Summary construction (`summarize_definition_shadow`) | never runs | runs (pure); output flows only to telemetry |
+| Telemetry keys for shadow definitions | absent | present, allowlisted counts/labels/digests only (§1.4 step 3) |
+| `investigation.metadata` payload shape | pre-implementation shape, byte-identical | pre-implementation shape PLUS the listed additive keys; every non-shadow field and every native outcome identical (differential-pinned by D3P-F02) |
+| Save calls and write transactions | exact legacy sequence | same save calls, same transactions; shadow adds zero new save calls and shares no new transaction — it rides the normal save path or is omitted by the existing fail-open guards |
+| Native verdicts, tiers, explanations, confidence, persistence writes, publication, side effects, error semantics | baseline | identical to baseline in every field (D3P-F02 differential) |
+
+Persistence language corrected: in shadow mode the package
+does NOT claim persistence-invariance — it explicitly
+authorizes the listed additive metadata changes and requires
+everything else identical. In Off/Off it requires the old
+payload shape and the exact old write sequence (D3P-F09).
+
+Telemetry-omission accounting (C5 — the omitted payload cannot
+count itself, so counting is defined through two independent
+paths plus a stated residual):
+
+- Path A (in-band flag): if `_derive_loop_telemetry` returns
+  `None` (its existing fail-open), the conclude activity sets
+  the additive result flag `loop_telemetry_omitted: true`
+  (§1.6) instead of telemetry keys. The workflow records the
+  flag in run-health (workflow-local, counted even though no
+  metadata key was written) and the flag propagates into the
+  workflow's terminal accounting read by the collection
+  harness. An omission never voids a run set by itself, but a
+  run set with zero usable telemetry joins is INSUFFICIENT
+  EVIDENCE by the same rule as missing joins.
+- Path B (harness-side absence detection): the collection
+  harness reconciles completed runs against telemetry-key
+  presence. A completed run with no shadow telemetry keys and
+  no in-band omission flag is a capture-health event (missing
+  telemetry with no accounted cause) and voids the run set
+  under the zero-capture-error rule.
+- Explicitly unmeasurable residual: if the harness loses the
+  terminal run record itself, or the conclude activity result
+  carrying the Path A flag is itself lost, no in-system
+  mechanism counts the omission. This residual is bounded by
+  the harness store's own reliability and is stated here, not
+  solved here: the package claims complete accounting of
+  omissions detectable through A or B, and names harness-loss
+  as outside the guarantee.
+
+If the underlying save itself fails, that is native behavior,
+unchanged and out of shadow accounting.
+
+Compatibility consequence (explicit interface-change list, also
+§1.6): the `observer` optional parameters, the additive result
+key, and the new telemetry keys are backward-compatible shape
+changes — old callers pass nothing new, old telemetry consumers
+ignore unknown keys — and each is covered by a compatibility
+test (D3P-N16 for `observer=None` behavior, D3P-N21 for
+key-absent-when-off, D3P-N17 for the Path A omission flag +
+Path B absence rule, D3P-N25 for envelope stability). They are
+listed in the implementation diff for review; "backward
+compatible" is proven per-change, not assumed.
+
+Authoritative correlation record (RV02/RV08; F-A2 split
+stamping): the T1 observation itself is the correlation record.
+It is emitted before the verdict exists; the native outcome is
+joined offline. No single tap site knows every key component —
+`VerifyRootCauseInput` carries no iteration (workflow-known)
+and execution identity lives only in the activity context —
+so the key is assembled in two specified halves:
+
+```text
+activity-stamped (at tap time, in-activity):
+  (investigation_id, hypothesis_id, input_set, tap,
+   namespace, workflow_id, workflow_run_id, activity_id, attempt,
+   bundle_digest)
+workflow-stamped (on result receipt, in-workflow):
+  iteration, receipt_index
+full join key (analysis time): all of the above
+```
+
+- Execution identity is the exact Temporal SDK contract (C2),
+  not an undefined "execution identity": `temporalio.activity.Info`
+  (pinned SDK `temporalio>=1.33.0`; field names verified against
+  the installed 1.33.0 distribution), read at tap time from the
+  activity context (read-only; no behavior change). Correlation
+  key components from `Info`: `namespace`, `workflow_id`,
+  `workflow_run_id`, `activity_id`, `attempt`. Semantics relied
+  upon: `activity_id` is stable across retries of one scheduled
+  activity; `attempt` is 1-based and increments per retry;
+  `task_token` is unique per delivery (recorded in the
+  observation for forensics, NOT part of the key);
+  `activity_run_id` is recorded, not keyed (its run-scoping
+  semantics are not relied upon). No activity in the worker reads
+  execution identity today (verified: no `activity.info` /
+  `task_token` use in `application/worker/`), so this is a new
+  read-only context access: the implementation cites
+  `temporalio.activity.info()` + the five key fields against the
+  pinned SDK version and pins them with a unit test.
+- Accepted-attempt rule, pinned to those fields: observations
+  are accepted iff they arrive in the workflow-accepted activity
+  result. Analysis groups observations by
+  `(activity_id, attempt)`; the group present in the accepted
+  result is the accepted attempt — no inference needed, because
+  superseded attempts' outputs never reach the workflow (only
+  the final delivered result is received). Any other
+  `(activity_id, attempt)` group bearing observations is
+  reachable only via test-harness injection and is classified
+  `superseded-attempt`: excluded from the denominator, counted
+  separately, never joined to another execution's native
+  result. D3P-N22 drives this logic with SDK-contract-shaped
+  records — constructed from the real `temporalio.activity.Info`
+  field tuple (or a pinned mirror of exactly those five fields),
+  with varying `attempt`/`activity_id` covering retries,
+  interleaved runs, repeated delivery, and superseded attempts —
+  plus a mirror-conformance test asserting the mirror matches
+  the installed SDK's `Info` field names, so an SDK upgrade
+  fails the test for review instead of silently changing
+  semantics. If the context is unavailable (unit-test
+  harnesses), the fallback is content-based dedup on
+  `(bundle_digest, tap)` with keep-first + a monotonic
+  `duplicate_count` (never silent).
+- `iteration` is stamped by the workflow when it reads the
+  additive result key — the workflow owns the loop counter and
+  the receipt point. Receipt order is the join: one activity
+  execution produces one result, which is received once, so
+  activity-stamped observations and the workflow-stamped
+  iteration pair 1:1 by receipt. A result whose observations
+  cannot be paired to exactly one receipt iteration is an
+  ambiguous join → voids the run set. Receipt-order pairing is
+  pinned by D3P-N22 (extended: iteration-stamp correctness
+  under interleaved and retried executions).
+- Cardinality is 0..n per turn: T1 emits at most one
+  `VERIFY_TURN` per candidate evaluation and always runs (it
+  sits before the fast-path ladder), so every evaluated
+  candidate yields at least a T1 coverage record declaring
+  `sites_expected: [site1, site2]`; T2a/T2b append
+  `sites_reached` only where their sites execute. Where an
+  earlier fast path returns first, no mirror note exists — and
+  none is fabricated in-band. Instead, coverage is determined
+  at join time: the native outcome record used for the join
+  must carry a producing-path label identifying which
+  fast-path or general path produced it (bound to concrete
+  native fields at implementation — candidates:
+  `answer_mode`, `code_value_validated`, limitation reason
+  codes — or a dedicated label added with the taps, listed in
+  §1.6). A turn with T1 but no T2 note and a fast-path native
+  outcome is classified `mirror-not-reached
+  (reason: <fast-path-name>)` offline — counted and reported,
+  never mistaken for agreement and never suppressed. If the
+  producing path is not recoverable from the join source, the
+  turn is an ambiguous join and voids the run set (F-A3;
+  pinned by D3P-N24) — attribution is never guessed.
+- Candidate changes: if the native path evaluates a different
+  candidate than T1 observed (re-selection, rival promotion),
+  the hypothesis_id component differs and the join fails by
+  construction → protocol violation handling (§6), never a
+  forced pairing.
+- Retries and repeated execution: the verify activity runs
+  under `maximum_attempts=3` (`workflows.py:1169-1177`,
+  applied at `:1904`). Each attempt stamps its own
+  `(activity_id, attempt)`; only the accepted attempt's result —
+  and therefore only its observations — reaches the workflow.
+  Superseded attempts leave no observations in the accepted
+  result; any observation bearing a non-accepted
+  `(activity_id, attempt)` group is classified
+  `superseded-attempt`: excluded from the denominator, counted
+  separately, never joined to another execution's native result.
+  Duplicate delivery within one accepted execution is caught by
+  the `((namespace, workflow_id, workflow_run_id, activity_id,
+  attempt), bundle_digest, tap)` dedup rule (keep-first +
+  `duplicate_count`). Both rules are pinned by D3P-N22
+  (SDK-contract-shaped records + mirror-conformance test;
+  extended: iteration-stamp correctness and receipt-order pairing
+  under interleaved and retried executions).
+- The authoritative join is receipt-time pairing (C3), not
+  offline reconstruction: when the workflow receives an
+  activity result, it pairs that turn's native outcome (from
+  the result data, including the additive `producing_path`
+  label, §1.6) with that turn's shadow observations (from the
+  additive key) into the envelope (§2.1) — in memory, at
+  receipt. The workflow already reads the native result at
+  receipt (`verify_res.data`, `workflows.py:1930-1932`);
+  pairing adds no branch, only the envelope record. Persisted
+  hypothesis rows are consistency cross-checks ONLY, never the
+  primary join source: rows are mutable current-state
+  (`Hypothesis`: statement/status/supporting_evidence_ids/
+  version — no iteration field, no producing-path field,
+  status overwritten by later turns), so a row cannot identify
+  which turn or path produced an outcome. Cross-check rule:
+  where the row is still representative (same hypothesis_id,
+  no later evaluation has overwritten it), its status must be
+  consistent with the paired native outcome; inconsistency is
+  flagged and investigated, never silently resolved in either
+  direction. Offline analysis therefore verifies (a) envelope
+  digest recomputation (tamper-evident pairing, D3P-N25),
+  (b) row cross-check consistency, (c) producing-path label
+  presence (absent → ambiguous join → void, D3P-N24), and
+  (d) harness-side completeness (every completed run has its
+  paired records; missing → void). A missing or ambiguous join
+  is a protocol violation that voids the run set (§6), never a
+  silent exclusion.
+- Per-tap join source (each tap's native outcome comes from a
+  named record with exact fields):
+
+| Tap | Native outcome source | Shadow source | Pairing point |
+|---|---|---|---|
+| T1 | activity result at receipt: `verified, status, confidence, hypothesis_id` + additive `producing_path` label (§1.6) | additive-key observations (T1 note) | workflow receipt → one envelope |
+| T2a | gate outcome recorded by the mirror note itself at site 1 (path known: site reached ⟹ location path) | observer note | same envelope, per-site section |
+| T2b | gate outcome + backstop trigger state at site 2 (path known: site reached ⟹ general path) | observer note | same envelope, per-site section |
+| T3 | conclude activity result at receipt (same fields + `producing_path`) | conclude additive key | workflow receipt → `CONCLUDE_GATE` envelope |
+| Fast-path early return (no site reached) | activity result at receipt + `producing_path` label | T1 note only | envelope marked `mirror-not-reached (reason: <fast-path-name>)`; label absent → ambiguous-join void (D3P-N24) |
+
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1625-1646
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.2d capture model and analysis inputs)
+
+#### 6.2d Capture model and analysis inputs (F-PROBE-04)
+
+The harness reads exactly these artifacts (citing v1.5 §1.4
+and v1.6 §12.1–§12.2 — no new capture surface):
+
+- `loop_telemetry` per run: `shadow_definition_summary`
+  (counts incl. `dropped_count`, `duplicate_count`,
+  `telemetry_omissions`) and the bounded
+  `definition_shadow_trace` projection.
+- Conclude activity results: native conclude outcome,
+  co-located T3 observation(s), `producing_path`,
+  `loop_telemetry_omitted` in-band flag.
+- Workflow history for receipt order; investigation rows for
+  the consistency cross-check (never as the primary join
+  source).
+- Join auditing per the §1.4 key with the §1.6
+  `verify_definition_binding`-style exactness: any turn that
+  cannot be joined, any candidate mismatch (checked against
+  the bound `hypothesis_id`), and any unattributable
+  producing path voids the run set — never silently
+  excluded, never counted as agreement.
+
