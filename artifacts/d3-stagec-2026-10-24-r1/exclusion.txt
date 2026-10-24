@@ -1,0 +1,63 @@
+# Stage C run-set d3-stagec-2026-10-24-r1 rule file: exclusion
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1586-1613
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.2b cohort and run-level eligibility)
+
+#### 6.2b Cohort and run-level eligibility (F-PROBE-02)
+
+- Eligible fixtures: the code-bearing L-series battery cases
+  present in the repo at freeze time, enumerated by id in the
+  frozen manifest (no silent substitution; a fixture added
+  later starts a new run set).
+- A run is *eligible* iff it completes without platform error
+  AND evaluates at least one definition-claim candidate at the
+  verify gate under `verifier_version == v2` AND records a
+  native outcome for that candidate. Runs that complete with
+  zero definition-claim candidates are *non-eligible runs*:
+  counted separately, reported, and excluded from the
+  denominator — never retroactively reclassified.
+- Objective exclusion rules (applied identically to every
+  run, pre-registered, never decided post hoc): turn-contained
+  platform errors and timeouts whose error outcome was
+  recorded through the normal channel (excluded attempts,
+  budget consumed; see error-class partition above);
+  non-v2 evaluations; runs whose telemetry or conclude
+  result is missing for reasons other than a counted
+  capture event (treated as ambiguous joins — they void
+  the run set per §6.1); runs executed outside the frozen
+  environment. Platform or infrastructure errors that are
+  *not* contained and recorded as above — worker crash or
+  restart, store unreachable, telemetry pipeline failure,
+  ambiguous ordering or identity — are not exclusions;
+  they void the run set.
+
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A1.md lines 14-24
+## Doc SHA-256: c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f
+## (A1-1 timeout disposition (OD-01))
+
+## A1-1. v1.9 §6.5 item 7 amended — timeout disposition (OD-01)
+
+"An UNRECORDED timeout — or any timeout that prevents the outcome from being
+recorded, corrupts ordering/identity/persistence/the frozen environment, or
+whose containment cannot be proven from the record — voids the affected runs
+(retain artifacts, mark INSUFFICIENT EVIDENCE, never trim/combine/rerun under
+that identity; replacement only by new freeze, new run-set ID, newly
+authorized budget). A RECORDED turn-contained timeout whose error outcome
+arrived through the normal channel with `producing_path` and a joinable
+envelope is an excluded attempt per §6.1 (budget consumed, collection
+continues)."
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A1.md lines 26-32
+## Doc SHA-256: c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f
+## (A1-2 superseded-attempt disposition (OD-02))
+
+## A1-2. v1.9 §6.5 item 4 amended — superseded-attempt disposition (OD-02)
+
+"A superseded-attempt observation that is merely present is EXCLUDED from the
+denominator and counted separately per §1.4, never joined, and does not void
+by presence. An attempted cross-execution join of a superseded observation to
+another execution's native result, or inability to prove accepted-attempt
+identity, is an ambiguous join and voids the run set."

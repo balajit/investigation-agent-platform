@@ -1,0 +1,75 @@
+# Stage C run-set d3-stagec-2026-10-24-r1 rule file: budget
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1647-1695
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.2e probe budget and go/no-go)
+
+#### 6.2e Probe budget and go/no-go (F-PROBE-05)
+
+- Pilot budget (decided): at most **12 *attempted* runs per
+  decision-7 cell** (owner-adjustable only by re-freeze, never
+  mid-collection). "Attempted" is deliberate: eligibility is
+  applied *after* the run, so excluded runs (non-eligible,
+  errored, voided) still consume budget. Repeated exclusions
+  cannot turn a nominally bounded pilot into unbounded
+  collection — when a cell's 12 attempts are spent, the cell
+  is closed as populated or not.
+  Collection stops early if all four cells reach populatable
+  status sooner; unfilled budget is not spent to "improve"
+  numbers.
+- Go/no-go (no discretion): the probe *passes* (formal
+  collection may be proposed) iff all four decision-7 cells
+  are demonstrated populatable within budget AND the
+  subcategory presence rule (§6.1) is either satisfied or
+  explicitly routed to restricted conclusions AND zero
+  capture errors occurred in the counted runs. Otherwise
+  the outcome is INSUFFICIENT EVIDENCE by construction —
+  the protocol never lowers the floor to fit the data, and
+  the floor is never met by re-running until cells fill.
+- Budget accounting for voids, retries, and replacements
+  (D3-V18-03 — no implicit refills, no salvage by trimming
+  or combining):
+  - A retry IS an attempt and consumes the same frozen
+    budget as a first try; there is no separate retry
+    allowance, and a retry never resets or extends the cap.
+  - A voided run set is terminal for that collection: it
+    cannot be salvaged by trimming failed records, dropping
+    inconvenient turns, or combining surviving turns with a
+    replacement set. Trimmed or combined run sets are
+    INSUFFICIENT EVIDENCE by construction, not a pass.
+  - A clean replacement after a void requires a NEW
+    collection under a NEW freeze (new snapshot identity,
+    new run-set id): previously consumed attempts do not
+    transfer, and the new collection receives its own
+    explicitly authorized budget — never an automatic
+    refill of the old one.
+  - Within-budget reruns after *excluded* (non-void)
+    attempts — e.g. a run with zero definition-claim
+    candidates, or a platform error that voids only its own
+    run — do NOT require a re-freeze, provided nothing
+    else changed (same code, flags, fixtures, prompts,
+    tenant, harness). Any change beyond the mere rerun
+    (new code, new flags, new fixtures, new prompts, new
+    tenant, new harness version) is a material change and
+    triggers a new freeze.
+
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A1.md lines 34-47
+## Doc SHA-256: c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f
+## (A1-3 reservation buckets (BUD-01))
+
+## A1-3. v1.9 §6.2e cap semantics clarified — reservation buckets (BUD-01)
+
+The "12 attempted runs per decision cell" cap applies to pre-run
+reservations against owner-frozen expected-cell buckets, with a hard
+run-set-total limit of 48 reservations. Each attempt is charged exactly once
+to its frozen expected-cell bucket at reservation time. An attempt whose
+observed outcome maps to a different cell is recorded as EXCLUDED against the
+reserved bucket (reason `BUDGET_RESERVED_CELL_MISMATCH`) and is never
+re-attributed, refunded, or transferred. Observed-cell counts are reported
+separately as diagnostic data and are not subject to the 12-cap; no parity,
+coverage, or pass claim may be derived from exceeding observed counts.
+Post-hoc reassignment, `UNKNOWN_CELL` pools, target-cell guessing, and
+refunds are forbidden. This clarification changes cap semantics versus a
+strict observed-cell reading and is adopted here by explicit owner decision.

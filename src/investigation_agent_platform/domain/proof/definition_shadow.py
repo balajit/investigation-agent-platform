@@ -38,7 +38,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from investigation_agent_platform.domain.proof.canonical import canonical_dict_bytes
+from investigation_agent_platform.domain.proof.canonical import (
+    CanonError,
+    CanonicalizationError,
+    canonical_dict_bytes,
+)
 from investigation_agent_platform.domain.proof.definition_dispatch import (
     DefinitionStage,
     shadow_typed_definitions_enabled,
@@ -546,6 +550,7 @@ def summarize_shadow_definitions(
         "abstained": 0,
         "unavailable": 0,
         "capture_errors": 0,
+        "mirror_notes": 0,
         "dropped_count": max(0, int(dropped_count or 0)),
         "duplicate_count": max(0, int(duplicate_count or 0)),
         "telemetry_omissions": max(0, int(telemetry_omissions or 0)),
@@ -572,6 +577,13 @@ def summarize_shadow_definitions(
             summary["abstained"] += 1
         elif outcome == "UNAVAILABLE":
             summary["unavailable"] += 1
+        elif isinstance(obs.get("tap"), str) and obs.get("tap") in ("T2a", "T2b"):
+            # T2 mirror note (gate-note shape carries no outcome
+            # vocabulary): a recorded coverage note, never a capture
+            # error. Counted in turns/by_input_set/by_reason above.
+            summary["mirror_notes"] += 1
+            tag = f"mirror:{obs['tap']}"
+            by_reason[tag] = by_reason.get(tag, 0) + 1
         else:
             summary["capture_errors"] += 1
     return summary
@@ -686,6 +698,33 @@ def attach_shadow_observations(
     return merged
 
 
+_FLOAT_FORMAT_SPEC = ".6f"
+
+
+def _canonicalizable(value: Any, where: str) -> Any:
+    """Rebuild `value` with no floats for canonical envelope bytes (DIGEST-01).
+
+    JSON floats have no canonical text form, so the envelope digest cannot
+    cover them: finite floats become fixed-precision decimal strings
+    (``format(x, ".6f")`` — 1e-6 fidelity, deterministic across platforms).
+    Non-finite floats (NaN/±Infinity) raise CanonicalizationError with
+    INVALID_FLOAT, exactly as the canonical-byte validation does today.
+    Mappings and sequences are rebuilt (inputs are never mutated); every
+    other value passes through unchanged for downstream validation.
+    """
+    if isinstance(value, float):
+        # No math import (static import gate): non-finite floats are exactly
+        # the ones whose shortest repr is a non-numeric token.
+        if str(value).lower() in ("nan", "inf", "-inf", "infinity", "-infinity"):
+            raise CanonicalizationError(CanonError.INVALID_FLOAT, where)
+        return format(value, _FLOAT_FORMAT_SPEC)
+    if isinstance(value, dict):
+        return {k: _canonicalizable(v, f"{where}.{k}") for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonicalizable(v, f"{where}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
 def build_correlation_envelope(
     observation: dict[str, Any],
     iteration: int,
@@ -693,28 +732,37 @@ def build_correlation_envelope(
     native_outcome: dict[str, Any],
     activity_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Workflow-stamped correlation envelope (C1 layer 2, C3 receipt pairing).
+    """    Workflow-stamped correlation envelope (C1 layer 2, C3 receipt pairing).
 
     The activity never mutates the observation: the workflow copies it
     into the envelope and digests (observation + iteration +
     receipt_index + native snapshot + activity identity) once, at receipt.
+
+    Float normalization: the canonical bytes forbid floats (no canonical
+    text form), so finite floats anywhere in the envelope body become
+    fixed-precision decimal strings before digesting, and the envelope
+    stores exactly those normalized bytes — stored and digested forms are
+    identical, so offline recompute always agrees.
     """
+    norm_observation = _canonicalizable(observation, "$.observation")
+    norm_native = _canonicalizable(native_outcome, "$.native_outcome")
+    norm_identity = _canonicalizable(activity_identity or {}, "$.activity_identity")
     body = canonical_dict_bytes(
         {
             "domain": "iap:definition-correlation-envelope",
-            "observation": observation,
+            "observation": norm_observation,
             "iteration": int(iteration),
             "receipt_index": int(receipt_index),
-            "native_outcome": native_outcome,
-            "activity_identity": activity_identity or {},
+            "native_outcome": norm_native,
+            "activity_identity": norm_identity,
         }
     )
     return {
-        "observation": dict(observation),
+        "observation": norm_observation,
         "iteration": int(iteration),
         "receipt_index": int(receipt_index),
-        "native_outcome": dict(native_outcome),
-        "activity_identity": dict(activity_identity or {}),
+        "native_outcome": norm_native,
+        "activity_identity": norm_identity,
         "envelope_digest": "sha256:" + hashlib.sha256(body).hexdigest(),
     }
 

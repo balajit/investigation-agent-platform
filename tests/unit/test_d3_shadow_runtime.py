@@ -481,3 +481,107 @@ def test_d3p_reload_refuses_malformed_fixture(tmp_path) -> None:
     missing = tmp_path / "absent.json"
     with pytest.raises(OSError):
         load_reviewed_definition_table(missing)
+
+
+# --- float normalization (live Stage C finding 2026-10-24) ------------------------------
+#
+# The workflow pairs each turn's native outcome (whose confidence is a
+# float, e.g. 0.8999999999999999) into the tamper-evident envelope, but
+# the canonical bytes forbid floats — so every live pairing raised
+# INVALID_FLOAT and the silent `except: pass` dropped all observations.
+# Envelopes must normalize finite floats and store exactly what they digest.
+
+
+def test_d3p_pairing_float_confidence_produces_envelopes() -> None:
+    import hashlib
+
+    from investigation_agent_platform.domain.proof.canonical import canonical_dict_bytes
+
+    obs = _obs()
+    native = {
+        "verified": True,
+        "status": "VERIFIED",
+        "confidence": 0.8999999999999999,
+        "hypothesis_id": "h-1",
+        "producing_path": "general",
+    }
+    native_before = dict(native)
+    envs, dups = pair_receipt([obs], 2, 0, native, IDENT)
+    assert len(envs) == 1 and dups == 0
+    env = envs[0]
+    assert env["native_outcome"]["confidence"] == "0.900000"
+    assert native == native_before  # inputs never mutated
+    raw = canonical_dict_bytes(
+        {
+            "domain": "iap:definition-correlation-envelope",
+            "observation": env["observation"],
+            "iteration": env["iteration"],
+            "receipt_index": env["receipt_index"],
+            "native_outcome": env["native_outcome"],
+            "activity_identity": env["activity_identity"],
+        }
+    )
+    assert env["envelope_digest"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def test_d3p_pairing_nan_confidence_raises() -> None:
+    from investigation_agent_platform.domain.proof.canonical import (
+        CanonicalizationError,
+    )
+
+    obs = _obs()
+    native = {
+        "verified": False,
+        "status": "ERROR",
+        "confidence": float("nan"),
+        "hypothesis_id": "h-1",
+        "producing_path": "general",
+    }
+    with pytest.raises(CanonicalizationError, match="INVALID_FLOAT"):
+        pair_receipt([obs], 1, 0, native, IDENT)
+
+
+def test_d3p_envelope_normalizes_observation_floats() -> None:
+    import hashlib
+
+    from investigation_agent_platform.domain.proof.canonical import canonical_dict_bytes
+
+    obs = _obs(score=0.123456789)
+    native = {"verified": False, "status": "INCONCLUSIVE", "producing_path": "general"}
+    env = build_correlation_envelope(obs, 3, 7, native, IDENT)
+    assert env["observation"]["score"] == "0.123457"
+    assert obs["score"] == 0.123456789  # input never mutated
+    raw = canonical_dict_bytes(
+        {
+            "domain": "iap:definition-correlation-envelope",
+            "observation": env["observation"],
+            "iteration": 3,
+            "receipt_index": 7,
+            "native_outcome": env["native_outcome"],
+            "activity_identity": env["activity_identity"],
+        }
+    )
+    assert env["envelope_digest"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def test_d3p_summarize_mirror_notes_are_coverage_not_capture_errors() -> None:
+    """T2a/T2b gate notes carry no outcome vocabulary; they are recorded
+    coverage, never capture errors (live Stage C finding 2026-10-24)."""
+    from investigation_agent_platform.domain.proof.definition_shadow import (
+        summarize_shadow_definitions,
+    )
+
+    summary = summarize_shadow_definitions(
+        [
+            {"tap": "T2a", "input_set": "CITED_LOCATION", "kind": "DEFINITION",
+             "ok": True, "reason": ""},
+            {"tap": "T2b", "input_set": "BOUND_FULL", "kind": "DEFINITION",
+             "ok": False, "reason": "definition-backstop-no-range-read"},
+            {"bogus": True},
+        ]
+    )
+    assert summary["turns"] == 3
+    assert summary["mirror_notes"] == 2
+    assert summary["capture_errors"] == 1  # only the bogus record
+    assert summary["by_reason"]["mirror:T2a"] == 1
+    assert summary["by_reason"]["mirror:T2b"] == 1

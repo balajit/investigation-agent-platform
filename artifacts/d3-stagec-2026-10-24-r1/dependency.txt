@@ -1,0 +1,13 @@
+# Stage C run-set d3-stagec-2026-10-24-r1 dependency inventory
+# Pinned harness + measured runtime dependencies (dev scope).
+
+harness: proposal-v1.15 registry-v12 vectors-v1.15
+registry_sha256: sha256:b1142ed9db57625762667685a416f95c9cd5014993bb025cfa8652df16093546
+vectors_sha256: sha256:810125cc87198a7f68eb88bd8ac959b6b77264d581c2f34c1362136ada2bfcf2
+jsonschema: 4.26.0
+cryptography: 50.0.1
+temporalio: 1.33.0
+database_image: pgvector/pgvector:pg16
+database_server: PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2) on aarch64-unknown-linux-gnu
+profile: config/profiles/tranche-b-offer.yaml version 1
+tenant: iap-probe-2026-10-24

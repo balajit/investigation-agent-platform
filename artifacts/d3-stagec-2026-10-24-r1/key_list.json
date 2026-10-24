@@ -1,0 +1,1 @@
+{"keys":[{"algorithm":"Ed25519","key_id":"dev-stagec-2026-10-24-01","key_reference":"run-set d3-stagec-2026-10-24-r1 dev key (public bytes in RUN_LOG.md; private held by operator outside the repo, never committed)","revoked":false,"valid_from":"2026-10-24T20:45:45Z","valid_until":null}],"schema":"key-list/v1"}

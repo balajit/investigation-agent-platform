@@ -101,6 +101,7 @@ with workflow.unsafe.imports_passed_through():
     # (canonical digests only — deterministic, replay-safe). The
     # workflow never branches on the paired output.
     from investigation_agent_platform.domain.proof.definition_shadow import (
+        build_correlation_envelope,
         pair_receipt,
         summarize_shadow_definitions,
     )
@@ -1950,7 +1951,35 @@ class RunInvestigationWorkflow:
                     definition_receipt_index += len(_new_envelopes)
                     definition_shadow_duplicates += int(_new_duplicates or 0)
             except Exception:
-                pass
+                # A pairing failure must never silently drop observations:
+                # log loudly and record one capture-error envelope with
+                # fully static content, so the loss is counted in
+                # capture-health (summary capture_errors) instead of
+                # vanishing. Control flow is never altered.
+                workflow.logger.exception(
+                    "definition shadow receipt pairing failed; recording capture-error envelope"
+                )
+                _new_envelopes = [
+                    build_correlation_envelope(
+                        {
+                            "capture_error": True,
+                            "reason": "pairing-fault",
+                            "input_set": "BOUND_FULL",
+                        },
+                        iteration,
+                        definition_receipt_index,
+                        {
+                            "verified": False,
+                            "status": "pairing-fault",
+                            "confidence": None,
+                            "hypothesis_id": "",
+                            "producing_path": "",
+                        },
+                        {},
+                    )
+                ]
+                definition_shadow_trace.extend(_new_envelopes)
+                definition_receipt_index += len(_new_envelopes)
 
             input_state = await _maybe_handle_input_required(verify_res.data, "VERIFYING")
             if input_state == "cancelled":
