@@ -35,3 +35,25 @@ Private key at tmp/keys/d3-stagec-2026-10-24-r2.key (0600, gitignored, never com
 
 sha256sum artifacts/<RS>/*.txt artifacts/<RS>/*.json  # compare to digests in freeze.json
 (ledger attempt ids are deterministic in run_set_id+seq+fixture+case.)
+
+## Shadow arm execution (live)
+- Battery tag: 20261024T215555 (logs: tmp/shadow_arm_r2.log, report: reports/d3-stagec-2026-10-24-r2-shadow.md).
+- Plan order = reservation order: L1#seq1, L2#seq2, L3#seq3, L4#seq4, L5#seq5, L8#seq6.
+- Worker: single poller with IAP_SHADOW_TYPED_DEFINITIONS=1 (verified via ps eww at restart).
+
+## Control arm execution (live, worker flag unset)
+- Battery tag: 20261024T220159 (logs: tmp/control_arm_r2.log, report: reports/d3-stagec-2026-10-24-r2-control.md).
+- L1/L2/L5/L8: fresh flag-off executions. L3/L4: CANCELLED serve_cached (platform disposition case B re-verified the shadow conclusions CONFIRMED and served them without running) — NOT independent executions; verdicts agree (PASS==PASS) but error-behavior comparison is vacuous for these two pairs.
+- D3 shadow keys ABSENT from all 6 control rows' telemetry (artifact absence holds).
+
+## COLLECTION STOPPED 2026-10-24 ~22:05 UTC — §6.2g stop rule (operator abort)
+- L2 diverged natively: shadow FAIL/INSUFFICIENT_EVIDENCE (45s struggle run) vs control PASS/ANSWERED (fresh 15s run).
+- Variance context: L2 passed in 5/6 flag-ON runs (r1-shadow, 4x scratch) and 1/1 flag-OFF; the single FAIL occurred flag-ON but matches no arm pattern. Owner classifies interference vs variance; until then no parity claim, no further collection.
+- Control artifact: artifacts/d3-stagec-2026-10-24-r2/control-artifact.json (pairing re-derived from workflow history; L3/L4 have no workflow history — recorded explicitly).
+- Budget consumed: 6/48 reservations. Remaining 42 unspent; no repeats run after the stop.
+
+## Owner classification + verdict (2026-10-24)
+- L2 divergence classified as **variance** (not interference): single FAIL across 6 flag-ON + 1 flag-OFF executions with no arm pattern.
+- Control arm ruled **sufficient** (4 fresh flag-off runs + 2 re-verified cached verdicts with recorded caveats).
+- Run-set verdict: **INSUFFICIENT** — stands as collected, kept open. As the logic evolves, future runs may converge on L2 or earn a focused fix. No further collection under r2; no parity claim.
+- Verdict: move on.
