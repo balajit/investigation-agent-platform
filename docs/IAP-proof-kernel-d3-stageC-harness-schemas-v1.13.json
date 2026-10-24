@@ -1,0 +1,2176 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "iap:d3-stagec:registry/v12",
+ "$defs": {
+  "sha256": {
+   "type": "string",
+   "pattern": "^sha256:[0-9a-f]{64}$"
+  },
+  "text": {
+   "type": "string",
+   "minLength": 1
+  },
+  "cell": {
+   "enum": [
+    "accept-PASS",
+    "accept-FAIL",
+    "nonaccept-PASS",
+    "nonaccept-FAIL"
+   ]
+  },
+  "runState": {
+   "enum": [
+    "PREPARED",
+    "FROZEN",
+    "COLLECTING",
+    "VOID_TERMINAL",
+    "CLOSED_INSUFFICIENT",
+    "CLOSED_FEASIBILITY",
+    "REPORTED_INSUFFICIENT",
+    "REPORTED_FEASIBILITY"
+   ]
+  },
+  "disposition": {
+   "enum": [
+    "RESERVED",
+    "ELIGIBLE",
+    "EXCLUDED",
+    "NON_ELIGIBLE",
+    "VOID_CONTRIBUTING"
+   ]
+  },
+  "reportVerdict": {
+   "enum": [
+    "INSUFFICIENT_EVIDENCE",
+    "HOLD",
+    "FEASIBILITY_DEMONSTRATED"
+   ]
+  },
+  "shadowOutcome": {
+   "enum": [
+    "OBSERVATION_ADMISSIBLE",
+    "ABSTAINED",
+    "UNAVAILABLE",
+    "SHADOW_FAILED"
+   ]
+  },
+  "identity": {
+   "type": "object",
+   "required": [
+    "namespace",
+    "workflow_id",
+    "workflow_run_id",
+    "activity_id",
+    "attempt"
+   ],
+   "properties": {
+    "namespace": {
+     "$ref": "#/$defs/text"
+    },
+    "workflow_id": {
+     "$ref": "#/$defs/text"
+    },
+    "workflow_run_id": {
+     "$ref": "#/$defs/text"
+    },
+    "activity_id": {
+     "$ref": "#/$defs/text"
+    },
+    "attempt": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "additionalProperties": false
+  },
+  "cohort": {
+   "type": "object",
+   "required": [
+    "fixture_id",
+    "fixture_version",
+    "case_id",
+    "prompt_hash"
+   ],
+   "properties": {
+    "fixture_id": {
+     "$ref": "#/$defs/text"
+    },
+    "fixture_version": {
+     "$ref": "#/$defs/sha256"
+    },
+    "case_id": {
+     "$ref": "#/$defs/text"
+    },
+    "prompt_hash": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "decisions": {
+   "type": "object",
+   "required": [
+    "OD-01",
+    "OD-02",
+    "D-01",
+    "BUD-01",
+    "DIGEST-01",
+    "ID-01",
+    "CAPTURE-01"
+   ],
+   "properties": {
+    "OD-01": {
+     "$ref": "#/$defs/sha256"
+    },
+    "OD-02": {
+     "$ref": "#/$defs/sha256"
+    },
+    "D-01": {
+     "$ref": "#/$defs/sha256"
+    },
+    "BUD-01": {
+     "$ref": "#/$defs/sha256"
+    },
+    "DIGEST-01": {
+     "$ref": "#/$defs/sha256"
+    },
+    "ID-01": {
+     "$ref": "#/$defs/sha256"
+    },
+    "CAPTURE-01": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "freeze": {
+   "type": "object",
+   "required": [
+    "authority_flag_state",
+    "budget_preimage",
+    "budget_rule_hash",
+    "capture_hash",
+    "capture_preimage",
+    "cell_budget",
+    "code_revision",
+    "cohort",
+    "comparison_hash",
+    "comparison_preimage",
+    "control_hash",
+    "control_preimage",
+    "decisions",
+    "dependency_hash",
+    "dependency_preimage",
+    "exclusion_hash",
+    "exclusion_preimage",
+    "flags",
+    "freeze_hash",
+    "harness_version",
+    "key_list_ref",
+    "prompts",
+    "protocol_hash",
+    "run_set_id",
+    "schema",
+    "total_reservations_max",
+    "tree_hash"
+   ],
+   "properties": {
+    "schema": {
+     "const": "freeze/v4"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "protocol_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "code_revision": {
+     "$ref": "#/$defs/text"
+    },
+    "tree_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "flags": {
+     "type": "object",
+     "required": [
+      "IAP_SHADOW_TYPED_DEFINITIONS"
+     ],
+     "properties": {
+      "IAP_SHADOW_TYPED_DEFINITIONS": {
+       "const": "1"
+      }
+     },
+     "additionalProperties": false
+    },
+    "authority_flag_state": {
+     "const": "MUST_BE_ABSENT"
+    },
+    "cohort": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "$ref": "#/$defs/cohort"
+     },
+     "uniqueItems": true
+    },
+    "prompts": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "required": [
+       "prompt_id",
+       "hash"
+      ],
+      "properties": {
+       "prompt_id": {
+        "$ref": "#/$defs/text"
+       },
+       "hash": {
+        "$ref": "#/$defs/sha256"
+       }
+      },
+      "additionalProperties": false
+     }
+    },
+    "comparison_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "cell_budget": {
+     "type": "object",
+     "required": [
+      "accept-PASS",
+      "accept-FAIL",
+      "nonaccept-PASS",
+      "nonaccept-FAIL"
+     ],
+     "properties": {
+      "accept-PASS": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 12
+      },
+      "accept-FAIL": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 12
+      },
+      "nonaccept-PASS": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 12
+      },
+      "nonaccept-FAIL": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 12
+      }
+     },
+     "additionalProperties": false
+    },
+    "budget_rule_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "control_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "exclusion_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "capture_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "dependency_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "harness_version": {
+     "$ref": "#/$defs/text"
+    },
+    "decisions": {
+     "$ref": "#/$defs/decisions"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "comparison_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "budget_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "control_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "exclusion_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "capture_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "dependency_preimage": {
+     "$ref": "#/$defs/rulePreimage"
+    },
+    "total_reservations_max": {
+     "const": 48
+    },
+    "key_list_ref": {
+     "$ref": "#/$defs/rulePreimage",
+     "description": "Digest-bound reference to the frozen key-list artifact (key-list/v1)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "attempt": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "freeze_hash",
+    "seq",
+    "id",
+    "fixture_id",
+    "fixture_version",
+    "case_id",
+    "budget_token",
+    "parent_id",
+    "state_version",
+    "disposition",
+    "reason",
+    "receipts",
+    "digest"
+   ],
+   "properties": {
+    "schema": {
+     "const": "attempt/v1"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "seq": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "id": {
+     "$ref": "#/$defs/sha256"
+    },
+    "fixture_id": {
+     "$ref": "#/$defs/text"
+    },
+    "fixture_version": {
+     "$ref": "#/$defs/sha256"
+    },
+    "case_id": {
+     "$ref": "#/$defs/text"
+    },
+    "budget_token": {
+     "$ref": "#/$defs/text"
+    },
+    "parent_id": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "state_version": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "disposition": {
+     "$ref": "#/$defs/disposition"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/reasonCode"
+      }
+     ]
+    },
+    "receipts": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/text"
+     },
+     "uniqueItems": true
+    },
+    "digest": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "receipt": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "id",
+    "event",
+    "workflow_id",
+    "workflow_run_id",
+    "order",
+    "iteration",
+    "activity",
+    "payload_ref",
+    "payload_digest",
+    "previous_digest"
+   ],
+   "properties": {
+    "schema": {
+     "const": "receipt/v2"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "id": {
+     "$ref": "#/$defs/text"
+    },
+    "event": {
+     "enum": [
+      "VERIFY_COMPLETED",
+      "CONCLUDE_COMPLETED",
+      "CAPTURE_EVENT"
+     ]
+    },
+    "workflow_id": {
+     "$ref": "#/$defs/text"
+    },
+    "workflow_run_id": {
+     "$ref": "#/$defs/text"
+    },
+    "order": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "iteration": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "activity": {
+     "$ref": "#/$defs/identity"
+    },
+    "payload_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "payload_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "previous_digest": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/sha256"
+      }
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "state": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "freeze_hash",
+    "state",
+    "version",
+    "last_transition",
+    "ledger_head"
+   ],
+   "properties": {
+    "schema": {
+     "const": "state/v2"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "state": {
+     "enum": [
+      "PREPARED",
+      "FROZEN",
+      "COLLECTING",
+      "VOID_TERMINAL",
+      "CLOSED_INSUFFICIENT",
+      "CLOSED_FEASIBILITY",
+      "REPORTED_INSUFFICIENT",
+      "REPORTED_FEASIBILITY"
+     ]
+    },
+    "version": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "last_transition": {
+     "$ref": "#/$defs/transitionName"
+    },
+    "ledger_head": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "manifest": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "freeze_hash",
+    "protocol_hash",
+    "cohort",
+    "attempts",
+    "artifacts",
+    "terminal_ref",
+    "harness_version"
+   ],
+   "properties": {
+    "schema": {
+     "const": "manifest/v1"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "protocol_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "cohort": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/cohort"
+     },
+     "uniqueItems": true
+    },
+    "attempts": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/text"
+     },
+     "uniqueItems": true
+    },
+    "artifacts": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "path",
+       "digest"
+      ],
+      "properties": {
+       "path": {
+        "$ref": "#/$defs/text"
+       },
+       "digest": {
+        "$ref": "#/$defs/sha256"
+       }
+      },
+      "additionalProperties": false
+     },
+     "uniqueItems": true
+    },
+    "terminal_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "harness_version": {
+     "$ref": "#/$defs/text"
+    }
+   },
+   "additionalProperties": false
+  },
+  "perTurn": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "count_key",
+    "activity",
+    "iteration",
+    "receipt_index",
+    "input_set",
+    "tap",
+    "native",
+    "shadow",
+    "bundle_digest",
+    "envelope_digest",
+    "cell",
+    "eligibility",
+    "disposition",
+    "reasons"
+   ],
+   "properties": {
+    "schema": {
+     "const": "turn/v2"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "count_key": {
+     "type": "array",
+     "prefixItems": [
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "type": "integer",
+       "minimum": 0
+      },
+      {
+       "enum": [
+        "BOUND_FULL",
+        "CITED_LOCATION",
+        "CONCLUDE_GATE"
+       ]
+      },
+      {
+       "$ref": "#/$defs/sha256"
+      }
+     ],
+     "minItems": 6,
+     "maxItems": 6,
+     "description": "Fixed order: (run_set_id, investigation_id, hypothesis_id, iteration, input_set, envelope_digest)."
+    },
+    "activity": {
+     "$ref": "#/$defs/identity"
+    },
+    "iteration": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "receipt_index": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "input_set": {
+     "enum": [
+      "BOUND_FULL",
+      "CITED_LOCATION",
+      "CONCLUDE_GATE"
+     ]
+    },
+    "tap": {
+     "enum": [
+      "T1",
+      "T2a",
+      "T2b",
+      "T3"
+     ]
+    },
+    "native": {
+     "type": "object",
+     "required": [
+      "verified",
+      "status",
+      "confidence",
+      "hypothesis_id",
+      "producing_path"
+     ],
+     "properties": {
+      "verified": {
+       "type": "boolean"
+      },
+      "status": {
+       "$ref": "#/$defs/text"
+      },
+      "confidence": {
+       "type": [
+        "object",
+        "null"
+       ]
+      },
+      "hypothesis_id": {
+       "$ref": "#/$defs/text"
+      },
+      "producing_path": {
+       "$ref": "#/$defs/text"
+      }
+     },
+     "additionalProperties": false
+    },
+    "shadow": {
+     "type": "object",
+     "required": [
+      "observation_id",
+      "outcome",
+      "stage1",
+      "reason",
+      "scope",
+      "declaration_requirement_satisfied"
+     ],
+     "properties": {
+      "observation_id": {
+       "$ref": "#/$defs/sha256"
+      },
+      "outcome": {
+       "$ref": "#/$defs/shadowOutcome"
+      },
+      "stage1": {
+       "enum": [
+        "ASSOCIATION_ADMISSIBLE",
+        "ABSTAINED",
+        "UNAVAILABLE"
+       ]
+      },
+      "reason": {
+       "$ref": "#/$defs/observationReason"
+      },
+      "scope": {
+       "const": "source-range-only"
+      },
+      "declaration_requirement_satisfied": {
+       "const": false
+      }
+     },
+     "additionalProperties": false
+    },
+    "bundle_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "envelope_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "cell": {
+     "$ref": "#/$defs/cell"
+    },
+    "eligibility": {
+     "enum": [
+      "ELIGIBLE",
+      "EXCLUDED",
+      "NON_ELIGIBLE",
+      "VOID"
+     ]
+    },
+    "disposition": {
+     "$ref": "#/$defs/disposition"
+    },
+    "reasons": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/reasonCode"
+     },
+     "uniqueItems": true
+    }
+   },
+   "additionalProperties": false
+  },
+  "terminal": {
+   "type": "object",
+   "required": [
+    "schema",
+    "run_set_id",
+    "freeze_hash",
+    "state",
+    "reason",
+    "attempt_seq",
+    "capture",
+    "cells",
+    "digest"
+   ],
+   "properties": {
+    "schema": {
+     "const": "terminal/v2"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "state": {
+     "enum": [
+      "VOID_TERMINAL",
+      "CLOSED_INSUFFICIENT",
+      "CLOSED_FEASIBILITY"
+     ]
+    },
+    "reason": {
+     "$ref": "#/$defs/terminalReason"
+    },
+    "attempt_seq": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "capture": {
+     "type": "object",
+     "required": [
+      "evaluator_failures",
+      "capture_errors",
+      "telemetry_omissions"
+     ],
+     "properties": {
+      "evaluator_failures": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "capture_errors": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "telemetry_omissions": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "cells": {
+     "type": "object",
+     "required": [
+      "accept-PASS",
+      "accept-FAIL",
+      "nonaccept-PASS",
+      "nonaccept-FAIL"
+     ],
+     "properties": {
+      "accept-PASS": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "accept-FAIL": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "nonaccept-PASS": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "nonaccept-FAIL": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "digest": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "metric": {
+   "type": "object",
+   "required": [
+    "denominator",
+    "exclusions",
+    "formula_ref",
+    "id",
+    "measure_kind",
+    "numerator"
+   ],
+   "properties": {
+    "id": {
+     "$ref": "#/$defs/metricId"
+    },
+    "numerator": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "denominator": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "type": "integer",
+       "minimum": 0
+      }
+     ]
+    },
+    "exclusions": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "reason",
+       "count"
+      ],
+      "properties": {
+       "reason": {
+        "$ref": "#/$defs/reasonCode"
+       },
+       "uniqueItems": true,
+       "count": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "additionalProperties": false
+     },
+     "uniqueItems": true,
+     "description": "Exclusions broken down by closed reason code; unknown reasons rejected."
+    },
+    "formula_ref": {
+     "$ref": "#/$defs/sha256",
+     "description": "SHA-256 of the single precisely defined preimage: domain `iap:d3-stagec:metric-formula/v1` || 0x00 || canonical formula bytes. Canonical formula bytes: one `key: value` line each for metric, numerator, denominator, population, exclusions, missing (in that exact field order, NOT sorted keys), UTF-8, LF endings, single trailing newline. Formula text frozen per metric ID."
+    },
+    "measure_kind": {
+     "enum": [
+      "COUNT",
+      "RATIO"
+     ]
+    }
+   },
+   "additionalProperties": false,
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "measure_kind": {
+        "const": "COUNT"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "denominator": {
+        "type": "null"
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "measure_kind": {
+        "const": "RATIO"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "denominator": {
+        "type": "integer",
+        "minimum": 0
+       }
+      }
+     }
+    }
+   ]
+  },
+  "tapCount": {
+   "type": "object",
+   "required": [
+    "population",
+    "eligible",
+    "excluded",
+    "divergences"
+   ],
+   "properties": {
+    "population": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "eligible": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "excluded": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "divergences": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "additionalProperties": false
+  },
+  "control": {
+   "type": "object",
+   "required": [
+    "capture_hash",
+    "code_revision",
+    "control_order",
+    "counterpart_ref",
+    "database",
+    "fixture_id",
+    "fixture_version",
+    "match",
+    "outcome_digest",
+    "prompt_hash",
+    "sequence",
+    "tenant",
+    "counterpart"
+   ],
+   "properties": {
+    "fixture_id": {
+     "$ref": "#/$defs/text"
+    },
+    "fixture_version": {
+     "$ref": "#/$defs/sha256"
+    },
+    "prompt_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "code_revision": {
+     "$ref": "#/$defs/text"
+    },
+    "sequence": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "match": {
+     "enum": [
+      "MATCHED",
+      "UNMATCHED",
+      "DUPLICATE",
+      "MISMATCH"
+     ]
+    },
+    "outcome_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "tenant": {
+     "$ref": "#/$defs/text"
+    },
+    "database": {
+     "$ref": "#/$defs/text"
+    },
+    "capture_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "counterpart_ref": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/text"
+      }
+     ]
+    },
+    "control_order": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "counterpart": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/controlCounterpart"
+      }
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "controlCounterpart": {
+   "type": "object",
+   "required": [
+    "fixture_id",
+    "fixture_version",
+    "prompt_hash",
+    "code_revision",
+    "tenant",
+    "database",
+    "capture_hash",
+    "counterpart_ref",
+    "control_order"
+   ],
+   "properties": {
+    "fixture_id": {
+     "$ref": "#/$defs/text"
+    },
+    "fixture_version": {
+     "$ref": "#/$defs/sha256"
+    },
+    "prompt_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "code_revision": {
+     "$ref": "#/$defs/text"
+    },
+    "tenant": {
+     "$ref": "#/$defs/text"
+    },
+    "database": {
+     "$ref": "#/$defs/text"
+    },
+    "capture_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "counterpart_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "control_order": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "additionalProperties": false
+  },
+  "divergence": {
+   "type": "object",
+   "required": [
+    "tap",
+    "count_key",
+    "e_class",
+    "native",
+    "shadow"
+   ],
+   "properties": {
+    "tap": {
+     "enum": [
+      "T1",
+      "T2a",
+      "T2b",
+      "T3"
+     ]
+    },
+    "count_key": {
+     "type": "array"
+    },
+    "e_class": {
+     "enum": [
+      "E1",
+      "E2",
+      "E3",
+      "E4"
+     ]
+    },
+    "native": {
+     "$ref": "#/$defs/text"
+    },
+    "shadow": {
+     "$ref": "#/$defs/shadowOutcome"
+    }
+   },
+   "additionalProperties": false
+  },
+  "report": {
+   "type": "object",
+   "required": [
+    "accounting",
+    "capture",
+    "cells",
+    "classes",
+    "conclusion",
+    "controls",
+    "divergences",
+    "freeze_hash",
+    "harness_version",
+    "limitations",
+    "manifest_digest",
+    "metrics",
+    "populations",
+    "run_set_id",
+    "schema",
+    "taps",
+    "terminal_ref",
+    "verdict"
+   ],
+   "properties": {
+    "schema": {
+     "const": "report/v3"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "terminal_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "manifest_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "harness_version": {
+     "$ref": "#/$defs/text"
+    },
+    "populations": {
+     "type": "object",
+     "required": [
+      "D-01",
+      "T1",
+      "T2a",
+      "T2b",
+      "T3"
+     ],
+     "properties": {
+      "D-01": {
+       "$ref": "#/$defs/sha256"
+      },
+      "T1": {
+       "$ref": "#/$defs/text"
+      },
+      "T2a": {
+       "$ref": "#/$defs/text"
+      },
+      "T2b": {
+       "$ref": "#/$defs/text"
+      },
+      "T3": {
+       "$ref": "#/$defs/text"
+      }
+     },
+     "additionalProperties": false
+    },
+    "metrics": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/metric"
+     }
+    },
+    "classes": {
+     "type": "object",
+     "required": [
+      "native_verified",
+      "native_rejection",
+      "native_abstention",
+      "native_error",
+      "shadow_failure",
+      "capture_failure",
+      "ambiguous_join"
+     ],
+     "properties": {
+      "native_verified": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "native_rejection": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "native_abstention": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "native_error": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "shadow_failure": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "capture_failure": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "ambiguous_join": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "capture": {
+     "type": "object",
+     "required": [
+      "evaluator_failures",
+      "capture_errors",
+      "telemetry_omissions",
+      "dropped",
+      "duplicates"
+     ],
+     "properties": {
+      "evaluator_failures": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "capture_errors": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "telemetry_omissions": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "dropped": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "duplicates": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "cells": {
+     "type": "object",
+     "required": [
+      "accept-PASS",
+      "accept-FAIL",
+      "nonaccept-PASS",
+      "nonaccept-FAIL"
+     ],
+     "properties": {
+      "accept-PASS": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "accept-FAIL": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "nonaccept-PASS": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "nonaccept-FAIL": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "taps": {
+     "type": "object",
+     "required": [
+      "T1",
+      "T2a",
+      "T2b",
+      "T3"
+     ],
+     "properties": {
+      "T1": {
+       "$ref": "#/$defs/tapCount"
+      },
+      "T2a": {
+       "$ref": "#/$defs/tapCount"
+      },
+      "T2b": {
+       "$ref": "#/$defs/tapCount"
+      },
+      "T3": {
+       "$ref": "#/$defs/tapCount"
+      }
+     },
+     "additionalProperties": false
+    },
+    "controls": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/control"
+     }
+    },
+    "divergences": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/divergence"
+     }
+    },
+    "limitations": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/limitationCode"
+     },
+     "uniqueItems": true
+    },
+    "verdict": {
+     "$ref": "#/$defs/reportVerdict"
+    },
+    "conclusion": {
+     "enum": [
+      "INSUFFICIENT_EVIDENCE",
+      "HOLD",
+      "MINIMUM_COVERAGE_MAY_WARRANT_PROPOSING_LARGER_SAMPLE"
+     ]
+    },
+    "accounting": {
+     "type": "object",
+     "required": [
+      "total_reservations",
+      "eligible",
+      "excluded",
+      "non_eligible",
+      "void_contributing",
+      "reserved_open"
+     ],
+     "properties": {
+      "total_reservations": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "eligible": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "excluded": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "non_eligible": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "void_contributing": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "reserved_open": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false,
+     "description": "Every reservation accounted exactly once. Terminal reports require reserved_open == 0 and eligible+excluded+non_eligible+void_contributing == total_reservations."
+    }
+   },
+   "additionalProperties": false
+  },
+  "ownerAuthorization": {
+   "type": "object",
+   "required": [
+    "algorithm",
+    "approval_ref",
+    "approved_at",
+    "approver",
+    "decision_digest",
+    "decision_type",
+    "evidence_ref",
+    "freeze_hash",
+    "key_id",
+    "run_set_id",
+    "schema",
+    "signature",
+    "signed_digest"
+   ],
+   "properties": {
+    "schema": {
+     "const": "owner-authorization/v5"
+    },
+    "approval_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256",
+     "description": "Freeze this authorization applies to; must equal the independently recomputed freeze digest (checked separately from signature verification)."
+    },
+    "decision_type": {
+     "enum": [
+      "FREEZE_APPROVAL",
+      "IMPLEMENTATION_AUTHORIZATION",
+      "STAGE_C_PROBE_AUTHORIZATION"
+     ]
+    },
+    "decision_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "approver": {
+     "$ref": "#/$defs/text"
+    },
+    "approved_at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "evidence_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "signature": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Detached Ed25519 signature (base64, standard encoding) by `key_id` over the signed preimage."
+    },
+    "key_id": {
+     "$ref": "#/$defs/text"
+    },
+    "signed_digest": {
+     "$ref": "#/$defs/sha256",
+     "description": "Signed preimage (normative, SC-V16-01): domain || 0x00 || canonical bytes of this record excluding BOTH `signature` and `signed_digest`, where canonical bytes are harness canonical bytes (\u00a75: UTF-8 JSON, sorted object keys, compact separators, NFC strings, duplicate keys/floats rejected, arrays in defined order, no trailing newline). `signed_digest` MUST equal SHA-256 of that exact preimage. No equality is required \u2014 or permitted to be assumed \u2014 between `signed_digest` and any freeze hash: freeze binding is established separately by requiring the signed record's `freeze_hash` field to equal an independently recomputed and validated freeze digest. Domain: `iap:d3-stagec:owner-authorization/v5`."
+    },
+    "algorithm": {
+     "const": "Ed25519",
+     "description": "Only permitted signature algorithm and encoding (base64, standard)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "reasonCode": {
+   "enum": [
+    "JOIN_OK",
+    "RECORDED_EXCLUDED",
+    "NON_ELIGIBLE_NO_CANDIDATE",
+    "NON_ELIGIBLE_NON_V2",
+    "TRUNCATED_AWAY",
+    "DUPLICATE_EXACT",
+    "SUPERSEDED_PRESENT_EXCLUDED",
+    "CONTROL_ARM",
+    "CAPTURE_ERROR",
+    "AMBIGUOUS_JOIN",
+    "VOID_CONTRIBUTING",
+    "BUDGET_EXCEEDED",
+    "PRODUCING_PATH_MISSING",
+    "DIGEST_MISMATCH",
+    "TELEMETRY_OMISSION_PATH_A",
+    "TELEMETRY_OMISSION_PATH_B_UNEXPLAINED",
+    "BUDGET_RESERVED_CELL_MISMATCH"
+   ]
+  },
+  "terminalReason": {
+   "enum": [
+    "FEASIBILITY_PROVEN",
+    "BUDGET_EXHAUSTED_FLOOR_UNMET",
+    "OPERATOR_ABORT_NO_INVALIDATION",
+    "FREEZE_INVALIDATED",
+    "CAPTURE_TRANSPORT_ERROR",
+    "AMBIGUOUS_JOIN",
+    "DIGEST_MISMATCH",
+    "BUDGET_CAP_EXCEEDED",
+    "STOPPED_FLOOR_UNMET",
+    "EXHAUSTED_AFTER_SUCCESS_IMPOSSIBLE"
+   ]
+  },
+  "transitionName": {
+   "enum": [
+    "INITIALIZE",
+    "VERIFY_OWNER_AUTHORIZATION",
+    "FIRST_RESERVATION",
+    "RECORD_ATTEMPT",
+    "INVALIDATE",
+    "ABORT",
+    "EXHAUST_INSUFFICIENT",
+    "CLOSE_FEASIBILITY",
+    "REPORT_INSUFFICIENT",
+    "REPORT_FEASIBILITY"
+   ]
+  },
+  "limitationCode": {
+   "enum": [
+    "DIAGNOSTIC_ONLY_NO_PARITY",
+    "CAPTURE_HEALTH_SEPARATE",
+    "DIVERGENCES_SEPARATE_NO_POOLING",
+    "HARNESS_LOSS_RESIDUAL_UNMEASURABLE",
+    "TRUNCATION_PREFIX256_EXCLUDED",
+    "CONTROL_BOUNDED_LIVE_COMPLEMENT",
+    "DIGEST_SINGLE_FORMULA_PENDING_DIGEST_01",
+    "BUDGET_ALLOCATOR_PENDING_BUD_01",
+    "OMISSION_PATH_A_COUNTED",
+    "OMISSION_PATH_B_VOID",
+    "RATIO_UNDEFINED_ZERO_DENOMINATOR"
+   ]
+  },
+  "metricId": {
+   "enum": [
+    "ELIGIBLE_T1_COUNT",
+    "CELL_ACCEPT_PASS",
+    "CELL_ACCEPT_FAIL",
+    "CELL_NONACCEPT_PASS",
+    "CELL_NONACCEPT_FAIL",
+    "CAPTURE_HEALTH",
+    "PER_TAP_T1",
+    "PER_TAP_T2a",
+    "PER_TAP_T2b",
+    "PER_TAP_T3",
+    "CONTROL_MATCH"
+   ]
+  },
+  "omissionPath": {
+   "enum": [
+    "PATH_A_FLAGGED",
+    "PATH_B_UNEXPLAINED",
+    "HARNESS_LOSS_RESIDUAL"
+   ]
+  },
+  "rulePreimage": {
+   "type": "object",
+   "required": [
+    "path",
+    "digest"
+   ],
+   "properties": {
+    "path": {
+     "$ref": "#/$defs/text"
+    },
+    "digest": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "omission": {
+   "type": "object",
+   "required": [
+    "path",
+    "disposition",
+    "budget_consumed"
+   ],
+   "properties": {
+    "path": {
+     "$ref": "#/$defs/omissionPath"
+    },
+    "disposition": {
+     "enum": [
+      "COUNTED_EXCLUDED",
+      "VOID_TERMINAL",
+      "STATED_LIMITATION"
+     ]
+    },
+    "budget_consumed": {
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "observationReason": {
+   "enum": [
+    "STAGE1_ADMISSIBLE",
+    "UNAVAILABLE_INPUT",
+    "EVALUATOR_ABSTAIN",
+    "SHADOW_FAILED_SAFE",
+    "CURRENCY_UNKNOWN",
+    "PROVENANCE_UNVERIFIED",
+    "TRUNCATED_SOURCE",
+    "DUPLICATE_OBSERVATION"
+   ]
+  },
+  "attestation": {
+   "type": "object",
+   "required": [
+    "algorithm",
+    "attested_at",
+    "code_revision",
+    "database",
+    "dependency_hash",
+    "flags",
+    "freeze_hash",
+    "key_id",
+    "run_set_id",
+    "schema",
+    "signature",
+    "signed_digest",
+    "tenant",
+    "tree_hash",
+    "wrapper_id"
+   ],
+   "properties": {
+    "schema": {
+     "const": "runtime-attestation/v4"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "freeze_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "wrapper_id": {
+     "$ref": "#/$defs/text"
+    },
+    "code_revision": {
+     "$ref": "#/$defs/text"
+    },
+    "tree_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "flags": {
+     "type": "object",
+     "required": [
+      "IAP_SHADOW_TYPED_DEFINITIONS"
+     ],
+     "properties": {
+      "IAP_SHADOW_TYPED_DEFINITIONS": {
+       "const": "1"
+      }
+     },
+     "additionalProperties": false
+    },
+    "tenant": {
+     "$ref": "#/$defs/text"
+    },
+    "database": {
+     "$ref": "#/$defs/text"
+    },
+    "dependency_hash": {
+     "$ref": "#/$defs/sha256"
+    },
+    "signature": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Detached Ed25519 signature (base64, standard encoding) by `key_id` over the signed preimage."
+    },
+    "key_id": {
+     "$ref": "#/$defs/text"
+    },
+    "signed_digest": {
+     "$ref": "#/$defs/sha256",
+     "description": "Signed preimage (normative, SC-V16-01): domain || 0x00 || canonical bytes of this record excluding BOTH `signature` and `signed_digest`, where canonical bytes are harness canonical bytes (\u00a75: UTF-8 JSON, sorted object keys, compact separators, NFC strings, duplicate keys/floats rejected, arrays in defined order, no trailing newline). `signed_digest` MUST equal SHA-256 of that exact preimage. No equality is required \u2014 or permitted to be assumed \u2014 between `signed_digest` and any freeze hash: freeze binding is established separately by requiring the signed record's `freeze_hash` field to equal an independently recomputed and validated freeze digest. Domain: `iap:d3-stagec:runtime-attestation/v4`."
+    },
+    "attested_at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "algorithm": {
+     "const": "Ed25519",
+     "description": "Only permitted signature algorithm and encoding (base64, standard)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "keyList": {
+   "type": "object",
+   "required": [
+    "schema",
+    "keys"
+   ],
+   "properties": {
+    "schema": {
+     "const": "key-list/v1"
+    },
+    "keys": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "required": [
+       "key_id",
+       "algorithm",
+       "valid_from",
+       "revoked",
+       "key_reference"
+      ],
+      "properties": {
+       "key_id": {
+        "$ref": "#/$defs/text"
+       },
+       "algorithm": {
+        "const": "Ed25519"
+       },
+       "valid_from": {
+        "type": "string",
+        "format": "date-time"
+       },
+       "valid_until": {
+        "type": [
+         "string",
+         "null"
+        ],
+        "format": "date-time"
+       },
+       "revoked": {
+        "type": "boolean"
+       },
+       "key_reference": {
+        "$ref": "#/$defs/text",
+        "description": "Opaque reference to key material; never a secret."
+       }
+      },
+      "additionalProperties": false
+     },
+     "uniqueItems": true
+    }
+   },
+   "additionalProperties": false
+  },
+  "requiredMetricSet": {
+   "description": "Closed, authoritative metric set. Every report MUST contain exactly these metric IDs, each with the formula_ref digest of its pinned canonical formula bytes in $defs.formulasText; no missing, extra, or substituted definitions.",
+   "const": [
+    "ELIGIBLE_T1_COUNT",
+    "CELL_ACCEPT_PASS",
+    "CELL_ACCEPT_FAIL",
+    "CELL_NONACCEPT_PASS",
+    "CELL_NONACCEPT_FAIL",
+    "CAPTURE_HEALTH",
+    "PER_TAP_T1",
+    "PER_TAP_T2a",
+    "PER_TAP_T2b",
+    "PER_TAP_T3",
+    "CONTROL_MATCH"
+   ]
+  },
+  "captureEventKind": {
+   "enum": [
+    "evaluator_failure",
+    "capture_error",
+    "telemetry_omission",
+    "dropped",
+    "duplicate"
+   ]
+  },
+  "captureEvent": {
+   "type": "object",
+   "required": [
+    "kind"
+   ],
+   "properties": {
+    "kind": {
+     "$ref": "#/$defs/captureEventKind"
+    }
+   },
+   "additionalProperties": false
+  },
+  "caseReceipt": {
+   "type": "object",
+   "required": [
+    "schema",
+    "id",
+    "run_set_id",
+    "workflow_id",
+    "workflow_run_id",
+    "iteration",
+    "order",
+    "activity",
+    "payload_digest",
+    "previous_digest"
+   ],
+   "properties": {
+    "schema": {
+     "const": "receipt/v2"
+    },
+    "id": {
+     "$ref": "#/$defs/text"
+    },
+    "run_set_id": {
+     "$ref": "#/$defs/text"
+    },
+    "workflow_id": {
+     "$ref": "#/$defs/text"
+    },
+    "workflow_run_id": {
+     "$ref": "#/$defs/text"
+    },
+    "iteration": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "order": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "activity": {
+     "$ref": "#/$defs/identity"
+    },
+    "payload_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "previous_digest": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/sha256"
+      }
+     ]
+    },
+    "event": {
+     "enum": [
+      "VERIFY_COMPLETED",
+      "CONCLUDE_COMPLETED"
+     ]
+    },
+    "payload_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "capture_error": {
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "caseAttempt": {
+   "type": "object",
+   "required": [
+    "id",
+    "disposition"
+   ],
+   "properties": {
+    "id": {
+     "$ref": "#/$defs/text"
+    },
+    "disposition": {
+     "enum": [
+      "ELIGIBLE",
+      "EXCLUDED",
+      "NON_ELIGIBLE",
+      "VOID_CONTRIBUTING"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "attemptLedger": {
+   "type": "object",
+   "required": [
+    "total",
+    "reserved_open",
+    "records"
+   ],
+   "properties": {
+    "total": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "reserved_open": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "records": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/caseAttempt"
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "caseTurn": {
+   "type": "object",
+   "required": [
+    "count_key",
+    "tap",
+    "eligibility",
+    "attempt_ref",
+    "receipt_ref",
+    "payload_digest",
+    "receipt_index",
+    "iteration",
+    "activity"
+   ],
+   "properties": {
+    "count_key": {
+     "type": "array",
+     "prefixItems": [
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "$ref": "#/$defs/text"
+      },
+      {
+       "type": "integer",
+       "minimum": 0
+      },
+      {
+       "enum": [
+        "BOUND_FULL",
+        "CITED_LOCATION",
+        "CONCLUDE_GATE"
+       ]
+      },
+      {
+       "$ref": "#/$defs/sha256"
+      }
+     ],
+     "minItems": 6,
+     "maxItems": 6,
+     "description": "Fixed order: (run_set_id, investigation_id, hypothesis_id, iteration, input_set, envelope_digest)."
+    },
+    "tap": {
+     "enum": [
+      "T1",
+      "T2a",
+      "T2b",
+      "T3"
+     ]
+    },
+    "eligibility": {
+     "enum": [
+      "ELIGIBLE",
+      "EXCLUDED",
+      "NON_ELIGIBLE",
+      "VOID"
+     ]
+    },
+    "attempt_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "receipt_ref": {
+     "$ref": "#/$defs/text"
+    },
+    "payload_digest": {
+     "$ref": "#/$defs/sha256"
+    },
+    "receipt_index": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "iteration": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "activity": {
+     "$ref": "#/$defs/identity"
+    },
+    "cell": {
+     "$ref": "#/$defs/cell"
+    },
+    "reason": {
+     "$ref": "#/$defs/reasonCode"
+    },
+    "divergent": {
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "reportCase": {
+   "type": "object",
+   "required": [
+    "id",
+    "expect",
+    "terminal",
+    "turns",
+    "attempts",
+    "receipts",
+    "report",
+    "cohort_fixtures",
+    "controls",
+    "capture_events",
+    "control_native_divergence",
+    "freeze"
+   ],
+   "properties": {
+    "id": {
+     "$ref": "#/$defs/text"
+    },
+    "expect": {
+     "enum": [
+      "accept",
+      "reject"
+     ]
+    },
+    "terminal": {
+     "type": "boolean"
+    },
+    "turns": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/caseTurn"
+     }
+    },
+    "attempts": {
+     "$ref": "#/$defs/attemptLedger"
+    },
+    "receipts": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/caseReceipt"
+     }
+    },
+    "report": {
+     "type": "object"
+    },
+    "cohort_fixtures": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/text"
+     },
+     "uniqueItems": true
+    },
+    "controls": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/control"
+     }
+    },
+    "capture_events": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/captureEvent"
+     }
+    },
+    "control_native_divergence": {
+     "type": "boolean"
+    },
+    "freeze": {
+     "$ref": "#/$defs/freeze"
+    },
+    "formulas": {
+     "type": "object",
+     "minProperties": 1,
+     "additionalProperties": {
+      "$ref": "#/$defs/formulaEntry"
+     },
+     "description": "Optional run-embedded formula definitions used in place of the vectors-level set; still checked against the registry catalog."
+    }
+   },
+   "additionalProperties": false
+  },
+  "formulaEntry": {
+   "type": "object",
+   "required": [
+    "text",
+    "digest"
+   ],
+   "properties": {
+    "text": {
+     "type": "string",
+     "minLength": 1
+    },
+    "digest": {
+     "$ref": "#/$defs/sha256"
+    }
+   },
+   "additionalProperties": false
+  },
+  "formulaCatalog": {
+   "type": "object",
+   "description": "Authoritative formula catalog. The exact formula text and expected digest per metric ID. The vector builder reads formulas from this catalog (no second list); the report checker requires the vectors formula set, text, and digest to equal this catalog before any recompute. Any change to this catalog requires a new registry identity and review.",
+   "const": {
+    "CAPTURE_HEALTH": {
+     "text": "metric: CAPTURE_HEALTH\nnumerator: sum of the five capture-health counters (evaluator_failures + capture_errors + telemetry_omissions + dropped + duplicates)\ndenominator: null\npopulation: all expected receipts\nexclusions: none; unexplained absence is Path B void\nmissing: void per section 6.3\n",
+     "digest": "sha256:1ad6bfef3d6deb0a33a29e5a4e9a9b44e52fb2b0d6b056fb0d1feb4eaaf326eb"
+    },
+    "CELL_ACCEPT_FAIL": {
+     "text": "metric: CELL_ACCEPT_FAIL\nnumerator: count of eligible T1 envelopes in cell ACCEPT-FAIL\ndenominator: null\npopulation: eligible T1 envelopes assigned to cell ACCEPT-FAIL per section 4.3\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:ecbe31b5400105d8fbceb1b8b08f973ca9000de26ca480c6e61ba6e094d70672"
+    },
+    "CELL_ACCEPT_PASS": {
+     "text": "metric: CELL_ACCEPT_PASS\nnumerator: count of eligible T1 envelopes in cell ACCEPT-PASS\ndenominator: null\npopulation: eligible T1 envelopes assigned to cell ACCEPT-PASS per section 4.3\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:241801ea22c24319d0d5f0bfe7ebb0574b8300f782a094f70a7ae6a00abdf44d"
+    },
+    "CELL_NONACCEPT_FAIL": {
+     "text": "metric: CELL_NONACCEPT_FAIL\nnumerator: count of eligible T1 envelopes in cell NONACCEPT-FAIL\ndenominator: null\npopulation: eligible T1 envelopes assigned to cell NONACCEPT-FAIL per section 4.3\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:74a67772d8b0d4b818f84942e7f484dbaa71dfbdce65f0b0409ba724c189db93"
+    },
+    "CELL_NONACCEPT_PASS": {
+     "text": "metric: CELL_NONACCEPT_PASS\nnumerator: count of eligible T1 envelopes in cell NONACCEPT-PASS\ndenominator: null\npopulation: eligible T1 envelopes assigned to cell NONACCEPT-PASS per section 4.3\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:699c9967cc679bef938924e4c27f3c5d572640b671f37212f17754336f47bd14"
+    },
+    "CONTROL_MATCH": {
+     "text": "metric: CONTROL_MATCH\nnumerator: MATCHED control pairs\ndenominator: frozen-cohort fixtures with at least one recorded control attempt\npopulation: control records with full match evidence\nexclusions: UNMATCHED, DUPLICATE, MISMATCH counted separately as non-comparable; never parity\nmissing: non-comparable; native divergence stops probe\n",
+     "digest": "sha256:57558b2308cc2e31e24ddc9f21f058d6816c149c439abe174ba75f19bd562ed6"
+    },
+    "ELIGIBLE_T1_COUNT": {
+     "text": "metric: ELIGIBLE_T1_COUNT\nnumerator: count of T1 envelopes with eligibility ELIGIBLE\ndenominator: null\npopulation: accepted unique T1 receipts on v2 definition candidates with complete join and approved digest\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:edf4d430c817e8667adef30bc4e84a10f0c827b9787c56c422dd48491c49331f"
+    },
+    "PER_TAP_T1": {
+     "text": "metric: PER_TAP_T1\nnumerator: count of PER_TAP_T1 records by disposition class\ndenominator: null\npopulation: PER_TAP_T1 scoped receipts\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:7020150db89d7fcb7ecf15317fc428e7aad9b5cdfecc0b31964fea5dcc7e6269"
+    },
+    "PER_TAP_T2a": {
+     "text": "metric: PER_TAP_T2a\nnumerator: count of PER_TAP_T2a records by disposition class\ndenominator: null\npopulation: PER_TAP_T2a scoped receipts\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:c91c2e7c2e1d6fce43e55a95da3530f92241dab4065540f8ef9ca17fa887cabf"
+    },
+    "PER_TAP_T2b": {
+     "text": "metric: PER_TAP_T2b\nnumerator: count of PER_TAP_T2b records by disposition class\ndenominator: null\npopulation: PER_TAP_T2b scoped receipts\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:13e4aca3130d323cbf9aaf99ad54db7e025bb392a254ff85c6b14f23a1b1a68d"
+    },
+    "PER_TAP_T3": {
+     "text": "metric: PER_TAP_T3\nnumerator: count of PER_TAP_T3 records by disposition class\ndenominator: null\npopulation: PER_TAP_T3 scoped receipts\nexclusions: by reasonCode; missing or ambiguous evidence voids per section 6 and 6.3\nmissing: void parent run set; never imputed\n",
+     "digest": "sha256:02263702e60f87302bddd91f6960e9193a278f8646b137d1ea198b949688a4bf"
+    }
+   }
+  }
+ }
+}
