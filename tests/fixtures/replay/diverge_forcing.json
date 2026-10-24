@@ -1,0 +1,1 @@
+{"steps": [{"recorded_action": "SEARCH_CODE", "snapshot": {"evidence_banked_total": 4, "stack_walk_owed": true}}, {"recorded_action": "SEARCH_CODE", "snapshot": {"evidence_banked_total": 4, "formulate_owed": true, "history": [{"action": "WALK_STACK", "outcome": "SUCCEEDED"}]}}]}

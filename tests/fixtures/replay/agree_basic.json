@@ -1,0 +1,1 @@
+{"steps": [{"recorded_action": "CORRELATE", "snapshot": {}}, {"recorded_action": "CORRELATE", "snapshot": {"evidence_banked_total": 5, "history": [{"action": "CORRELATE", "outcome": "SUCCEEDED"}]}}, {"recorded_action": "CORRELATE", "snapshot": {"evidence_banked_total": 5, "history": [{"action": "CORRELATE", "outcome": "SUCCEEDED"}], "unverified_count": 1}}]}

@@ -1209,6 +1209,41 @@ def _derive_loop_telemetry(
             telemetry["evidence_banked_repo"] = max(0, int(evidence_banked or 0))
         except (TypeError, ValueError):
             pass
+# G6-measure: pass the shadow trace/summary through (capped,
+        # shape-checked; anything malformed is dropped, never fatal).
+        # Existing keys above are untouched.
+        try:
+            summary = passed.get("shadow_summary")
+            if isinstance(summary, dict):
+                telemetry["shadow_summary"] = {
+                    k: max(0, int(summary.get(k, 0) or 0))
+                    for k in ("turns", "matched", "capture_errors", "eligible", "diverged")
+                }
+        except Exception:
+            pass
+        try:
+            trace = passed.get("shadow_trace")
+            if isinstance(trace, list):
+                kept: list[dict[str, Any]] = []
+                for turn in trace[:256]:
+                    if not isinstance(turn, dict):
+                        continue
+                    entry = {
+                        k: turn.get(k)
+                        for k in (
+                            "iteration", "recorded", "selected", "match",
+                            "cause", "shadow_terminal", "capture_error",
+                            "evidence_banked_total", "prev_outcome", "params",
+                        )
+                    }
+                    if isinstance(entry.get("iteration"), bool):
+                        continue
+                    if not isinstance(entry.get("params"), (dict, type(None))):
+                        continue
+                    kept.append(entry)
+                telemetry["shadow_trace"] = kept
+        except Exception:
+            pass
         return telemetry or None
     except Exception:
         return None

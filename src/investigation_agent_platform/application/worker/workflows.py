@@ -86,6 +86,17 @@ with workflow.unsafe.imports_passed_through():
         verify_root_cause_activity,
     )
 
+with workflow.unsafe.imports_passed_through():
+    # G6-measure shadow capture: pure compute-and-log helpers (no I/O,
+    # no clock, no execution). Imported for the per-turn shadow replay;
+    # the workflow never branches on its output.
+    from investigation_agent_platform.application.investigation.shadow_capture import (
+        build_shadow_snapshot,
+        capture_turn,
+        summarize_trace,
+        verification_state,
+    )
+
 
 @dataclass
 class RunInvestigationInput:
@@ -1333,6 +1344,10 @@ class RunInvestigationWorkflow:
         # model sees repetition and escalates capability instead of looping
         # the same empty action to the iteration cap.
         action_history: list[dict[str, Any]] = []
+        # G6-measure shadow trace (plain JSON scalars, replay-safe): one
+        # per-turn (recorded, shadow-selected) record appended by the
+        # capture hook. Compute-only; the loop never reads this list.
+        shadow_trace: list[dict[str, Any]] = []
         # Cumulative LLM spend across iterations (plain scalars, replay-safe).
         # Fed into each checkpoint so token/cost totals survive worker
         # restarts; the reason activity enforces the per-investigation cap.
@@ -1591,6 +1606,96 @@ class RunInvestigationWorkflow:
                     _reason_data["next_action"] = _replan["next_action"]
                     _reason_data["action_parameters"] = _replan["action_parameters"]
                     _reason_data["forced_replan"] = True
+            # G6-measure shadow capture (Option A): compute-only, never acts.
+            # Replays the frozen turn snapshot through the shadow policy and
+            # appends the (recorded, shadow) pair to shadow_trace. Owed
+            # flags re-evaluate the pure trigger helpers with the cap
+            # bypassed (count=0) — same functions, no drift. Any failure
+            # records a marker; the loop proceeds identically either way.
+            try:
+                _unverified_count, _verified_present = verification_state(
+                    _reason_data.get("hypotheses_evaluated")
+                )
+                _shadow_snapshot = build_shadow_snapshot(
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    actions_used=len(action_history),
+                    action_limit=max_iterations,
+                    tokens_used=llm_tokens_total,
+                    token_limit=0,
+                    evidence_banked_total=evidence_banked_total,
+                    formulated_count=formulated_count,
+                    unverified_count=_unverified_count,
+                    verified_present=_verified_present,
+                    reasoning_available=True,
+                    value_target_present=_source_value_target(_reason_data, action_history, 0)
+                    is not None,
+                    stack_walk_owed=_should_force_walk_stack(
+                        knowledge_seed, _reason_data, action_history, 0
+                    )
+                    is not None,
+                    below_evidence_floor=_explore_floor_target(
+                        _reason_data,
+                        evidence_banked_total,
+                        triage_route,
+                        input_data.description,
+                        knowledge_seed,
+                        0,
+                    )
+                    is not None,
+                    formulate_owed=_should_force_formulate(
+                        iteration,
+                        formulated_count,
+                        _reason_data.get("hypotheses_evaluated"),
+                        evidence_banked_total,
+                        0,
+                    ),
+                    synthesis_owed=_should_force_synthesis(
+                        action_history,
+                        evidence_banked_total,
+                        formulated_count,
+                        0,
+                        _reason_data,
+                    ),
+                    reread_path_present=_reread_target(_reason_data, action_history, 0) is not None,
+                    callsite_owed=_callsite_target(_reason_data, action_history, 0) is not None,
+                    forcing_used={
+                        "value_read": forced_value_read_count,
+                        "walk_stack": forced_walk_stack_count,
+                        "floor": forced_floor_count,
+                        "formulate": forced_formulate_count,
+                        "synthesis": forced_formulate_count,
+                        "reread": forced_reread_count,
+                        "callsite": forced_callsite_count,
+                    },
+                    action_history=action_history,
+                )
+                _shadow_turn = capture_turn(
+                    _shadow_snapshot,
+                    recorded_action=str((_reason_data or {}).get("next_action", "?") or "?"),
+                )
+                _shadow_turn["iteration"] = iteration
+                # Blind-retry classification inputs (§4.2, frozen
+                # definition): cumulative evidence for delta computation
+                # across stamped turns, the previous turn's outcome, and
+                # the recorded action's parameters (capped) for the
+                # changed-input judgment. All loop-local reads.
+                _shadow_turn["evidence_banked_total"] = evidence_banked_total
+                _prev = action_history[-1] if action_history else {}
+                _shadow_turn["prev_outcome"] = (
+                    str((_prev or {}).get("outcome_status", "") or "")
+                    if isinstance(_prev, dict)
+                    else ""
+                )
+                _raw_params = _reason_data.get("action_parameters", {})
+                _shadow_turn["params"] = (
+                    {str(k): str(v)[:200] for k, v in _raw_params.items()}
+                    if isinstance(_raw_params, dict)
+                    else {}
+                )
+                shadow_trace.append(_shadow_turn)
+            except Exception:
+                shadow_trace.append({"iteration": iteration, "capture_error": True})
             _hyps = _reason_data.get("hypotheses_evaluated") or []
             _obss = _reason_data.get("observations") or []
             action_history.append(
@@ -1856,6 +1961,10 @@ class RunInvestigationWorkflow:
                     "iterations": iteration,
                     "triage_route": triage_route,
                     "plan": list(investigation_plan),
+                    # G6-measure: per-turn shadow records (JSON scalars) +
+                    # summary; consumed by the operator, never by the loop.
+                    "shadow_trace": list(shadow_trace),
+                    "shadow_summary": summarize_trace(shadow_trace),
                 },
             ),
             start_to_close_timeout=timedelta(seconds=60),
