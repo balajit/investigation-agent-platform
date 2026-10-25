@@ -11,11 +11,14 @@ freeze_hash is the harness freeze_digest (canonical JSON minus self field).
 Usage:
     uv run python scripts/build_d3_stagec_runset.py [RUN_SET_ID [FREEZE_RECORD_HASH]]
 
-Defaults reproduce the r1 invocation. For a new run set, pass the new
-run-set id and the freeze record hash (or TO-BE-HASHED, patched into
-RUN_LOG.md after the record is hashed). Refuses to overwrite an existing
+Defaults reproduce the r3 invocation (freeze v3, protocol v1.9+A1+A2,
+prompts 016/015, probe tenant iap-probe-2026-10-26-r3). For a new run set,
+pass the new run-set id and the freeze record hash (or TO-BE-HASHED, patched
+into RUN_LOG.md after the record is hashed). Refuses to overwrite an existing
 run-set directory. The frozen code revision is always the current HEAD;
-governed paths must be worktree-clean.
+governed paths (src, tests, config, pyproject.toml) must be worktree-clean.
+scripts/ itself is ungoverned tooling: adapting this builder does not void a
+signed freeze as long as governed paths are untouched.
 """
 
 from __future__ import annotations
@@ -38,15 +41,16 @@ from investigation_agent_platform.harness.freeze import (
 )
 from investigation_agent_platform.harness.ledger import AttemptLedger
 
-RS = sys.argv[1] if len(sys.argv) > 1 else "d3-stagec-2026-10-24-r1"
+RS = sys.argv[1] if len(sys.argv) > 1 else "d3-stagec-2026-10-26-r3"
 ART = ROOT / "artifacts" / RS
 DEC = ART / "decisions"
 
 V19 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-approval-package-v1.9.md"
 A1 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-amendment-A1.md"
-MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v1.json"
+A2 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-amendment-A2.md"
+MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v3.json"
 FREEZE_RECORD_HASH = (
-    sys.argv[2] if len(sys.argv) > 2 else "9be13fa7b9f730655aac28797218dca06f076c499feb802dcb0de57e95b99dc1"
+    sys.argv[2] if len(sys.argv) > 2 else "20b901d1291b7f2ff9fa7fdbf1eadb9079d8e7666291d4eb0e2e6961b4bc3419"
 )
 FREEZE_COMMIT = subprocess.run(
     ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -101,10 +105,13 @@ def main() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     digests: dict[str, str] = manifest["battery_case_digests"]
     prompts = manifest["prompts"]
-    form014 = prompts["reasoner_source"]["sha256"]
-    form015 = prompts["compiler_source"]["sha256"]
-    assert prompts["reasoner_prompt_version"] == "v3-claim-grounded-014"
+    form016 = prompts["reasoner_source"]["sha256_working_tree_reference"]
+    form015 = prompts["compiler_source"]["sha256_working_tree_reference"]
+    assert prompts["reasoner_prompt_version"] == "v3-claim-grounded-016"
     assert prompts["compiler_prompt_version"] == "v3-claim-grounded-015"
+    assert form016 == (
+        "sha256:ffee28d53a66efcf538587cfa7c9110b7c2192841390604cc4c232c701951bcd"
+    ), form016
 
     # Frozen-doc integrity assertions (file bytes must match frozen hashes).
     v19_hash = "sha256:" + hashlib.sha256(V19.read_bytes()).hexdigest()
@@ -115,6 +122,10 @@ def main() -> None:
     assert a1_hash == (
         "sha256:c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f"
     ), a1_hash
+    a2_hash = "sha256:" + hashlib.sha256(A2.read_bytes()).hexdigest()
+    assert a2_hash == (
+        "sha256:ddaa518b4a169049a4b44d1e10c3093e7d49e73941bf38e628855a0a6cbe1071"
+    ), a2_hash
 
     if ART.exists():
         raise SystemExit(f"refusing to overwrite existing run-set dir: {ART}")
@@ -139,6 +150,7 @@ def main() -> None:
         "budget.txt": rule_file("budget", [
             ("v1.9 §6.2e probe budget and go/no-go", V19, 1647, 1695),
             ("A1-3 reservation buckets (BUD-01)", A1, 34, 47),
+            ("A2-4 carry-overs (BUD-02)", A2, 75, 84),
         ]),
         "control.txt": rule_file("control", [
             ("v1.9 §6.2g shadow-off control arm", V19, 1731, 1752),
@@ -147,6 +159,8 @@ def main() -> None:
             ("v1.9 §6.2b cohort and run-level eligibility", V19, 1586, 1613),
             ("A1-1 timeout disposition (OD-01)", A1, 14, 24),
             ("A1-2 superseded-attempt disposition (OD-02)", A1, 26, 32),
+            ("A2-1 eligibility redefined (OD-03)", A2, 23, 47),
+            ("A2-2 pre-consolidation exclusion (OD-04)", A2, 48, 58),
         ]),
         "capture.txt": rule_file("capture", [
             ("v1.9 §1.4 observation channel and persistence lifecycle", V19, 478, 755),
@@ -192,14 +206,23 @@ def main() -> None:
         "database_image: pgvector/pgvector:pg16",
         f"database_server: {manifest['tenant_database']['server_version']}",
         "profile: config/profiles/tranche-b-offer.yaml version 1",
-        "tenant: iap-probe-2026-10-24",
+        "tenant: iap-probe-2026-10-26-r3",
         "",
     ]
     (ART / "dependency.txt").write_bytes(("\n".join(dep_lines)).encode("utf-8"))
 
     # ---- Decision records (transcribed from surviving sources, labeled). ----
     a1_lines = A1.read_text(encoding="utf-8").splitlines()
+    a2_lines = A2.read_text(encoding="utf-8").splitlines()
     decisions_src: dict[str, dict[str, str]] = {
+        "OD-03": {
+            "decision": "DEC-2026-10-26-A2 (covers OD-03, OD-04, BUD-02)",
+            "text": "\n".join(a2_lines[23:47]),
+        },
+        "OD-04": {
+            "decision": "DEC-2026-10-26-A2 (covers OD-03, OD-04, BUD-02)",
+            "text": "\n".join(a2_lines[48:58]),
+        },
         "OD-01": {
             "decision": "DEC-2026-10-24-A1 (covers OD-01, OD-02, BUD-01)",
             "text": "\n".join(a1_lines[15:24]),
@@ -260,7 +283,7 @@ def main() -> None:
     )
 
     pub_hex = pub.public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
-    key_id = "dev-stagec-2026-10-24-01"
+    key_id = "dev-stagec-2026-10-26-r3"
     keylist = {
         "schema": "key-list/v1",
         "keys": [{
@@ -295,10 +318,10 @@ def main() -> None:
         "fixture_id": fid,
         "fixture_version": digests[fid],
         "case_id": cid,
-        "prompt_hash": form014,
+        "prompt_hash": form016,
     } for fid, cid, _ in PLAN]
     prompt_entries = [
-        {"prompt_id": "v3-claim-grounded-014", "hash": form014},
+        {"prompt_id": "v3-claim-grounded-016", "hash": form016},
         {"prompt_id": "v3-claim-grounded-015", "hash": form015},
     ]
 
@@ -313,6 +336,10 @@ def main() -> None:
         "schema": "freeze/v4",
         "run_set_id": RS,
         "protocol_hash": v19_hash,
+        "amendment_a1_hash": a1_hash,
+        "amendment_a2_hash": a2_hash,
+        "behavior_id": "unified-dev-v1",
+        "protocol_id": "v1.9+A1+A2",
         "code_revision": FREEZE_COMMIT,
         "tree_hash": tree_hash,  # sha256 over `git archive HEAD` (governed paths) bytes
         "flags": {"IAP_SHADOW_TYPED_DEFINITIONS": "1"},
@@ -399,7 +426,7 @@ def main() -> None:
         "## Cohort prompt pin",
         "",
         "Cohort prompt_hash is the formulate-definition prompt "
-        "v3-claim-grounded-014 (case-driving prompt); both prompts are frozen "
+        "v3-claim-grounded-016 (case-driving prompt); both prompts are frozen "
         "globally in freeze.prompts.",
         "",
         "## Shadow attempt ids (pre-computed, deterministic)",

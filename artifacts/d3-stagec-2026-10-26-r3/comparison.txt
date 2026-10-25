@@ -1,0 +1,115 @@
+# Stage C run-set d3-stagec-2026-10-26-r3 rule file: comparison
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1431-1538
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.1 frozen definitions and outcome taxonomy)
+
+### 6.1 Frozen definitions and outcome taxonomy
+
+- *Eligible turn*: native outcome recorded AND typed observation
+  recorded under the frozen comparison rule, `verifier_version ==
+  v2`, definition-claim candidate, input-set labeled
+  (`BOUND_FULL` / `CITED_LOCATION` / `CONCLUDE_GATE`).
+- *Run terminal states*: PASS / FAIL, bound at freeze time to
+  the exact terminal vocabulary in use (default mapping:
+  PASS = run reached a terminal verification conclusion
+  without platform error; FAIL = run terminated through a
+  failure, exhaustion, or error path). The frozen protocol
+  instance records the binding explicitly; a vocabulary change
+  is a protocol change and restarts collection.
+- *Missing observations are never successful observations*:
+  a native outcome without a recorded typed observation, a
+  typed observation without a recorded native outcome, and a
+  turn with neither are all excluded from the denominator —
+  never counted as agreement, disagreement, or coverage.
+  Native errors and shadow failures reported separately from
+  the denominator do not satisfy any cell.
+- *Attribution*: every counted turn carries
+  `(investigation_id, hypothesis_id, iteration, input_set, tap,
+  snapshot identity)`.
+- *Snapshot identity*: exact code revision (commit hash plus
+  working-tree state for governed paths), configuration,
+  resolver/contract/artifact digests, dispatch-row versions,
+  run-case ids, flag settings, prompt text/files with content
+  hashes, fixture versions/ids, and the protocol document hash
+  itself — all recorded before collection starts. Anything that
+  can change what was observed is part of the identity; the
+  list above is a floor, not a ceiling.
+
+Frozen comparison taxonomy (every observed turn lands in exactly
+one class; the class determines treatment — fixed before
+collection, never re-cut after seeing data):
+
+| Outcome class | Definition | Treatment |
+|---|---|---|
+| Native verified | gate outcome `VERIFIED` on the observed candidate | native acceptance |
+| Native explicit non-verification | explicit rejection outcome on the observed candidate (non-accepting terminal gate result that is a decision, not an error or abstention) | separate non-acceptance class |
+| Native inconclusive / abstention | `INCONCLUSIVE`, abstention, or non-acceptance without explicit rejection | separate abstention class |
+| Native execution error | activity/engine exception, timeout, or malformed native state *whose error outcome was recorded through the normal channel* | excluded from the primary comparison (budget consumed, collection continues); counted and reported separately |
+| Shadow evaluator failure | the evaluator ran and produced a failure marker that was successfully captured (`SHADOW_FAILED` class) | reported separately; never treated as agreement or as ordinary abstention |
+| Observation capture/transport failure | the observation was lost, truncated past the bound, or never arrived (counter-example: `dropped_count` increments, additive key missing) | invalidates the run set under the zero-capture-error rule (§6.3) |
+| Missing or ambiguous native-to-shadow join | observation that cannot be joined to its tap-specific native outcome by the §1.4 key | protocol violation: voids the run set; never silently excluded |
+
+`SHADOW_FAILED` is an evaluator failure, not a capture error:
+the evaluator ran, failed safely, and the failure marker itself
+was captured — that is successful failure handling, counted in
+shadow-health. Losing the marker (or the observation) is the
+capture error. The protocol preserves this distinction in
+reporting: evaluator-failure count and capture-error count are
+separate required fields, and only the second voids run sets.
+
+Error-class partition (excluded attempt vs voided run set —
+the recorded-vs-unrecorded test): an *excluded* turn or run
+consumes budget and the collection continues; a *voided*
+run set is terminal for that collection and its surviving
+records cannot be reused. The test is whether the turn's
+fate was recorded through the normal channel. A native or
+evaluator failure whose outcome (or failure marker) was
+recorded is an excluded turn: counted, reported, collection
+continues. Any failure whose outcome was *not* recorded
+through the normal channel — capture/transport failure,
+missing or ambiguous join, unattributable producing path,
+worker crash or restart mid-run, investigation store or
+database unreachable for protocol-required reads or writes,
+telemetry pipeline failure affecting ordering or identity,
+unauthorized flag state, or any failure whose scope cannot
+be proven contained to already-recorded turns — voids the
+run set, because ordering, identity, or completeness of the
+collection can no longer be trusted. When containment cannot
+be established from the record itself, the run set is void:
+fail-closed applies to the protocol, not only to the
+shadow evaluator. Concretely: a platform/infrastructure
+error fully captured as a turn-scoped native error outcome
+is an excluded attempt; the *same class* of error, if it
+prevents the outcome from being recorded or corrupts
+ordering, identity, persistence, or the frozen environment,
+voids the run set.
+
+Coverage floor — minimum feasibility/coverage gate, NOT a
+statistically validated parity gate (RV05, proposal): at least
+20 eligible turns total, with a minimum of 3 eligible turns in
+each of the four decision-7 cells (native accept / native
+non-accept × PASS / FAIL run terminals), where "native
+non-accept" for cell purposes groups explicit non-verification
+with inconclusive/abstention (reported separately per the
+taxonomy above, grouped only for the floor). Twenty
+observations with an empty or single-observation critical cell
+is INSUFFICIENT EVIDENCE, not a pass — the floor is conjunctive
+(total AND per-cell), and the protocol never lowers it to fit
+collected data. Meeting this floor establishes only that a
+larger-sample measurement is warranted; it establishes no
+statistical confidence, no production safety, and no parity
+claim (see gate-interpretation discipline, §6.4).
+
+Subcategory presence rule: because the grouped non-acceptance
+cell can otherwise hide an unevaluated subcategory, each run
+terminal's non-accept floor additionally requires at least one
+explicit-rejection turn AND at least one
+inconclusive/abstention turn. If either subcategory is
+unpopulatable in a terminal, conclusions are restricted to
+grouped non-acceptance for that terminal, and claiming either
+subcategory adequately evaluated is prohibited — any
+subcategory-specific conclusion in that case is INSUFFICIENT
+EVIDENCE by construction.
+
