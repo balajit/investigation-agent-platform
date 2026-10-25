@@ -568,6 +568,56 @@ def _callsite_target(
             try:
                 if not isinstance(raw_claim, dict):
                     continue
+                edge_candidates = raw_claim.get("caller_edges")
+                if isinstance(edge_candidates, list) and edge_candidates:
+                    candidates = [
+                        edge.get("target")
+                        for edge in edge_candidates
+                        if isinstance(edge, dict) and isinstance(edge.get("target"), dict)
+                    ]
+                else:
+                    candidates = [raw_claim.get("target")]
+                for raw_target in candidates:
+                    if not isinstance(raw_target, dict):
+                        continue
+                    target = raw_target
+                    kind = str(raw_claim.get("claim_kind", "") or "").strip().upper()
+                    if kind != "CALL_EDGE":
+                        continue
+                    file_path = str(target.get("file_path", "") or "").strip()
+                    if not file_path:
+                        continue
+                    normalized = (
+                        file_path.replace("\\", "/").strip().strip("/").lstrip("./")
+                    )
+                    if normalized in read_files:
+                        continue
+                    # Must match VerificationEngine.canonical_caller_edge_key:
+                    # identical normalization, `|` escaped as `%7C`.
+                    def _escape(value: Any) -> str:
+                        return str(value or "").strip().replace("|", "%7C")
+
+                    call_params: dict[str, Any] = {
+                        "file_path": file_path,
+                        "caller_edge_key": "|".join(
+                            (
+                                _escape(target.get("symbol", "")),
+                                _escape(target.get("counterpart", "")),
+                                normalized.replace("|", "%7C"),
+                                _escape(target.get("commit_id", "")),
+                            )
+                        ),
+                    }
+                    try:
+                        start = int(target.get("line_start", target.get("start_line")) or 0) or None
+                        end = int(target.get("line_end", target.get("end_line")) or 0) or None
+                    except (TypeError, ValueError):
+                        start, end = None, None
+                    if start and start >= 1:
+                        call_params["start_line"] = start
+                        if end and end >= start:
+                            call_params["end_line"] = end
+                    return {"next_action": "GET_CODE", "action_parameters": call_params}
                 kind = raw_claim.get("claim_kind", "")
                 kind_value = str(getattr(kind, "value", kind) or "").strip().upper()
                 target = raw_claim.get("target") or {}

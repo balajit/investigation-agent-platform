@@ -52,7 +52,7 @@ def _decision_extra(decision: Any) -> dict[str, Any]:
         return {}
 
 
-REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-014"
+REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-016"
 
 
 def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +157,29 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
                 item["claimed_value"] = _clean_opt_str(item["claimed_value"], 512)
             if "target" in item:
                 item["target"] = _clean_target(item["target"])
+            raw_edges = item.get("caller_edges")
+            if isinstance(raw_edges, list):
+                clean_edges: list[dict[str, Any]] = []
+                for raw_edge in raw_edges[:20]:
+                    if not isinstance(raw_edge, dict):
+                        continue
+                    edge_target = _clean_target(raw_edge.get("target"))
+                    if not isinstance(edge_target, dict) or not edge_target.get("counterpart"):
+                        continue
+                    edge_ids = raw_edge.get("evidence_ids")
+                    clean_edges.append(
+                        {
+                            "target": edge_target,
+                            "evidence_ids": (
+                                [e for e in edge_ids if isinstance(e, str)][:20]
+                                if isinstance(edge_ids, list)
+                                else []
+                            ),
+                        }
+                    )
+                item["caller_edges"] = clean_edges
+            else:
+                item["caller_edges"] = []
             items.append(item)
         clean["claims"] = items
     else:
@@ -181,7 +204,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "action": {"action_type": "<one of QUERY_STATE|SEARCH_LOGS|GET_CODE|SEARCH_CODE|FIND_SYMBOL|FIND_CALL_GRAPH|GET_CODE_HISTORY|PROBE_API|CORRELATE|WALK_STACK|TRACE_LOGIC|TRACE_JOURNEY|WALK_SESSION_GRAPH|SEARCH_REF_DOCS|FORMULATE_HYPOTHESIS|VERIFY_HYPOTHESIS|CONCLUDE>", "parameters": {...}} — the single next step.
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; MANDATORY non-empty whenever visible evidence is non-empty — these are persisted as hypotheses and required for verification"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale".
 Do NOT include execution_hash (derived server-side).""",
@@ -204,7 +227,7 @@ When citing code, cite the range-read evidence ID (GET_CODE result), not just th
 A log line merely NAMING a symbol is not a location citation — hedged claims like 'referenced in logs, suggesting X lives in Y' never verify without a code row for Y whose window contains the symbol.
 A location answer verifies on code citations alone only when the cited range-read window contains the asserted symbol or line; that is what 'location citation' means.
 Behavior claims need code that shows the mechanism plus runtime evidence (logs, state, or a live probe). Code alone establishes structure, not observed behavior.
-Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit does not prove a call. For caller enumeration, emit one CALL_EDGE claim per caller, each with its own call-site row; a single-caller answer to a caller-enumeration question is incomplete. HISTORY: for recent-change questions, cite one COMMIT_HISTORY row per claim, set target.file_path and target.commit_id from that row, and include that exact commit subject in the statement; do not use CAUSAL or require runtime evidence. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
+Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit does not prove a call. For caller enumeration, emit one CALL_EDGE claim per caller, each with its own call-site row. You may instead emit one aggregate CALL_EDGE claim with caller_edges, where every entry has one target.counterpart and only that caller's evidence IDs; unresolved edges must remain unresolved. The enumeration is incomplete unless every required caller edge is proven. HISTORY: for recent-change questions, cite one COMMIT_HISTORY row per claim, set target.file_path and target.commit_id from that row, and include that exact commit subject in the statement; do not use CAUSAL or require runtime evidence. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
     ),
     (
         "code-reading",

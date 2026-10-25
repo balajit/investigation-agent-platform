@@ -87,7 +87,9 @@ class HypothesisEvidenceAssessment(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     hypothesis_id: UUID
-    evidence_id: UUID
+    # Unresolved obligations have no evidence row yet. ``None`` is explicit
+    # absence, never a fabricated sentinel evidence ID.
+    evidence_id: UUID | None = None
     assessment: AssessmentType
     strength: AssessmentStrength
     reason: str = Field(..., max_length=1024)

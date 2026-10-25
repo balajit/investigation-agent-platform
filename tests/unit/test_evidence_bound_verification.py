@@ -9,8 +9,10 @@ from investigation_agent_platform.application.investigation.verification import 
     ConclusionGate,
     Contradiction,
     ContradictionSeverity,
+    InvestigationConfidence,
     RootCauseVerificationPolicy,
     VerificationEngine,
+    VerificationResult,
     VerificationStatus,
     rank_hypotheses,
 )
@@ -232,6 +234,125 @@ def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
     assert ok is True, reason
 
 
+def test_call_edge_aggregate_typed_claim_checks_each_named_caller():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    iid = uuid4()
+
+    def _call_row(path, snippet):
+        row = _code_evidence("GET_SOURCE").model_copy(update={"investigation_id": iid})
+        location = row.provenance.source_location.model_copy(
+            update={"file_path": path, "revision": "abc123", "line_start": 10, "line_end": 20}
+        )
+        return row.model_copy(
+            update={
+                "content_snippet": snippet,
+                "provenance": row.provenance.model_copy(update={"source_location": location}),
+            }
+        )
+
+    helper = _call_row(
+        "src/OrderQualifyHelper.java",
+        "10| public String qualify() {\n11| return handler.handle(orderId);",
+    )
+    proxy = _call_row(
+        "src/OrderServiceRestProxy.java",
+        "10| public String submit() {\n11| return handler.handle(orderId);",
+    )
+    statement = "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle"
+    hyp = _hyp(statement)
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp.id,
+        evidence_id=helper.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="aggregate caller enumeration",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=ClaimTarget(
+            symbol="OrderServiceHandler.handle",
+            counterpart="OrderQualifyHelper and OrderServiceRestProxy",
+        ),
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": [assessment],
+            "supporting_evidence_ids": [helper.evidence_id],
+        }
+    )
+
+    ok, reason = VerificationEngine().check_claim_kind(hyp, [helper, proxy])
+
+    assert ok is True, reason
+
+
+def test_v3_call_edge_obligation_requires_all_persisted_callers():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    iid = uuid4()
+    helper = _code_evidence("GET_SOURCE").model_copy(update={"investigation_id": iid})
+    helper = helper.model_copy(
+        update={
+            "content_snippet": "10| return handler.handle(orderId);",
+            "provenance": helper.provenance.model_copy(
+                update={
+                    "source_location": helper.provenance.source_location.model_copy(
+                        update={
+                            "file_path": "src/OrderQualifyHelper.java",
+                            "revision": "abc123",
+                            "line_start": 10,
+                            "line_end": 10,
+                        }
+                    )
+                }
+            ),
+        }
+    )
+    hyp = _hyp("OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle")
+    helper_target = ClaimTarget(
+        symbol="OrderServiceHandler.handle", counterpart="OrderQualifyHelper"
+    )
+    proxy_target = ClaimTarget(
+        symbol="OrderServiceHandler.handle", counterpart="OrderServiceRestProxy"
+    )
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp.id,
+        evidence_id=helper.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="helper call",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=helper_target,
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": [assessment],
+            "required_verification": [
+                f"CALL_EDGE|{VerificationEngine.caller_edge_key(helper_target)}",
+                f"CALL_EDGE|{VerificationEngine.caller_edge_key(proxy_target)}",
+            ],
+            "supporting_evidence_ids": [helper.evidence_id],
+        }
+    )
+
+    ok, reason = VerificationEngine(verifier_version="v3").check_claim_kind(hyp, [helper])
+
+    assert ok is False
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in reason
+    assert "OrderServiceRestProxy" in reason
+
+
 def test_unresolved_critical_contradiction_contradicts():
     engine = VerificationEngine()
     result = engine.evaluate_hypothesis(
@@ -267,6 +388,38 @@ def test_gate_requires_causal_chain_when_policy_demands():
     decision = asyncio.run(_run())
     assert decision.approved is False
     assert any("causal" in b for b in decision.blockers)
+
+
+def test_gate_allows_complete_caller_edges_without_causal_chain():
+    import asyncio
+
+    async def _run():
+        gate = ConclusionGate()
+        verification = VerificationResult(
+            hypothesis_id=uuid4(),
+            status=VerificationStatus.VERIFIED,
+            corroborating_evidence_ids=[_ev("prov-a", EvidenceType.SOURCE_CODE).evidence_id],
+            explanation="caller edges proven",
+            confidence=InvestigationConfidence(
+                coverage_score=1.0,
+                reliability_score=1.0,
+                causal_score=0.5,
+                contradiction_penalty=0.0,
+            ),
+        )
+        return await gate.evaluate(
+            "tenant-a",
+            uuid4(),
+            verification,
+            [],
+            [],
+            [_ev("prov-a", EvidenceType.SOURCE_CODE)],
+            RootCauseVerificationPolicy(),
+            caller_edges_validated=True,
+        )
+
+    decision = asyncio.run(_run())
+    assert decision.approved is True, decision.blockers
 
 
 def test_gate_approves_with_causal_chain_and_diverse_bound_evidence():

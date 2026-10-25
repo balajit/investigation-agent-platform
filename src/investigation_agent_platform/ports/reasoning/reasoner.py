@@ -13,6 +13,15 @@ from investigation_agent_platform.domain.investigation.models import (
 )
 
 
+class CallerEdgeClaim(BaseModel):
+    """One independently provable edge in a caller enumeration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target: ClaimTarget
+    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 class DecisionClaim(BaseModel):
     """One typed claim with its own evidence binding (Phase 2.1).
 
@@ -31,6 +40,7 @@ class DecisionClaim(BaseModel):
     commit_id: str | None = Field(default=None, max_length=64)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
+    caller_edges: list[CallerEdgeClaim] = Field(default_factory=list, max_length=20)
 
 
 class InvestigationDecision(BaseModel):

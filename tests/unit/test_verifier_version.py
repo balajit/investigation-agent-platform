@@ -1,10 +1,4 @@
-"""Verifier version containment: recorded-version routing, fail-closed.
-
-Pinned rows keep their semantics; successfully loaded unmarked rows
-resolve to current under the documented migration policy; anything
-else (missing row, unreadable repo, malformed metadata, unknown pin)
-fails closed instead of guessing a contract.
-"""
+"""The dev verifier has one active behavior; old labels are audit-only."""
 
 from __future__ import annotations
 
@@ -29,16 +23,16 @@ from investigation_agent_platform.application.investigation.verification import 
 from investigation_agent_platform.domain.investigation.models import InvestigationRequest
 
 
-def test_version_constants_are_distinct_and_current_is_v2() -> None:
+def test_one_active_dev_verifier_behavior() -> None:
     assert VERIFIER_VERSION_CURRENT == "v2"
     assert VERIFIER_VERSION_LEGACY == "v1"
-    assert VERIFIER_VERSION_CURRENT != VERIFIER_VERSION_LEGACY
-    assert KNOWN_VERIFIER_VERSIONS == frozenset({"v1", "v2"})
+    assert KNOWN_VERIFIER_VERSIONS == frozenset({"v1", "v2", "v3"})
 
 
 def test_resolve_uses_pinned_version() -> None:
-    assert resolve_verifier_version({"verifier_version": "v1"}) == ("v1", "pinned")
-    assert resolve_verifier_version({"verifier_version": "v2"}) == ("v2", "pinned")
+    assert resolve_verifier_version({"verifier_version": "v1"}) == ("v2", "unified-dev")
+    assert resolve_verifier_version({"verifier_version": "v2"}) == ("v2", "unified-dev")
+    assert resolve_verifier_version({"verifier_version": "v3"}) == ("v2", "unified-dev")
 
 
 def test_resolve_defaults_loaded_unmarked_to_current() -> None:
@@ -99,22 +93,26 @@ async def _create(service: CreateInvestigationService) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_creation_pins_current_verifier_version() -> None:
+async def test_creation_does_not_pin_dev_verifier_version() -> None:
     saved: list[Any] = []
     investigation = await _create(_service(saved))
-    assert investigation.metadata["verifier_version"] == VERIFIER_VERSION_CURRENT
-    assert saved[0].metadata["verifier_version"] == VERIFIER_VERSION_CURRENT
+    assert "verifier_version" not in investigation.metadata
+    assert "verifier_version" not in saved[0].metadata
     assert saved[0].metadata["profile_version"] == 3
 
 
-def test_version_routing_prefers_pinned_over_default() -> None:
+def test_historical_labels_resolve_to_one_active_behavior() -> None:
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine,
     )
 
     assert resolve_verifier_version({"verifier_version": VERIFIER_VERSION_LEGACY}) == (
-        VERIFIER_VERSION_LEGACY,
-        "pinned",
+        VERIFIER_VERSION_CURRENT,
+        "unified-dev",
+    )
+    assert resolve_verifier_version({"verifier_version": "v3"}) == (
+        VERIFIER_VERSION_CURRENT,
+        "unified-dev",
     )
     engine = VerificationEngine()
     assert hasattr(engine, "evaluate_hypothesis")
@@ -161,8 +159,7 @@ def _hyps(inv_id: Any) -> tuple[Any, Any, list[Any], list[Any]]:
         title="weak",
         statement="weak claim",
         description="d",
-        # Rejected: excluded from candidacy, so the ranked candidate is
-        # deterministically h2 while v1 still evaluates hypotheses[0].
+        # Rejected: excluded from candidacy under the unified behavior.
         status=HypothesisStatus.REJECTED,
         confidence_score=0.1,
         support_score=0.1,
@@ -212,7 +209,7 @@ def _spy_result(hyp_id: Any) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_v1_pin_evaluates_first_hypothesis_whole_corpus(monkeypatch: Any) -> None:
+async def test_v1_label_uses_unified_current_behavior(monkeypatch: Any) -> None:
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine,
     )
@@ -255,13 +252,9 @@ async def test_v1_pin_evaluates_first_hypothesis_whole_corpus(monkeypatch: Any) 
     assert result.success is True
     assert len(calls) == 1
     call = calls[0]
-    assert call["hypothesis"].id == h1.id
-    assert {e.evidence_id for e in call["evidence_items"]} == {
-        e.evidence_id for e in rows
-    }
-    assert call["contradictions"] == []
-    assert call["causal_chain"] == []
-    assert [h.id for h in call["siblings"]] == [h2.id]
+    assert call["hypothesis"].id == h2.id
+    assert {e.evidence_id for e in call["evidence_items"]} == {h2.supporting_evidence_ids[0]}
+    assert [h.id for h in call["siblings"]] == [h1.id]
 
 
 @pytest.mark.asyncio
@@ -301,58 +294,38 @@ async def test_unmarked_row_evaluates_ranked_candidate_bound_subset(monkeypatch:
         VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
     )
     assert result.success is True
-    # Two engine calls: the routed general evaluation, then the shadow
-    # legacy comparison (which always runs hypotheses[0] + whole corpus).
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0]["hypothesis"].id == h2.id
     assert {e.evidence_id for e in calls[0]["evidence_items"]} == {
         h2.supporting_evidence_ids[0]
     }
     assert [h.id for h in calls[0]["siblings"]] == [h1.id]
-    assert calls[1]["hypothesis"].id == h1.id
-    assert {e.evidence_id for e in calls[1]["evidence_items"]} == {
-        e.evidence_id for e in rows
-    }
 
 
 @pytest.mark.asyncio
-async def test_verify_fails_closed_without_version(monkeypatch: Any) -> None:
-    from investigation_agent_platform.application.investigation.verification import (
-        VerificationEngine,
-    )
+async def test_verify_uses_unified_behavior_without_version_metadata(monkeypatch: Any) -> None:
     from investigation_agent_platform.application.worker.activities import (
         VerifyRootCauseInput,
         verify_root_cause_activity,
     )
 
-    async def _boom(*args: Any, **kwargs: Any) -> Any:  # pragma: no cover - guard
-        raise AssertionError("engine must not run without a version")
-
-    monkeypatch.setattr(VerificationEngine, "evaluate_hypothesis", _boom)
     inv_id = uuid4()
     h1, _, rows, _ = _hyps(inv_id)
     from investigation_agent_platform.api.dependencies import get_app_context
 
-    for metadata, missing, failing in (
-        ({"verifier_version": "v9"}, False, False),
-        ("not-a-dict", False, False),
-        ({}, True, False),
-        ({}, False, True),
-    ):
-        _harness(metadata, fail_get=failing, row_missing=missing)
-        ctx = get_app_context()
-        ctx.evidence_repo = SimpleNamespace(
-            find_by_investigation_id=AsyncMock(return_value=list(rows))
-        )
-        ctx.hypothesis_repo = SimpleNamespace(
-            find_by_investigation_id=AsyncMock(return_value=[h1]),
-            save=AsyncMock(),
-        )
-        result = await verify_root_cause_activity(
-            VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
-        )
-        assert result.success is False, (metadata, missing, failing)
-        assert "verifier version unavailable" in (result.error or "")
+    _harness({})
+    ctx = get_app_context()
+    ctx.evidence_repo = SimpleNamespace(
+        find_by_investigation_id=AsyncMock(return_value=list(rows))
+    )
+    ctx.hypothesis_repo = SimpleNamespace(
+        find_by_investigation_id=AsyncMock(return_value=[h1]),
+        save=AsyncMock(),
+    )
+    result = await verify_root_cause_activity(
+        VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+    )
+    assert result.success is True
 
 
 @pytest.mark.asyncio
@@ -420,7 +393,7 @@ async def test_verify_persistence_conflict_is_typed_denial(monkeypatch: Any) -> 
     assert result.data.get("verified") is False
     assert result.data.get("persisted") is False
     assert result.data.get("status") == "VERIFIED"
-    assert result.data.get("verifier_version_source") == "pinned"
+    assert result.data.get("verifier_version_source") == "unified-dev"
 
 
 @pytest.mark.asyncio
@@ -461,14 +434,12 @@ async def test_verify_materialization_failure_is_typed_denial(monkeypatch: Any) 
     assert result.success is False
     assert result.data.get("reason") == "outcome_materialization_failed"
     assert result.data.get("verified") is False
-    assert result.data.get("verifier_version_source") == "pinned"
+    assert result.data.get("verifier_version_source") == "unified-dev"
 
 
 @pytest.mark.asyncio
-async def test_no_repository_marks_version_source(monkeypatch: Any) -> None:
-    """Repo-less execution keeps working (tests/dev) but its provenance
-    reads "no-repository", never "pinned": the fallback is loud, not
-    silent."""
+async def test_no_repository_uses_unified_version_source(monkeypatch: Any) -> None:
+    """Repo-less dev execution uses the same unified behavior."""
     from investigation_agent_platform.api.dependencies import AppContext, set_app_context
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine,
@@ -498,7 +469,7 @@ async def test_no_repository_marks_version_source(monkeypatch: Any) -> None:
     )
     assert result.success is True
     assert result.data.get("verifier_version") == VERIFIER_VERSION_CURRENT
-    assert result.data.get("verifier_version_source") == "no-repository"
+    assert result.data.get("verifier_version_source") == "unified-dev"
 
 
 @pytest.mark.asyncio

@@ -223,13 +223,6 @@ class CreateInvestigationService:
             status = InvestigationStatus.CANCELLED
             completed_at = now
 
-        # Pin the verifier behavior version: rows keep the semantics they
-        # started with when the engine evolves. (Function-level import per
-        # C13: keeps the worker import graph light.)
-        from investigation_agent_platform.application.investigation.verification import (
-            VERIFIER_VERSION_CURRENT,
-        )
-
         investigation = Investigation(
             session_id=request.session_id,
             application_id=request.application_id,
@@ -247,7 +240,6 @@ class CreateInvestigationService:
             metadata={
                 "profile_version": profile.version,
                 "disposition": disposition.to_metadata(),
-                "verifier_version": VERIFIER_VERSION_CURRENT,
             },
         )
 

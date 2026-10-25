@@ -2728,15 +2728,37 @@ async def execute_action_activity(
             claim_kind_key = str(raw_claim.get("claim_kind") or "CAUSAL").strip().upper()
             claim_target = raw_claim.get("target")
             claim_target = claim_target if isinstance(claim_target, dict) else {}
-            proposed_claims[
-                (
-                    claim_text,
-                    claim_kind_key,
-                    str(claim_target.get("counterpart") or "").strip().casefold(),
-                    str(claim_target.get("commit_id") or "").strip().casefold(),
-                    str(claim_target.get("file_path") or "").replace("\\", "/").strip().casefold(),
-                )
-            ] = raw_claim
+            raw_edges = raw_claim.get("caller_edges")
+            claim_variants = (
+                [
+                    {
+                        **raw_claim,
+                        "target": edge.get("target"),
+                        "evidence_ids": edge.get("evidence_ids", []),
+                    }
+                    for edge in raw_edges
+                    if isinstance(raw_edges, list)
+                    and isinstance(edge, dict)
+                    and isinstance(edge.get("target"), dict)
+                ]
+                if claim_kind_key == "CALL_EDGE" and isinstance(raw_edges, list) and raw_edges
+                else [raw_claim]
+            )
+            for claim_variant in claim_variants:
+                variant_target = claim_variant.get("target")
+                variant_target = variant_target if isinstance(variant_target, dict) else {}
+                proposed_claims[
+                    (
+                        claim_text,
+                        claim_kind_key,
+                        str(variant_target.get("counterpart") or "").strip().casefold(),
+                        str(variant_target.get("commit_id") or "").strip().casefold(),
+                        str(variant_target.get("file_path") or "")
+                        .replace("\\", "/")
+                        .strip()
+                        .casefold(),
+                    )
+                ] = claim_variant
             if claim_text not in proposed_hypotheses:
                 proposed_hypotheses.append(claim_text)
         if not tenant_id or not inv_id_str:
@@ -2771,6 +2793,11 @@ async def execute_action_activity(
             or (getattr(investigation_obj, "application_id", None) if investigation_obj else None)
             or ""
         )
+        from investigation_agent_platform.application.investigation.verification import (
+            VERIFIER_VERSION_CURRENT,
+            VerificationEngine,
+        )
+        verifier_version = VERIFIER_VERSION_CURRENT
 
         inv_action = InvestigationAction.create(
             tenant_id=tenant_id,
@@ -5442,6 +5469,7 @@ async def execute_action_activity(
                     # batch-wide list is dropped, never merged.
                     claim_cited = []
                 claim_binding_ids: dict[tuple[str, str, str, str, str], list[UUID]] = {}
+                caller_obligations: list[tuple[Any, dict[str, Any], list[UUID]]] = []
                 for claim_key, typed in typed_list:
                     typed_cited: list[Any] = []
                     for raw in (typed.get("evidence_ids", []) or [])[:20]:
@@ -5530,6 +5558,17 @@ async def execute_action_activity(
                             ClaimTarget.model_validate(target_data) if target_data else None
                         )
                         kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
+                        edge_targets = [edge_target]
+                        if kind == ClaimKind.CALL_EDGE and verifier_version == VERIFIER_VERSION_CURRENT:
+                            edge_targets = VerificationEngine._aggregate_call_edge_targets(edge_target)
+                            if not edge_targets:
+                                edge_targets = [edge_target]
+                        if kind == ClaimKind.CALL_EDGE and verifier_version == VERIFIER_VERSION_CURRENT:
+                            for target in edge_targets:
+                                caller_obligations.append(
+                                    (target, typed, claim_binding_ids.get(claim_key, []))
+                                )
+                            continue
                         fact_category = typed.get("fact_category") or (
                             edge_target.fact_category.value
                             if edge_target is not None and edge_target.fact_category is not None
@@ -5562,6 +5601,55 @@ async def execute_action_activity(
                                 ),
                             )
                             assessments.append(assessment)
+                    if verifier_version == VERIFIER_VERSION_CURRENT and caller_obligations:
+                        required_verification: list[str] = []
+                        for edge_target, typed, edge_ids in caller_obligations:
+                            edge_key = VerificationEngine.caller_edge_key(edge_target)
+                            required_verification.append(f"CALL_EDGE|{edge_key}")
+                            matching_ids = list(edge_ids)
+                            if edge_target.file_path:
+                                matching_ids = [
+                                    evidence_id
+                                    for evidence_id in matching_ids
+                                    if VerificationEngine._paths_match(
+                                        str(edge_target.file_path),
+                                        VerificationEngine._item_file(
+                                            known_evidence_rows.get(evidence_id)
+                                        ),
+                                    )
+                                ]
+                            if not matching_ids:
+                                assessments.append(
+                                    HypothesisEvidenceAssessment(
+                                        hypothesis_id=hypothesis_id,
+                                        evidence_id=None,
+                                        assessment=AssessmentType.SUPPORTS,
+                                        strength=AssessmentStrength.MODERATE,
+                                        reason="caller edge obligation unresolved",
+                                        claim_kind=ClaimKind.CALL_EDGE,
+                                        claim_target=edge_target,
+                                        reason_code="CALL_EDGE_UNRESOLVED",
+                                        schema_version="v2",
+                                    )
+                                )
+                                continue
+                            for evidence_id in matching_ids:
+                                assessments.append(
+                                    HypothesisEvidenceAssessment(
+                                        hypothesis_id=hypothesis_id,
+                                        evidence_id=evidence_id,
+                                        assessment=AssessmentType.SUPPORTS,
+                                        strength=AssessmentStrength.MODERATE,
+                                        reason="cited by CALL_EDGE obligation",
+                                        claim_kind=ClaimKind.CALL_EDGE,
+                                        claim_target=edge_target,
+                                        reason_code="CALL_EDGE_BOUND",
+                                        schema_version="v2",
+                                    )
+                                )
+                        required_verification = list(dict.fromkeys(required_verification))
+                    else:
+                        required_verification = []
                     await hypothesis_repo.save(
                         tenant_id,
                         Hypothesis(
@@ -5573,6 +5661,7 @@ async def execute_action_activity(
                             statement=statement,
                             supporting_evidence_ids=claim_cited,
                             assessments=assessments,
+                            required_verification=required_verification,
                         ),
                         investigation_id,
                         0,
@@ -6032,61 +6121,15 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
 
         from investigation_agent_platform.application.investigation.verification import (
             VERIFIER_VERSION_CURRENT,
-            VERIFIER_VERSION_LEGACY,
             CausalRelationship,
-            UnknownVerifierVersion,
             VerificationEngine,
-            VerifierVersionUnavailable,
             rank_hypotheses,
-            resolve_verifier_version,
             select_verifiable_candidate,
         )
+        from investigation_agent_platform.domain.hypothesis.models import ClaimKind
 
-        # Version-contained routing: the investigation's recorded
-        # verifier version decides the semantics — never an env switch.
-        # Unmarked rows ran current-path semantics by default, so they
-        # resolve to current; only rows explicitly pinned v1 run legacy.
-        # Anything else fails closed (established error result, no
-        # evaluation under an assumed version).
-        investigation_repo: Any = getattr(ctx, "investigation_repo", None)
-        if investigation_repo is None:
-            # No repository wired (tests/dev): no persisted row exists to
-            # misinterpret, so unmarked current semantics apply. Loud, not
-            # silent: the provenance reads "no-repository", never "pinned".
-            logger.warning(
-                "verify proceeding without investigation repository; "
-                "unmarked current verifier semantics apply",
-                extra=_log_extra(
-                    tenant_id=tenant_id,
-                    investigation_id=inv_id_str,
-                    event="verify no-repository fallback",
-                ),
-            )
-            verifier_version = VERIFIER_VERSION_CURRENT
-            _version_source = "no-repository"
-        else:
-            try:
-                _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
-            except Exception as exc:
-                return GenericActivityResult(
-                    success=False,
-                    error="verifier version unavailable: "
-                    f"repository read failed ({type(exc).__name__})",
-                )
-            if _inv is None:
-                return GenericActivityResult(
-                    success=False,
-                    error="verifier version unavailable: investigation not found",
-                )
-            try:
-                verifier_version, _version_source = resolve_verifier_version(
-                    getattr(_inv, "metadata", None)
-                )
-            except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
-                return GenericActivityResult(
-                    success=False,
-                    error=f"verifier version unavailable: {exc}",
-                )
+        verifier_version = VERIFIER_VERSION_CURRENT
+        _version_source = "unified-dev"
         contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
         contradictions: list[Any] = []
         if contradiction_repo is not None:
@@ -6130,40 +6173,14 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     out.append(item)
             return out
 
-        engine = VerificationEngine()
+        engine = VerificationEngine(verifier_version=verifier_version)
         policy = _select_verification_policy(data.get("triage_route", ""))
-        # D3 Phase 0 shadow state: initialized on every path (legacy included)
-        # so the read-only tap can never introduce an unbound name into the
-        # native return. Legacy rows keep version-pinned semantics with no
-        # shadow tap — the list stays empty there.
+        # D3 Phase 0 shadow state is observational and runs beside the one
+        # active dev verifier behavior.
         definition_shadow_observations: list[dict[str, Any]] = []
         producing_path: str | None = None
         _shadow_identity: dict[str, Any] = {}
-        if verifier_version == VERIFIER_VERSION_LEGACY:
-            # Rows pinned to v1 keep the semantics they started with:
-            # first hypothesis, whole corpus, empty contradiction/causal
-            # lists. Falls through to the shared tail below.
-            hypothesis = hypotheses[0]
-            result = engine.evaluate_hypothesis(
-                hypothesis,
-                evidence_items,
-                [],
-                [],
-                policy,
-                sibling_hypotheses=list(hypotheses[1:]),
-            )
-            producing_path = "legacy"
-            verified = result.status.value == "VERIFIED"
-            # Phase 4.2: pinned-v1 decisions are observed too.
-            _emit_verify_telemetry(
-                ctx,
-                tenant_id,
-                investigation_id,
-                hypothesis,
-                result,
-                list(hypotheses[1:]),
-            )
-        else:
+        if candidate is not None:
             bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
             refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
             # Tranche B: range-read rows for files the claim names join the
@@ -6277,6 +6294,11 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and not refuting
                 and not code_value_claim
                 and not history_answered
+                and not (
+                    verifier_version == VERIFIER_VERSION_CURRENT
+                    and VerificationEngine.effective_claim_kind(candidate)
+                    == ClaimKind.CALL_EDGE
+                )
             )
             if location_answered:
                 result = location_result
@@ -6394,6 +6416,16 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     for s in (getattr(candidate, "causal_steps", []) or [])
                 ]
             causal_chain = [c for c in causal_chain if c.evidence_ids]
+            caller_edge_gate = None
+            caller_edge_validated = False
+            if (
+                verifier_version == VERIFIER_VERSION_CURRENT
+                and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+            ):
+                caller_edge_gate = engine.check_claim_kind(candidate, bound)
+                caller_edge_validated = bool(
+                    caller_edge_gate is not None and caller_edge_gate[0]
+                ) and not refuting
             blockers: list[str] = []
             if not bound:
                 blockers.append("no bound supporting evidence")
@@ -6410,6 +6442,7 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and not history_answered
                 and not doc_answered
                 and not state_answered
+                and not caller_edge_validated
                 and not code_value_claim
             ):
                 blockers.append("no validated causal chain")
@@ -6433,6 +6466,25 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     ),
                 )
                 producing_path = "blocked"
+            elif caller_edge_gate is not None and not caller_edge_validated:
+                if caller_edge_gate is not None:
+                    result = VerificationResult(
+                        hypothesis_id=candidate.id,
+                        status=VerificationStatus.INCONCLUSIVE,
+                        corroborating_evidence_ids=[e.evidence_id for e in bound],
+                        explanation=caller_edge_gate[1],
+                        confidence=InvestigationConfidence(
+                            coverage_score=0.3,
+                            reliability_score=0.5,
+                            causal_score=0.0,
+                            contradiction_penalty=0.0,
+                        ),
+                    )
+                    producing_path = "caller-edge-incomplete"
+            elif caller_edge_validated:
+                result = location_result
+                producing_path = "caller-edge"
+                causal_chain = []
             elif code_value_answered:
                 result = code_value_result
                 producing_path = "code-value"
@@ -6447,6 +6499,7 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and not history_answered
                 and not doc_answered
                 and not state_answered
+                and not caller_edge_validated
             ):
                 _candidate_id = getattr(candidate, "id", None)
                 producing_path = "general"
@@ -6474,31 +6527,6 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     if getattr(h, "id", None) != getattr(candidate, "id", None)
                 ],
             )
-            # Shadow telemetry: always compute the legacy answer alongside
-            # and log divergence while the new path is authoritative.
-            try:
-                legacy = engine.evaluate_hypothesis(
-                    hypotheses[0],
-                    evidence_items,
-                    [],
-                    [],
-                    policy,
-                    sibling_hypotheses=list(hypotheses[1:]),
-                )
-                if legacy.status.value != result.status.value:
-                    logger.warning(
-                        "verifier divergence legacy=%s new=%s",
-                        legacy.status.value,
-                        result.status.value,
-                        extra=_log_extra(
-                            tenant_id=tenant_id,
-                            investigation_id=inv_id_str,
-                            event="verifier divergence",
-                            hypothesis_id=str(candidate.id),
-                        ),
-                    )
-            except Exception:
-                pass
             verified = result.status.value == "VERIFIED"
             # Persist the verdict back onto the candidate (scores, bindings,
             # lifecycle) so the next ranking sorts on maintained fields.
@@ -7184,14 +7212,10 @@ async def _gate_conclusion_or_fail(
     """
     from investigation_agent_platform.application.investigation.verification import (
         VERIFIER_VERSION_CURRENT,
-        VERIFIER_VERSION_LEGACY,
         ConclusionGate,
         RootCauseVerificationPolicy,
-        UnknownVerifierVersion,
         VerificationEngine,
         VerificationStatus,
-        VerifierVersionUnavailable,
-        resolve_verifier_version,
     )
     from investigation_agent_platform.domain.finding.models import (
         ConclusionStatus,
@@ -7199,6 +7223,7 @@ async def _gate_conclusion_or_fail(
         FindingType,
         InvestigationConclusion,
     )
+    from investigation_agent_platform.domain.hypothesis.models import ClaimKind
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
 
     evidence_repo: Any = getattr(ctx, "evidence_repo", None)
@@ -7319,125 +7344,9 @@ async def _gate_conclusion_or_fail(
     engine = VerificationEngine()
     policy = RootCauseVerificationPolicy()
 
-    # Version-contained routing: rows pinned to v1 keep the pre-P0-3
-    # semantics they started with (first hypothesis, whole corpus, no
-    # causal requirement, best-effort persistence); everything else runs
-    # the current path below. Never an env switch. Unresolvable versions
-    # deny publication (FAILED is the designated platform-error outcome).
-    investigation_repo: Any = getattr(ctx, "investigation_repo", None)
-    _inv: Any = None
-    if investigation_repo is None:
-        verifier_version = VERIFIER_VERSION_CURRENT
-    else:
-        try:
-            _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
-        except Exception as exc:
-            logger.warning(
-                "ConclusionGate: verifier version unreadable; denying COMPLETED",
-                extra=_log_extra(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    event="ConclusionGate denied COMPLETED",
-                    reason="version_unavailable",
-                    error_type=type(exc).__name__,
-                ),
-            )
-            return InvestigationStatus.FAILED
-        if _inv is None:
-            logger.warning(
-                "ConclusionGate: investigation not found; denying COMPLETED",
-                extra=_log_extra(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    event="ConclusionGate denied COMPLETED",
-                    reason="investigation_not_found",
-                ),
-            )
-            return InvestigationStatus.FAILED
-        try:
-            verifier_version, _version_source = resolve_verifier_version(
-                getattr(_inv, "metadata", None)
-            )
-        except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
-            logger.warning(
-                "ConclusionGate: verifier version unresolvable; denying COMPLETED",
-                extra=_log_extra(
-                    tenant_id=tenant_id,
-                    investigation_id=investigation_id,
-                    event="ConclusionGate denied COMPLETED",
-                    reason="version_unresolvable",
-                    error=str(exc),
-                ),
-            )
-            return InvestigationStatus.FAILED
-
-    if verifier_version == VERIFIER_VERSION_LEGACY:
-        verification = engine.evaluate_hypothesis(
-            hypotheses[0],
-            evidence_items,
-            [],
-            [],
-            policy,
-            sibling_hypotheses=list(hypotheses[1:]),
-        )
-        gate = ConclusionGate()
-        gate_policy = policy.model_copy(update={"require_causal_relationship": False})
-        decision = await gate.evaluate(
-            tenant_id,
-            investigation_id,
-            verification,
-            [],
-            [],
-            evidence_items,
-            gate_policy,
-        )
-        if not decision.approved:
-            return InvestigationStatus.FAILED
-        if finding_repo is not None:
-            try:
-                _legacy_ids = [e.evidence_id for e in evidence_items][:100]
-                _legacy_hyp = hypotheses[0]
-                await finding_repo.save_finding_record(
-                    tenant_id,
-                    Finding(
-                        tenant_id=tenant_id,
-                        investigation_id=investigation_id,
-                        finding_type=FindingType.ROOT_CAUSE,
-                        title=_legacy_hyp.title,
-                        statement=_legacy_hyp.statement,
-                        evidence_ids=_legacy_ids,
-                        related_hypothesis_ids=[_legacy_hyp.id],
-                        causal_chain=_legacy_ids[:1],
-                        confidence=verification.confidence.overall_confidence,
-                    ),
-                )
-                await finding_repo.save_conclusion(
-                    tenant_id,
-                    InvestigationConclusion(
-                        tenant_id=tenant_id,
-                        investigation_id=investigation_id,
-                        status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED
-                        if verification.status == VerificationStatus.VERIFIED
-                        else ConclusionStatus.ROOT_CAUSE_LIKELY,
-                        root_cause=_legacy_hyp.statement,
-                        supporting_evidence_ids=_legacy_ids,
-                        supporting_hypothesis_ids=[_legacy_hyp.id],
-                        confidence=verification.confidence.overall_confidence,
-                        verifier_version=VERIFIER_VERSION_LEGACY,
-                    ),
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Pinned-v1 finding/conclusion persist failed",
-                    extra=_log_extra(
-                        tenant_id=tenant_id,
-                        investigation_id=investigation_id,
-                        event="pinned-v1 finding persist failed",
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                    ),
-                )
-        return InvestigationStatus.COMPLETED
+    verifier_version = VERIFIER_VERSION_CURRENT
+    _version_source = "unified-dev"
+    _inv = None
     ranked = rank_hypotheses(list(hypotheses))
     # G9: same resolvable-citation preference as the verify activity.
     candidate = select_verifiable_candidate(ranked, evidence_by_id)
@@ -7541,7 +7450,7 @@ async def _gate_conclusion_or_fail(
     ]
     causal_chain = [c for c in causal_chain if c.evidence_ids]
     # G1: location-answer fast path (mirrors verify_root_cause_activity).
-    _verify_engine = VerificationEngine()
+    _verify_engine = VerificationEngine(verifier_version=verifier_version)
     code_value_verification = _verify_engine.validate_code_value_claim(
         candidate, bound, contradictions
     )
@@ -7566,12 +7475,25 @@ async def _gate_conclusion_or_fail(
         and not refuting
         and not code_value_claim
         and not history_answered
+        and not (
+            verifier_version == VERIFIER_VERSION_CURRENT
+            and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+        )
     )
+    caller_edge_validated = False
+    if (
+        verifier_version == VERIFIER_VERSION_CURRENT
+        and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+    ):
+        caller_edge_gate = _verify_engine.check_claim_kind(candidate, bound)
+        caller_edge_validated = bool(caller_edge_gate is not None and caller_edge_gate[0]) and not refuting
     # T1-1: doc validation up front so the abstention check below sees it.
     doc_answered = False
     doc_verification = None
     try:
-        doc_verification = VerificationEngine().validate_doc_claim(candidate, bound, contradictions)
+        doc_verification = VerificationEngine(verifier_version=verifier_version).validate_doc_claim(
+            candidate, bound, contradictions
+        )
         doc_answered = doc_verification is not None and not refuting
     except Exception:
         pass
@@ -7586,7 +7508,7 @@ async def _gate_conclusion_or_fail(
         and not code_value_claim
     ):
         try:
-            state_verification = VerificationEngine().validate_state_claim(
+            state_verification = VerificationEngine(verifier_version=verifier_version).validate_state_claim(
                 candidate, bound, contradictions
             )
             state_answered = state_verification is not None and not refuting
@@ -7602,6 +7524,7 @@ async def _gate_conclusion_or_fail(
             and not history_answered
             and not doc_answered
             and not state_answered
+            and not caller_edge_validated
         )
     ):
         reasons = []
@@ -7616,13 +7539,14 @@ async def _gate_conclusion_or_fail(
             and not history_answered
             and not doc_answered
             and not state_answered
+            and not caller_edge_validated
         ):
             reasons.append("no validated causal chain")
         if code_value_claim and not code_value_answered:
             reasons.append("code value claim lacks a matching deterministic resolution")
         await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
         return InvestigationStatus.COMPLETED
-    if location_answered:
+    if caller_edge_validated or location_answered:
         verification = location_verification
     elif code_value_answered:
         verification = code_value_verification
@@ -7638,6 +7562,7 @@ async def _gate_conclusion_or_fail(
         and not history_answered
         and not doc_answered
         and not state_answered
+        and not caller_edge_validated
         and not code_value_claim
     ):
         _gate_candidate_id = getattr(candidate, "id", None)
@@ -7666,6 +7591,7 @@ async def _gate_conclusion_or_fail(
         history_validated=history_answered,
         doc_validated=doc_answered,
         state_validated=state_answered,
+        caller_edges_validated=caller_edge_validated,
     )
     if not decision.approved:
         logger.warning(
@@ -8012,7 +7938,7 @@ async def conclude_investigation_activity(
                         )
                         if epistemic:
                             from investigation_agent_platform.application.investigation.verification import (
-                                resolve_verifier_version,
+                                VERIFIER_VERSION_CURRENT,
                             )
                             from investigation_agent_platform.domain.finding.models import (
                                 ConclusionStatus,
@@ -8049,9 +7975,7 @@ async def conclude_investigation_activity(
                                                 )
                                             ],
                                         next_check=_epistemic_check,
-                                        verifier_version=resolve_verifier_version(
-                                            getattr(inv, "metadata", None)
-                                        )[0],
+                                        verifier_version=VERIFIER_VERSION_CURRENT,
                                     ),
                                     )
                                     # Phase 4.2: abstention volume counter.

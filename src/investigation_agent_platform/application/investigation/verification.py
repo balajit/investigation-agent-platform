@@ -750,18 +750,16 @@ def category_proof_rule(category: JavaFactCategory) -> CategoryProofRule | None:
         return None
 
 
-#: Current verifier behavior version. Pinned on every new investigation
-#: (``metadata["verifier_version"]``) so rows keep the semantics they
-#: started with when the engine evolves. Routing is by recorded version,
-#: never by environment switch.
+# The dev system has one active verifier behavior. The ``v2`` label is retained
+# only because the frozen D3 protocol names it and existing persisted
+# conclusions may expose it. Historical v1/v3 labels do not select behavior.
 VERIFIER_VERSION_CURRENT = "v2"
-#: Pre-P0-3 semantics (first hypothesis, whole corpus, empty
-#: contradiction/causal lists, best-effort persistence). Only rows
-#: explicitly pinned here run it.
-VERIFIER_VERSION_LEGACY = "v1"
-#: Verifier versions with defined semantics. Anything else pinned is
-#: rejected — an unknown contract must never silently select one.
-KNOWN_VERIFIER_VERSIONS = frozenset({VERIFIER_VERSION_CURRENT, VERIFIER_VERSION_LEGACY})
+VERIFIER_VERSION_LEGACY = "v1"  # historical audit label only
+VERIFIER_VERSION_V2 = VERIFIER_VERSION_CURRENT
+VERIFIER_VERSION_V3 = "v3"  # historical audit label only
+KNOWN_VERIFIER_VERSIONS = frozenset(
+    {VERIFIER_VERSION_LEGACY, VERIFIER_VERSION_CURRENT, VERIFIER_VERSION_V3}
+)
 
 
 class UnknownVerifierVersion(ValueError):
@@ -775,16 +773,9 @@ class VerifierVersionUnavailable(ValueError):
 def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
     """Resolve the recorded verifier version for an investigation.
 
-    Returns ``(version, source)`` where source is ``"pinned"`` (row
-    carries an explicit pin) or ``"unmarked"`` (successfully loaded row
-    or row-equivalent metadata without a pin — these ran current-path
-    semantics by default under the documented migration policy, so they
-    stay on current). Raises :class:`UnknownVerifierVersion` for pins
-    outside :data:`KNOWN_VERIFIER_VERSIONS` and
-    :class:`VerifierVersionUnavailable` when version information could
-    not be obtained at all (missing row, missing repository read,
-    malformed metadata). Callers must fail closed on either exception:
-    never guess a contract.
+    Returns the single active dev behavior for audit-compatible labels. The
+    source value is retained for telemetry only; it never selects a runtime
+    branch. Unknown labels still fail closed so corrupted metadata is visible.
     """
     if metadata is None or not isinstance(metadata, dict):
         raise VerifierVersionUnavailable(
@@ -795,7 +786,7 @@ def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
         return VERIFIER_VERSION_CURRENT, "unmarked"
     if pinned not in KNOWN_VERIFIER_VERSIONS:
         raise UnknownVerifierVersion(f"unrecognized pin: {pinned!r}")
-    return pinned, "pinned"
+    return VERIFIER_VERSION_CURRENT, "unified-dev"
 
 
 class VerificationEngine:
@@ -827,6 +818,57 @@ class VerificationEngine:
         "incomplete extraction",
         "missing extraction",
     )
+
+    def __init__(self, verifier_version: str = VERIFIER_VERSION_CURRENT) -> None:
+        # Kept as an API-compatible argument for shadow/protocol callers. It
+        # does not select behavior in the unified dev runtime.
+        self.verifier_version = VERIFIER_VERSION_CURRENT
+
+    @staticmethod
+    def canonical_caller_edge_key(
+        symbol: Any, counterpart: Any, file_path: Any, commit_id: Any
+    ) -> str:
+        """Single canonical obligation key for caller edges.
+
+        Shared by verification coverage and workflow repair forcing so both
+        sides join on the same identity. `|` is escaped as `%7C` in each
+        component to prevent delimiter collisions; file paths are normalized
+        identically on both sides (backslash → slash, strip whitespace and
+        leading/trailing slashes).
+        """
+        def _escape(value: Any) -> str:
+            return str(value or "").strip().replace("|", "%7C")
+
+        normalized_path = (
+            str(file_path or "").replace("\\", "/").strip().strip("/").lstrip("./")
+        ).replace("|", "%7C")
+        return "|".join(
+            (
+                _escape(symbol),
+                _escape(counterpart),
+                normalized_path.strip(),
+                _escape(commit_id),
+            )
+        )
+
+    @staticmethod
+    def caller_edge_key(target: ClaimTarget) -> str:
+        """Stable obligation key carried through reason/workflow repair."""
+        return VerificationEngine.canonical_caller_edge_key(
+            getattr(target, "symbol", ""),
+            getattr(target, "counterpart", ""),
+            getattr(target, "file_path", ""),
+            getattr(target, "commit_id", ""),
+        )
+
+    @staticmethod
+    def required_caller_edge_keys(hypothesis: Any) -> set[str]:
+        """Read v3 caller obligations persisted in required_verification."""
+        return {
+            str(item)[len("CALL_EDGE|") :]
+            for item in (getattr(hypothesis, "required_verification", None) or [])
+            if str(item).startswith("CALL_EDGE|")
+        }
 
     # G3: definition-strength claims ("defined/implemented/declared in X")
     # require at least one range-read (GET_SOURCE) citation — SEARCH matches
@@ -1996,7 +2038,10 @@ class VerificationEngine:
                     str(getattr(item, "evidence_id", "")): item
                     for item in evidence_items or []
                 }
+                proven_callers: set[str] = set()
                 for assessment in edge_assessments:
+                    if getattr(assessment, "evidence_id", None) is None:
+                        continue
                     row = evidence_by_id.get(str(assessment.evidence_id))
                     if row is None:
                         return (False, "a caller edge's bound call-site evidence is unavailable")
@@ -2006,7 +2051,9 @@ class VerificationEngine:
                     # stays bound to showing evidence — set membership in
                     # the bound set — rather than failing on the pointer.
                     # Tight: only same-file range rows for this target.
-                    _rows: list[Any] = [row]
+                    _rows: list[Any] = list(evidence_items or [])
+                    if row not in _rows:
+                        _rows.insert(0, row)
                     _tfile = str(
                         getattr(assessment.claim_target, "file_path", "") or ""
                     )
@@ -2019,15 +2066,50 @@ class VerificationEngine:
                                     _tfile, VerificationEngine._item_file(_item)
                                 ):
                                     continue
-                            except Exception:
+                            except (AttributeError, TypeError, ValueError):
                                 continue
                             if _item not in _rows:
                                 _rows.append(_item)
-                    edge_ok, edge_reason = VerificationEngine.call_site_proof(
-                        _rows, assessment.claim_target, statement
-                    )
-                    if not edge_ok:
-                        return (False, edge_reason)
+                    edge_targets = VerificationEngine._aggregate_call_edge_targets(
+                        assessment.claim_target
+                    ) or [assessment.claim_target]
+                    if len(edge_targets) == 1:
+                        _rows = [row]
+                        if _tfile:
+                            for _item in evidence_items or []:
+                                if _item is row:
+                                    continue
+                                try:
+                                    if not VerificationEngine._paths_match(
+                                        _tfile, VerificationEngine._item_file(_item)
+                                    ):
+                                        continue
+                                except Exception:
+                                    continue
+                                if _item not in _rows:
+                                    _rows.append(_item)
+                    matched_targets: list[ClaimTarget] = []
+                    for edge_target in edge_targets:
+                        # A same-file sibling range read can repair a
+                        # cited search/comment row, but it must still prove
+                        # this specific caller edge.
+                        edge_ok, edge_reason = VerificationEngine.call_site_proof(
+                            _rows, edge_target, statement
+                        )
+                        if not edge_ok:
+                            return (
+                                False,
+                                edge_reason,
+                            )
+                        matched_targets.append(edge_target)
+                    for matched_target in matched_targets:
+                        _cp = str(getattr(matched_target, "counterpart", "") or "")
+                        for _sep in ("::", "#"):
+                            _cp = _cp.replace(_sep, ".")
+                        for _part in _cp.split("."):
+                            _part = _part.strip()
+                            if _part:
+                                proven_callers.add(_part.casefold())
                 named_callers: list[str] = []
                 for item in evidence_items or []:
                     if VerificationEngine._item_type(item) not in VerificationEngine.CODE_EVIDENCE_TYPES:
@@ -2049,20 +2131,18 @@ class VerificationEngine:
                         statement,
                     ):
                         named_callers.append(file_stem.casefold())
-                bound_callers: set[str] = set()
-                for a in edge_assessments:
-                    _ct = getattr(a, "claim_target", None)
-                    if _ct is None:
-                        continue
-                    _cp = str(getattr(_ct, "counterpart", "") or "")
-                    for _sep in ("::", "#"):
-                        _cp = _cp.replace(_sep, ".")
-                    for _part in _cp.split("."):
-                        _part = _part.strip()
-                        if _part:
-                            bound_callers.add(_part.casefold())
-                if set(named_callers) - bound_callers:
+                if set(named_callers) - proven_callers:
                     return (False, "caller enumeration names a caller without its own CALL_EDGE claim")
+                required = self.required_caller_edge_keys(hypothesis)
+                proven_keys = {
+                    self.caller_edge_key(a.claim_target)
+                    for a in edge_assessments
+                    if getattr(a, "evidence_id", None) is not None
+                    and getattr(a, "claim_target", None) is not None
+                }
+                if required - proven_keys:
+                    missing = min(required - proven_keys)
+                    return (False, f"CALL_EDGE_INCOMPLETE_ENUMERATION: unresolved edge {missing}")
                 return (True, "")
             aggregate_edges = VerificationEngine._aggregate_call_edges(hypothesis)
             if aggregate_edges:
@@ -2086,6 +2166,11 @@ class VerificationEngine:
     def _aggregate_call_edges(hypothesis: Any) -> list[ClaimTarget]:
         """Detect claims whose one target actually asserts several callers."""
         target = getattr(hypothesis, "claim_target", None)
+        return VerificationEngine._aggregate_call_edge_targets(target)
+
+    @staticmethod
+    def _aggregate_call_edge_targets(target: ClaimTarget | None) -> list[ClaimTarget]:
+        """Split an aggregate caller target into independently checked edges."""
         if target is None or not getattr(target, "counterpart", None):
             return []
         counterpart = str(target.counterpart)
@@ -4302,6 +4387,7 @@ class ConclusionGate:
         state_validated: bool = False,
         code_value_validated: bool = False,
         history_validated: bool = False,
+        caller_edges_validated: bool = False,
     ) -> ConclusionGateDecision:
         blockers: list[str] = []
         if verification.status != VerificationStatus.VERIFIED:
@@ -4329,6 +4415,7 @@ class ConclusionGate:
             and not state_validated
             and not code_value_validated
             and not history_validated
+            and not caller_edges_validated
         ):
             # G1: location answers have no causal chain by nature — the
             # location validation (cited code with provenance) stands in.
