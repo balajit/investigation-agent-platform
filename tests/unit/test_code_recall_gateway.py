@@ -150,6 +150,52 @@ async def test_flag_off_symbol_hit_is_byte_identical(
 
 
 @pytest.mark.asyncio
+async def test_call_graph_both_depth_expands_callers_and_callees():
+    from investigation_agent_platform.application.evidence.gateway import AsyncEvidenceGateway
+    from investigation_agent_platform.domain.evidence.requests import CallGraphRequest
+    from investigation_agent_platform.ports.evidence.code import CallGraphNode, CodeLocation
+
+    provider = MagicMock()
+    provider.profile = SimpleNamespace(name="test-profile")
+    provider.find_callers = AsyncMock(
+        side_effect=[
+            [CallGraphNode(caller_symbol="caller-1", callee_symbol="root", location=CodeLocation(file_path="src/caller.py", line_number=10))],
+            [CallGraphNode(caller_symbol="caller-2", callee_symbol="caller-1", location=CodeLocation(file_path="src/caller2.py", line_number=20))],
+        ]
+    )
+    provider.find_callees = AsyncMock(
+        side_effect=[
+            [CallGraphNode(caller_symbol="root", callee_symbol="callee-1", location=CodeLocation(file_path="src/callee.py", line_number=30))],
+            [CallGraphNode(caller_symbol="callee-1", callee_symbol="callee-2", location=CodeLocation(file_path="src/callee2.py", line_number=40))],
+        ]
+    )
+    selector = MagicMock()
+    selector.get_code_intelligence_provider = AsyncMock(return_value=provider)
+    policy = MagicMock()
+    policy.validate_symbol_request = AsyncMock(return_value=None)
+    gateway = AsyncEvidenceGateway(
+        provider_selector=selector,
+        query_safety_policy=policy,
+        sanitizer=MagicMock(),
+        telemetry=_Metrics(),
+        fuzzy_search_fn=None,
+        fuzzy_authority_fn=None,
+        fuzzy_dataset_fn=None,
+    )
+    result = await gateway.find_call_graph(
+        "tenant-a", uuid.uuid4(), "app-1",
+        CallGraphRequest(repository="repo", symbol="root", direction="BOTH", depth=2),
+    )
+
+    assert {item["caller_symbol"] for item in result.provider_metadata["callers"]} == {
+        "caller-1", "caller-2"
+    }
+    assert {item["callee_symbol"] for item in result.provider_metadata["callees"]} == {
+        "callee-1", "callee-2"
+    }
+
+
+@pytest.mark.asyncio
 async def test_flag_off_empty_miss_is_byte_identical(flag_off: None) -> None:
     gateway, metrics, search_calls = _gateway(find_symbol_result=[])
     result = await gateway.find_symbol(

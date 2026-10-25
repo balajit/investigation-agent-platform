@@ -244,6 +244,9 @@ async def insert_conclusion_record(
             ],
             limitations=list(conclusion.get("limitations") or []),
             recommended_next_steps=list(conclusion.get("recommended_next_steps") or []),
+            proven_callers=list(conclusion.get("proven_callers") or []),
+            unresolved_callers=list(conclusion.get("unresolved_callers") or []),
+            caller_coverage=conclusion.get("caller_coverage"),
             verifier_version=str(conclusion.get("verifier_version") or "v2"),
         )
         .on_conflict_do_update(
@@ -252,6 +255,9 @@ async def insert_conclusion_record(
                 "status": str(conclusion.get("status") or ""),
                 "root_cause": str(conclusion.get("root_cause") or ""),
                 "confidence": float(conclusion.get("confidence") or 0.0),
+                "proven_callers": list(conclusion.get("proven_callers") or []),
+                "unresolved_callers": list(conclusion.get("unresolved_callers") or []),
+                "caller_coverage": conclusion.get("caller_coverage"),
             },
         )
         .returning(InvestigationConclusionORM.id)

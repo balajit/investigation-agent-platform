@@ -21,6 +21,7 @@ from investigation_agent_platform.harness.freeze import (
     sign_record,
     validate_keylist,
     verify_freeze_self_hash,
+    verify_provenance_consistency,
     verify_record_signature,
     verify_rule_preimage,
 )
@@ -108,6 +109,36 @@ def test_freeze_digest_excludes_self_hash() -> None:
     assert freeze_digest({**body, "freeze_hash": "sha256:" + "00" * 32}) == freeze_digest(
         {**body, "freeze_hash": "sha256:" + "ff" * 32}
     )
+
+
+def test_runset_builder_requires_explicit_code_revision() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "build_d3_stagec_runset.py"
+    ).read_text(encoding="utf-8")
+    assert "explicit governed code revision required" in source
+    assert '"code_revision": code_revision' in source
+    assert "FREEZE_COMMIT" not in source
+
+
+def test_provenance_consistency_requires_one_code_revision() -> None:
+    manifest = {"git_rev": "rev-1"}
+    freeze = {"code_revision": "rev-1"}
+    verify_provenance_consistency(
+        manifest=manifest,
+        freeze=freeze,
+        attestation={"code_revision": "rev-1"},
+        governed_tree_revision="rev-1",
+    )
+    with pytest.raises(HarnessValidationError, match="freeze code_revision"):
+        verify_provenance_consistency(manifest=manifest, freeze={"code_revision": "rev-2"})
+    with pytest.raises(HarnessValidationError, match="attestation code_revision"):
+        verify_provenance_consistency(
+            manifest=manifest,
+            freeze=freeze,
+            attestation={"code_revision": "rev-2"},
+        )
 
 
 def test_verify_freeze_self_hash() -> None:

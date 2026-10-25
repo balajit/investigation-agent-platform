@@ -460,6 +460,9 @@ class InvestigationConclusionORM(Base):
     ranked_alternatives: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     # Phase 2.4: re-verify directive (NULL = established-clean / legacy).
     next_check: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proven_callers: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    unresolved_callers: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    caller_coverage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

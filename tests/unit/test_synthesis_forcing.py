@@ -7,6 +7,7 @@ holds unevaluated hypotheses against banked evidence.
 """
 
 from investigation_agent_platform.application.worker.workflows import (
+    _absence_disconfirmation_target,
     _should_force_formulate,
     _source_value_target,
 )
@@ -58,6 +59,7 @@ def test_source_value_claim_forces_exact_java_range_read():
             }
         ],
     }
+
     assert _source_value_target(reason, [], 0) == {
         "file_path": "src/TransactionProcessor.java",
         "field_name": "retryCount",
@@ -68,6 +70,124 @@ def test_source_value_claim_forces_exact_java_range_read():
     }
 
 
+def test_absence_disconfirmation_uses_cited_provider_location_and_key():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    candidate_id = uuid4()
+    row = SimpleNamespace(
+        evidence_id=candidate_id,
+        tenant_id="tenant-a",
+        investigation_id="investigation-a",
+        provenance=SimpleNamespace(
+            source_location=SimpleNamespace(
+                file_path="src/handler.py",
+                line_start=12,
+                line_end=20,
+                revision="abc123",
+            ),
+            query_fingerprint=SimpleNamespace(operation="SEARCH_CODE"),
+        ),
+        attributes={
+            "discovery_only": True,
+            "search_scope": "repo@abc123:src",
+            "match_count": 1,
+        },
+    )
+    target = _absence_disconfirmation_target(
+        {
+            "claims": [
+                {
+                    "claim_kind": "ABSENCE",
+                    "evidence_ids": [str(candidate_id)],
+                    "target": {"scope": "repo@abc123:src"},
+                }
+            ]
+        },
+        [row],
+        [],
+        0,
+    )
+
+    assert target is not None
+    assert target["next_action"] == "GET_CODE"
+    assert target["action_parameters"]["file_path"] == "src/handler.py"
+    assert target["action_parameters"]["start_line"] == 12
+    assert target["action_parameters"]["end_line"] == 20
+    assert target["action_parameters"]["revision"] == "abc123"
+    assert target["action_parameters"]["absence_disconfirmation_key"].startswith(
+        "ABSENCE_DISCONFIRMATION|"
+    )
+
+
+def test_absence_disconfirmation_rejects_locationless_or_unrelated_candidates():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    def _row(operation, path, evidence_id=None):
+        return SimpleNamespace(
+            evidence_id=evidence_id or uuid4(),
+            tenant_id="tenant-a",
+            investigation_id="investigation-a",
+            provenance=SimpleNamespace(
+                source_location=SimpleNamespace(
+                    file_path=path,
+                    line_start=None if not path else 10,
+                    line_end=None if not path else 20,
+                    revision="abc123",
+                ),
+                query_fingerprint=SimpleNamespace(operation=operation),
+            ),
+            attributes={"discovery_only": True, "search_scope": "other-scope"},
+        )
+
+    assert _absence_disconfirmation_target(
+        {
+            "claims": [
+                {"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src"}}
+            ]
+        },
+        [_row("FIND_CALL_GRAPH", "")],
+        [],
+        0,
+    ) is None
+
+
+def test_absence_disconfirmation_rejects_segment_collision_and_empty_row():
+    from uuid import uuid4
+
+    def _row(path, count, scope="repo@abc123:src/app", tenant="tenant-a"):
+        return {
+            "evidence_id": str(uuid4()),
+            "tenant_id": tenant,
+            "investigation_id": "investigation-a",
+            "attributes": {
+                "discovery_only": True,
+                "search_scope": scope,
+                "match_count": count,
+            },
+            "provenance": {
+                "source_location": {
+                    "file_path": path,
+                    "line_start": 10,
+                    "line_end": 20,
+                    "revision": "abc123",
+                },
+                "query_fingerprint": {"operation": "SEARCH_CODE"},
+            },
+        }
+
+    reason = {
+        "claims": [
+            {"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src/app"}}
+        ]
+    }
+    assert _absence_disconfirmation_target(
+        reason, [_row("src/application.py", 1, scope="repo@abc123:src/application")], [], 0
+    ) is None
+    assert _absence_disconfirmation_target(reason, [_row("src/app.py", 0)], [], 0) is None
+    assert _absence_disconfirmation_target(reason, [_row("src/app.py", True)], [], 0) is None
+    assert _absence_disconfirmation_target(reason, [_row("src/app.py", 1, tenant="")], [], 0) is None
 def test_source_value_forcing_is_bounded_and_covers_java_and_python():
     claim = {
         "claim_kind": "DEFINITION",
@@ -612,20 +732,32 @@ def test_floor_keyword_fallback():
     assert hit["action_parameters"]["query"]
 
 
-def _callsite(reason_data, history=None, count=0):
+def _callsite(reason_data, history=None, count=0, **kwargs):
     from investigation_agent_platform.application.worker.workflows import (
         _callsite_target,
     )
 
-    return _callsite_target(reason_data, history or [], count)
+    return _callsite_target(reason_data, history or [], count, **kwargs)
 
 
-def _edge_claim(symbol="reserve", counterpart="checkout", file_path="src/Checkout.java"):
+def _edge_claim(
+    symbol="reserve",
+    counterpart="checkout",
+    file_path="src/Checkout.java",
+    revision="rev-1",
+):
     return {
         "statement": f"{counterpart} calls {symbol}",
         "claim_kind": "CALL_EDGE",
         "evidence_ids": [],
-        "target": {"symbol": symbol, "counterpart": counterpart, "file_path": file_path},
+        "target": {
+            "symbol": symbol,
+            "counterpart": counterpart,
+            "file_path": file_path,
+            "line_start": 10,
+            "line_end": 20,
+            "commit_id": revision,
+        },
     }
 
 
@@ -641,11 +773,27 @@ def test_callsite_passes_read_caller_file():
         {
             "action": "GET_CODE",
             "evidence_added": 2,
-            "parameters": {"file_path": "src/Checkout.java"},
+            "parameters": {
+                "file_path": "src/Checkout.java",
+                "caller_edge_key": "reserve|checkout|src/Checkout.java|rev-1",
+                "caller_edge_symbol": "reserve",
+                "caller_edge_counterpart": "checkout",
+                "start_line": "10",
+                "end_line": "20",
+                "revision": "rev-1",
+                "caller_edge_tenant_id": "tenant-a",
+                "caller_edge_investigation_id": "inv-a",
+            },
         },
     ]
     assert (
-        _callsite({"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]}, history) is None
+        _callsite(
+            {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]},
+            history,
+            tenant_id="tenant-a",
+            investigation_id="inv-a",
+        )
+        is None
     )
 
 
@@ -670,3 +818,84 @@ def test_callsite_passes_target_window():
     assert hit is not None
     assert hit["action_parameters"]["start_line"] == 88
     assert hit["action_parameters"]["end_line"] == 104
+
+
+def test_callsite_does_not_suppress_same_path_wrong_revision_read():
+    history = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 1,
+            "parameters": {
+                "file_path": "src/Checkout.java",
+                "caller_edge_key": "reserve|checkout|src/Checkout.java|old-rev",
+                "caller_edge_symbol": "reserve",
+                "caller_edge_counterpart": "checkout",
+                "start_line": "10",
+                "end_line": "20",
+                "revision": "old-rev",
+                "caller_edge_tenant_id": "tenant-b",
+                "caller_edge_investigation_id": "inv-b",
+            },
+        }
+    ]
+    hit = _callsite(
+        {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim(revision="new-rev")]},
+        history,
+        tenant_id="tenant-a",
+        investigation_id="inv-a",
+    )
+    assert hit is not None
+    assert hit["action_parameters"]["revision"] == "new-rev"
+
+
+def test_callsite_does_not_suppress_foreign_binding_read():
+    history = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 1,
+            "parameters": {
+                "file_path": "src/Checkout.java",
+                "caller_edge_key": "reserve|checkout|src/Checkout.java|rev-1",
+                "caller_edge_symbol": "reserve",
+                "caller_edge_counterpart": "checkout",
+                "start_line": "10",
+                "end_line": "20",
+                "revision": "rev-1",
+                "caller_edge_tenant_id": "tenant-b",
+                "caller_edge_investigation_id": "inv-b",
+            },
+        }
+    ]
+    hit = _callsite(
+        {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]},
+        history,
+        tenant_id="tenant-a",
+        investigation_id="inv-a",
+    )
+    assert hit is not None
+
+
+def test_callsite_does_not_suppress_same_path_wrong_range_read():
+    history = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 1,
+            "parameters": {
+                "file_path": "src/Checkout.java",
+                "caller_edge_key": "reserve|checkout|src/Checkout.java|rev-1",
+                "caller_edge_symbol": "reserve",
+                "caller_edge_counterpart": "checkout",
+                "start_line": "30",
+                "end_line": "40",
+                "revision": "rev-1",
+            },
+        }
+    ]
+    hit = _callsite(
+        {"next_action": "VERIFY_HYPOTHESIS", "claims": [_edge_claim()]},
+        history,
+        tenant_id="tenant-a",
+        investigation_id="inv-a",
+    )
+    assert hit is not None
+    assert hit["action_parameters"]["start_line"] == 10

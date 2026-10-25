@@ -135,6 +135,25 @@ def test_d3p_mode_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_definition_mode() == "off"
 
 
+def test_d3p_a2_identity_is_present_and_joined() -> None:
+    from investigation_agent_platform.domain.proof.definition_shadow import (
+        ACTIVE_BEHAVIOR_VERSION,
+        AMENDMENT_ID,
+        PROTOCOL_ID,
+    )
+
+    obs = _obs()
+    assert obs["active_behavior_version"] == ACTIVE_BEHAVIOR_VERSION
+    assert obs["verifier_version"] == "v2"
+    assert obs["protocol_id"] == PROTOCOL_ID
+    assert obs["amendment_id"] == AMENDMENT_ID
+    envelope = build_correlation_envelope(obs, 1, 0, {"status": "INCONCLUSIVE", "producing_path": "verify"}, IDENT)
+    assert envelope["protocol_id"] == PROTOCOL_ID
+    assert envelope["amendment_id"] == AMENDMENT_ID
+    assert audit_envelope_join(envelope) == "ok"
+    assert audit_envelope_join({**envelope, "amendment_id": "DEC-other"}) == "void:amendment-mismatch"
+
+
 def test_d3p_mode_shadow_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IAP_SHADOW_TYPED_DEFINITIONS", "1")
     monkeypatch.delenv("IAP_TYPED_DEFINITIONS", raising=False)
@@ -544,6 +563,8 @@ def test_d3p_pairing_float_confidence_produces_envelopes() -> None:
             "receipt_index": env["receipt_index"],
             "native_outcome": env["native_outcome"],
             "activity_identity": env["activity_identity"],
+            "protocol_id": env["protocol_id"],
+            "amendment_id": env["amendment_id"],
         }
     )
     assert env["envelope_digest"] == "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -584,6 +605,8 @@ def test_d3p_envelope_normalizes_observation_floats() -> None:
             "receipt_index": 7,
             "native_outcome": env["native_outcome"],
             "activity_identity": env["activity_identity"],
+            "protocol_id": env["protocol_id"],
+            "amendment_id": env["amendment_id"],
         }
     )
     assert env["envelope_digest"] == "sha256:" + hashlib.sha256(raw).hexdigest()

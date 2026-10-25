@@ -184,6 +184,26 @@ def verify_freeze_binding(record: dict[str, Any], digest: str) -> None:
         raise HarnessValidationError("record freeze_hash does not match recomputed freeze digest")
 
 
+def verify_provenance_consistency(
+    *,
+    manifest: dict[str, Any],
+    freeze: dict[str, Any],
+    attestation: dict[str, Any] | None = None,
+    governed_tree_revision: str | None = None,
+) -> None:
+    """Require one exact code revision across all provenance surfaces."""
+    manifest_revision = manifest.get("git_rev")
+    freeze_revision = freeze.get("code_revision")
+    if not isinstance(manifest_revision, str) or not manifest_revision:
+        raise HarnessValidationError("manifest git_rev is missing")
+    if freeze_revision != manifest_revision:
+        raise HarnessValidationError("freeze code_revision does not match manifest git_rev")
+    if governed_tree_revision is not None and governed_tree_revision != manifest_revision:
+        raise HarnessValidationError("governed tree revision does not match manifest git_rev")
+    if attestation is not None and attestation.get("code_revision") != manifest_revision:
+        raise HarnessValidationError("attestation code_revision does not match manifest git_rev")
+
+
 def _authorization_chain(
     *,
     domain: str,
@@ -387,6 +407,7 @@ __all__ = [
     "validate_keylist",
     "verify_freeze_binding",
     "verify_freeze_self_hash",
+    "verify_provenance_consistency",
     "verify_record_signature",
     "verify_rule_preimage",
 ]

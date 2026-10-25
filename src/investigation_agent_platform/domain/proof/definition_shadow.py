@@ -51,6 +51,9 @@ from investigation_agent_platform.domain.proof.definition_dispatch import (
 from investigation_agent_platform.domain.proof.dispatch import DispatchTable, ResolverRegistry
 
 BUNDLE_VERSION = "definition-bundle/v1"
+ACTIVE_BEHAVIOR_VERSION = "unified-dev-v1"
+PROTOCOL_ID = "v1.9+A1+A2"
+AMENDMENT_ID = "DEC-2026-10-26-A2"
 MAX_BOUND_ROWS = 256
 MAX_RESIDENT_BYTES = 1024 * 1024
 
@@ -172,6 +175,10 @@ class ShadowDefinitionObservation(BaseModel):
     declaration_requirement_satisfied: bool = Field(default=False)
     input_set: str = Field(..., min_length=1, max_length=32)
     flag_config_snapshot: dict[str, bool] = Field(default_factory=dict)
+    active_behavior_version: str = Field(default=ACTIVE_BEHAVIOR_VERSION, max_length=64)
+    verifier_version: str = Field(default="", max_length=32)
+    protocol_id: str = Field(default=PROTOCOL_ID, max_length=64)
+    amendment_id: str = Field(default=AMENDMENT_ID, max_length=128)
 
 
 class ShadowError(ValueError):
@@ -370,6 +377,10 @@ def _observation_id(
     reason: str,
     trace: list[str],
     input_set: str,
+    active_behavior_version: str = ACTIVE_BEHAVIOR_VERSION,
+    protocol_id: str = PROTOCOL_ID,
+    amendment_id: str = AMENDMENT_ID,
+    verifier_version: str = "",
 ) -> str:
     raw = canonical_dict_bytes(
         {
@@ -383,6 +394,10 @@ def _observation_id(
             "association_scope": "source-range-only",
             "declaration_requirement_satisfied": False,
             "input_set": input_set,
+            "active_behavior_version": active_behavior_version,
+            "verifier_version": verifier_version,
+            "protocol_id": protocol_id,
+            "amendment_id": amendment_id,
         }
     )
     return "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -420,7 +435,14 @@ def evaluate_definition_shadow(
             raise ShadowError("BAD_REASON", reason)
         return ShadowDefinitionObservation(
             observation_id=_observation_id(
-                bundle.bundle_digest, bundle.hypothesis_id, stage1, outcome, reason, trace, bundle.input_set
+                bundle.bundle_digest,
+                bundle.hypothesis_id,
+                stage1,
+                outcome,
+                reason,
+                trace,
+                bundle.input_set,
+                verifier_version=bundle.verifier_version,
             ),
             bundle_digest=bundle.bundle_digest,
             hypothesis_id=bundle.hypothesis_id,
@@ -430,6 +452,10 @@ def evaluate_definition_shadow(
             rule_trace=list(trace),
             input_set=bundle.input_set,
             flag_config_snapshot=dict(flags),
+            active_behavior_version=ACTIVE_BEHAVIOR_VERSION,
+            verifier_version=bundle.verifier_version,
+            protocol_id=PROTOCOL_ID,
+            amendment_id=AMENDMENT_ID,
         )
 
     trace = ["evaluate:start", f"input_set:{bundle.input_set}"]
@@ -739,6 +765,8 @@ def build_correlation_envelope(
     receipt_index: int,
     native_outcome: dict[str, Any],
     activity_identity: dict[str, Any] | None = None,
+    protocol_id: str = PROTOCOL_ID,
+    amendment_id: str = AMENDMENT_ID,
 ) -> dict[str, Any]:
     """    Workflow-stamped correlation envelope (C1 layer 2, C3 receipt pairing).
 
@@ -763,6 +791,8 @@ def build_correlation_envelope(
             "receipt_index": int(receipt_index),
             "native_outcome": norm_native,
             "activity_identity": norm_identity,
+            "protocol_id": protocol_id,
+            "amendment_id": amendment_id,
         }
     )
     return {
@@ -771,6 +801,8 @@ def build_correlation_envelope(
         "receipt_index": int(receipt_index),
         "native_outcome": norm_native,
         "activity_identity": norm_identity,
+        "protocol_id": protocol_id,
+        "amendment_id": amendment_id,
         "envelope_digest": "sha256:" + hashlib.sha256(body).hexdigest(),
     }
 
@@ -781,6 +813,8 @@ def pair_receipt(
     receipt_start_index: int,
     native_outcome: dict[str, Any],
     activity_identity: dict[str, Any],
+    protocol_id: str = PROTOCOL_ID,
+    amendment_id: str = AMENDMENT_ID,
 ) -> tuple[list[dict[str, Any]], int]:
     """Receipt-order pairing with duplicate delivery dedup (C2/RV08).
 
@@ -806,6 +840,8 @@ def pair_receipt(
                     receipt_index,
                     native_outcome,
                     activity_identity,
+                    protocol_id,
+                    amendment_id,
                 )
             )
             receipt_index += 1
@@ -827,7 +863,13 @@ def pair_receipt(
         seen.add(key)
         envelopes.append(
             build_correlation_envelope(
-                obs, iteration, receipt_index, native_outcome, activity_identity
+                obs,
+                iteration,
+                receipt_index,
+                native_outcome,
+                activity_identity,
+                protocol_id,
+                amendment_id,
             )
         )
         receipt_index += 1
@@ -925,6 +967,12 @@ def audit_envelope_join(envelope: dict[str, Any]) -> str:
     obs = envelope.get("observation", {})
     if not isinstance(obs, dict) or not obs:
         return "void:missing-observation"
+    if envelope.get("protocol_id") != PROTOCOL_ID:
+        return "void:protocol-mismatch"
+    if envelope.get("amendment_id") != AMENDMENT_ID:
+        return "void:amendment-mismatch"
+    if obs.get("active_behavior_version") != ACTIVE_BEHAVIOR_VERSION:
+        return "void:behavior-mismatch"
     native_hyp = native.get("hypothesis_id")
     obs_hyp = obs.get("hypothesis_id")
     if native_hyp and obs_hyp and str(native_hyp) != str(obs_hyp):

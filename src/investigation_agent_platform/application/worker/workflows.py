@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -532,6 +533,9 @@ def _callsite_target(
     reason_data: dict[str, Any] | None,
     action_history: list[dict[str, Any]] | None,
     forced_count: int,
+    *,
+    tenant_id: str = "",
+    investigation_id: str = "",
 ) -> dict[str, Any] | None:
     """GET_CODE for a claimed caller file never successfully read, or None.
 
@@ -549,7 +553,28 @@ def _callsite_target(
         claims = (reason_data or {}).get("claims") or []
         if not isinstance(claims, list):
             return None
+        def _edge_identity(target: dict[str, Any]) -> tuple[str, ...]:
+            path = str(target.get("file_path", "") or "").replace("\\", "/")
+            path = path.strip().strip("/").lstrip("./")
+            try:
+                start = int(target.get("line_start", target.get("start_line")) or 0) or 0
+                end = int(target.get("line_end", target.get("end_line")) or 0) or 0
+            except (TypeError, ValueError):
+                start, end = 0, 0
+            return (
+                str(target.get("symbol", "") or "").strip(),
+                str(target.get("counterpart", "") or "").strip(),
+                path,
+                str(target.get("commit_id", target.get("revision", "")) or "").strip(),
+                str(start),
+                str(end),
+                str(target.get("scope", "") or "").strip(),
+                str(target.get("tenant_id", tenant_id) or "").strip(),
+                str(target.get("investigation_id", investigation_id) or "").strip(),
+            )
+
         read_files: set[str] = set()
+        read_obligations: set[tuple[str, ...]] = set()
         for entry in action_history or []:
             try:
                 if not isinstance(entry, dict):
@@ -560,6 +585,19 @@ def _callsite_target(
                     continue
                 params = entry.get("parameters") or {}
                 path = str(params.get("file_path", "") or "").strip()
+                if path and params.get("caller_edge_key"):
+                    read_target = {
+                        "symbol": params.get("caller_edge_symbol", ""),
+                        "counterpart": params.get("caller_edge_counterpart", ""),
+                        "file_path": path,
+                        "commit_id": params.get("revision", ""),
+                        "line_start": params.get("start_line"),
+                        "line_end": params.get("end_line"),
+                        "scope": params.get("caller_edge_scope", ""),
+                        "tenant_id": params.get("caller_edge_tenant_id", ""),
+                        "investigation_id": params.get("caller_edge_investigation_id", ""),
+                    }
+                    read_obligations.add(_edge_identity(read_target))
                 if path:
                     read_files.add(path.replace("\\", "/").strip().strip("/"))
             except (TypeError, ValueError):
@@ -590,8 +628,6 @@ def _callsite_target(
                     normalized = (
                         file_path.replace("\\", "/").strip().strip("/").lstrip("./")
                     )
-                    if normalized in read_files:
-                        continue
                     # Must match VerificationEngine.canonical_caller_edge_key:
                     # identical normalization, `|` escaped as `%7C`.
                     def _escape(value: Any) -> str:
@@ -604,9 +640,18 @@ def _callsite_target(
                                 _escape(target.get("symbol", "")),
                                 _escape(target.get("counterpart", "")),
                                 normalized.replace("|", "%7C"),
-                                _escape(target.get("commit_id", "")),
+                                _escape(
+                                    target.get("commit_id", target.get("revision", ""))
+                                ),
                             )
                         ),
+                        "caller_edge_symbol": str(target.get("symbol", "") or ""),
+                        "caller_edge_counterpart": str(
+                            target.get("counterpart", "") or ""
+                        ),
+                        "caller_edge_scope": str(target.get("scope", "") or ""),
+                        "caller_edge_tenant_id": str(tenant_id or ""),
+                        "caller_edge_investigation_id": str(investigation_id or ""),
                     }
                     try:
                         start = int(target.get("line_start", target.get("start_line")) or 0) or None
@@ -617,6 +662,13 @@ def _callsite_target(
                         call_params["start_line"] = start
                         if end and end >= start:
                             call_params["end_line"] = end
+                    revision = str(
+                        target.get("commit_id", target.get("revision", "")) or ""
+                    ).strip()
+                    if revision:
+                        call_params["revision"] = revision
+                    if _edge_identity(target) in read_obligations:
+                        continue
                     return {"next_action": "GET_CODE", "action_parameters": call_params}
                 kind = raw_claim.get("claim_kind", "")
                 kind_value = str(getattr(kind, "value", kind) or "").strip().upper()
@@ -656,8 +708,6 @@ def _callsite_target(
                 if not file_path:
                     continue
                 normalized = file_path.replace("\\", "/").strip().strip("/")
-                if normalized in read_files:
-                    continue
                 call_params: dict[str, Any] = {"file_path": file_path}
                 try:
                     # ClaimTarget serializes the window as line_start/line_end.
@@ -671,6 +721,39 @@ def _callsite_target(
                     call_params["start_line"] = start
                     if end and end >= start:
                         call_params["end_line"] = end
+                call_params.update(
+                    {
+                        "caller_edge_key": "|".join(
+                            (
+                                str(target.get("symbol", "") or "").strip().replace("|", "%7C"),
+                                str(target.get("counterpart", "") or "")
+                                .strip()
+                                .replace("|", "%7C"),
+                                normalized.replace("|", "%7C"),
+                                str(
+                                    target.get("commit_id", target.get("revision", ""))
+                                    or ""
+                                )
+                                .strip()
+                                .replace("|", "%7C"),
+                            )
+                        ),
+                        "caller_edge_symbol": str(target.get("symbol", "") or ""),
+                        "caller_edge_counterpart": str(
+                            target.get("counterpart", "") or ""
+                        ),
+                        "caller_edge_scope": str(target.get("scope", "") or ""),
+                        "caller_edge_tenant_id": str(tenant_id or ""),
+                        "caller_edge_investigation_id": str(investigation_id or ""),
+                    }
+                )
+                revision = str(
+                    target.get("commit_id", target.get("revision", "")) or ""
+                ).strip()
+                if revision:
+                    call_params["revision"] = revision
+                if _edge_identity(target) in read_obligations:
+                    continue
                 return {"next_action": "GET_CODE", "action_parameters": call_params}
             except Exception:
                 continue
@@ -757,6 +840,121 @@ def _source_value_target(
             params["end_line"] = 2000
             return params
         return None
+
+    except Exception:
+        return None
+
+
+def _absence_disconfirmation_target(
+    reason_data: dict[str, Any] | None,
+    evidence: list[Any] | None,
+    action_history: list[dict[str, Any]] | None,
+    forced_count: int,
+) -> dict[str, Any] | None:
+    """Force one provider-located source read before an ABSENCE claim verifies."""
+    try:
+        if int(forced_count or 0) >= 2:
+            return None
+        claims = (reason_data or {}).get("claims") or []
+        if not isinstance(claims, list):
+            return None
+        absence_ids: set[str] = set()
+        absence_scopes: set[str] = set()
+        for claim in claims:
+            if not isinstance(claim, dict) or str(claim.get("claim_kind", "")).upper() != "ABSENCE":
+                continue
+            target = claim.get("target") or {}
+            if isinstance(target, dict) and str(target.get("scope", "") or "").strip():
+                absence_scopes.add(str(target["scope"]).strip().casefold())
+            for raw_id in claim.get("evidence_ids") or []:
+                if isinstance(raw_id, str):
+                    absence_ids.add(raw_id)
+        if not absence_scopes:
+            return None
+        read_files: set[str] = set()
+        for action in action_history or []:
+            if not isinstance(action, dict) or str(action.get("action", "")).upper() != "GET_CODE":
+                continue
+            params = action.get("parameters") or {}
+            path = str(params.get("file_path", "") or "").strip()
+            if path:
+                read_files.add(path.replace("\\", "/").strip().strip("/").lstrip("./"))
+        candidates: list[tuple[str, Any, dict[str, Any]]] = []
+        def _get(item: Any, key: str, default: Any = None) -> Any:
+            if isinstance(item, dict):
+                return item.get(key, default)
+            return getattr(item, key, default)
+
+        for item in evidence or []:
+            evidence_id = str(_get(item, "evidence_id", "") or "")
+            if absence_ids and evidence_id not in absence_ids:
+                continue
+            provenance = _get(item, "provenance", {}) or {}
+            location = _get(provenance, "source_location", provenance) or {}
+            path = str(_get(location, "file_path", "") or "").strip()
+            start = _get(location, "line_start")
+            end = _get(location, "line_end")
+            if not path or not isinstance(start, int) or not isinstance(end, int) or end < start:
+                continue
+            operation = str(
+                _get(_get(provenance, "query_fingerprint", provenance), "operation", "") or ""
+            ).upper()
+            if operation not in {"SEARCH_CODE", "FIND_SYMBOL", "FIND_CALL_GRAPH"}:
+                continue
+            attrs = _get(item, "attributes", {}) or {}
+            if not isinstance(attrs, dict):
+                continue
+            match_count = attrs.get("match_count")
+            if (
+                not isinstance(match_count, int)
+                or isinstance(match_count, bool)
+                or match_count <= 0
+            ):
+                continue
+            if operation != "SEARCH_CODE" and attrs.get("discovery_only") is not True:
+                continue
+            scope = str(attrs.get("search_scope", "") or "").strip().casefold()
+            if scope not in absence_scopes:
+                continue
+            normalized_path = path.replace("\\", "/").strip().strip("/").lstrip("./")
+            if normalized_path in read_files:
+                continue
+            revision = str(_get(location, "revision", "") or "").strip()
+            tenant = str(_get(item, "tenant_id", "") or "").strip()
+            investigation = str(_get(item, "investigation_id", "") or "").strip()
+            if not tenant:
+                continue
+            obligation_material = "|".join(
+                (
+                    tenant,
+                    investigation,
+                    scope,
+                    evidence_id,
+                    normalized_path,
+                    revision,
+                    str(start),
+                    str(end),
+                )
+            )
+            key = "ABSENCE_DISCONFIRMATION|" + hashlib.sha256(
+                obligation_material.encode()
+            ).hexdigest()
+            params: dict[str, Any] = {
+                "file_path": path,
+                "start_line": start,
+                "end_line": end,
+                "absence_disconfirmation_key": key,
+            }
+            if revision:
+                params["revision"] = revision
+            candidates.append((normalized_path, item, {"key": key, "parameters": params}))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda entry: (entry[0], str(_get(entry[1], "evidence_id", ""))))
+        return {
+            "next_action": "GET_CODE",
+            "action_parameters": candidates[0][2]["parameters"],
+        }
     except Exception:
         return None
 
@@ -1434,7 +1632,10 @@ class RunInvestigationWorkflow:
         forced_synthesis_count = 0
         forced_floor_count = 0
         forced_callsite_count = 0
+        forced_absence_disconfirmation_count = 0
         overconfident_turns = 0
+        defer_repairs_used = 0
+        max_defer_repairs = 2
         # D3: triage route computed once at iteration 0 from the complaint
         # + intake seed; guides the reasoner, never decides alone.
         triage_route = "UNKNOWN"
@@ -1523,12 +1724,76 @@ class RunInvestigationWorkflow:
                 break
             # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
+            _defer = _reason_data.get("defer_gathering")
+            _is_defer = _reason_data.get("disposition") == "DEFER_GATHERING"
+            if _is_defer:
+                if not isinstance(_defer, dict):
+                    last_error = "defer_gathering_invalid"
+                    break
+                if defer_repairs_used >= max_defer_repairs:
+                    last_error = "defer_repair_budget_exhausted"
+                    try:
+                        workflow.logger.debug(
+                            "story.defer_exhausted iteration=%s used=%s max=%s action=%s",
+                            iteration,
+                            defer_repairs_used,
+                            max_defer_repairs,
+                            str((_defer or {}).get("next_action", "?") if isinstance(_defer, dict) else "?"),
+                        )
+                    except Exception:
+                        pass
+                    break
+                _defer_action = str(_defer.get("next_action", "") or "").upper()
+                if _defer_action in {
+                    "",
+                    "FORMULATE_HYPOTHESIS",
+                    "VERIFY_HYPOTHESIS",
+                    "CONCLUDE",
+                }:
+                    last_error = "defer_gathering_invalid"
+                    break
+                _reason_data = dict(_reason_data)
+                _reason_data["next_action"] = _defer_action
+                _reason_data["action_parameters"] = dict(
+                    _defer.get("next_action_parameters") or {}
+                )
+                _reason_data["hypotheses_evaluated"] = []
+                _reason_data["claims"] = []
+                _reason_data["defer_repairs_used"] = defer_repairs_used + 1
+                defer_repairs_used += 1
+                _reason_data["defer_turn"] = True
+                try:
+                    workflow.logger.debug(
+                        "story.defer_accepted iteration=%s repair=%s action=%s",
+                        iteration,
+                        defer_repairs_used,
+                        str(_defer_action or "?"),
+                    )
+                except Exception:
+                    pass
             # G6-measure: freeze the model's pre-override proposal for the
             # shadow owed recomputation below. Trigger helpers read the
             # proposed action; after the cascade _reason_data carries the
             # override, which would mask the debt the cascade itself saw.
             _shadow_proposal = dict(_reason_data)
-            _value_target = _source_value_target(
+            _absence_target = None
+            if not _is_defer:
+                _absence_target = _absence_disconfirmation_target(
+                    _reason_data,
+                    getattr(reason_res, "data", {}).get("evidence", [])
+                    if isinstance(getattr(reason_res, "data", {}), dict)
+                    else [],
+                    action_history,
+                    forced_absence_disconfirmation_count,
+                )
+            if _absence_target is not None:
+                forced_absence_disconfirmation_count += 1
+                _reason_data = dict(_reason_data)
+                _reason_data["next_action"] = _absence_target["next_action"]
+                _reason_data["action_parameters"] = _absence_target["action_parameters"]
+                _reason_data["forced_absence_disconfirmation"] = True
+            _absence_forced = bool(_reason_data.get("forced_absence_disconfirmation"))
+            _value_target = None if _is_defer or _absence_forced else _source_value_target(
                 _reason_data, action_history, forced_value_read_count
             )
             if _value_target is not None:
@@ -1539,7 +1804,7 @@ class RunInvestigationWorkflow:
                 _reason_data["forced_source_value_read"] = True
             # D2: stack-walk forcing first — explicit intake frames outrank
             # every other gathering rule.
-            _walk_params = _should_force_walk_stack(
+            _walk_params = None if _is_defer or _absence_forced else _should_force_walk_stack(
                 knowledge_seed, _reason_data, action_history, forced_walk_stack_count
             )
             if _walk_params:
@@ -1552,7 +1817,7 @@ class RunInvestigationWorkflow:
             # conclude) on fewer than 3 banked rows for a code-shaped
             # incident gathers first instead of committing to a thin
             # theory. Skipped once explicit frames already forced.
-            if not _reason_data.get("forced_walk_stack"):
+            if not _is_defer and not _absence_forced and not _reason_data.get("forced_walk_stack"):
                 _floor = _explore_floor_target(
                     _reason_data,
                     evidence_banked_total,
@@ -1568,7 +1833,9 @@ class RunInvestigationWorkflow:
                     _reason_data["action_parameters"] = _floor["action_parameters"]
                     _reason_data["forced_floor"] = True
             if (
-                not _reason_data.get("forced_source_value_read")
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_source_value_read")
                 and _should_force_formulate(
                     iteration,
                     formulated_count,
@@ -1586,7 +1853,9 @@ class RunInvestigationWorkflow:
             # T2-4: synthesis forcing — rich multi-action corpus with
             # nothing committed gets FORMULATE (same override as G8).
             if (
-                not _reason_data.get("forced_walk_stack")
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_source_value_read")
@@ -1606,7 +1875,9 @@ class RunInvestigationWorkflow:
             # without a range-read gets the read first (G3 floor would
             # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.
             if (
-                not _reason_data.get("forced_formulate")
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_source_value_read")
@@ -1622,13 +1893,21 @@ class RunInvestigationWorkflow:
             # file reads it before the loop can conclude on a graph summary
             # alone. Skipped when an earlier read-forcing rule already fired.
             if (
-                not _reason_data.get("forced_formulate")
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_source_value_read")
             ):
-                _callsite = _callsite_target(_reason_data, action_history, forced_callsite_count)
+                _callsite = _callsite_target(
+                    _reason_data,
+                    action_history,
+                    forced_callsite_count,
+                    tenant_id=tenant_id,
+                    investigation_id=str(inv_id),
+                )
                 if _callsite:
                     forced_callsite_count += 1
                     _reason_data = dict(_reason_data)
@@ -1638,6 +1917,9 @@ class RunInvestigationWorkflow:
             # B-4: log-first forcing — service-error complaints gather logs
             # before code/state. Skipped when G8/G3/D2 already forced.
             if (
+                not _is_defer
+                and not _absence_forced
+                and
                 not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_walk_stack")
@@ -1660,7 +1942,9 @@ class RunInvestigationWorkflow:
             # plus same proposal redirects to the alternative family.
             # Skipped when any earlier rule already forced.
             if (
-                not _reason_data.get("forced_formulate")
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_log_search")
                 and not _reason_data.get("forced_walk_stack")
@@ -1679,6 +1963,35 @@ class RunInvestigationWorkflow:
                     _reason_data["next_action"] = _replan["next_action"]
                     _reason_data["action_parameters"] = _replan["action_parameters"]
                     _reason_data["forced_replan"] = True
+            # Debug story: forcing cascade outcome. Compares the model's
+            # pre-override proposal (_shadow_proposal) with the post-cascade
+            # dispatch (_reason_data). Deterministic: both derive from
+            # reason output + history. Story is joined with activity-level
+            # story.reason_out / story.execute_in by iteration.
+            try:
+                _forced_flags = sorted(
+                    k for k in (
+                        "forced_absence_disconfirmation",
+                        "forced_source_value_read",
+                        "forced_walk_stack",
+                        "forced_floor",
+                        "forced_formulate",
+                        "forced_reread",
+                        "forced_callsite",
+                        "forced_log_search",
+                        "forced_replan",
+                    ) if _reason_data.get(k)
+                )
+                workflow.logger.debug(
+                    "story.forcing_outcome iteration=%s proposal=%s final=%s forced=%s defer=%s",
+                    iteration,
+                    str((_shadow_proposal or {}).get("next_action", "?")),
+                    str((_reason_data or {}).get("next_action", "?")),
+                    ",".join(_forced_flags) if _forced_flags else "none",
+                    bool(_is_defer),
+                )
+            except Exception:
+                pass
             # G6-measure shadow capture (Option A): compute-only, never acts.
             # Replays the frozen turn snapshot through the shadow policy and
             # appends the (recorded, shadow) pair to shadow_trace. Owed
@@ -1781,6 +2094,7 @@ class RunInvestigationWorkflow:
                         ("forced_callsite", "callsite"),
                         ("forced_log_search", "log_search"),
                         ("forced_replan", "replan"),
+                        ("forced_absence_disconfirmation", "absence_disconfirmation"),
                     )
                     if _reason_data.get(key)
                 )
@@ -1810,7 +2124,17 @@ class RunInvestigationWorkflow:
                     "action": str(_reason_data.get("next_action", "?")),
                     "readiness": _reason_data.get("conclusion_readiness"),
                     "hypotheses": len(_hyps) if isinstance(_hyps, list) else 0,
-                    "observations": len(_obss) if isinstance(_obss, list) else 0,
+                        "observations": len(_obss) if isinstance(_obss, list) else 0,
+                    "disposition": _reason_data.get("disposition"),
+                    "defer_repairs_used": _reason_data.get("defer_repairs_used"),
+                    "defer_reason": (
+                        (_reason_data.get("defer_gathering") or {}).get("reason")
+                        if isinstance(_reason_data.get("defer_gathering"), dict)
+                        else None
+                    ),
+                    "forced_absence_disconfirmation": bool(
+                        _reason_data.get("forced_absence_disconfirmation", False)
+                    ),
                     "triage_route": triage_route,
                     # E1: strategy skeleton (iteration 0 only).
                     "plan": list(investigation_plan) if iteration == 0 else [],
@@ -1848,6 +2172,9 @@ class RunInvestigationWorkflow:
                             for claim in (_reason_data.get("claims", []) or [])
                             if isinstance(claim, dict)
                         ],
+                        caller_edge_candidates=list(
+                            _reason_data.get("caller_edge_candidates", []) or []
+                        ),
                     ),
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=retry_policy,
@@ -1896,6 +2223,11 @@ class RunInvestigationWorkflow:
                         "forced_replan": bool(_reason_data.get("forced_replan", False)),
                         "forced_floor": bool(_reason_data.get("forced_floor", False)),
                         "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
+                        "disposition": _reason_data.get("disposition"),
+                        "defer_repairs_used": _reason_data.get("defer_repairs_used"),
+                        "forced_absence_disconfirmation": bool(
+                            _reason_data.get("forced_absence_disconfirmation", False)
+                        ),
                     }
                 )
                 # D4 fuzzy orientation rides history (not the prompt): the
@@ -1938,6 +2270,13 @@ class RunInvestigationWorkflow:
             if input_state == "expired":
                 last_error = "input_expired"
                 break
+
+            if _is_defer or _reason_data.get("forced_absence_disconfirmation"):
+                # A defer turn gathers exactly once and returns to reasoning;
+                # a disconfirmation read must not verify the stale ABSENCE claim
+                # on the same turn.
+                iteration += 1
+                continue
 
             # Drive correlation/hypothesis/verification phases via state machine.
             # The reason decision rides along in each description so the
@@ -1996,6 +2335,8 @@ class RunInvestigationWorkflow:
                         definition_receipt_index,
                         _native_outcome,
                         _shadow_identity,
+                        protocol_id="v1.9+A1+A2",
+                        amendment_id="DEC-2026-10-26-A2",
                     )
                     definition_shadow_trace.extend(_new_envelopes)
                     definition_receipt_index += len(_new_envelopes)
@@ -2085,13 +2426,30 @@ class RunInvestigationWorkflow:
 
             iteration += 1
 
+        # Debug story: loop-exit ledger. One line per run closing the story:
+        # why the loop stopped + final counters. Joined by investigation_id.
+        try:
+            workflow.logger.debug(
+                "story.loop_exit iterations=%s last_error=%s formulated=%s banked=%s defer=%s/%s forced_callsite=%s forced_reread=%s forced_formulate=%s",
+                iteration,
+                str(last_error or "none"),
+                formulated_count,
+                evidence_banked_total,
+                defer_repairs_used,
+                max_defer_repairs,
+                forced_callsite_count,
+                forced_reread_count,
+                forced_formulate_count,
+            )
+        except Exception:
+            pass
         # 3. Conclude & Publish Events (EventPublisher on completion).
         await _transition("CONCLUDING", "Workflow entering concluding phase")
         if self._is_cancelled:
             final_status = "CANCELLED"
         elif verified:
             final_status = "COMPLETED"
-        elif last_error == "budget_exceeded":
+        elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted"}:
             final_status = "FAILED"
         else:
             # Not verified: reached max_iterations or readiness threshold without verification -> FAILED with limitations
@@ -2128,6 +2486,9 @@ class RunInvestigationWorkflow:
                     "forced_replan_count": forced_replan_count,
                     "forced_synthesis_count": forced_synthesis_count,
                     "overconfident_turns": overconfident_turns,
+                    "defer_repairs_used": defer_repairs_used,
+                    "defer_repairs_limit": max_defer_repairs,
+                    "forced_absence_disconfirmation_count": forced_absence_disconfirmation_count,
                     "iterations": iteration,
                     "triage_route": triage_route,
                     "plan": list(investigation_plan),

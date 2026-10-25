@@ -71,7 +71,9 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
     """
     from investigation_agent_platform.domain.code.models import JavaFactCategory
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
-    from investigation_agent_platform.ports.reasoning.reasoner import DecisionClaim
+    from investigation_agent_platform.ports.reasoning.reasoner import (
+        DecisionClaim,
+    )
 
     known_claim = set(DecisionClaim.model_fields)
     valid_kinds = {k.value for k in ClaimKind}
@@ -122,6 +124,54 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
         if "fact_category" in raw:
             out["fact_category"] = _clean_fact_cat(raw["fact_category"])
         return out
+
+    raw_defer = parsed.get("defer_gathering")
+    if raw_defer is not None:
+        if not isinstance(raw_defer, dict):
+            raise ValueError("defer_gathering must be an object")
+        defer = {key: raw_defer.get(key) for key in (
+            "reason",
+            "missing_proof_kind",
+            "next_action",
+            "next_action_parameters",
+            "target",
+            "scope",
+            "remaining_repair_budget",
+        ) if key in raw_defer}
+        for key, limit in (
+            ("reason", 1024),
+            ("missing_proof_kind", 64),
+            ("next_action", 64),
+            ("target", 512),
+            ("scope", 512),
+        ):
+            if key in defer:
+                if not isinstance(defer[key], str) or not defer[key].strip():
+                    raise ValueError(f"defer_gathering.{key} must be non-empty text")
+                defer[key] = defer[key].strip()[:limit]
+        parameters = defer.get("next_action_parameters", {})
+        if not isinstance(parameters, dict):
+            raise ValueError("defer_gathering.next_action_parameters must be an object")
+        defer["next_action_parameters"] = parameters
+        from investigation_agent_platform.domain.investigation.models import ActionType
+
+        _defer_action = str(defer.get("next_action", "")).upper()
+        gathering_actions = {
+            action.value
+            for action in ActionType
+            if action
+            not in {
+                ActionType.FORMULATE_HYPOTHESIS,
+                ActionType.VERIFY_HYPOTHESIS,
+                ActionType.CONCLUDE,
+            }
+        }
+        if _defer_action not in gathering_actions:
+            raise ValueError("defer_gathering.next_action must be a gathering action")
+        budget = defer.get("remaining_repair_budget")
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= 2:
+            raise ValueError("defer_gathering.remaining_repair_budget must be an integer from 0 to 2")
+        parsed["defer_gathering"] = defer
 
     clean: dict[str, Any] = dict(parsed)
     raw_claims = clean.get("claims")
@@ -202,11 +252,13 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
         "output-contract",
         """You are an investigation orchestrator. Analyze the state and return ONLY a JSON object with EXACTLY these keys (no markdown, no prose outside the JSON):
 "action": {"action_type": "<one of QUERY_STATE|SEARCH_LOGS|GET_CODE|SEARCH_CODE|FIND_SYMBOL|FIND_CALL_GRAPH|GET_CODE_HISTORY|PROBE_API|CORRELATE|WALK_STACK|TRACE_LOGIC|TRACE_JOURNEY|WALK_SESSION_GRAPH|SEARCH_REF_DOCS|FORMULATE_HYPOTHESIS|VERIFY_HYPOTHESIS|CONCLUDE>", "parameters": {...}} — the single next step.
+"disposition": "DEFER_GATHERING" (optional; use only when evidence is mixed or proof is incomplete),
+"defer_gathering": {"reason": "...", "missing_proof_kind": "...", "next_action": "<one gathering action>", "next_action_parameters": {...}, "target": "...", "scope": "...", "remaining_repair_budget": 0-2},
 "observations": ["..."],
-"hypotheses_evaluated": ["candidate root-cause statements; MANDATORY non-empty whenever visible evidence is non-empty — these are persisted as hypotheses and required for verification"],
+"hypotheses_evaluated": ["candidate root-cause statements; mandatory for ordinary committed reasoning, but empty for DEFER_GATHERING"],
 "claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
-"reasoning_chain": "brief rationale".
+"reasoning_chain": "brief rationale". For DEFER_GATHERING, do not commit a hypothesis; select exactly one bounded gathering action and let the workflow own the repair budget.
 Do NOT include execution_hash (derived server-side).""",
     ),
     (

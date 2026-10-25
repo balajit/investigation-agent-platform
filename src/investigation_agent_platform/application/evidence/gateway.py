@@ -1374,41 +1374,45 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
             hops: list[dict[str, Any]] = []
             for hop in range(1, request.depth):
-                # Depth > 1: expand one more hop from the previous frontier
-                # on each requested side (bounded: first 10 nodes per side).
-                frontier = [
-                    (n.caller_symbol if direction == "INBOUND" else n.callee_symbol)
-                    for n in (callers if direction == "INBOUND" else callees)[:10]
-                ]
-                grown: list[Any] = []
-                for symbol in frontier:
-                    fn = (
-                        provider.find_callers
-                        if direction == "INBOUND"
-                        else provider.find_callees
-                    )
-                    try:
-                        grown.extend(
-                            await asyncio.wait_for(
-                                fn(
-                                    tenant_id,
-                                    symbol,
-                                    profile,
-                                    investigation_id=investigation_id,
-                                    revision=request.revision,
-                                ),
-                                timeout=self._timeout_seconds,
+                # Depth > 1 expands each requested side independently. BOTH
+                # must not fall through to outbound-only expansion.
+                side_specs: list[tuple[str, list[Any], Any]] = []
+                if direction in ("INBOUND", "BOTH"):
+                    side_specs.append(("INBOUND", callers, provider.find_callers))
+                if direction in ("OUTBOUND", "BOTH"):
+                    side_specs.append(("OUTBOUND", callees, provider.find_callees))
+                grew = False
+                for side, nodes, fn in side_specs:
+                    frontier = [
+                        (n.caller_symbol if side == "INBOUND" else n.callee_symbol)
+                        for n in nodes[:10]
+                    ]
+                    grown: list[Any] = []
+                    for symbol in frontier:
+                        try:
+                            grown.extend(
+                                await asyncio.wait_for(
+                                    fn(
+                                        tenant_id,
+                                        symbol,
+                                        profile,
+                                        investigation_id=investigation_id,
+                                        revision=request.revision,
+                                    ),
+                                    timeout=self._timeout_seconds,
+                                )
                             )
-                        )
-                    except Exception:
-                        continue
-                if not grown:
+                        except Exception:
+                            continue
+                    if grown:
+                        grew = True
+                        hops.extend([g.model_dump() for g in grown])
+                        if side == "INBOUND":
+                            callers = list(callers) + grown
+                        else:
+                            callees = list(callees) + grown
+                if not grew:
                     break
-                hops.extend([g.model_dump() for g in grown])
-                if direction == "INBOUND":
-                    callers = list(callers) + grown
-                else:
-                    callees = list(callees) + grown
             return EvidenceQueryResult(
                 items=[],
                 total_count=len(callers) + len(callees),

@@ -803,4 +803,4 @@ class TestMigration015:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["034_proof_tables_grants"]
+        assert script.get_heads() == ["035_caller_coverage_diagnostics"]

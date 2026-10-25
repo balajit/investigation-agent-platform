@@ -870,6 +870,37 @@ class VerificationEngine:
             if str(item).startswith("CALL_EDGE|")
         }
 
+    @staticmethod
+    def caller_edge_diagnostics(hypothesis: Any) -> tuple[list[str], list[str], str | None]:
+        """Return caller coverage diagnostics without changing proof semantics."""
+        assessments = [
+            assessment
+            for assessment in (getattr(hypothesis, "assessments", None) or [])
+            if getattr(assessment, "claim_kind", None) == ClaimKind.CALL_EDGE
+            and getattr(assessment, "claim_target", None) is not None
+        ]
+        proven: set[str] = set()
+        unresolved: set[str] = set()
+        for assessment in assessments:
+            targets = VerificationEngine._aggregate_call_edge_targets(
+                getattr(assessment, "claim_target", None)
+            ) or [getattr(assessment, "claim_target", None)]
+            for target in targets:
+                if target is None:
+                    continue
+                caller = str(getattr(target, "counterpart", "") or "").strip()
+                if not caller:
+                    continue
+                (proven if getattr(assessment, "evidence_id", None) is not None else unresolved).add(
+                    caller
+                )
+        proven_callers = sorted(proven, key=str.casefold)
+        unresolved_callers = sorted(unresolved - proven, key=str.casefold)
+        required = VerificationEngine.required_caller_edge_keys(hypothesis)
+        required_count = max(len(required), len(proven) + len(unresolved))
+        coverage = f"{len(proven)}/{required_count}" if required_count else None
+        return proven_callers, unresolved_callers, coverage
+
     # G3: definition-strength claims ("defined/implemented/declared in X")
     # require at least one range-read (GET_SOURCE) citation — SEARCH matches
     # establish presence, never definition. Provenance operation is the
@@ -1646,6 +1677,137 @@ class VerificationEngine:
             return False
 
     @staticmethod
+    def caller_edge_binding_rows(
+        evidence_items: list[Any],
+        target: ClaimTarget | None,
+        bound_set: list[Any],
+    ) -> list[Any]:
+        """Return exact, eligible range rows for one bound caller edge.
+
+        ``bound_set`` is the evidence already bound to this claim. Its
+        tenant/investigation and repository anchor the repair. A discovery row
+        may identify the edge, but only a same-binding, same-revision range
+        read whose window contains the target range can prove it.
+        """
+        if target is None or not target.symbol or not target.counterpart:
+            return []
+        target_path = str(target.file_path or "").strip()
+        target_revision = str(target.commit_id or "").strip()
+        target_start = target.line_start
+        target_end = target.line_end
+        if (
+            not target_path
+            or not target_revision
+            or not isinstance(target_start, int)
+            or isinstance(target_start, bool)
+            or not isinstance(target_end, int)
+            or isinstance(target_end, bool)
+            or target_end < target_start
+        ):
+            return []
+
+        def _binding(item: Any) -> tuple[str, str] | None:
+            provenance = getattr(item, "provenance", None)
+            tenant = str(getattr(item, "tenant_id", "") or "").strip()
+            investigation = str(getattr(item, "investigation_id", "") or "").strip()
+            provenance_tenant = str(getattr(provenance, "tenant_id", "") or "").strip()
+            provenance_investigation = str(
+                getattr(provenance, "investigation_id", "") or ""
+            ).strip()
+            if not tenant or not investigation:
+                return None
+            if (tenant, investigation) != (provenance_tenant, provenance_investigation):
+                return None
+            return (tenant, investigation)
+
+        anchors = [_binding(item) for item in bound_set or []]
+        if not anchors or any(binding is None for binding in anchors):
+            return []
+        if len(set(anchors)) != 1:
+            return []
+        binding = anchors[0]
+
+        def _repository(item: Any) -> str:
+            location = getattr(
+                getattr(getattr(item, "provenance", None), "source_location", None),
+                "file_path",
+                "",
+            )
+            path = str(location or "").replace("\\", "/").strip().strip("/")
+            for raw in (
+                getattr(item, "source", None),
+                getattr(
+                    getattr(getattr(item, "provenance", None), "source_location", None),
+                    "identifier",
+                    None,
+                ),
+            ):
+                value = str(raw or "").strip()
+                if "://" in value:
+                    value = value.split("://", 1)[1]
+                value = value.split("@", 1)[0].strip("/")
+                suffix = "/" + path
+                if path and value.endswith(suffix):
+                    return value[: -len(suffix)].strip("/").casefold()
+                if value:
+                    return value.casefold()
+            return ""
+
+        anchor_repositories = {_repository(item) for item in bound_set if _repository(item)}
+        target_scope = str(target.scope or "").strip()
+        target_repository = (
+            target_scope.split("@", 1)[0].strip().casefold()
+            if "@" in target_scope
+            else ""
+        )
+        if target_repository:
+            anchor_repositories.add(target_repository)
+        if len(anchor_repositories) > 1:
+            return []
+
+        eligible: list[Any] = []
+        contains_target: list[Any] = []
+        for item in evidence_items or []:
+            if _binding(item) != binding:
+                continue
+            location = getattr(
+                getattr(getattr(item, "provenance", None), "source_location", None),
+                "file_path",
+                "",
+            )
+            if not VerificationEngine._paths_match(target_path, str(location or "")):
+                continue
+            revision = str(
+                getattr(
+                    getattr(getattr(item, "provenance", None), "source_location", None),
+                    "revision",
+                    "",
+                )
+                or ""
+            ).strip()
+            if not revision or revision.casefold() != target_revision.casefold():
+                continue
+            if anchor_repositories and _repository(item) not in anchor_repositories:
+                continue
+            if VerificationEngine._item_type(item) not in VerificationEngine.CODE_EVIDENCE_TYPES:
+                continue
+            if not VerificationEngine._is_range_read(item):
+                continue
+            attributes = getattr(item, "attributes", None) or {}
+            if isinstance(attributes, dict):
+                caller = str(attributes.get("caller_symbol", "") or "").strip()
+                callee = str(attributes.get("callee_symbol", "") or "").strip()
+                if caller and caller.casefold() != str(target.counterpart).casefold():
+                    continue
+                if callee and callee.casefold() != str(target.symbol).casefold():
+                    continue
+            eligible.append(item)
+            window = VerificationEngine._item_window(item)
+            if window is not None and window[0] <= target_start and window[1] >= target_end:
+                contains_target.append(item)
+        return contains_target if contains_target else []
+
+    @staticmethod
     def has_range_read(evidence_items: list) -> bool:
         """At least one citation comes from an actual line-range read."""
         try:
@@ -1965,38 +2127,101 @@ class VerificationEngine:
     def absence_outcome(
         evidence_items: list[Any], target: ClaimTarget | None
     ) -> tuple[str, str]:
-        """Four-outcome absence classification (Phase 2a, pure, deterministic).
+        """Classify whether bound evidence can support an absence claim.
 
         - NO_SCOPE: claim states no search scope (target-resolution failure).
-        - EMPTY_SEARCH_PROVED: scoped match_count==0 row covers the claim.
+        - EMPTY_SEARCH_PROVED: eligible scoped match_count==0 row covers the claim.
         - NO_SEARCH: bound set holds no empty-search rows at all (retrieval
           failure — never invent "nothing changed" from this).
         - SCOPE_MISMATCH: empty-search rows exist but none covers the claim
           (target-resolution failure).
+        - DISCOVERY_ONLY: matching empty rows exist, but they are discovery
+          material and cannot establish absence.
+        - PRESENCE_CONFLICT: same-scope, same-binding positive evidence defeats
+          the absence claim without proving the positive claim by itself.
         """
         scope = (
             (getattr(target, "scope", "") or "").strip() if target is not None else ""
         )
         if not scope:
             return ("NO_SCOPE", "absence claim states no search scope (set target.scope)")
-        scoped_rows: list[str] = []
-        for item in evidence_items or []:
+
+        def _scope(item: Any) -> str:
             attributes = getattr(item, "attributes", None) or {}
             if not isinstance(attributes, dict):
+                return ""
+            return str(attributes.get("search_scope", "") or "").strip()
+
+        def _binding(item: Any) -> tuple[str, str] | None:
+            tenant = str(getattr(item, "tenant_id", "") or "").strip()
+            investigation = str(getattr(item, "investigation_id", "") or "").strip()
+            provenance = getattr(item, "provenance", None)
+            if not tenant:
+                tenant = str(getattr(provenance, "tenant_id", "") or "").strip()
+            if not investigation:
+                investigation = str(
+                    getattr(provenance, "investigation_id", "") or ""
+                ).strip()
+            if not tenant or not investigation:
+                return None
+            return (tenant, investigation)
+
+        def _same_binding(left: Any, right: Any) -> bool:
+            left_binding = _binding(left)
+            right_binding = _binding(right)
+            return left_binding is not None and left_binding == right_binding
+
+        def _attributes(item: Any) -> dict[str, Any]:
+            attributes = getattr(item, "attributes", None) or {}
+            return attributes if isinstance(attributes, dict) else {}
+
+        def _is_zero(attributes: dict[str, Any]) -> bool:
+            count = attributes.get("match_count")
+            return isinstance(count, int) and not isinstance(count, bool) and count == 0
+
+        def _is_positive(attributes: dict[str, Any]) -> bool:
+            count = attributes.get("match_count")
+            return isinstance(count, int) and not isinstance(count, bool) and count > 0
+
+        scoped_rows: list[Any] = []
+        discovery_rows: list[Any] = []
+        for item in evidence_items or []:
+            attributes = _attributes(item)
+            proof_scope = _scope(item)
+            if not _is_zero(attributes) or not proof_scope:
                 continue
-            proof_scope = str(attributes.get("search_scope", "") or "").strip()
-            if attributes.get("match_count") != 0 or not proof_scope:
-                continue
-            scoped_rows.append(proof_scope)
+            if attributes.get("discovery_only"):
+                discovery_rows.append(item)
+            else:
+                scoped_rows.append(item)
         if not scoped_rows:
+            if discovery_rows and any(_scope(item).casefold() == scope.casefold() for item in discovery_rows):
+                return (
+                    "DISCOVERY_ONLY",
+                    "ABSENCE_PROOF_DISCOVERY_ONLY: matching empty-search evidence is discovery-only and cannot prove absence",
+                )
             return (
                 "NO_SEARCH",
                 "no empty-search evidence bound; do not conclude absence from retrieval silence",
             )
-        lowered = scope.lower()
-        for proof_scope in scoped_rows:
-            if proof_scope.lower() == lowered or lowered in proof_scope.lower():
-                return ("EMPTY_SEARCH_PROVED", "")
+
+        for empty_row in scoped_rows:
+            if _scope(empty_row).casefold() != scope.casefold():
+                continue
+            for positive_row in evidence_items or []:
+                if positive_row is empty_row or not _same_binding(empty_row, positive_row):
+                    continue
+                positive_attributes = _attributes(positive_row)
+                if (
+                    _scope(positive_row).casefold() == scope.casefold()
+                    and _is_positive(positive_attributes)
+                    and not positive_attributes.get("discovery_only")
+                ):
+                    return (
+                        "PRESENCE_CONFLICT",
+                        "ABSENCE_CONTRADICTED_BY_PRESENCE: same-scope positive evidence contradicts the absence claim",
+                    )
+            return ("EMPTY_SEARCH_PROVED", "")
         return (
             "SCOPE_MISMATCH",
             f"no scoped empty-search evidence covers '{scope}'; an empty result alone is not proof of absence",
@@ -2034,6 +2259,22 @@ class VerificationEngine:
                 and getattr(assessment, "claim_target", None) is not None
             ]
             if edge_assessments:
+                unresolved = [
+                    assessment
+                    for assessment in edge_assessments
+                    if getattr(assessment, "evidence_id", None) is None
+                ]
+                if unresolved:
+                    first_target = getattr(unresolved[0], "claim_target", None)
+                    missing = (
+                        self.caller_edge_key(first_target)
+                        if first_target is not None
+                        else "unknown"
+                    )
+                    return (
+                        False,
+                        f"CALL_EDGE_INCOMPLETE_ENUMERATION: unresolved edge {missing}",
+                    )
                 evidence_by_id = {
                     str(getattr(item, "evidence_id", "")): item
                     for item in evidence_items or []
@@ -2045,54 +2286,25 @@ class VerificationEngine:
                     row = evidence_by_id.get(str(assessment.evidence_id))
                     if row is None:
                         return (False, "a caller edge's bound call-site evidence is unavailable")
-                    # Same-claim sibling repair (live L2 035908): the model
-                    # cited a sibling (comment/search row) while the showing
-                    # call-site range sits bound but unlinked. The claim
-                    # stays bound to showing evidence — set membership in
-                    # the bound set — rather than failing on the pointer.
-                    # Tight: only same-file range rows for this target.
-                    _rows: list[Any] = list(evidence_items or [])
-                    if row not in _rows:
-                        _rows.insert(0, row)
-                    _tfile = str(
-                        getattr(assessment.claim_target, "file_path", "") or ""
-                    )
-                    if _tfile:
-                        for _item in evidence_items or []:
-                            if _item is row:
-                                continue
-                            try:
-                                if not VerificationEngine._paths_match(
-                                    _tfile, VerificationEngine._item_file(_item)
-                                ):
-                                    continue
-                            except (AttributeError, TypeError, ValueError):
-                                continue
-                            if _item not in _rows:
-                                _rows.append(_item)
                     edge_targets = VerificationEngine._aggregate_call_edge_targets(
                         assessment.claim_target
                     ) or [assessment.claim_target]
-                    if len(edge_targets) == 1:
-                        _rows = [row]
-                        if _tfile:
-                            for _item in evidence_items or []:
-                                if _item is row:
-                                    continue
-                                try:
-                                    if not VerificationEngine._paths_match(
-                                        _tfile, VerificationEngine._item_file(_item)
-                                    ):
-                                        continue
-                                except Exception:
-                                    continue
-                                if _item not in _rows:
-                                    _rows.append(_item)
                     matched_targets: list[ClaimTarget] = []
                     for edge_target in edge_targets:
+                        _rows = VerificationEngine.caller_edge_binding_rows(
+                            evidence_items,
+                            edge_target,
+                            [row],
+                        )
+                        if not _rows:
+                            return (
+                                False,
+                                "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
+                            )
                         # A same-file sibling range read can repair a
-                        # cited search/comment row, but it must still prove
-                        # this specific caller edge.
+                        # cited discovery row, but it must still prove this
+                        # specific caller edge at the same binding, revision,
+                        # repository, and target range.
                         edge_ok, edge_reason = VerificationEngine.call_site_proof(
                             _rows, edge_target, statement
                         )
@@ -2145,15 +2357,50 @@ class VerificationEngine:
                     return (False, f"CALL_EDGE_INCOMPLETE_ENUMERATION: unresolved edge {missing}")
                 return (True, "")
             aggregate_edges = VerificationEngine._aggregate_call_edges(hypothesis)
+            if target is None:
+                return VerificationEngine.call_site_proof(evidence_items, target, statement)
+            anchor_ids = {
+                str(value)
+                for value in (getattr(hypothesis, "supporting_evidence_ids", None) or [])
+                if str(value or "").strip()
+            }
             if aggregate_edges:
                 for edge in aggregate_edges:
+                    rows = VerificationEngine.caller_edge_binding_rows(
+                        evidence_items,
+                        edge,
+                        [
+                            item
+                            for item in evidence_items
+                            if str(getattr(item, "evidence_id", "") or "") in anchor_ids
+                        ],
+                    )
+                    if not rows:
+                        return (
+                            False,
+                            "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
+                        )
                     edge_ok, edge_reason = VerificationEngine.call_site_proof(
-                        evidence_items, edge, statement
+                        rows, edge, statement
                     )
                     if not edge_ok:
                         return (False, edge_reason)
                 return (True, "")
-            return VerificationEngine.call_site_proof(evidence_items, target, statement)
+            rows = VerificationEngine.caller_edge_binding_rows(
+                evidence_items,
+                target,
+                [
+                    item
+                    for item in evidence_items
+                    if str(getattr(item, "evidence_id", "") or "") in anchor_ids
+                ],
+            )
+            if not rows:
+                return (
+                    False,
+                    "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
+                )
+            return VerificationEngine.call_site_proof(rows, target, statement)
         if kind == ClaimKind.BEHAVIOR:
             return VerificationEngine.behavior_proof(evidence_items)
         if kind == ClaimKind.ABSENCE:
@@ -2161,6 +2408,19 @@ class VerificationEngine:
         if kind == ClaimKind.HISTORY:
             return VerificationEngine.history_proof(evidence_items, target)
         return None
+
+    def evaluate_caller_edge(
+        self, hypothesis: Any, evidence_items: list[Any]
+    ) -> tuple[bool, str] | None:
+        """Evaluate one caller-edge claim for both verify and conclude.
+
+        This is the single caller-edge decision seam. It preserves the
+        existing ``None`` contract for non-caller claims while ensuring both
+        lifecycle paths consume the same exact-binding and enumeration result.
+        """
+        if VerificationEngine.effective_claim_kind(hypothesis) != ClaimKind.CALL_EDGE:
+            return None
+        return self.check_claim_kind(hypothesis, evidence_items)
 
     @staticmethod
     def _aggregate_call_edges(hypothesis: Any) -> list[ClaimTarget]:
@@ -2174,20 +2434,14 @@ class VerificationEngine:
         if target is None or not getattr(target, "counterpart", None):
             return []
         counterpart = str(target.counterpart)
-        names = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", counterpart)
-        names = [name for name in names if name.casefold() not in {"and", "or"}]
+        names = [
+            segment.strip(" ,;:")
+            for segment in re.split(r"\s+(?:and|or)\s+|[,;]", counterpart, flags=re.IGNORECASE)
+        ]
+        names = [name for name in names if name]
         if len(names) < 2:
             return []
-        return [
-            ClaimTarget(
-                symbol=target.symbol,
-                counterpart=name,
-                file_path=target.file_path,
-                line_start=target.line_start,
-                line_end=target.line_end,
-            )
-            for name in names
-        ]
+        return [target.model_copy(update={"counterpart": name}) for name in names]
 
     @staticmethod
     def history_proof(

@@ -170,7 +170,9 @@ def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
         location = row.provenance.source_location.model_copy(
             update={"file_path": path, "revision": "abc123", "line_start": 10, "line_end": 20}
         )
-        provenance = row.provenance.model_copy(update={"source_location": location})
+        provenance = row.provenance.model_copy(
+            update={"source_location": location, "investigation_id": iid}
+        )
         return row.model_copy(
             update={
                 "content_snippet": snippet,
@@ -202,6 +204,10 @@ def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
             claim_target=ClaimTarget(
                 symbol="OrderServiceHandler.handle",
                 counterpart="OrderQualifyHelper",
+                file_path="src/OrderQualifyHelper.java",
+                line_start=10,
+                line_end=20,
+                commit_id="abc123",
             ),
         )
     ]
@@ -221,6 +227,10 @@ def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
             "claim_target": ClaimTarget(
                 symbol="OrderServiceHandler.handle",
                 counterpart="OrderServiceRestProxy",
+                file_path="src/OrderServiceRestProxy.java",
+                line_start=10,
+                line_end=20,
+                commit_id="abc123",
             ),
         }
     )
@@ -253,7 +263,9 @@ def test_call_edge_aggregate_typed_claim_checks_each_named_caller():
         return row.model_copy(
             update={
                 "content_snippet": snippet,
-                "provenance": row.provenance.model_copy(update={"source_location": location}),
+                "provenance": row.provenance.model_copy(
+                    update={"source_location": location, "investigation_id": iid}
+                ),
             }
         )
 
@@ -277,6 +289,10 @@ def test_call_edge_aggregate_typed_claim_checks_each_named_caller():
         claim_target=ClaimTarget(
             symbol="OrderServiceHandler.handle",
             counterpart="OrderQualifyHelper and OrderServiceRestProxy",
+            file_path="src/OrderQualifyHelper.java",
+            line_start=10,
+            line_end=20,
+            commit_id="abc123",
         ),
     )
     hyp = hyp.model_copy(
@@ -288,7 +304,8 @@ def test_call_edge_aggregate_typed_claim_checks_each_named_caller():
 
     ok, reason = VerificationEngine().check_claim_kind(hyp, [helper, proxy])
 
-    assert ok is True, reason
+    assert ok is False
+    assert "not from 'OrderServiceRestProxy'" in reason
 
 
 def test_v3_call_edge_obligation_requires_all_persisted_callers():
@@ -320,11 +337,26 @@ def test_v3_call_edge_obligation_requires_all_persisted_callers():
         }
     )
     hyp = _hyp("OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle")
+    helper = helper.model_copy(
+        update={
+            "provenance": helper.provenance.model_copy(update={"investigation_id": iid})
+        }
+    )
     helper_target = ClaimTarget(
-        symbol="OrderServiceHandler.handle", counterpart="OrderQualifyHelper"
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=10,
+        commit_id="abc123",
     )
     proxy_target = ClaimTarget(
-        symbol="OrderServiceHandler.handle", counterpart="OrderServiceRestProxy"
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderServiceRestProxy",
+        file_path="src/OrderServiceRestProxy.java",
+        line_start=10,
+        line_end=10,
+        commit_id="abc123",
     )
     assessment = HypothesisEvidenceAssessment(
         hypothesis_id=hyp.id,
@@ -350,7 +382,237 @@ def test_v3_call_edge_obligation_requires_all_persisted_callers():
 
     assert ok is False
     assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in reason
-    assert "OrderServiceRestProxy" in reason
+
+
+def test_call_edge_binding_rejects_cross_revision_and_cross_range_rows():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    iid = uuid4()
+    anchor = _code_evidence("SEARCH_CODE").model_copy(update={"investigation_id": iid})
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id="abc123",
+    )
+    wrong_revision = _code_evidence("GET_SOURCE").model_copy(
+        update={
+            "investigation_id": iid,
+            "content_snippet": "10| return handler.handle(orderId);",
+            "provenance": _code_evidence("GET_SOURCE").provenance.model_copy(
+                update={
+                    "investigation_id": iid,
+                    "source_location": SourceLocation(
+                        system="git",
+                        identifier="src/OrderQualifyHelper.java",
+                        file_path="src/OrderQualifyHelper.java",
+                        line_start=10,
+                        line_end=12,
+                        revision="wrong-revision",
+                    ),
+                }
+            ),
+        }
+    )
+    wrong_range = wrong_revision.model_copy(
+        update={
+            "provenance": wrong_revision.provenance.model_copy(
+                update={
+                    "source_location": wrong_revision.provenance.source_location.model_copy(
+                        update={"line_start": 1, "line_end": 5, "revision": "abc123"}
+                    )
+                }
+            )
+        }
+    )
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=uuid4(),
+        evidence_id=anchor.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="discovery anchor",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=target,
+    )
+    rows = VerificationEngine.caller_edge_binding_rows(
+        [anchor, wrong_revision, wrong_range], target, [anchor]
+    )
+    assert rows == []
+    assert assessment.claim_target == target
+
+
+def test_call_edge_binding_rejects_cross_investigation_range_row():
+    from investigation_agent_platform.domain.hypothesis.models import ClaimTarget
+
+    iid = uuid4()
+    anchor = _code_evidence("SEARCH_CODE").model_copy(update={"investigation_id": iid})
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id="abc123",
+    )
+    foreign = _code_evidence("GET_SOURCE").model_copy(
+        update={
+            "content_snippet": "10| return handler.handle(orderId);",
+            "provenance": _code_evidence("GET_SOURCE").provenance.model_copy(
+                update={
+                    "source_location": SourceLocation(
+                        system="git",
+                        identifier="src/OrderQualifyHelper.java",
+                        file_path="src/OrderQualifyHelper.java",
+                        line_start=10,
+                        line_end=12,
+                        revision="abc123",
+                    )
+                }
+            ),
+        }
+    )
+    assert VerificationEngine.caller_edge_binding_rows([anchor, foreign], target, [anchor]) == []
+
+
+def test_call_edge_binding_requires_a_range_row_not_a_sibling_search_row():
+    from investigation_agent_platform.domain.hypothesis.models import ClaimTarget
+
+    anchor = _code_evidence("SEARCH_CODE")
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id="abc123",
+    )
+    assert VerificationEngine.caller_edge_binding_rows([anchor], target, [anchor]) == []
+
+
+def test_verify_and_conclude_caller_edge_evaluator_has_one_result():
+    engine = VerificationEngine()
+    hypothesis = _hyp("the caller edge is unresolved")
+    assert engine.evaluate_caller_edge(hypothesis, []) is None
+
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=20,
+        commit_id="abc123",
+    )
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hypothesis.id,
+        evidence_id=None,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.MODERATE,
+        reason="unresolved",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=target,
+        reason_code="CALL_EDGE_UNRESOLVED",
+    )
+    caller_hypothesis = hypothesis.model_copy(update={"assessments": [assessment]})
+    result = engine.evaluate_caller_edge(caller_hypothesis, [])
+    assert result is not None
+    assert result[0] is False
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in result[1]
+    assert result == engine.check_claim_kind(caller_hypothesis, [])
+
+
+def test_call_edge_binding_returns_only_target_containing_rows():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    containing = _code_evidence("GET_SOURCE").model_copy(
+        update={"content_snippet": "11| return handler.handle(orderId);"}
+    )
+    containing = containing.model_copy(
+        update={
+            "provenance": containing.provenance.model_copy(
+                update={
+                    "source_location": containing.provenance.source_location.model_copy(
+                        update={
+                            "file_path": "src/OrderQualifyHelper.java",
+                            "line_start": 10,
+                            "line_end": 20,
+                            "revision": "abc123",
+                        }
+                    )
+                }
+            )
+        }
+    )
+    non_containing = containing.model_copy(
+        update={
+            "content_snippet": "31| return handler.handle(orderId);",
+            "provenance": containing.provenance.model_copy(
+                update={
+                    "source_location": containing.provenance.source_location.model_copy(
+                        update={"line_start": 30, "line_end": 40}
+                    )
+                }
+            ),
+        }
+    )
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id="abc123",
+    )
+    rows = VerificationEngine.caller_edge_binding_rows(
+        [containing, non_containing], target, [containing]
+    )
+    assert rows == [containing]
+    assert VerificationEngine.caller_edge_binding_rows(
+        [non_containing], target, [non_containing]
+    ) == []
+
+    hypothesis = _hyp("OrderQualifyHelper calls OrderServiceHandler.handle")
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hypothesis.id,
+        evidence_id=non_containing.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="non-containing call-site row",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=target,
+    )
+    non_containing_hypothesis = hypothesis.model_copy(
+        update={
+            "assessments": [assessment],
+            "supporting_evidence_ids": [non_containing.evidence_id],
+        }
+    )
+    ok, reason = VerificationEngine().check_claim_kind(
+        non_containing_hypothesis, [non_containing]
+    )
+    assert ok is False
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in reason
 
 
 def test_unresolved_critical_contradiction_contradicts():

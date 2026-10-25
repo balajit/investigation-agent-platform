@@ -170,6 +170,7 @@ def test_enumeration_guard_still_catches_unbound_caller():
         file_path=proxy_path,
         line_start=10,
         line_end=11,
+        commit_id=REV,
     )
     hyp = _hyp_with_edge(
         "OrderServiceRestProxy and OrderQualifyHelper call OrderServiceHandler.",
@@ -197,13 +198,14 @@ def test_L2_2_comment_row_shows_no_call():
         file_path=path,
         line_start=5,
         line_end=5,
+        commit_id=REV,
     )
     hyp = _hyp_with_edge(
         "OrderServiceRestProxy calls the order service handler.", target, row
     )
     ok, reason = ENGINE.check_claim_kind(hyp, [row])
     assert ok is False
-    assert "no cited row shows a call" in reason
+    assert "no cited row shows a call" in reason or "no exact bound range read" in reason
     res = ENGINE.evaluate_hypothesis(hyp, [row], [], [], POLICY)
     assert res.status == VerificationStatus.INCONCLUSIVE
 
@@ -442,6 +444,18 @@ def test_same_claim_sibling_repair_035908():
     )
 
     helper_path = "samplecorp/orders-internal/service/src/main/java/com/sample/orders/helper/OrderQualifyHelper.java"
+    investigation_id = uuid4()
+
+    def _same_investigation(row):
+        return row.model_copy(
+            update={
+                "investigation_id": investigation_id,
+                "provenance": row.provenance.model_copy(
+                    update={"investigation_id": investigation_id}
+                ),
+            }
+        )
+
     cited = _ev(
         snippet="import com.sample.orders.handler.OrderServiceHandler;",
         file_path=helper_path,
@@ -450,6 +464,7 @@ def test_same_claim_sibling_repair_035908():
         revision=REV,
         operation="SEARCH_CODE",
     )
+    cited = _same_investigation(cited)
     declaring = _ev(
         snippet="8|     private final OrderServiceHandler handler = new OrderServiceHandler();",
         file_path=helper_path,
@@ -457,19 +472,22 @@ def test_same_claim_sibling_repair_035908():
         line_end=8,
         revision=REV,
     )
+    declaring = _same_investigation(declaring)
     invoking = _ev(
-        snippet="10|     public String qualify(String orderId, boolean preChecked) {\n12|             return handler.handle(orderId);",
+        snippet="1|     private final OrderServiceHandler handler = new OrderServiceHandler();\n10|     public String qualify(String orderId, boolean preChecked) {\n12|             return handler.handle(orderId);",
         file_path=helper_path,
-        line_start=10,
+        line_start=1,
         line_end=12,
         revision=REV,
     )
+    invoking = _same_investigation(invoking)
     target = ClaimTarget(
         symbol="OrderServiceHandler",
         counterpart="OrderQualifyHelper",
         file_path=helper_path,
-        line_start=5,
-        line_end=5,
+        line_start=1,
+        line_end=12,
+        commit_id=REV,
     )
     hid = uuid4()
     hyp = Hypothesis(

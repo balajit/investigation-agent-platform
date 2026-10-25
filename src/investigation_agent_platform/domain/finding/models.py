@@ -91,6 +91,12 @@ class InvestigationConclusion(BaseModel):
     # conclusion (test the untested rival, cite the uncited sentence,
     # corroborate with another provider). None when established clean.
     next_check: str | None = Field(default=None, max_length=1024)
+    # Caller enumeration diagnostics are informational only. Incomplete
+    # enumeration remains INSUFFICIENT_EVIDENCE and can never become PARTIAL
+    # or ANSWERED through these fields.
+    proven_callers: list[str] = Field(default_factory=list, max_length=100)
+    unresolved_callers: list[str] = Field(default_factory=list, max_length=100)
+    caller_coverage: str | None = Field(default=None, max_length=32)
     # 020: verifier provenance. None = legacy/pre-marker historical row.
     verifier_version: str | None = Field(default=None, max_length=16)
 

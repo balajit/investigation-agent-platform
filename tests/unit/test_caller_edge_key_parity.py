@@ -168,6 +168,8 @@ def test_method_qualified_counterpart_proves_class_stem():
                 symbol="OrderServiceHandler.handle",
                 counterpart="OrderQualifyHelper",
                 file_path="src/OrderQualifyHelper.java",
+                line_start=10,
+                line_end=20,
                 commit_id="abc123",
             ),
         ),
@@ -183,6 +185,8 @@ def test_method_qualified_counterpart_proves_class_stem():
                 # Method-qualified form must still prove the class stem.
                 counterpart="OrderServiceRestProxy.submit",
                 file_path="src/OrderServiceRestProxy.java",
+                line_start=10,
+                line_end=20,
                 commit_id="abc123",
             ),
         ),
@@ -195,3 +199,26 @@ def test_method_qualified_counterpart_proves_class_stem():
     )
     ok, reason = VerificationEngine().check_claim_kind(hyp, [helper, proxy])
     assert ok is True, reason
+
+
+def test_aggregate_qualified_callers_preserve_identity_fields():
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="com.sample.OrderQualifyHelper.qualify and com.sample.OrderServiceRestProxy.submit",
+        file_path="src/orders.py",
+        line_start=10,
+        line_end=20,
+        scope="repo@abc123:src",
+        declaring_type="OrderServiceHandler",
+        commit_id="abc123",
+    )
+
+    targets = VerificationEngine._aggregate_call_edge_targets(target)
+
+    assert [item.counterpart for item in targets] == [
+        "com.sample.OrderQualifyHelper.qualify",
+        "com.sample.OrderServiceRestProxy.submit",
+    ]
+    assert all(item.commit_id == "abc123" for item in targets)
+    assert all(item.scope == "repo@abc123:src" for item in targets)
+    assert all(item.declaring_type == "OrderServiceHandler" for item in targets)

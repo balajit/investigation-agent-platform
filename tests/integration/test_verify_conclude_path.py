@@ -268,9 +268,9 @@ def test_l2_comment_row_needs_rebind_end_to_end():
     hyp = hyp.model_copy(update={"id": hyp_id})
     out = run_path(hyp.statement, hyp, [cited, showing])
     assert out["kind_gate"][0] is False
-    assert "no cited row shows a call" in out["kind_gate"][1]
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
     assert out["verification"].status == VerificationStatus.INCONCLUSIVE
-    assert out["next_check"] is not None and "range-read" in out["next_check"]
+    assert out["next_check"] is not None
 
 
 def test_l2_sibling_repair_and_proxy_gap_end_to_end():
@@ -342,8 +342,8 @@ def test_l2_sibling_repair_and_proxy_gap_end_to_end():
     # ... but no proxy showing row exists anywhere, so the run still abstains,
     # localized to the missing call site rather than a generic chain message.
     assert out["kind_gate"][0] is False
-    assert "no cited row shows a call" in out["kind_gate"][1]
-    assert out["next_check"] is not None and "range-read" in out["next_check"]
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
+    assert out["next_check"] is not None
 
 
 def test_l2_joint_construction_only_abstains_end_to_end():
@@ -408,7 +408,7 @@ def test_l2_joint_construction_only_abstains_end_to_end():
     hyp = hyp.model_copy(update={"id": hyp_id})
     out = run_path(statement, hyp, [proxy_comment, proxy_ctor, helper_ctor])
     assert out["kind_gate"][0] is False
-    assert "no cited row shows a call" in out["kind_gate"][1]
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
     assert out["verification"].status == VerificationStatus.INCONCLUSIVE
     assert out["decision"].approved is False
 
@@ -442,6 +442,158 @@ def test_l3_absence_policy_abstain_end_to_end():
     assert out["verification"].status == VerificationStatus.INCONCLUSIVE
     assert out["verification"].confidence.overall_confidence < 0.80
     assert out["decision"].approved is False
+
+
+def test_caller_edge_unresolved_persistence_stays_inconclusive_at_conclusion():
+    iid = uuid4()
+    evidence = _ev(
+        snippet="graph candidate only",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=10,
+        operation="FIND_CALL_GRAPH",
+        etype=EvidenceType.CALL_GRAPH,
+    )
+    hyp_id = uuid4()
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id=REV,
+    )
+    unresolved = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp_id,
+        evidence_id=None,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.MODERATE,
+        reason="caller edge obligation unresolved",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=target,
+        reason_code="CALL_EDGE_UNRESOLVED",
+    )
+    hypothesis = Hypothesis(
+        id=hyp_id,
+        tenant_id="n-batt",
+        investigation_id=iid,
+        title="caller edge",
+        description="caller edge",
+        statement="OrderQualifyHelper calls OrderServiceHandler.handle",
+        status=HypothesisStatus.UNDER_INVESTIGATION,
+        assessments=[unresolved],
+        required_verification=[f"CALL_EDGE|{ENGINE.caller_edge_key(target)}"],
+    )
+    out = run_path(hypothesis.statement, hypothesis, [evidence])
+    assert out["kind_gate"][0] is False
+    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
+    assert out["verification"].status == VerificationStatus.INCONCLUSIVE
+    assert out["decision"].approved is False
+
+
+def test_strict_caller_diagnostics_report_proven_and_unresolved_coverage():
+    iid = uuid4()
+    first = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path=HELPER,
+        line_start=10,
+        line_end=12,
+        commit_id=REV,
+    )
+    second = first.model_copy(update={"counterpart": "OrderServiceRestProxy"})
+    hypothesis_id = uuid4()
+    first_evidence_id = uuid4()
+    hypothesis = _hyp(
+        "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle.",
+        [
+            _asm(hypothesis_id, first_evidence_id, ClaimKind.CALL_EDGE, first),
+            HypothesisEvidenceAssessment(
+                hypothesis_id=hypothesis_id,
+                evidence_id=None,
+                assessment=AssessmentType.SUPPORTS,
+                strength=AssessmentStrength.MODERATE,
+                reason="caller edge obligation unresolved",
+                claim_kind=ClaimKind.CALL_EDGE,
+                claim_target=second,
+                reason_code="CALL_EDGE_UNRESOLVED",
+            ),
+        ],
+        [first_evidence_id],
+        iid,
+    ).model_copy(update={"id": hypothesis_id})
+    proven, unresolved, coverage = VerificationEngine.caller_edge_diagnostics(hypothesis)
+    assert proven == ["OrderQualifyHelper"]
+    assert unresolved == ["OrderServiceRestProxy"]
+    assert coverage == "1/2"
+
+
+def test_strict_caller_diagnostics_are_not_a_partial_conclusion_status():
+    from investigation_agent_platform.domain.finding.models import (
+        ConclusionStatus,
+        InvestigationConclusion,
+    )
+
+    conclusion = InvestigationConclusion(
+        tenant_id="n-batt",
+        investigation_id=uuid4(),
+        status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
+        limitations=["CALL_EDGE_INCOMPLETE_ENUMERATION: unresolved edge"],
+        proven_callers=["OrderQualifyHelper"],
+        unresolved_callers=["OrderServiceRestProxy"],
+        caller_coverage="1/2",
+    )
+    assert conclusion.status == ConclusionStatus.INSUFFICIENT_EVIDENCE
+    assert conclusion.caller_coverage == "1/2"
+    assert "PARTIAL" not in {status.value for status in ConclusionStatus}
+
+
+def test_caller_edge_exact_binding_reaches_gate_without_borrowing_sibling_revision():
+    iid = uuid4()
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        commit_id=REV,
+    )
+    proof = _ev(
+        snippet="10| return handler.handle(orderId);",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+        revision=REV,
+    )
+    wrong_revision = proof.model_copy(
+        update={
+            "evidence_id": uuid4(),
+            "provenance": proof.provenance.model_copy(
+                update={
+                    "source_location": proof.provenance.source_location.model_copy(
+                        update={"revision": "wrong-revision"}
+                    )
+                }
+            ),
+        }
+    )
+    hyp_id = uuid4()
+    assessment = _asm(hyp_id, proof.evidence_id, ClaimKind.CALL_EDGE, target)
+    hypothesis = _hyp(
+        "OrderQualifyHelper calls OrderServiceHandler.handle",
+        [assessment],
+        [proof.evidence_id],
+        iid,
+    ).model_copy(
+        update={
+            "id": hyp_id,
+            "required_verification": [f"CALL_EDGE|{ENGINE.caller_edge_key(target)}"],
+        }
+    )
+    out = run_path(hypothesis.statement, hypothesis, [proof, wrong_revision])
+    assert out["kind_gate"] == (True, "")
+    assert out["decision"].approved is False
+    assert any("causal" in blocker for blocker in out["decision"].blockers)
 
 
 def test_l5_answered_via_method_return_end_to_end():

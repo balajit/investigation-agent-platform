@@ -209,6 +209,7 @@ class Hypothesis(BaseModel):
         for asm in self.assessments:
             if (
                 asm.assessment == AssessmentType.SUPPORTS
+                and asm.reason_code != "CALL_EDGE_UNRESOLVED"
                 and asm.evidence_id not in self.supporting_evidence_ids
             ):
                 raise ValueError(

@@ -1,9 +1,10 @@
 # src/investigation_agent_platform/ports/reasoning/reasoner.py
 """LLM reasoner port protocol and structured decision contracts."""
 
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from investigation_agent_platform.domain.code.models import JavaFactCategory
 from investigation_agent_platform.domain.hypothesis.models import ClaimKind, ClaimTarget
@@ -43,6 +44,26 @@ class DecisionClaim(BaseModel):
     caller_edges: list[CallerEdgeClaim] = Field(default_factory=list, max_length=20)
 
 
+class ReasoningDisposition(StrEnum):
+    """Workflow disposition for a reasoner decision."""
+
+    DEFER_GATHERING = "DEFER_GATHERING"
+
+
+class DeferGathering(BaseModel):
+    """Bounded evidence-gathering request that must not persist a hypothesis."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=1024)
+    missing_proof_kind: str = Field(..., min_length=1, max_length=64)
+    next_action: str = Field(..., min_length=1, max_length=64)
+    next_action_parameters: dict[str, Any] = Field(default_factory=dict)
+    target: str = Field(..., min_length=1, max_length=512)
+    scope: str = Field(..., min_length=1, max_length=512)
+    remaining_repair_budget: int = Field(..., ge=0, le=2)
+
+
 class InvestigationDecision(BaseModel):
     """Structured reasoning output containing step evaluation, action, and readiness."""
 
@@ -57,6 +78,16 @@ class InvestigationDecision(BaseModel):
     conclusion_readiness: float = Field(ge=0.0, le=1.0, default=0.0)
     reasoning_chain: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    disposition: ReasoningDisposition | None = None
+    defer_gathering: DeferGathering | None = None
+
+    @model_validator(mode="after")
+    def validate_disposition(self) -> "InvestigationDecision":
+        if self.defer_gathering is not None and self.disposition != ReasoningDisposition.DEFER_GATHERING:
+            raise ValueError("defer_gathering requires disposition=DEFER_GATHERING")
+        if self.disposition == ReasoningDisposition.DEFER_GATHERING and self.defer_gathering is None:
+            raise ValueError("DEFER_GATHERING requires defer_gathering")
+        return self
 
 
 @runtime_checkable

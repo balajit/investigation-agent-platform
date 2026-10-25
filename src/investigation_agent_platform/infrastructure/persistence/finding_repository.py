@@ -89,6 +89,9 @@ class SqlAlchemyFindingConclusionRepository:
             ranked_alternatives=list(row.ranked_alternatives or []),
             verifier_version=row.verifier_version,
             next_check=getattr(row, "next_check", None),
+            proven_callers=list(getattr(row, "proven_callers", None) or []),
+            unresolved_callers=list(getattr(row, "unresolved_callers", None) or []),
+            caller_coverage=getattr(row, "caller_coverage", None),
         )
 
     # -- writes ----------------------------------------------------------
@@ -239,6 +242,9 @@ class SqlAlchemyFindingConclusionRepository:
                         provisional=bool(getattr(conclusion, "provisional", False)),
                         ranked_alternatives=list(getattr(conclusion, "ranked_alternatives", []) or []),
                         next_check=getattr(conclusion, "next_check", None),
+                        proven_callers=list(getattr(conclusion, "proven_callers", []) or []),
+                        unresolved_callers=list(getattr(conclusion, "unresolved_callers", []) or []),
+                        caller_coverage=getattr(conclusion, "caller_coverage", None),
                     )
                     .on_conflict_do_update(
                         constraint="uq_conclusion_investigation",
@@ -263,6 +269,9 @@ class SqlAlchemyFindingConclusionRepository:
                             "provisional": bool(getattr(conclusion, "provisional", False)),
                             "ranked_alternatives": list(getattr(conclusion, "ranked_alternatives", []) or []),
                             "next_check": getattr(conclusion, "next_check", None),
+                            "proven_callers": list(getattr(conclusion, "proven_callers", []) or []),
+                            "unresolved_callers": list(getattr(conclusion, "unresolved_callers", []) or []),
+                            "caller_coverage": getattr(conclusion, "caller_coverage", None),
                         },
                     )
                 )

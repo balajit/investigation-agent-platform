@@ -125,3 +125,98 @@ def test_persistent_invalid_exhausts_to_unavailable():
     decision = _run(coord, _state())
     assert gateway.complete.await_count == 3  # initial + 2 hidden resamples
     assert decision.reasoning_chain == "REASONING_UNAVAILABLE"
+
+
+def test_valid_defer_gathering_decision_survives_validation():
+    coord, _ = _coord([])
+    decision = coord._validate_llm_decision(
+        {
+            "disposition": "DEFER_GATHERING",
+            "defer_gathering": {
+                "reason": "mixed presence and empty evidence",
+                "missing_proof_kind": "ABSENCE",
+                "next_action": "GET_CODE",
+                "next_action_parameters": {"file_path": "src/handler.py"},
+                "target": "handler.py",
+                "scope": "repo@rev:src/handler.py",
+                "remaining_repair_budget": 2,
+            },
+            "hypotheses_evaluated": [],
+            "claims": [],
+            "conclusion_readiness": 0.1,
+        },
+        "tenant-a",
+        _state().investigation.id,
+    )
+
+    assert decision.disposition.value == "DEFER_GATHERING"
+    assert decision.defer_gathering is not None
+    assert decision.defer_gathering.next_action == "GET_CODE"
+
+
+def test_defer_gathering_rejects_terminal_action():
+    coord, _ = _coord([])
+    import pytest
+
+    with pytest.raises(ValueError):
+        coord._validate_llm_decision(
+            {
+                "disposition": "DEFER_GATHERING",
+                "defer_gathering": {
+                    "reason": "needs proof",
+                    "missing_proof_kind": "ABSENCE",
+                    "next_action": "CONCLUDE",
+                    "next_action_parameters": {},
+                    "target": "target",
+                    "scope": "scope",
+                    "remaining_repair_budget": 1,
+                },
+            },
+            "tenant-a",
+            _state().investigation.id,
+        )
+
+
+def test_defer_gathering_rejects_unknown_action():
+    coord, _ = _coord([])
+    import pytest
+
+    with pytest.raises(ValueError, match="gathering action"):
+        coord._validate_llm_decision(
+            {
+                "disposition": "DEFER_GATHERING",
+                "defer_gathering": {
+                    "reason": "needs proof",
+                    "missing_proof_kind": "ABSENCE",
+                    "next_action": "FOO",
+                    "next_action_parameters": {},
+                    "target": "target",
+                    "scope": "scope",
+                    "remaining_repair_budget": 1,
+                },
+            },
+            "tenant-a",
+            _state().investigation.id,
+        )
+
+
+def test_defer_gathering_requires_matching_disposition():
+    coord, _ = _coord([])
+    import pytest
+
+    with pytest.raises(ValueError):
+        coord._validate_llm_decision(
+            {
+                "defer_gathering": {
+                    "reason": "needs proof",
+                    "missing_proof_kind": "ABSENCE",
+                    "next_action": "GET_CODE",
+                    "next_action_parameters": {},
+                    "target": "target",
+                    "scope": "scope",
+                    "remaining_repair_budget": 1,
+                }
+            },
+            "tenant-a",
+            _state().investigation.id,
+        )

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build Stage C live run-set artifacts for a frozen §6.2i record.
 
 Creates artifacts/<RS>/ with rule texts (verbatim frozen sections),
@@ -30,6 +29,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -52,10 +58,6 @@ MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v3.json"
 FREEZE_RECORD_HASH = (
     sys.argv[2] if len(sys.argv) > 2 else "20b901d1291b7f2ff9fa7fdbf1eadb9079d8e7666291d4eb0e2e6961b4bc3419"
 )
-FREEZE_COMMIT = subprocess.run(
-    ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-    cwd=ROOT, check=True,
-).stdout.strip()
 GOVERNED = ["src", "tests", "config", "pyproject.toml"]
 
 # Fixture -> expected cell (a priori, from fixture `expect` + §6.1 taxonomy).
@@ -94,7 +96,7 @@ def rule_file(name: str, parts: list[tuple[str, Path, int, int]]) -> bytes:
 
 def utcnow() -> str:
     return (
-        datetime.datetime.now(datetime.timezone.utc)
+        datetime.datetime.now(datetime.UTC)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
@@ -102,7 +104,18 @@ def utcnow() -> str:
 
 
 def main() -> None:
+    if len(sys.argv) < 4:
+        raise SystemExit(
+            "explicit governed code revision required: pass RUN_SET_ID, FREEZE_RECORD_HASH, and CODE_REVISION"
+        )
+    code_revision = sys.argv[3].strip()
+    if not code_revision or code_revision.startswith("-"):
+        raise SystemExit("explicit governed code revision must be non-empty")
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if manifest.get("git_rev") != code_revision:
+        raise SystemExit(
+            "explicit governed code revision does not match signed freeze manifest git_rev"
+        )
     digests: dict[str, str] = manifest["battery_case_digests"]
     prompts = manifest["prompts"]
     form016 = prompts["reasoner_source"]["sha256_working_tree_reference"]
@@ -130,9 +143,9 @@ def main() -> None:
     if ART.exists():
         raise SystemExit(f"refusing to overwrite existing run-set dir: {ART}")
 
-    # Governed code bytes are exactly the frozen HEAD: no diff, no
-    # worktree modifications under governed paths.
-    for args in (["diff", "HEAD", "--"] + GOVERNED,
+    # Governed code bytes are exactly the explicitly supplied revision: no
+    # diff or worktree modifications under governed paths.
+    for args in (["diff", code_revision, "--"] + GOVERNED,
                  ["status", "--porcelain", "--"] + GOVERNED):
         out = subprocess.run(
             ["git"] + args, capture_output=True, text=True, cwd=ROOT, check=True,
@@ -275,13 +288,6 @@ def main() -> None:
 
     # ---- Dev key list (dev scope; private key never enters the repo). ----
     priv, pub = generate_dev_keypair()
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        PrivateFormat,
-        PublicFormat,
-        NoEncryption,
-    )
-
     pub_hex = pub.public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
     key_id = "dev-stagec-2026-10-26-r3"
     keylist = {
@@ -327,7 +333,7 @@ def main() -> None:
 
     # ---- Freeze object. ----
     tree = subprocess.run(
-        ["git", "archive", "HEAD", "--", "src", "tests", "config",
+        ["git", "archive", code_revision, "--", "src", "tests", "config",
          "pyproject.toml"],
         capture_output=True, cwd=ROOT, check=True,
     ).stdout
@@ -340,7 +346,7 @@ def main() -> None:
         "amendment_a2_hash": a2_hash,
         "behavior_id": "unified-dev-v1",
         "protocol_id": "v1.9+A1+A2",
-        "code_revision": FREEZE_COMMIT,
+        "code_revision": code_revision,
         "tree_hash": tree_hash,  # sha256 over `git archive HEAD` (governed paths) bytes
         "flags": {"IAP_SHADOW_TYPED_DEFINITIONS": "1"},
         "authority_flag_state": "MUST_BE_ABSENT",
@@ -413,21 +419,25 @@ def main() -> None:
     log = [
         f"# Stage C run set {RS} — collection log",
         "",
-        f"Freeze record hash: {FREEZE_RECORD_HASH} (commit {FREEZE_COMMIT}).",
+        f"Freeze record hash: {FREEZE_RECORD_HASH} (commit {code_revision}).",
         f"Freeze object digest: {freeze['freeze_hash']}.",
         f"Ledger head: {ledger_state['head']} (total {ledger.total}/48).",
         "",
         "## Expected-cell mapping (a priori)",
         "",
-        "L1-L5 expect ANSWERED terminals -> accept-PASS. "
-        "L8 expects a clean ABSTAIN terminal -> nonaccept-PASS.",
+        (
+            "L1-L5 expect ANSWERED terminals -> accept-PASS. "
+            "L8 expects a clean ABSTAIN terminal -> nonaccept-PASS."
+        ),
         "Mispredictions record as EXCLUDED/BUDGET_RESERVED_CELL_MISMATCH, never reassigned.",
         "",
         "## Cohort prompt pin",
         "",
-        "Cohort prompt_hash is the formulate-definition prompt "
-        "v3-claim-grounded-016 (case-driving prompt); both prompts are frozen "
-        "globally in freeze.prompts.",
+        (
+            "Cohort prompt_hash is the formulate-definition prompt "
+            "v3-claim-grounded-016 (case-driving prompt); both prompts are frozen "
+            "globally in freeze.prompts."
+        ),
         "",
         "## Shadow attempt ids (pre-computed, deterministic)",
         "",
@@ -438,11 +448,13 @@ def main() -> None:
         "",
         "## Control arm",
         "",
-        "After the shadow arm: restart worker with "
-        "IAP_SHADOW_TYPED_DEFINITIONS unset; one control run per exercised "
-        "fixture; k-th shadow pairs with k-th control (control_order = "
-        "per-fixture ordinal); stop on native divergence. Control runs are "
-        "excluded from the eligible denominator and consume no budget.",
+        (
+            "After the shadow arm: restart worker with "
+            "IAP_SHADOW_TYPED_DEFINITIONS unset; one control run per exercised "
+            "fixture; k-th shadow pairs with k-th control (control_order = "
+            "per-fixture ordinal); stop on native divergence. Control runs are "
+            "excluded from the eligible denominator and consume no budget."
+        ),
         "",
         "## Dev key",
         "",
