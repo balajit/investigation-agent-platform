@@ -1,27 +1,29 @@
 # src/investigation_agent_platform/domain/proof/certificate.py
-"""WP-B4 certificate serializer + independent checker (cert/v1).
+"""WP-B4 certificate serializer + independent checker (cert/v2).
 
 ``certify()`` serializes a manifest-bound derivation into a
-schema-valid certificate (``tests/fixtures/proof_kernel/cert_schema_v1.json``).
+schema-valid certificate (``tests/fixtures/proof_kernel/cert_schema_v2.json``).
 ``check_certificate()`` accepts, rejects, or replays from the schema +
-registry alone: it recomputes every ID it can derive, re-verifies premise
-semantics through the registry validators, and enforces coverage, scope,
-cycle, and freshness gates. Producer-supplied ``validation`` and
-``proof_classification`` fields are ignored — the checker's own verdict
-is the only acceptance evidence.
+registry alone: it recomputes every ID it can derive and re-derives
+semantic verdicts through the independent checker semantics, enforcing
+coverage, scope, cycle, and freshness gates. Producer-supplied ``validation``
+and ``proof_classification`` fields are ignored — the checker's own
+verdict is the only acceptance evidence.
 
 Independence note: the checker shares the frozen registry, canonical
-primitives, and pure validators (the contracts, not engine state) but
-runs a separate decision path with no evaluator internals, no shared
-mutable state, and no workflow access. Diverse re-implementation of the
-validators is a hardening step beyond this package.
+primitives, and Pydantic parsing schemas (the contracts, not engine
+state) but runs a separate decision path with no evaluator internals,
+no shared mutable state, no workflow access, and — since Component 2 —
+no producer validators: semantic verdicts come from
+``checker_semantics.py`` alone (``_CHECKER_SEMANTICS`` dispatch).
+``certify()`` still runs the producer validator first and refuses to
+serialize a non-discharging application.
 """
 
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,12 +33,20 @@ from investigation_agent_platform.domain.proof.canonical import (
     derivation_id,
     proposition_id,
 )
+from investigation_agent_platform.domain.proof.checker_semantics import (
+    check_absence_semantics,
+    check_behavior_semantics,
+    check_call_edge_semantics,
+    check_definition_semantics,
+    check_history_semantics,
+)
 from investigation_agent_platform.domain.proof.evaluation import EvaluationInputs
 from investigation_agent_platform.domain.proof.manifest import (
     EvidenceManifest,
     ManifestCoverage,
     manifest_digest,
 )
+from investigation_agent_platform.domain.proof.outcomes import CheckerOutcome
 from investigation_agent_platform.domain.proof.rules import (
     RULE_BUNDLE_VERSION,
     RuleOutcome,
@@ -45,22 +55,26 @@ from investigation_agent_platform.domain.proof.rules import (
     get_rule,
 )
 
-CERT_SCHEMA_VERSION = "cert/v1"
+CERT_SCHEMA_VERSION = "cert/v2"
 
+__all__ = [
+    "CERT_SCHEMA_VERSION",
+    "CertificationError",
+    "CheckRequest",
+    "CheckerOutcome",
+    "certify",
+    "check_certificate",
+]
+"""Public checker surface (the re-exported CheckerOutcome keeps current importers working)."""
 
-class CheckerOutcome(str, Enum):
-    """Checker verdicts (frozen §3.4 vocabulary)."""
-
-    VALID = "VALID"
-    MISSING_PREMISE = "MISSING_PREMISE"
-    INADMISSIBLE_PREMISE = "INADMISSIBLE_PREMISE"
-    INVALID_INFERENCE = "INVALID_INFERENCE"
-    SCOPE_MISMATCH = "SCOPE_MISMATCH"
-    UNSUPPORTED_CONSTRUCT = "UNSUPPORTED_CONSTRUCT"
-    STALE_CERTIFICATE = "STALE_CERTIFICATE"
-    CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
-    CHECKER_FAILURE = "CHECKER_FAILURE"
-    PREMISE_UNAVAILABLE = "PREMISE_UNAVAILABLE"
+_CHECKER_SEMANTICS = {
+    "definition/v1": check_definition_semantics,
+    "call_edge/v1": check_call_edge_semantics,
+    "behavior/v1": check_behavior_semantics,
+    "absence/v1": check_absence_semantics,
+    "history/v1": check_history_semantics,
+}
+"""Independent semantic entry points by rule (never producer validators)."""
 
 
 class CertificationError(ValueError):
@@ -108,29 +122,51 @@ def _certificate_coverage(
     }
 
 
-def _claim_bindings(proposition: dict[str, Any]) -> dict[str, Any]:
-    """Inference bindings from the canonical proposition's target.
+def _claim_for_rule(proposition: dict[str, Any], rule_id: str) -> dict[str, Any]:
+    """Validator claim from canonical header + rule-specific projection.
 
-    Copies symbol/caller/callee/counterpart when present, then applies
-    the ClaimTarget contract (symbol is the callee of a call edge,
-    counterpart is the caller): missing caller/callee fall back to
-    counterpart/symbol so call-edge claims bind without re-parsing
-    prose. Validators ignore keys they do not need.
+    Copies present header fields (form/quantifier/relation/modality/
+    completeness/predicate/asserted_value, including explicit nulls so
+    null-vs-omitted distinctions reach the validators), then projects
+    the target and scope through the rule's closed key sets. For
+    ``call_edge/v1`` the legacy ClaimTarget aliases apply (counterpart
+    is the caller, symbol is the callee). Validators ignore keys they
+    do not need; unknown keys never enter the claim because the
+    projection only copies allowlisted fields.
     """
-    bindings: dict[str, Any] = {}
-    target = proposition.get("target") if isinstance(proposition, dict) else None
+    from investigation_agent_platform.domain.proof.canonical import V2_SCOPE_KEYS, V2_TARGET_KEYS
+
+    claim: dict[str, Any] = {}
+    proposition = proposition if isinstance(proposition, dict) else {}
+    for key in (
+        "form",
+        "quantifier",
+        "relation",
+        "modality",
+        "completeness",
+        "predicate",
+        "asserted_value",
+    ):
+        if key in proposition:
+            claim[key] = proposition[key]
+    target = proposition.get("target")
     target = target if isinstance(target, dict) else {}
-    for key in ("symbol", "caller", "callee", "counterpart"):
-        value = target.get(key)
-        if isinstance(value, str) and value:
-            bindings[key] = value
-    if "caller" not in bindings and isinstance(target.get("counterpart"), str):
-        if target["counterpart"].strip():
-            bindings["caller"] = target["counterpart"].strip()
-    if "callee" not in bindings and isinstance(target.get("symbol"), str):
-        if target["symbol"].strip():
-            bindings["callee"] = target["symbol"].strip()
-    return bindings
+    for key in V2_TARGET_KEYS.get(str(rule_id or ""), frozenset()):
+        if key in target:
+            claim[key] = target[key]
+    scope = proposition.get("scope")
+    scope = scope if isinstance(scope, dict) else {}
+    for key in V2_SCOPE_KEYS.get(str(rule_id or ""), frozenset()):
+        if key in scope:
+            claim[key] = scope[key]
+    if str(rule_id or "") == "call_edge/v1":
+        if "caller" not in claim and isinstance(target.get("counterpart"), str):
+            if target["counterpart"].strip():
+                claim["caller"] = target["counterpart"].strip()
+        if "callee" not in claim and isinstance(target.get("symbol"), str):
+            if target["symbol"].strip():
+                claim["callee"] = target["symbol"].strip()
+    return claim
 
 
 def _artifact_hash(artifact: dict[str, Any]) -> str:
@@ -145,21 +181,45 @@ def _artifact_hash(artifact: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_dict_bytes(dict(artifact or {}))).hexdigest()
 
 
-def _claim_from_bindings(bindings: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild the validator claim from typed inference bindings."""
-    claim: dict[str, Any] = {}
-    for key in ("symbol", "caller", "callee", "counterpart"):
-        value = (bindings or {}).get(key)
-        if isinstance(value, str) and value:
-            claim[key] = value
-    return claim
+def _entry_scope(rule_id: str, premise: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
+    """Premise-entry scope: explicit scope wins, else rule-specific synthesis.
+
+    Component-1-style premise records carry no ``scope`` key; the entry
+    scope is then synthesized from the artifact's revision-bearing
+    fields so the K11 scope-revision gate can verify every premise
+    against the certificate scope. v1 callers that already attach an
+    explicit scope are unaffected.
+    """
+    scope = premise.get("scope")
+    if isinstance(scope, dict) and scope:
+        return dict(scope)
+    artifact = artifact if isinstance(artifact, dict) else {}
+    if rule_id in ("definition/v1", "call_edge/v1"):
+        rev = artifact.get("revision")
+    elif rule_id == "history/v1":
+        rev = artifact.get("repository_revision")
+    elif rule_id == "behavior/v1":
+        rev = artifact.get("revision") or artifact.get("source_revision")
+    elif rule_id == "absence/v1":
+        ascope = artifact.get("scope")
+        return dict(ascope) if isinstance(ascope, dict) else {}
+    else:
+        rev = None
+    return {"revision": rev} if rev else {}
 
 
 def _validator_premise(entry: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild the validator input: certified type + artifact record."""
+    """Rebuild the validator input: certified envelope + artifact record.
+
+    The certified evidence_id, premise_type, and content_hash ride
+    alongside the artifact bytes (certify() verifies the hash binding
+    before rule application, so the envelope is sound here). Strict
+    premise models require all three envelope fields.
+    """
     merged = dict(artifact or {})
     merged["premise_type"] = entry.get("premise_type")
     merged["evidence_id"] = entry.get("evidence_id")
+    merged["content_hash"] = entry.get("content_hash")
     if "window_text" not in merged and isinstance(merged.get("text"), str):
         merged["window_text"] = merged["text"]
     if "call_text" not in merged and isinstance(merged.get("text"), str):
@@ -167,7 +227,9 @@ def _validator_premise(entry: dict[str, Any], artifact: dict[str, Any]) -> dict[
     return merged
 
 
-def _premise_entry(premise: dict[str, Any]) -> dict[str, Any]:
+def _premise_entry(
+    premise: dict[str, Any], rule_id: str, artifact: dict[str, Any] | None
+) -> dict[str, Any]:
     """Schema-shaped premise: evidence_id, content_hash, type, scope only.
 
     Semantic fields live in the artifact (bound by content_hash), never
@@ -178,7 +240,7 @@ def _premise_entry(premise: dict[str, Any]) -> dict[str, Any]:
         "content_hash": premise.get("content_hash"),
         "evidence_id": str(premise.get("evidence_id") or ""),
         "premise_type": premise.get("premise_type"),
-        "scope": premise.get("scope") or {},
+        "scope": _entry_scope(rule_id, premise, artifact or {}),
     }
 
 
@@ -203,7 +265,12 @@ def certify(
     proposition = inputs.proposition
     manifest = inputs.manifest
     rule = get_rule(inputs.rule_id)
-    bindings = _claim_bindings(proposition)
+    if inputs.rule_bundle_version != RULE_BUNDLE_VERSION:
+        raise CertificationError(
+            "UNSUPPORTED_BUNDLE",
+            f"rule bundle must be {RULE_BUNDLE_VERSION}: {inputs.rule_bundle_version!r}",
+        )
+    claim = _claim_for_rule(proposition, rule.rule_id)
     artifacts = dict(artifacts or {})
     validator_inputs = []
     for premise in premises or []:
@@ -220,13 +287,15 @@ def certify(
                 "PREMISE_UNAVAILABLE", f"artifact not the manifested bytes: {pid}"
             )
         validator_inputs.append(_validator_premise(premise, artifact))
-    outcome, reason = apply_rule(rule, _claim_from_bindings(bindings), validator_inputs)
+    outcome, reason = apply_rule(
+        rule, claim, validator_inputs, manifest.model_dump(mode="json")
+    )
     if outcome != RuleOutcome.DISCHARGED:
         raise CertificationError("RULE_NOT_DISCHARGED", reason)
     # Single construction, used twice: the derivation binds exactly the
     # inference the certificate carries, so recomputation always matches.
     # (Building these separately once caused a binding mismatch.)
-    inference_instance = {"bindings": bindings, "rule": rule.rule_id}
+    inference_instance = {"bindings": claim, "rule": rule.rule_id}
     # The derivation binds exactly the inference the certificate carries:
     # evaluate with the typed instance, so recomputation matches.
     derivation = evaluate(inputs.model_copy(update={"inference": inference_instance}))
@@ -238,6 +307,7 @@ def certify(
         "relation",
         "modality",
         "completeness",
+        "asserted_value",
     )
     header = {k: proposition[k] for k in header_keys if k in proposition}
     scope = proposition.get("scope")
@@ -250,7 +320,7 @@ def certify(
         "implementation_digest": rule.implementation_digest,
         "inference_instance": inference_instance,
         "input_manifest_digest": derivation.manifest_digest,
-        "premises": [_premise_entry(p) for p in premises],
+        "premises": [_premise_entry(p, rule.rule_id, artifacts.get(str(p.get("evidence_id") or ""))) for p in premises],
         "proof_classification": rule.soundness.value,
         "proposition_id": derivation.proposition_id,
         "rule_id": rule.rule_id,
@@ -271,8 +341,11 @@ class CheckRequest(BaseModel):
     ``context`` carries the frozen evaluation-context fields (rule bundle
     version, model encoding, reconciliation state).
     ``expected_context_id`` pins freshness at publication time.
-    ``derivation_deps`` maps derivation IDs to the derivation IDs they
-    depend on, for cycle detection (K2).
+    ``mapping_authority`` carries the independently addressable
+    build-to-source attestation contract for BEHAVIOR checks
+    (``{"approved_provenance_refs": [...]}``); ``None`` abstains every
+    behavior candidate. ``derivation_deps`` maps derivation IDs to the
+    derivation IDs they depend on, for cycle detection (K2).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -280,11 +353,12 @@ class CheckRequest(BaseModel):
     certificate: dict[str, Any] = Field(...)
     proposition: dict[str, Any] = Field(...)
     manifest: EvidenceManifest = Field(...)
-    rule_bundle_version: str = Field(default=RULE_BUNDLE_VERSION, max_length=64)
+    rule_bundle_version: str = Field(..., max_length=64)
     model_encoding: dict[str, Any] = Field(default_factory=dict)
     reconciliation_state: str = Field(default="unreconciled", max_length=64)
     artifacts: dict[str, dict[str, Any]] = Field(default_factory=dict)
     expected_context_id: str | None = Field(default=None)
+    mapping_authority: dict[str, Any] | None = Field(default=None)
     known_normalization_ops: frozenset[str] = Field(default_factory=frozenset)
     derivation_deps: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -313,12 +387,20 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
 
     Deterministic: identical inputs always yield the identical verdict.
     Check order is fixed — schema, registry, identity, binding,
-    availability, semantics, coverage, scope, cycle, freshness — and the
-    first failure wins, so verdicts are attributable to exactly one cause.
+    availability, coverage-presence (absence/universal only, so a
+    missing coverage block reports MISSING before any header verdict),
+    semantics, rule-aware header admission, scope, cycle, freshness —
+    and the first failure wins, so verdicts are attributable to exactly
+    one cause.
     """
     cert = request.certificate if isinstance(request.certificate, dict) else {}
     if cert.get("schema_version") != CERT_SCHEMA_VERSION:
         return _fail(CheckerOutcome.CHECKER_FAILURE, "unknown schema_version")
+    if request.rule_bundle_version != RULE_BUNDLE_VERSION:
+        return _fail(
+            CheckerOutcome.CHECKER_FAILURE,
+            f"unsupported rule bundle version: {request.rule_bundle_version!r}",
+        )
     required = (
         "proposition_id",
         "canonical_proposition",
@@ -365,6 +447,7 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
         "relation",
         "modality",
         "completeness",
+        "asserted_value",
     ):
         in_header = key in header
         in_proposition = key in proposition
@@ -389,6 +472,11 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
         {
             "evidence_manifest_digest": manifest_digest(request.manifest),
             "model_encoding": dict(request.model_encoding or {}),
+            "proposition_scope": (
+                dict(proposition["scope"])
+                if isinstance(proposition.get("scope"), dict)
+                else {}
+            ),
             "reconciliation_state": request.reconciliation_state,
             "rule_bundle_version": request.rule_bundle_version,
         },
@@ -424,27 +512,23 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
             )
     bindings = cert.get("inference_instance", {}).get("bindings", {})
     bindings = bindings if isinstance(bindings, dict) else {}
-    if bindings != _claim_bindings(proposition):
+    if bindings != _claim_for_rule(proposition, rule.rule_id):
         return _fail(
             CheckerOutcome.INVALID_INFERENCE,
             "inference bindings diverge from proposition target",
         )
-    validator_inputs = [
-        _validator_premise(p, available[str(p.get("evidence_id") or "")])
-        for p in premises
-        if isinstance(p, dict)
-    ]
-    outcome, reason = apply_rule(rule, _claim_from_bindings(bindings), validator_inputs)
-    if outcome == RuleOutcome.DISCHARGED:
-        pass
-    elif outcome == RuleOutcome.MISSING_PREMISE:
-        return _fail(CheckerOutcome.MISSING_PREMISE, reason)
-    elif outcome == RuleOutcome.INADMISSIBLE_PREMISE:
-        return _fail(CheckerOutcome.INADMISSIBLE_PREMISE, reason)
-    elif outcome == RuleOutcome.UNSUPPORTED_CONSTRUCT:
-        return _fail(CheckerOutcome.UNSUPPORTED_CONSTRUCT, reason)
-    else:
-        return _fail(CheckerOutcome.INVALID_INFERENCE, reason)
+    cert_scope = cert.get("scope")
+    prop_scope = proposition.get("scope") or {}
+    if not isinstance(cert_scope, dict) or cert_scope != (
+        prop_scope if isinstance(prop_scope, dict) else {}
+    ):
+        return _fail(CheckerOutcome.SCOPE_MISMATCH, "scope mismatch")
+    semantic = _CHECKER_SEMANTICS.get(rule.rule_id)
+    if semantic is None:
+        return _fail(
+            CheckerOutcome.UNSUPPORTED_CONSTRUCT,
+            f"no independent semantic check for rule: {rule.rule_id!r}",
+        )
     quantifier = str(proposition.get("quantifier") or "")
     form = str(proposition.get("form") or "")
     if form == "ABSENCE" or quantifier == "UNIVERSAL":
@@ -475,22 +559,33 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
                 CheckerOutcome.INVALID_INFERENCE,
                 "coverage universe differs from manifest scope (K3)",
             )
-    if form and form != "EXISTENCE":
+    outcome, reason = semantic(
+        cert, proposition, request.manifest, available, request.mapping_authority
+    )
+    if outcome != CheckerOutcome.VALID:
+        return _fail(outcome, reason)
+    admitted_forms: dict[str, set[str | None]] = {
+        "definition/v1": {"EXISTENCE", None},
+        "call_edge/v1": {"EXISTENCE", None},
+        "behavior/v1": {"OBSERVATION"},
+        "absence/v1": {"ABSENCE"},
+        "history/v1": {"HISTORICAL"},
+    }
+    admitted_quantifiers: dict[str, set[str]] = {
+        "definition/v1": {"EXISTENTIAL"},
+        "call_edge/v1": {"EXISTENTIAL"},
+        "behavior/v1": {"OBSERVATIONAL"},
+        "absence/v1": {"UNIVERSAL"},
+        "history/v1": {"EXISTENTIAL"},
+    }
+    if (form or None) not in admitted_forms.get(rule.rule_id, set()) or quantifier not in admitted_quantifiers.get(
+        rule.rule_id, set()
+    ):
         return _fail(
             CheckerOutcome.UNSUPPORTED_CONSTRUCT,
-            f"existential rules do not establish {form} claims",
-        )
-    if quantifier == "UNIVERSAL":
-        return _fail(
-            CheckerOutcome.UNSUPPORTED_CONSTRUCT,
-            "existential rules do not establish universals (K4)",
+            f"rule {rule.rule_id} does not establish {form or '?'} claims",
         )
     cert_scope = cert.get("scope")
-    prop_scope = proposition.get("scope") or {}
-    if not isinstance(cert_scope, dict) or cert_scope != (
-        prop_scope if isinstance(prop_scope, dict) else {}
-    ):
-        return _fail(CheckerOutcome.INVALID_INFERENCE, "scope mismatch")
     if isinstance(cert_scope, dict) and "revision" in cert_scope:
         for premise in premises:
             if not isinstance(premise, dict):

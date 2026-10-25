@@ -44,8 +44,12 @@ def _prop() -> dict[str, Any]:
 def _inputs(**over: Any) -> EvaluationInputs:
     base: dict[str, Any] = {
         "proposition": _prop(),
-        "manifest": build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}),
-        "rule_bundle_version": "rules/v1",
+        "manifest": build_manifest(
+            ["e1", "e2"],
+            {"e1": _h("a"), "e2": _h("b")},
+            premise_types={"e1": "RANGE_READ_FACT", "e2": "RANGE_READ_FACT"},
+        ),
+        "rule_bundle_version": "rules/v2",
         "model_encoding": {"model": "m", "encoding": "utf-8"},
         "rule_id": "definition/v1",
         "rule_version": "v1",
@@ -55,22 +59,83 @@ def _inputs(**over: Any) -> EvaluationInputs:
     return EvaluationInputs(**base)
 
 
+def _typed(ids: list[str]) -> dict[str, str]:
+    return {pid: "RANGE_READ_FACT" for pid in ids}
+
+
 def test_manifest_digest_binds_content_and_order() -> None:
-    m1 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")})
-    m2 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")})
+    m1 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
+    m2 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
     assert manifest_digest(m1) == manifest_digest(m2)
     assert manifest_digest(m1).startswith("sha256:")
-    reordered = build_manifest(["e2", "e1"], {"e1": _h("a"), "e2": _h("b")})
+    reordered = build_manifest(["e2", "e1"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
     assert manifest_digest(reordered) != manifest_digest(m1)
 
 
+def test_manifest_rejects_premise_type_key_mismatch() -> None:
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types={"e1": "RANGE_READ_FACT"})
+    assert excinfo.value.code == "PREMISE_TYPE_MISMATCH"
+
+
+def test_manifest_rejects_missing_content_hash_key() -> None:
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(["e1", "e2"], {"e1": _h("a")}, premise_types=_typed(["e1", "e2"]))
+    assert excinfo.value.code == "CONTENT_HASH_KEY_MISMATCH"
+
+
+def test_manifest_rejects_extra_content_hash_key() -> None:
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(["e1"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1"]))
+    assert excinfo.value.code == "CONTENT_HASH_KEY_MISMATCH"
+
+
+def test_manifest_rejects_unknown_premise_type() -> None:
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(["e1"], {"e1": _h("a")}, premise_types={"e1": "SEARCH_HIT"})
+    assert excinfo.value.code == "UNKNOWN_PREMISE_TYPE"
+
+
+def test_manifest_coverage_binding_requires_complete_linkage() -> None:
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(
+            ["ev-coverage-001"],
+            {"ev-coverage-001": _h("a")},
+            premise_types={"ev-coverage-001": "ABSENCE_COVERAGE_FACT"},
+            coverage_evidence_id="ev-coverage-001",
+        )
+    assert excinfo.value.code == "COVERAGE_BINDING_MISMATCH"
+    with pytest.raises(ManifestConstructionError) as excinfo:
+        build_manifest(
+            ["ev-coverage-001"],
+            {"ev-coverage-001": _h("a")},
+            premise_types={"ev-coverage-001": "RANGE_READ_FACT"},
+            coverage_evidence_id="ev-coverage-001",
+            coverage_evidence={
+                "premise_type": "ABSENCE_COVERAGE_FACT",
+                "universe": "u",
+                "predicate": "p",
+                "search_status": "COMPLETE_EMPTY",
+                "search_config_digest": _h("cfg"),
+                "scope": {"repository": "r", "revision": "a" * 40, "path_scope": "src/"},
+                "exclusions": [],
+                "coverage_basis": {"kind": "k", "value": "v"},
+                "match_count": 0,
+            },
+        )
+    assert excinfo.value.code == "COVERAGE_BINDING_MISMATCH"
+
+
 def test_manifest_rejects_duplicates_and_bad_hashes() -> None:
-    with pytest.raises(ManifestConstructionError):
+    with pytest.raises(ManifestConstructionError) as excinfo:
         build_manifest(["e1", "e1"], {"e1": _h("a")})
-    with pytest.raises(ManifestConstructionError):
+    assert excinfo.value.code == "DUPLICATE_PREMISE_ID"
+    with pytest.raises(ManifestConstructionError) as excinfo:
         build_manifest(["e1"], {"e1": "not-a-hash"})
-    with pytest.raises(ManifestConstructionError):
+    assert excinfo.value.code == "BAD_CONTENT_HASH"
+    with pytest.raises(ManifestConstructionError) as excinfo:
         build_manifest(["e1"], {"e1": "sha256:" + "zz" * 32})
+    assert excinfo.value.code == "BAD_CONTENT_HASH"
 
 
 def test_empty_match_manifest_evaluates_for_absence() -> None:
@@ -106,7 +171,11 @@ def test_rerun_deterministic_and_inputs_immutable() -> None:
 
 def test_new_evidence_yields_new_ids_old_records_untouched() -> None:
     old = evaluate(_inputs(), available_hashes={"e1": _h("a"), "e2": _h("b")})
-    new_manifest = build_manifest(["e1", "e2", "e3"], {"e1": _h("a"), "e2": _h("b"), "e3": _h("c")})
+    new_manifest = build_manifest(
+        ["e1", "e2", "e3"],
+        {"e1": _h("a"), "e2": _h("b"), "e3": _h("c")},
+        premise_types={"e1": "RANGE_READ_FACT", "e2": "RANGE_READ_FACT", "e3": "RANGE_READ_FACT"},
+    )
     new = evaluate(
         _inputs(manifest=new_manifest),
         available_hashes={"e1": _h("a"), "e2": _h("b"), "e3": _h("c")},

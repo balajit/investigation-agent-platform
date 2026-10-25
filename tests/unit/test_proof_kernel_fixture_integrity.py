@@ -280,7 +280,8 @@ def test_ledger_matches_fixture_directory():
 
 def test_cert_examples_conform_to_schema():
     # R3: every certificate in the valid, provisional, and invalid
-    # collections is checked against the actual cert/v1 schema.
+    # collections is checked against the grandfathered Layer-1 cert/v1
+    # schema (v1 corpus is read-only history; v2 is normative for G4).
     schema = load("cert_schema_v1.json")
     checked = 0
     for fname, sections in (

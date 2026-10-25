@@ -56,6 +56,43 @@ RULE_DEPS: dict[str, frozenset[str]] = {
     "call_edge/v1": frozenset(
         {"evidence.content", "evidence.availability", "scope.revision", "rule.bundle"}
     ),
+    "behavior/v1": frozenset(
+        {
+            "evidence.content",
+            "evidence.availability",
+            "scope.repository",
+            "scope.revision",
+            "scope.execution",
+            "scope.environment",
+            "scope.build_identity",
+            "rule.bundle",
+        }
+    ),
+    "absence/v1": frozenset(
+        {
+            "evidence.content",
+            "evidence.availability",
+            "scope.repository",
+            "scope.revision",
+            "scope.path",
+            "coverage.universe",
+            "coverage.exclusions",
+            "coverage.search_config",
+            "rule.bundle",
+        }
+    ),
+    "history/v1": frozenset(
+        {
+            "evidence.content",
+            "evidence.availability",
+            "scope.repository",
+            "scope.revision",
+            "history.commit",
+            "history.file_path",
+            "history.subject",
+            "rule.bundle",
+        }
+    ),
 }
 
 # Change classes that affect progress only, never truth (contracts §5.1).

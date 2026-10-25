@@ -8,6 +8,19 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from investigation_agent_platform.application.evidence.retrieval_ledger import (
+    RETRYABLE_ACTIONS,
+    WP_A3_DEFAULT_MAX_ATTEMPTS,
+    ClaimRetrievalBinding,
+    ClaimRetrievalLedger,
+    RetrievalOutcome,
+    _distinct_typed_claims,
+    _normalize_scope,
+    build_claim_ledger,
+    count_persisted_attempts,
+    extract_search_query,
+    re_retrieval_directive,
+)
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
     CodeFactResolution,
@@ -463,6 +476,13 @@ class VerificationDiagnostics(BaseModel):
         default_factory=list, max_length=10
     )
     reason_codes: list[str] = Field(default_factory=list, max_length=20)
+    # G3: per-distinct-claim retrieval partitions (diagnostics-only, default
+    # empty — legacy rows validate unchanged). Never alters verdicts.
+    claim_bindings: list[ClaimRetrievalBinding] = Field(default_factory=list, max_length=100)
+    # G3: the ledgers behind claim_bindings, paired by claim_key (same
+    # order, same cap). Persisted so the benefit battery measures changed
+    # bindings from recorded state instead of recomputing the join.
+    claim_ledgers: list[ClaimRetrievalLedger] = Field(default_factory=list, max_length=100)
 
 
 class VerificationResult(BaseModel):
@@ -513,7 +533,10 @@ _DEFAULT_MISSING_OBLIGATION_DIRECTIVE = "Bind supporting evidence to the claim, 
 
 
 def collect_verification_diagnostics(
-    hypothesis: Any, evidence_items: list[Any], result: "VerificationResult"
+    hypothesis: Any,
+    evidence_items: list[Any],
+    result: "VerificationResult",
+    recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None = None,
 ) -> "VerificationDiagnostics | None":
     """Build diagnostics-only annotations for an evaluated hypothesis.
 
@@ -522,6 +545,10 @@ def collect_verification_diagnostics(
     when there is nothing to report. Fail-open by contract — callers
     must additionally guard with try/except so persistence never blocks
     on diagnostics.
+
+    ``recorded_attempts`` is the timeline-backed (banked IDs, attempt
+    dict) list, oldest first; ``None`` (legacy callers) degrades claim
+    bindings to ``unmapped`` without failing.
     """
     try:
         bound: set[str] = set()
@@ -556,12 +583,61 @@ def collect_verification_diagnostics(
                     _cite(raw)
         except Exception:
             pass
+        # G3: one retrieval binding per distinct typed claim. Legacy rows
+        # (recorded_attempts None) degrade to unmapped, never fail.
+        recorded: list[tuple[list[str], dict[str, Any] | None]] = list(
+            recorded_attempts or []
+        )
+        claim_bindings: list[ClaimRetrievalBinding] = []
+        claim_ledgers: list[ClaimRetrievalLedger] = []
+        unknown_to_ref: dict[str, str] = {}
+        try:
+            try:
+                statement = str(getattr(hypothesis, "statement", "") or "")
+            except Exception:
+                statement = ""
+            for group in _distinct_typed_claims(hypothesis):
+                try:
+                    kind_value = group.get("kind_value")
+                    target_dict = group.get("target_dict")
+                    group_cited = group.get("cited_ids")
+                    ledger, binding, full_unknown = build_claim_ledger(
+                        statement=str(group.get("statement", "") or statement),
+                        claim_kind=str(kind_value) if kind_value else None,
+                        claim_target=dict(target_dict) if isinstance(target_dict, dict) else None,
+                        cited_ids=list(group_cited) if isinstance(group_cited, list) else [],
+                        bank_ids=set(bound),
+                        attempts=recorded,
+                        target_ref=str(group.get("target_key") or "") or None,
+                    )
+                except Exception:
+                    continue
+                if _claim_bounded_search(binding, ledger, recorded):
+                    try:
+                        binding = binding.model_copy(update={"bounded_search": True})
+                    except Exception:
+                        pass
+                claim_bindings.append(binding)
+                try:
+                    claim_ledgers.append(ledger)
+                except Exception:
+                    pass
+                # Uncapped mapping: IDs omitted from the 50-ID binding
+                # limit still resolve to the claim ref in evaporation.
+                for unknown_id in full_unknown:
+                    unknown_to_ref.setdefault(str(unknown_id), binding.claim_ref)
+        except Exception:
+            claim_bindings = []
+            claim_ledgers = []
+            unknown_to_ref = {}
         try:
             cited_by = str(getattr(hypothesis, "id", "") or "")
         except Exception:
             cited_by = ""
         evaporated = [
-            EvaporatedId(cited_id=c, cited_by=cited_by[:64]) for c in cited if c not in bound
+            EvaporatedId(cited_id=c, cited_by=(unknown_to_ref.get(c) or cited_by)[:64])
+            for c in cited
+            if c not in bound
         ]
         demotions: list[Demotion] = []
         try:
@@ -630,14 +706,307 @@ def collect_verification_diagnostics(
             | {d.reason_code.value for d in demotions}
             | {m.reason_code.value for m in missing}
         )
-        if not (evaporated or demotions or missing):
+        if not (evaporated or demotions or missing or claim_bindings):
             return None
         return VerificationDiagnostics(
             evaporated_ids=evaporated[:100],
             demotions=demotions[:10],
             missing_obligations=missing[:10],
             reason_codes=codes[:20],
+            claim_bindings=claim_bindings[:100],
+            claim_ledgers=claim_ledgers[:100],
         )
+    except Exception:
+        return None
+
+
+def _latest_linked_outcome(
+    ledger: Any, recorded: list[tuple[list[str], dict[str, Any] | None]]
+) -> str | None:
+    """Outcome string of the claim's latest linked attempt, or None."""
+    try:
+        indexes = list(getattr(ledger, "attempt_indexes", None) or [])
+        if not indexes:
+            return None
+        _banked, attempt = recorded[int(indexes[-1])]
+        if isinstance(attempt, dict):
+            return str(attempt.get("outcome") or "") or None
+    except Exception:
+        return None
+    return None
+
+
+def _claim_bounded_search(
+    binding: ClaimRetrievalBinding,
+    ledger: Any,
+    recorded: list[tuple[list[str], dict[str, Any] | None]],
+) -> bool:
+    """True when the claim's only basis is a truncated scoped empty.
+
+    The truncation must come from a strictly prior attempt for the same
+    normalized (query, scope) key — the latest linked empty itself never
+    counts, even if it carries truncation signals.
+    """
+    try:
+        if list(getattr(binding, "claim_local", None) or []) or list(
+            getattr(binding, "bank_fallback", None) or []
+        ):
+            return False
+        if _latest_linked_outcome(ledger, recorded) != RetrievalOutcome.SCOPED_EMPTY.value:
+            return False
+        try:
+            positions = [int(p) for p in (getattr(ledger, "attempt_indexes", None) or [])]
+            latest_pos = max(positions) if positions else -1
+        except Exception:
+            return False
+        try:
+            query = str(getattr(ledger, "search_query", "") or "")
+            scope = _normalize_scope(getattr(ledger, "scope", None))
+        except Exception:
+            return False
+        for pos, (_banked, attempt) in enumerate(recorded or []):
+            if pos >= latest_pos:
+                continue
+            if not isinstance(attempt, dict):
+                continue
+            if str(attempt.get("search_query") or "") != query:
+                continue
+            if _normalize_scope(attempt.get("scope")) != scope:
+                continue
+            try:
+                truncated = int(attempt.get("truncated_rows") or 0)
+            except (TypeError, ValueError):
+                truncated = 0
+            signals = attempt.get("signals") or []
+            signaled = (
+                any(str(s).startswith("truncated:") for s in signals)
+                if isinstance(signals, list)
+                else False
+            )
+            try:
+                provider_total = attempt.get("provider_total_count")
+                banked_count = attempt.get("banked_count")
+                totaled = (
+                    provider_total is not None
+                    and banked_count is not None
+                    and int(provider_total) > int(banked_count)
+                )
+            except (TypeError, ValueError):
+                totaled = False
+            if truncated > 0 or signaled or totaled:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def build_verify_evaluation_attributes(
+    diagnostics: Any | None,
+    *,
+    turn: int | None,
+    hypothesis_id: Any,
+    verifier_version: str,
+) -> dict[str, Any] | None:
+    """Attributes for one VERIFY_EVALUATION timeline marker, or None.
+
+    Pure (diagnostics-only): serializes the recomputed claim bindings,
+    their ledgers, and the missing obligations (claim identity only) so
+    the benefit battery measures changed bindings and missing-obligation
+    events from persisted state instead of recomputing the join. A None
+    diagnostics (empty or otherwise unrepresented evaluation) yields a
+    skeleton with empty lists — every current-version turn persists a
+    marker, so the battery never mistakes a missing row for an unevaluated
+    turn. None is returned only on internal error; the caller then skips
+    the write and reports the persistence failure. Sizes are bounded by
+    the diagnostics caps (100 bindings, 50 IDs each, 10 missing), so the
+    marker stays a small JSON object.
+    """
+    try:
+        try:
+            turn_value = int(turn) if turn is not None else None
+        except (TypeError, ValueError):
+            turn_value = None
+        skeleton = {
+            "turn": turn_value,
+            "hypothesis_id": str(hypothesis_id or ""),
+            "verifier_version": str(verifier_version or ""),
+            "bindings": [],
+            "ledgers": [],
+            "missing_obligations": [],
+            "evaporated_count": 0,
+        }
+        if diagnostics is None:
+            return skeleton
+        bindings = list(getattr(diagnostics, "claim_bindings", None) or [])
+        ledgers = list(getattr(diagnostics, "claim_ledgers", None) or [])
+        missing = list(getattr(diagnostics, "missing_obligations", None) or [])
+        evaporated = list(getattr(diagnostics, "evaporated_ids", None) or [])
+        binding_dicts: list[dict[str, Any]] = []
+        for binding in bindings[:100]:
+            try:
+                dumped = binding.model_dump(mode="json")
+                binding_dicts.append(dict(dumped) if isinstance(dumped, dict) else {})
+            except Exception:
+                continue
+        ledger_dicts: list[dict[str, Any]] = []
+        for ledger in ledgers[:100]:
+            try:
+                dumped = ledger.model_dump(mode="json")
+                ledger_dicts.append(dict(dumped) if isinstance(dumped, dict) else {})
+            except Exception:
+                continue
+        missing_dicts: list[dict[str, Any]] = []
+        for item in missing[:10]:
+            try:
+                missing_dicts.append(
+                    {
+                        "claim": str(getattr(item, "claim", "") or "")[:1024],
+                        "claim_kind": getattr(item, "claim_kind", None),
+                        "reason_code": str(
+                            getattr(getattr(item, "reason_code", ""), "value", "")
+                            or ""
+                        ),
+                    }
+                )
+            except Exception:
+                continue
+        skeleton["bindings"] = binding_dicts
+        skeleton["ledgers"] = ledger_dicts
+        skeleton["missing_obligations"] = missing_dicts
+        skeleton["evaporated_count"] = len(evaporated)
+        return skeleton
+    except Exception:
+        return None
+
+
+def _match_recent_action(
+    ledger: Any, recent_actions: list[Any]
+) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+    """Find the recent typed action behind a claim's ledger query.
+
+    Prefers a history summary carrying the same retrieval attempt
+    (query + normalized scope); falls back to a retryable action whose
+    parameters derive to the same key. Returns (None, None) when no
+    typed, validated action matches — the directive is then skipped.
+    """
+    try:
+        query = str(getattr(ledger, "search_query", "") or "")
+        scope = _normalize_scope(getattr(ledger, "scope", None))
+    except Exception:
+        return None, None
+    if not query:
+        return None, None
+    try:
+        entries = list(recent_actions or [])
+    except Exception:
+        return None, None
+    for entry in reversed(entries):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            attempt = entry.get("retrieval_attempt")
+            if isinstance(attempt, dict):
+                if str(attempt.get("search_query") or "") != query:
+                    continue
+                if _normalize_scope(attempt.get("scope")) != scope:
+                    continue
+            else:
+                action = str(entry.get("action") or "").strip().upper()
+                params = entry.get("parameters")
+                if action not in RETRYABLE_ACTIONS or not isinstance(params, dict):
+                    continue
+                derived_query, derived_scope, _provider = extract_search_query(
+                    action, params
+                )
+                if derived_query != query or _normalize_scope(derived_scope) != scope:
+                    continue
+            action = str(entry.get("action") or "").strip().upper()
+            params = entry.get("parameters")
+            if action not in RETRYABLE_ACTIONS or not isinstance(params, dict):
+                continue
+            return action, {str(k): v for k, v in params.items()}
+        except Exception:
+            continue
+    return None, None
+
+
+def select_ledger_requery(
+    hypothesis: Any,
+    evidence_items: list[Any],
+    recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None,
+    recent_actions: list[Any] | None,
+    max_attempts: int = WP_A3_DEFAULT_MAX_ATTEMPTS,
+) -> dict[str, Any] | None:
+    """First dispatchable bounded re-retrieval directive, or None (pure).
+
+    Walks the hypothesis's distinct typed claims in order; the first
+    claim whose binding is unsatisfied (unknown citations with zero
+    durable attempts, or a failed latest attempt under budget) and whose
+    query maps to a typed, validated recent action yields the directive.
+    Fail-closed on unavailable history: ``recorded_attempts=None``
+    (attempt history unavailable, distinct from confirmed-empty) yields
+    None — an unknown-citation retry is never authorized without durable
+    data. Fail-open on internal error: returns None, never a directive.
+    """
+    try:
+        if recorded_attempts is None:
+            return None
+        recorded = list(recorded_attempts)
+        bound: set[str] = set()
+        for item in evidence_items or []:
+            try:
+                key = str(getattr(item, "evidence_id", "") or "").strip()
+            except Exception:
+                continue
+            if key:
+                bound.add(key)
+        try:
+            statement = str(getattr(hypothesis, "statement", "") or "")
+        except Exception:
+            statement = ""
+        try:
+            budget = max(1, int(max_attempts))
+        except (TypeError, ValueError):
+            budget = WP_A3_DEFAULT_MAX_ATTEMPTS
+        for group in _distinct_typed_claims(hypothesis):
+            try:
+                kind_value = group.get("kind_value")
+                target_dict = group.get("target_dict")
+                group_cited = group.get("cited_ids")
+                ledger, binding, _full_unknown = build_claim_ledger(
+                    statement=str(group.get("statement", "") or statement),
+                    claim_kind=str(kind_value) if kind_value else None,
+                    claim_target=dict(target_dict) if isinstance(target_dict, dict) else None,
+                    cited_ids=list(group_cited) if isinstance(group_cited, list) else [],
+                    bank_ids=set(bound),
+                    attempts=recorded,
+                    target_ref=str(group.get("target_key") or "") or None,
+                )
+            except Exception:
+                continue
+            try:
+                latest = _latest_linked_outcome(ledger, recorded)
+            except Exception:
+                latest = None
+            if not binding.unknown and latest != RetrievalOutcome.SEARCH_FAILED.value:
+                continue
+            if count_persisted_attempts(recorded, ledger.search_query, ledger.scope) >= budget:
+                continue
+            try:
+                action_type, params = _match_recent_action(ledger, recent_actions or [])
+            except Exception:
+                continue
+            if action_type is None or params is None:
+                continue
+            try:
+                directive = re_retrieval_directive(
+                    binding, ledger, latest, recorded, action_type, params, budget
+                )
+            except Exception:
+                continue
+            if directive is not None:
+                return directive
+        return None
     except Exception:
         return None
 
@@ -3829,16 +4198,19 @@ class VerificationEngine:
         policy: RootCauseVerificationPolicy,
         sibling_hypotheses: list[Any] | None = None,
         observer: Callable[[dict[str, Any]], None] | None = None,
+        recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None = None,
     ) -> VerificationResult:
         """Public verdict entry point (WP-A2 wrapper): verdicts unchanged.
 
         Runs the inner evaluator, then attaches diagnostics-only
-        annotations (evaporated IDs, demotions, missing obligations).
-        Diagnostics never alter status, tier, explanation, confidence, or
-        corroborating IDs — ambiguous results stay exactly as evaluated.
-        The optional observer carries the T2b mirror note through to the
-        inner gate; ``None`` (all existing callers) preserves the exact
-        legacy call shape.
+        annotations (evaporated IDs, demotions, missing obligations, G3
+        claim bindings). Diagnostics never alter status, tier,
+        explanation, confidence, or corroborating IDs — ambiguous
+        results stay exactly as evaluated. The optional observer
+        carries the T2b mirror note through to the inner gate; ``None``
+        (all existing callers) preserves the exact legacy call shape.
+        ``recorded_attempts`` (timeline-backed, oldest first; ``None``
+        for legacy callers) feeds G3 bindings only.
         """
         result = self._evaluate_hypothesis_inner(
             hypothesis,
@@ -3851,7 +4223,7 @@ class VerificationEngine:
         )
         try:
             diagnostics = collect_verification_diagnostics(
-                hypothesis, evidence_items, result
+                hypothesis, evidence_items, result, recorded_attempts
             )
             if diagnostics is not None:
                 result = result.model_copy(update={"diagnostics": diagnostics})

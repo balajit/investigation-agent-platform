@@ -1027,6 +1027,9 @@ class ExecuteActionInput:
     # binding. Empty for legacy callers; FORMULATE falls back to the
     # batch-wide supporting_evidence_ids parameter for statements without one.
     claims: list[dict[str, Any]] = field(default_factory=list)
+    # G3: workflow loop iteration driving this action. None (legacy
+    # callers) means the attempt id is left untagged rather than guessed.
+    iteration: int | None = None
 
 
 @dataclass
@@ -1043,6 +1046,14 @@ class VerifyRootCauseInput:
     # D5: triage route selects the runtime verification preset for
     # failure-shaped runs; empty (legacy callers) keeps the default.
     triage_route: str = ""
+    # G3: prior-turn history entries (most recent last) carried by the
+    # workflow so verify can re-derive timeline-backed recorded attempts.
+    # Empty for legacy callers; verify then keeps legacy diagnostics.
+    recent_actions: list = field(default_factory=list)
+    # G3: workflow loop iteration driving this verify turn. None (legacy
+    # callers) leaves the evaluation marker's turn untagged rather than
+    # guessed; timestamps still order evaluations.
+    iteration: int | None = None
 
 
 @dataclass
@@ -5718,16 +5729,40 @@ async def execute_action_activity(
             # fail-open). Records the query/attempt with a distinct
             # outcome plus novelty/lift against earlier attempts in
             # this investigation. Never blocks or alters the outcome.
+            # G3: provider_total_count arrives via outcome_detail when a
+            # handler surfaces the gateway total (None preserves legacy
+            # behavior); banked_count is the handler's banked-row count,
+            # not the 25-capped evidence_ids list. The attempt id tags
+            # the workflow history entry; the RETRIEVAL_ATTEMPT timeline
+            # marker below is skipped until Step 4 adds the enum member.
+            _attempt_id: str | None = None
+            _provider_total_count: int | None = None
+            _resolved_action_name = str(
+                getattr(resolved_action_type, "value", resolved_action_type)
+            )
             try:
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    attempt_id_for as _attempt_id_for,
+                )
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    extract_search_query as _extract_search_query,
+                )
                 from investigation_agent_platform.application.evidence.retrieval_ledger import (
                     record_retrieval_attempt as _record_retrieval_attempt,
                 )
 
+                try:
+                    _provider_total_raw = outcome_detail.get("provider_total_count")
+                    _provider_total_count = (
+                        int(_provider_total_raw)
+                        if _provider_total_raw is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    _provider_total_count = None
                 _retrieval_attempt = _record_retrieval_attempt(
                     investigation_id=inv_id_str,
-                    action_type=str(
-                        getattr(resolved_action_type, "value", resolved_action_type)
-                    ),
+                    action_type=_resolved_action_name,
                     parameters=parameters if isinstance(parameters, dict) else {},
                     status=str(_outcome_status),
                     miss_reason=outcome_detail.get("miss_reason"),
@@ -5741,10 +5776,94 @@ async def execute_action_activity(
                         for s in (outcome_detail.get("sources") or [])
                         if isinstance(s, dict) and s.get("status") is not None
                     ],
+                    provider_total_count=_provider_total_count,
+                    banked_count=int(items_count or 0),
                 )
                 if _retrieval_attempt is not None:
                     outcome_detail["retrieval_attempt"] = (
                         _retrieval_attempt.model_dump(mode="json")
+                    )
+                try:
+                    _exec_iteration = data.get("iteration")
+                    if _exec_iteration is not None:
+                        _attempt_query, _attempt_scope, _attempt_provider = (
+                            _extract_search_query(
+                                _resolved_action_name,
+                                parameters if isinstance(parameters, dict) else {},
+                            )
+                        )
+                        _attempt_id = _attempt_id_for(
+                            inv_id_str,
+                            int(_exec_iteration),
+                            _resolved_action_name,
+                            _attempt_query,
+                            _attempt_scope,
+                        )
+                except (TypeError, ValueError):
+                    _attempt_id = None
+                if _attempt_id is not None:
+                    outcome_detail["attempt_id"] = _attempt_id
+            except Exception:
+                pass
+            # G3: RETRIEVAL_ATTEMPT timeline marker (diagnostics-only,
+            # fail-open — marker faults never touch the outcome above).
+            try:
+                from investigation_agent_platform.domain.timeline.models import (
+                    TimelineEvent,
+                    TimelineEventType,
+                )
+
+                _retrieval_event_type = getattr(
+                    TimelineEventType, "RETRIEVAL_ATTEMPT", None
+                )
+                _timeline_repo = getattr(ctx, "timeline_repo", None)
+                if (
+                    _retrieval_event_type is not None
+                    and _timeline_repo is not None
+                ):
+                    # No sequence-number read: TimelineEventORM persists
+                    # no sequence column (ordering is by timestamp), so a
+                    # full-history read here would buy nothing.
+                    _marker_evidence_ids = [
+                        str(e) for e in (outcome_detail.get("evidence_ids") or [])
+                    ][:25]
+                    await _timeline_repo.append(
+                        tenant_id,
+                        TimelineEvent(
+                            tenant_id=tenant_id,
+                            investigation_id=investigation_id,
+                            timestamp=datetime.now(UTC),
+                            event_type=_retrieval_event_type,
+                            description=(
+                                f"{_resolved_action_name} attempt "
+                                f"{_attempt_id or 'unindexed'}: "
+                                f"{_outcome_status} "
+                                f"({int(items_count or 0)} banked)"
+                            )[:2048],
+                            attributes={
+                                "action_type": _resolved_action_name,
+                                "status": str(_outcome_status),
+                                "attempt_id": _attempt_id,
+                                # G3: per-action coverage join key — the
+                                # action_executions.action_id for this
+                                # dispatch (same UUID recorded by
+                                # action_service.execute). Lets the battery
+                                # pair each eligible retrieval action with
+                                # its recorded attempt. None-safe: legacy
+                                # rows simply carry no key and count as
+                                # missing, never as covered.
+                                "action_execution_id": str(inv_action.action_id),
+                                "provider_total_count": _provider_total_count,
+                                "banked_count": int(items_count or 0),
+                                "truncated_rows": int(
+                                    outcome_detail.get("truncated_rows") or 0
+                                ),
+                                "miss_reason": outcome_detail.get("miss_reason"),
+                                "evidence_ids": _marker_evidence_ids,
+                                "attempt": outcome_detail.get("retrieval_attempt"),
+                            },
+                        ),
+                        investigation_id,
                     )
             except Exception:
                 pass
@@ -5847,6 +5966,7 @@ async def execute_action_activity(
                     "data": {
                         "status": result_status,
                         "items_count": items_count,
+                        "attempt_id": _attempt_id,
                         "code_fact_resolution": outcome_detail.get("code_fact_resolution"),
                         # Phase 3.2: the stored response must equal the live
                         # return below — a replayed action without the outcome
@@ -5873,6 +5993,7 @@ async def execute_action_activity(
             data={
                 "status": result_status,
                 "items_count": items_count,
+                "attempt_id": _attempt_id,
                 "code_fact_resolution": outcome_detail.get("code_fact_resolution"),
                 "action_outcome": action_outcome.model_dump(mode="json"),
             },
@@ -6138,6 +6259,11 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
         # shadow tap — the list stays empty there.
         definition_shadow_observations: list[dict[str, Any]] = []
         producing_path: str | None = None
+        # G3: timeline-backed recorded attempts for the verify-time
+        # directive producer below. Bound here so every producing path
+        # (legacy, fast-path, blocked, general) sees a defined value;
+        # the general branch re-derives it before evaluating.
+        _verify_recorded_attempts: list | None = None
         _shadow_identity: dict[str, Any] = {}
         if verifier_version == VERIFIER_VERSION_LEGACY:
             # Rows pinned to v1 keep the semantics they started with:
@@ -6450,6 +6576,29 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             ):
                 _candidate_id = getattr(candidate, "id", None)
                 producing_path = "general"
+                # G3: timeline-backed recorded attempts (diagnostics-only,
+                # fail-open). Derived from the workflow-carried history;
+                # None (legacy callers, failed derivation) keeps the exact
+                # legacy diagnostics shape. Dict-shaped history entries
+                # yield no tuples until Step 5 carries persisted markers.
+                _verify_recorded_attempts = None
+                try:
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        recorded_retrieval_attempts as _recorded_retrieval_attempts,
+                    )
+
+                    _verify_recorded_attempts = _recorded_retrieval_attempts(
+                        data.get("recent_actions", []) or []
+                    )
+                except Exception:
+                    _verify_recorded_attempts = None
+                # Empty/None keeps the exact legacy call shape (no
+                # kwarg at all); only a non-empty marker set threads
+                # through. Downstream [] and None already degrade
+                # identically to unmapped, so this changes no verdict.
+                _evaluate_kwargs: dict[str, Any] = {}
+                if _verify_recorded_attempts:
+                    _evaluate_kwargs["recorded_attempts"] = _verify_recorded_attempts
                 result = engine.evaluate_hypothesis(
                     candidate,
                     bound,
@@ -6460,6 +6609,7 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                         h for h in (hypotheses or []) if getattr(h, "id", None) != _candidate_id
                     ],
                     observer=_definition_observe,
+                    **_evaluate_kwargs,
                 )
             # Phase 4.2: verification decision + location-exemption counters.
             _emit_verify_telemetry(
@@ -6576,21 +6726,204 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 verification_status=result.status.value,
             ),
         )
+        # G3: bounded re-retrieval directive producer (D3 lifecycle
+        # step 1). Current-version runs only — legacy-pinned rows keep
+        # their exact v1 result shape. Attempt history prefers the
+        # timeline read (durable, worker-independent) and falls back to
+        # the workflow-carried summaries. Fail-open: None on any fault,
+        # on unavailable history, or when no unsatisfied claim maps to
+        # a dispatchable recent action.
+        _ledger_requery: dict[str, Any] | None = None
+        try:
+            if verifier_version != VERIFIER_VERSION_LEGACY:
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    merge_recorded_attempts as _merge_recorded_attempts,
+                )
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    recorded_attempt_summaries as _recorded_attempt_summaries,
+                )
+                from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                    recorded_retrieval_attempts as _recorded_timeline_attempts,
+                )
+                from investigation_agent_platform.application.investigation.verification import (
+                    select_ledger_requery as _select_ledger_requery,
+                )
+
+                # Fail-closed default: None (history unavailable) authorizes
+                # nothing. A zero count must mean confirmed-empty, never a
+                # failed read or an unconvertible summary list.
+                _directive_recorded = None
+                try:
+                    _recent_for_directive = data.get("recent_actions", []) or []
+                    _summary_pairs = _recorded_attempt_summaries(_recent_for_directive)
+                    _timeline_repo = getattr(ctx, "timeline_repo", None)
+                    _timeline_events: list | None = None
+                    if _timeline_repo is not None:
+                        try:
+                            _timeline_events = (
+                                await _timeline_repo.find_by_investigation_id(
+                                    tenant_id, investigation_id
+                                )
+                            )
+                        except Exception:
+                            _timeline_events = None
+                    if _timeline_events is None:
+                        # Timeline unavailable: summaries alone, or None
+                        # when nothing convertible (fail-closed downstream).
+                        _directive_recorded = _summary_pairs
+                    else:
+                        _directive_recorded = _merge_recorded_attempts(
+                            _recorded_timeline_attempts(_timeline_events or []),
+                            _summary_pairs or [],
+                        )
+                except Exception:
+                    _directive_recorded = None
+                _ledger_requery = _select_ledger_requery(
+                    candidate,
+                    evidence_items,
+                    _directive_recorded,
+                    data.get("recent_actions", []) or [],
+                )
+        except Exception:
+            _ledger_requery = None
+        # G3: VERIFY_EVALUATION timeline marker (diagnostics-only,
+        # fail-open — marker faults never touch the result below). One row
+        # per verify turn carrying the recomputed claim bindings, their
+        # ledgers, and missing obligations, so the benefit battery measures
+        # changed bindings and missing-obligation events from persisted
+        # state instead of recomputing the join. The diagnostics are
+        # recomputed here (not read off result) so every producing path —
+        # general, fast-path validators, and blocked — emits the same
+        # timeline-backed join the directive producer used above; paths
+        # that never ran the evaluator still get a measured snapshot, and
+        # an empty evaluation still persists a skeleton row (no marker is
+        # ever fabricated, but no current-version turn goes unrecorded).
+        # Current-version runs only; legacy-pinned rows emit nothing.
+        # result itself is never mutated. A skipped write is logged — a
+        # missing marker must be a reported persistence failure, never
+        # silent.
+        try:
+            if verifier_version != VERIFIER_VERSION_LEGACY:
+                from investigation_agent_platform.application.investigation.verification import (
+                    build_verify_evaluation_attributes as _build_eval_attrs,
+                )
+                from investigation_agent_platform.application.investigation.verification import (
+                    collect_verification_diagnostics as _collect_eval_diag,
+                )
+                from investigation_agent_platform.domain.timeline.models import (
+                    TimelineEvent,
+                    TimelineEventType,
+                )
+
+                _eval_diag = None
+                try:
+                    _eval_diag = _collect_eval_diag(
+                        candidate,
+                        evidence_items,
+                        result,
+                        _directive_recorded,
+                    )
+                except Exception:
+                    _eval_diag = None
+                if _eval_diag is None:
+                    _eval_diag = getattr(result, "diagnostics", None)
+                _eval_attrs = _build_eval_attrs(
+                    _eval_diag,
+                    turn=data.get("iteration"),
+                    hypothesis_id=getattr(result, "hypothesis_id", ""),
+                    verifier_version=str(verifier_version),
+                )
+                _eval_event_type = getattr(
+                    TimelineEventType, "VERIFY_EVALUATION", None
+                )
+                _eval_repo = getattr(ctx, "timeline_repo", None)
+                if _eval_attrs is None:
+                    logger.warning(
+                        "verify evaluation marker skipped: attributes build failed",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="verify evaluation marker skipped",
+                        ),
+                    )
+                elif _eval_event_type is None or _eval_repo is None:
+                    logger.warning(
+                        "verify evaluation marker unwritable: repository unavailable",
+                        extra=_log_extra(
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="verify evaluation marker unwritable",
+                        ),
+                    )
+                else:
+                    # No sequence-number read: TimelineEventORM persists
+                    # no sequence column (ordering is by timestamp), so a
+                    # full-history read here would buy nothing.
+                    try:
+                        await _eval_repo.append(
+                            tenant_id,
+                            TimelineEvent(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                timestamp=datetime.now(UTC),
+                                event_type=_eval_event_type,
+                                description=(
+                                    f"verify evaluation turn "
+                                    f"{_eval_attrs.get('turn')}: "
+                                    f"{len(_eval_attrs.get('bindings') or [])} bindings, "
+                                    f"{len(_eval_attrs.get('missing_obligations') or [])} missing"
+                                )[:2048],
+                                attributes=_eval_attrs,
+                            ),
+                            investigation_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "verify evaluation marker write failed",
+                            extra=_log_extra(
+                                tenant_id=tenant_id,
+                                investigation_id=inv_id_str,
+                                event="verify evaluation marker write failed",
+                                error=str(exc),
+                                error_type=type(exc).__name__,
+                            ),
+                        )
+        except Exception as exc:
+            # Fail-open by design (diagnostics must never break the loop),
+            # but never fail-silent: an unexpected marker-block fault is
+            # observable at the source, not just as a downstream coverage gap.
+            logger.warning(
+                "verify evaluation marker block failed",
+                extra=_log_extra(
+                    tenant_id=tenant_id,
+                    investigation_id=inv_id_str,
+                    event="verify evaluation marker block failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                ),
+            )
+        _verify_result_data: dict[str, Any] = {
+            "verified": verified,
+            "status": result.status.value,
+            "confidence": result.confidence.overall_confidence,
+            "hypothesis_id": str(result.hypothesis_id),
+            "answer_mode": bool(getattr(result, "location_validated", False)),
+            "code_value_validated": bool(getattr(result, "code_value_validated", False)),
+            "producing_path": producing_path,
+            "shadow_activity_identity": dict(_shadow_identity),
+            "verifier_version": str(verifier_version),
+            "verifier_version_source": _version_source,
+        }
+        # The directive key exists only on current-version runs, so
+        # legacy-pinned rows keep their exact v1 result shape (no new
+        # key, not even a None one). Absent directive on a current run
+        # reads as an explicit None.
+        if verifier_version != VERIFIER_VERSION_LEGACY:
+            _verify_result_data["ledger_requery"] = _ledger_requery
         return GenericActivityResult(
             success=True,
             data=attach_shadow_observations(
-                {
-                    "verified": verified,
-                    "status": result.status.value,
-                    "confidence": result.confidence.overall_confidence,
-                    "hypothesis_id": str(result.hypothesis_id),
-                    "answer_mode": bool(getattr(result, "location_validated", False)),
-                    "code_value_validated": bool(getattr(result, "code_value_validated", False)),
-                    "producing_path": producing_path,
-                    "shadow_activity_identity": dict(_shadow_identity),
-                    "verifier_version": str(verifier_version),
-                    "verifier_version_source": _version_source,
-                },
+                _verify_result_data,
                 definition_shadow_observations,
             ),
         )

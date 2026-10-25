@@ -53,7 +53,15 @@ def _h(text: str) -> str:
 def _definition_cert() -> tuple[dict[str, Any], dict[str, Any], Any, dict[str, dict[str, Any]]]:
     """(certificate, proposition, manifest, artifacts) for a valid definition claim."""
     window = "class OrderService:\n    pass\n"
-    artifact = {"file_path": "svc.py", "symbol": "OrderService", "text": window}
+    artifact = {
+        "file_path": "svc.py",
+        "repository": "synthetic/service",
+        "revision": "rev-1",
+        "line_start": 10,
+        "line_end": 14,
+        "target": "OrderService",
+        "window_text": window,
+    }
     content_hash = certificate_mod._artifact_hash(artifact)
     proposition = {
         "canon_version": "canon/v1",
@@ -72,11 +80,13 @@ def _definition_cert() -> tuple[dict[str, Any], dict[str, Any], Any, dict[str, d
         "premise_type": "RANGE_READ_FACT",
         "scope": {"revision": "rev-1"},
     }
-    manifest = build_manifest(["row-1"], {"row-1": content_hash})
+    manifest = build_manifest(
+        ["row-1"], {"row-1": content_hash}, premise_types={"row-1": "RANGE_READ_FACT"}
+    )
     inputs = EvaluationInputs(
         proposition=dict(proposition),
         manifest=manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -98,7 +108,7 @@ def _request(
         "certificate": cert,
         "proposition": proposition,
         "manifest": manifest,
-        "rule_bundle_version": "rules/v1",
+        "rule_bundle_version": "rules/v2",
         "model_encoding": {"model": "m"},
         "reconciliation_state": "unreconciled",
         "artifacts": artifacts,
@@ -132,8 +142,9 @@ def test_gate_no_stale_publication_end_to_end() -> None:
         {
             "evidence_manifest_digest": new_digest,
             "model_encoding": {"model": "m"},
+            "proposition_scope": {"configuration": "default", "execution": "n/a", "revision": "rev-1"},
             "reconciliation_state": "unreconciled",
-            "rule_bundle_version": "rules/v1",
+            "rule_bundle_version": "rules/v2",
         },
     )
     stale_outcome, _ = check_certificate(
@@ -242,11 +253,15 @@ def test_sensitivity_semantic_validator_is_load_bearing(monkeypatch: Any) -> Non
         "premise_type": "SEARCH_HIT",
         "scope": {"revision": "rev-1"},
     }
-    manifest = build_manifest(["row-9"], {"row-9": content_hash})
+    manifest = build_manifest(
+        ["row-9"],
+        {"row-9": content_hash},
+        premise_types={"row-9": "NORMALIZED_CALLSITE_FACT"},
+    )
     inputs = EvaluationInputs(
         proposition=dict(proposition),
         manifest=manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="call_edge/v1",
         rule_version="v1",
@@ -260,7 +275,7 @@ def test_sensitivity_semantic_validator_is_load_bearing(monkeypatch: Any) -> Non
     monkeypatch.setattr(
         certificate_mod,
         "apply_rule",
-        lambda rule, claim, premises: (rules_mod.RuleOutcome.DISCHARGED, "neutered"),
+        lambda rule, claim, premises, manifest=None: (rules_mod.RuleOutcome.DISCHARGED, "neutered"),
     )
     forged = certify(inputs, [premise], {"row-9": artifact})
     assert forged["rule_id"] == "call_edge/v1"

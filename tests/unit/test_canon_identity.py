@@ -27,7 +27,11 @@ from investigation_agent_platform.domain.proof.canonical import (
     normalize_path,
     proposition_id,
     same_proposition,
+    v2_unknown_scope_keys,
+    v2_unknown_target_keys,
 )
+from investigation_agent_platform.domain.proof.evaluation import EvaluationInputs, evaluate
+from investigation_agent_platform.domain.proof.manifest import build_manifest
 
 FIXDIR = Path("tests/fixtures/proof_kernel")
 
@@ -234,6 +238,8 @@ def test_context_keys_tolerated_and_unhashed() -> None:
         line_start=10,
         line_end=40,
         evidence_manifest_digest="sha256:" + "0" * 64,
+        # Intentional v1-era bundle: this vector asserts context keys stay
+        # unhashed regardless of bundle version. Not a v2 acceptance path.
         rule_bundle_version="rules/v1",
         model_config={"model": "m"},
         reconciliation_state="unreconciled",
@@ -275,3 +281,86 @@ def test_normalization_requires_pair_subjects() -> None:
         )
         is False
     )
+
+
+def _v2_evaluate(scope: dict[str, Any] | None) -> Any:
+    proposition: dict[str, Any] = {
+        "canon_version": "canon/v1",
+        "predicate": "defined(S)",
+        "quantifier": "EXISTENTIAL",
+        "target": {"symbol": "S", "file_path": "svc.py"},
+    }
+    if scope is not None:
+        proposition["scope"] = dict(scope)
+    return evaluate(
+        EvaluationInputs(
+            proposition=proposition,
+            manifest=build_manifest([], {}, premise_types={}),
+            rule_bundle_version="rules/v2",
+        )
+    )
+
+
+def test_non_object_scope_rejected() -> None:
+    with pytest.raises(CanonicalizationError) as excinfo:
+        canonical_bytes(_minimal_proposition(scope="rev-1"))
+    assert excinfo.value.code == CanonError.MISSING_FIELD.value
+    with pytest.raises(CanonicalizationError) as excinfo:
+        canonical_bytes(_minimal_proposition(scope=["rev-1"]))
+    assert excinfo.value.code == CanonError.MISSING_FIELD.value
+
+
+def test_v2_target_keys_validate_and_participate_in_identity() -> None:
+    absence = _minimal_proposition(
+        form="ABSENCE",
+        quantifier="UNIVERSAL",
+        modality="STATIC",
+        completeness="CLOSED_WORLD",
+        target={"universe": "repo@rev:src/"},
+    )
+    assert proposition_id(absence) != proposition_id(
+        _minimal_proposition(
+            form="ABSENCE",
+            quantifier="UNIVERSAL",
+            modality="STATIC",
+            completeness="CLOSED_WORLD",
+            target={"universe": "repo@rev:other/"},
+        )
+    )
+    history = _minimal_proposition(
+        form="HISTORICAL",
+        quantifier="EXISTENTIAL",
+        modality="HISTORY",
+        target={
+            "repository": "synthetic/service",
+            "commit_id": "c" * 40,
+            "file_path": "src/service.py",
+            "subject": "Update target handling",
+        },
+    )
+    assert proposition_id(history) == proposition_id(dict(history))
+    assert v2_unknown_target_keys("history/v1", history["target"]) == []
+    assert v2_unknown_target_keys("history/v1", {"commit_id": "c" * 40, "bogus": 1}) == [
+        "bogus"
+    ]
+    assert v2_unknown_scope_keys(
+        "behavior/v1", {"repository": "r", "revision": "a" * 40, "extra": 1}
+    ) == ["extra"]
+
+
+def test_scope_excluded_from_proposition_id_but_bound_in_context() -> None:
+    scope_a = {"repository": "synthetic/service", "revision": "a" * 40}
+    scope_b = {"repository": "synthetic/service", "revision": "b" * 40}
+    first = _v2_evaluate(scope_a)
+    second = _v2_evaluate(scope_b)
+    assert first.proposition_id == second.proposition_id
+    assert first.context_id != second.context_id
+    assert first.derivation_id != second.derivation_id
+    assert first.manifest_digest == second.manifest_digest
+
+
+def test_missing_scope_yields_empty_proposition_scope_deterministically() -> None:
+    first = _v2_evaluate(None)
+    second = _v2_evaluate(None)
+    assert first.context_id == second.context_id
+    assert first.derivation_id == second.derivation_id

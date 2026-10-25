@@ -147,6 +147,13 @@ DECLARED_FILES = (
         # test_d3_mapping_artifact_validates + definition tests,
         # not by ledger record generation).
         "definition_dispatch_mapping.json",
+        # G4 cert/v2 schema (validated by the Component 2 rule suite
+        # emitting v2 certificates, not by ledger record generation).
+        "cert_schema_v2.json",
+        # G4 validator fingerprints (verified by
+        # scripts/proof_kernel_validator_fingerprints.py --check and the
+        # fingerprint detector suite, not by ledger record generation).
+        "validator_fingerprints_v1.json",
     }
 )
 

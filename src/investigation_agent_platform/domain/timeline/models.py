@@ -18,6 +18,16 @@ class TimelineEventType(StrEnum):
     DEPLOYMENT = "DEPLOYMENT"
     CODE_CHANGE = "CODE_CHANGE"
     TRACE_EVENT = "TRACE_EVENT"
+    # G3: per-action retrieval-attempt marker (diagnostics-only). Stored
+    # as a plain string in the String(64) column — no migration, RLS is
+    # table-level. String ids stay in attributes (evidence_ids is UUID).
+    RETRIEVAL_ATTEMPT = "RETRIEVAL_ATTEMPT"
+    # G3: per-evaluation verify snapshot (diagnostics-only). One row per
+    # verify turn carrying the recomputed claim bindings, their ledgers,
+    # and missing obligations, so the benefit battery measures changed
+    # bindings and missing-obligation events from persisted state instead
+    # of recomputing them. Additive only; 18 chars fit String(64).
+    VERIFY_EVALUATION = "VERIFY_EVALUATION"
     UNKNOWN = "UNKNOWN"
 
 

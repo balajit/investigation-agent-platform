@@ -69,7 +69,7 @@ class EvaluationInputs(BaseModel):
 
     proposition: dict[str, Any] = Field(...)
     manifest: EvidenceManifest = Field(...)
-    rule_bundle_version: str = Field(default="", max_length=64)
+    rule_bundle_version: str = Field(..., max_length=64)
     model_encoding: dict[str, Any] = Field(default_factory=dict)
     rule_id: str = Field(default="", max_length=128)
     rule_version: str = Field(default="", max_length=64)
@@ -100,14 +100,22 @@ class Derivation(BaseModel):
 
 
 def _freeze_context(
+    proposition: dict[str, Any],
     manifest: EvidenceManifest,
     rule_bundle_version: str,
     model_encoding: dict[str, Any],
 ) -> dict[str, Any]:
-    """Frozen evaluation context (reconciliation state starts unreconciled)."""
+    """Frozen evaluation context (reconciliation state starts unreconciled).
+
+    The normalized proposition scope rides in the context preimage, never
+    in the proposition identity: a scope move keeps the proposition ID and
+    yields a new context (and derivation), never a mutated one.
+    """
+    scope = (proposition or {}).get("scope")
     return {
         "evidence_manifest_digest": manifest_digest(manifest),
         "model_encoding": dict(model_encoding or {}),
+        "proposition_scope": dict(scope) if isinstance(scope, dict) else {},
         "reconciliation_state": "unreconciled",
         "rule_bundle_version": rule_bundle_version,
     }
@@ -138,7 +146,7 @@ def evaluate(
             raise PremiseUnavailable(missing=missing, mismatched=mismatched)
     prop_id = proposition_id(inputs.proposition)
     digest = manifest_digest(manifest)
-    ctx = _freeze_context(manifest, inputs.rule_bundle_version, inputs.model_encoding)
+    ctx = _freeze_context(inputs.proposition, manifest, inputs.rule_bundle_version, inputs.model_encoding)
     ctx_id = context_id(prop_id, ctx)
     premise_ids = list(manifest.evidence_ids)
     der_id = derivation_id(
