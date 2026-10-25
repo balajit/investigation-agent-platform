@@ -1,0 +1,202 @@
+{
+  "schema_version": "g4-evidence-fixture/v1",
+  "fixtures": [
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-001",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "bounded_complete_empty_candidate",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "CANDIDATE_INPUT", "layer": "EVIDENCE", "invariant": "COMPLETE_EMPTY_WITHIN_UNIVERSE", "reason": "bounded search reports complete empty coverage"},
+      "inputs": {
+        "proposition": {"form": "ABSENCE", "quantifier": "UNIVERSAL", "modality": "STATIC", "completeness": "CLOSED_WORLD", "predicate": "contains_symbol(target)", "target": {"universe": "repository revision path prefix"}, "scope": {"repository": "synthetic/service", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "path_scope": "src/"}},
+        "coverage_evidence_id": "ev-coverage-001",
+        "coverage_evidence": {"premise_type": "ABSENCE_COVERAGE_FACT", "universe": "repository revision path prefix", "predicate": "contains_symbol(target)", "search_status": "COMPLETE_EMPTY", "search_config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope": {"repository": "synthetic/service", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "path_scope": "src/"}, "exclusions": [], "coverage_basis": {"kind": "synthetic_complete_inventory", "value": "all fixture files under src/ enumerated"}, "match_count": 0},
+        "available_evidence_ids": ["ev-coverage-001"],
+        "manifest": {"evidence_ids": ["ev-coverage-001"], "content_hashes": {"ev-coverage-001": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "premise_types": {"ev-coverage-001": "ABSENCE_COVERAGE_FACT"}, "retrieval_config": {"scope": "repository revision path prefix", "search_config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "exclusions": [], "coverage": "COMPLETE_EMPTY"}
+      },
+      "rationale": "Candidate is bounded to a synthetic universe; this is not a provider-completeness or checker-pass claim."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-002",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "incomplete_coverage",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "COMPLETE_COVERAGE_REQUIRED", "reason": "universe is not completely covered"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.search_status", "operation": "replace", "value": "INCOMPLETE"},
+      "rationale": "Partial coverage cannot support absence."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-003",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "failed_search",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "SUCCESSFUL_SEARCH_REQUIRED", "reason": "search failed"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.search_status", "operation": "replace", "value": "FAILED"},
+      "rationale": "Failed retrieval is not an empty result."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-004",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "unbounded_universe",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "BOUNDED_UNIVERSE_REQUIRED", "reason": "universe is missing"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.universe", "operation": "remove", "value": null},
+      "rationale": "Absence is never inferred outside a stated universe."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-005",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "nonzero_match_count",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "ZERO_MATCHES_REQUIRED", "reason": "search reports a match"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.match_count", "operation": "replace", "value": 1},
+      "rationale": "A nonzero match count contradicts an absence proposition."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-006",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "relevant_path_excluded",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "RELEVANT_SCOPE_NOT_EXCLUDED", "reason": "exclusion removes the claimed target scope"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.exclusions", "operation": "replace", "value": ["src/"]},
+      "rationale": "An empty result after excluding relevant scope cannot support the claim."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-007",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "revision_scope_mismatch",
+      "maps_to": ["ABSENCE", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_REVISION_MATCH", "reason": "coverage revision differs from proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.scope.revision", "operation": "replace", "value": "cccccccccccccccccccccccccccccccccccccccc"},
+      "rationale": "Coverage for another revision does not establish absence in this revision."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-008",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "repository_path_scope_mismatch",
+      "maps_to": ["ABSENCE", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_SCOPE_MATCH", "reason": "coverage path scope differs from proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.scope.path_scope", "operation": "replace", "value": "tests/"},
+      "rationale": "The searched path prefix must match the proposition scope."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-009",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "predicate_mismatch",
+      "maps_to": ["ABSENCE", "D"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_PREDICATE_MATCH", "reason": "coverage predicate differs from claim"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence.predicate", "operation": "replace", "value": "contains_symbol(other)"},
+      "rationale": "Coverage must be measured for the proposition's predicate."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-010",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "coverage_id_unbound",
+      "maps_to": ["ABSENCE", "K10"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_ID_BOUND", "reason": "coverage evidence ID is absent from manifest inventory"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.available_evidence_ids", "operation": "replace", "value": []},
+      "rationale": "Coverage record must be explicitly linked to its manifest artifact."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-011",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "coverage_hash_unavailable",
+      "maps_to": ["ABSENCE", "K10"],
+      "expectation": {"class": "PREMISE_UNAVAILABLE", "layer": "EVIDENCE", "invariant": "COVERAGE_HASH_MATCH", "reason": "coverage content hash differs from available artifact"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.manifest.content_hashes.ev-coverage-001", "operation": "replace", "value": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+      "rationale": "Hash mismatch makes the coverage artifact unavailable for evaluation."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-012",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "coverage_type_mismatch",
+      "maps_to": ["ABSENCE", "K1"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_TYPE_BOUND", "reason": "manifest type does not match coverage artifact"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.manifest.premise_types.ev-coverage-001", "operation": "replace", "value": "RANGE_READ_FACT"},
+      "rationale": "Valid hashes do not make an incorrectly typed premise admissible."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-013",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "search_config_mismatch",
+      "maps_to": ["ABSENCE", "N"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "SEARCH_CONFIG_MATCH", "reason": "coverage search config differs from retrieval config"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.manifest.retrieval_config.search_config_digest", "operation": "replace", "value": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+      "rationale": "Coverage must bind the exact search configuration used."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-014",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "manifest_exclusion_mismatch",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "EXCLUSIONS_MATCH", "reason": "manifest and coverage exclusions differ"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.manifest.exclusions", "operation": "replace", "value": ["tests/"]},
+      "rationale": "Manifest and coverage must describe the same excluded scope."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-015",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "coverage_record_missing",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "COVERAGE_RECORD_REQUIRED", "reason": "manifest claims complete-empty without typed coverage record"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.coverage_evidence", "operation": "remove", "value": null},
+      "rationale": "A manifest status alone is not coverage evidence."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-ABS-016",
+      "component": "G4-C1",
+      "family": "ABSENCE",
+      "scenario": "empty_premises_without_coverage",
+      "maps_to": ["ABSENCE", "K3"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "EMPTY_IS_NOT_ABSENCE_PROOF", "reason": "empty evidence is not a scoped coverage proof"},
+      "inputs": {"baseline_fixture_id": "G4E-ABS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-ABS-001", "field_path": "inputs.manifest.evidence_ids", "operation": "replace", "value": []},
+      "rationale": "An empty premise inventory cannot prove absence."
+    }
+  ]
+}
