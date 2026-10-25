@@ -209,6 +209,19 @@ class ProofPublicationService:
                 return CommitResult(
                     True, "ALREADY_COMMITTED", first_commit_id, tuple(committed_ids)
                 )
+            if lifecycle is not None:
+                # Hoisted validation (lifecycle fix 2026-10-26): lifecycle
+                # denials must precede ALL writes — previously these checks ran
+                # after derivation/commit persistence, leaving rows behind on
+                # denial. `hyp` is the row locked above, still held in this
+                # transaction, so no re-lock is needed. Placed after the
+                # ALREADY_COMMITTED early return so idempotent recommit
+                # (lifecycle re-presented on an already-VERIFIED hypothesis)
+                # keeps returning ALREADY_COMMITTED.
+                if str(lifecycle.new_status) != "VERIFIED":
+                    return CommitResult(False, "UNSUPPORTED_PROJECTION_STATUS")
+                if str(hyp.status) not in _COMMITTABLE_FROM:
+                    return CommitResult(False, "LIFECYCLE_EDGE_DENIED")
             for item in fresh:
                 derivation = item["derivation"]
                 cert = item["certificate"]
@@ -268,11 +281,8 @@ class ProofPublicationService:
                 if first_commit_id is None:
                     first_commit_id = str(row.id)
             if lifecycle is not None:
-                if str(lifecycle.new_status) != "VERIFIED":
-                    return CommitResult(False, "UNSUPPORTED_PROJECTION_STATUS")
-                hyp_row = await lock_hypothesis_row(session, tenant_id, expectation.hypothesis_id)
-                if hyp_row is None or str(hyp_row.status) not in _COMMITTABLE_FROM:
-                    return CommitResult(False, "LIFECYCLE_EDGE_DENIED")
+                # Validation hoisted above (see pre-store gate): only the
+                # version-guarded advance and the projections remain here.
                 advanced = await advance_hypothesis_guarded(
                     session,
                     tenant_id,
