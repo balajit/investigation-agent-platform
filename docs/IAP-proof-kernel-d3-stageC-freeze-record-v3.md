@@ -1,7 +1,7 @@
-# D3 Stage C §6.2i Freeze Record v3 (PROPOSED — collection NOT authorized)
+# D3 Stage C §6.2i Freeze Record v3 (SIGNED + HASHED — collection authorized under it)
 
-> Status: **PROPOSED 2026-10-26, UNHASHED. Owner sign-off pending. No collection
-> authorized under this record until signed + hashed + committed.**
+> Status: **SIGNED 2026-10-27, HASHED. Owner sign-off: Balaji ("go", "owner sign-off + hashing").**
+> No collection except under this record's run set and budget.
 > Record hash (SHA-256 over exact bytes with the hash line below in its
 > blank form `…recorded here: ________`): recorded here: ________
 > Recompute rule: restore the hash line to blank, hash, compare.
@@ -20,8 +20,8 @@
 
 ## 1. Code revision (TO BE PINNED AT SIGNING — tree currently dirty)
 
-- Commit: `TBD — fill at signing after owner-directed commit; must be a clean-tree commit`
-- Working-tree reference (NOT frozen): HEAD `0b7df3c52ed7a53e7f7d93b1c4eca0a1a4b5963f` with 15 modified tracked files + 2 untracked (`amendment-A2.md`, `test_caller_edge_key_parity.py`); `git status --porcelain` currently NON-EMPTY, so this draft cannot be hashed as-is.
+- Commit: `c9bedaf76f6db3de1b9d475bd483d5deafcca1fd` (code rev: secrets ports+infra fail-closed, caller-edge prompt sentence; owner-committed 2026-10-27).
+- Working-tree reference: this record + manifest v3 + ledger are the only paths differing from that commit at signing; the signing commit freezes them (porcelain must read empty after it).
 - Governed scope: all tracked paths; ignore rules per `.gitignore` (`tmp/`, `.venv/` excluded). `.env.local` is tracked, therefore governed, frozen at committed bytes (dev defaults).
 - Drift rule: any porcelain output after hashing voids the freeze.
 - Behavior id: `unified-dev-v1` (single active verifier behavior; historical `v1`/`v2`/`v3` labels audit-only, new rows unmarked).
@@ -43,9 +43,9 @@
   No silent substitution; a fixture added later starts a new run set.
 - Prompts: formulate-definition prompt pinned by file + content hash
   (template lives in code; no standalone prompt file exists):
-  - `reasoning.py` (prompt `v3-claim-grounded-016`), working-tree SHA-256
-    `60f3d99450ceb3696b4feff3a798097f66ff61c39272e3426489a6eadd321a7b`
-    (CHANGED vs v2 `3a79b37e…`/`014` — caller-edge `caller_edges` schema + per-edge binding; repin at signing commit)
+  - `reasoning.py` (prompt `v3-claim-grounded-016`), SHA-256
+    `ffee28d53a66efcf538587cfa7c9110b7c2192841390604cc4c232c701951bcd`
+    (CHANGED vs v2 `3a79b37e…`/`014` — caller-edge `caller_edges` schema + per-edge binding + single-caller-incomplete sentence; verified at pinned commit)
   - `context_compiler.py` (prompt `v3-claim-grounded-015`), SHA-256
     `df9e3728234bf169137de3f2c723c8062df741bd497638607b8556a4ee22ad6e`
     (unchanged vs v2)
@@ -104,15 +104,18 @@ integers. Audit, executed before any verdict: re-derive the pairing from
 workflow history and compare against the frozen pairing; any mismatch voids
 the run set.
 
-## 6. Tenant + database identity (proposed; no credentials recorded)
+## 6. Tenant + database identity (verified 2026-10-27; no credentials recorded)
 
 - Host `localhost`, port `5452`, database `iap`, image
   `pgvector/pgvector:pg16`; server `PostgreSQL 16.15` (same frozen database
   as v1/v2; compose-stack database, read-only metadata queries).
-- Dedicated probe tenant namespace: `iap-probe-2026-10-26-r3`. Verification
-  pending: must show zero rows for the candidate across
-  `action_executions` / `evidence` / `investigations` / `hypotheses` /
-  `findings`, no such schema in `pg_namespace`, before first collection.
+- Dedicated probe tenant namespace: `iap-probe-2026-10-26-r3`. Verified empty
+  and isolated 2026-10-27 (read-only): 0 rows for the candidate across
+  `investigations` / `evidence` / `hypotheses` / `findings` /
+  `investigation_conclusions` / `investigation_sessions` /
+  `investigation_tool_executions` / `investigation_contradictions` /
+  `investigation_transitions` / `action_executions` (dry-run scope audit,
+  nothing deleted), 0 matching schemas in `pg_namespace`.
   r1 rows (`iap-probe-2026-10-24`) and r2 rows (`iap-probe-2026-10-24-r2`)
   retained as evidence, never merged.
   Isolation is by `tenant_id` scoping, not a separate database — recorded
@@ -139,16 +142,22 @@ the run set.
 - Harness: proposal v1.15, registry `iap:d3-stagec:registry/v12`, vectors
   v1.15 (`810125cc87198a7f68eb88bd8ac959b6b77264d581c2f34c1362136ada2bfcf2`).
 
-## 9. Decision owner + executing operator (proposed)
+## 9. Decision owner + executing operator (owner-named 2026-10-27)
 
 - Decision owner: **Balaji**. Executing operator: **Lead Engineer (muse)**.
 - Powers per §6.2f: the operator may execute and abort; only the owner
   classifies results, authorizes further collection, or closes the probe
   as complete.
 
-## Validation (NOT executed — signing checklist)
+## Validation (executed 2026-10-27 on the completed record)
 
-- [ ] All nine items filled with no TBDs (commit pinned, tenant verified empty/isolated, owner sign-off recorded).
-- [ ] Record hashed (SHA-256 over exact bytes with the hash line in blank form); hash recorded in the hash field.
-- [ ] §6.2i checklist: v1.9+A1+A2 hierarchy acknowledged; validators green on the frozen basis (harness gates, shadow 49, full unit minus 2 baseline pins, secret-store collection gate resolved) before first collection.
-- [ ] Run set opened only after signing: `d3-stagec-2026-10-26-r3`, fresh 48 budget, freeze object + ledger head digests recorded at opening.
+- [x] All nine items filled (no TBDs remain); owner sign-off recorded: Balaji, 2026-10-27 ("go", "owner sign-off + hashing").
+- [x] Record hashed (SHA-256 over exact bytes with the hash line in its blank
+  form `…recorded here: ________`); hash recorded here: `20b901d1291b7f2ff9fa7fdbf1eadb9079d8e7666291d4eb0e2e6961b4bc3419`
+- [x] §6.2i checklist: v1.9+A1+A2 hierarchy acknowledged; validators green on
+  the frozen basis before first collection — schema vectors 32 passed,
+  signatures 52 passed, report cases 44 passed, D3 shadow suite 49 passed,
+  full unit 3333 passed with 2 pre-existing baseline-rev pins, secrets suites
+  41 passed, ruff check clean, fixtures 10/10 byte-identical, tenant
+  `iap-probe-2026-10-26-r3` verified empty/isolated read-only.
+- [ ] Run set opened only after this signing commit: `d3-stagec-2026-10-26-r3`, fresh 48 budget, freeze object + ledger head digests recorded at opening.

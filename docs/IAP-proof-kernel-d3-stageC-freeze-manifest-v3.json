@@ -1,8 +1,8 @@
 {
   "format": "stagec-freeze-manifest/v1",
-  "status": "PROPOSED 2026-10-26 (owner sign-off pending); run set d3-stagec-2026-10-26-r3. Supersedes v2 (r2 INSUFFICIENT kept open, retained as evidence). Collection NOT authorized until record v3 signed + hashed + committed.",
-  "git_rev": "TBD — fill at signing after owner-directed commit (working-tree reference HEAD 0b7df3c52ed7a53e7f7d93b1c4eca0a1a4b5963f, tree dirty at draft)",
-  "porcelain": ["DRAFT-DIRTY — must be [] at signing"],
+  "status": "SIGNED 2026-10-27 (owner sign-off Balaji); run set d3-stagec-2026-10-26-r3. Supersedes v2 (r2 INSUFFICIENT kept open, retained as evidence).",
+  "git_rev": "c9bedaf76f6db3de1b9d475bd483d5deafcca1fd",
+  "porcelain": [],
   "generated_by": "python3 -c <inline>; fixtures hashed as exact file bytes (carried byte-identical from v2); see freeze record v3 §3",
   "battery_cases": [
     "L1.json",
@@ -48,7 +48,7 @@
     "reasoner_prompt_version": "v3-claim-grounded-016",
     "reasoner_source": {
       "path": "src/investigation_agent_platform/application/investigation/reasoning.py",
-      "sha256_working_tree_reference": "sha256:60f3d99450ceb3696b4feff3a798097f66ff61c39272e3426489a6eadd321a7b"
+      "sha256_working_tree_reference": "sha256:ffee28d53a66efcf538587cfa7c9110b7c2192841390604cc4c232c701951bcd"
     },
     "compiler_prompt_version": "v3-claim-grounded-015",
     "compiler_source": {
@@ -64,7 +64,7 @@
     "image": "pgvector/pgvector:pg16",
     "server_version": "PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2) on aarch64-unknown-linux-gnu",
     "probe_tenant_namespace": "iap-probe-2026-10-26-r3",
-    "namespace_verification": "PENDING — must show 0 rows for the candidate across action_executions/evidence/investigations/hypotheses/findings and no such schema in pg_namespace before first collection (r1/r2 rows retained under prior namespaces, never merged)"
+    "namespace_verification": "2026-10-27 read-only: 0 rows for the candidate across investigations/evidence/hypotheses/findings/investigation_conclusions/investigation_sessions/investigation_tool_executions/investigation_contradictions/investigation_transitions/action_executions (dry-run, nothing deleted); 0 matching schemas in pg_namespace (r1/r2 rows retained under prior namespaces, never merged)"
   },
   "owner_operator": {
     "decision_owner": "Balaji",
