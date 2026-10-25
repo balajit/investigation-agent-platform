@@ -35,3 +35,23 @@ Private key at tmp/keys/d3-stagec-2026-10-26-r3.key (0600, gitignored, never com
 
 sha256sum artifacts/<RS>/*.txt artifacts/<RS>/*.json  # compare to digests in freeze.json
 (ledger attempt ids are deterministic in run_set_id+seq+fixture+case.)
+
+## 2026-10-25 19:05 UTC — shadow arm executed (6/6) — operator
+- Battery pid 94058, tag 20261025T185850, tenant iap-probe-2026-10-26-r3, profile spring-sample-service auto-created v1.
+- Worker: single poller from this repo, IAP_SHADOW_TYPED_DEFINITIONS=1 confirmed; API READY.
+- Verdicts: L1 FAIL, L2 FAIL, L3 FAIL, L4 FAIL, L5 FAIL (all COMPLETED + INSUFFICIENT_EVIDENCE, want answered), L8 PASS (honest abstention). Report: reports/d3-stagec-2026-10-26-r3-shadow.md (gitignored scratch).
+- DB capture (read-only): 6/6 hyp UNDER_INVESTIGATION, claim_kinds ABSENCE-only (13 total), 0 untyped assessments, absence proofs scoped (absence:///mcp://, no fabricated CEL spans), chains=0 everywhere. Reasoner 016 + compiler 015 confirmed in play (frozen rev).
+- Budget: 6 spent (r3-s01..s06).
+
+## 2026-10-25 19:10 UTC — control arm executed (6/6, flag off) — operator
+- Worker restarted flag-unset (single poller 94644/94648, flag absent confirmed, API READY); battery pid 94684, tag 20261025T190516, --no-cleanup-prior (shadow rows preserved).
+- Verdicts: IDENTICAL pattern — L1-L5 FAIL (INSUFFICIENT_EVIDENCE, same bucket "scoped absence proof banked but heuristic score / chain gate abstains"), L8 PASS. Report: reports/d3-stagec-2026-10-26-r3-control.md (gitignored scratch).
+- DB capture: 6/6 UNDER_INVESTIGATION, ABSENCE-only (14 total), 0 untyped assessments EVEN WITH FLAG OFF, scoped proofs, chains=0, revision drift none.
+- Parity shadow-vs-control: EXACT on all six (verdict, status, hyp state, bucket, kinds, typing). D3-anomaly screen clean both arms: no untyped, no fabricated spans, no paraphrase vectors (no chains), no drift.
+- Budget: 6 spent (procedure-required 1:1 controls, r2 pattern; PLAN §5 6-reservation covered shadow). Total probe spend 12/48 → 36 remaining.
+
+## 2026-10-25 19:15 UTC — DECISION: NO-GO (probe-level, not a fix rejection) — operator
+- Acceptance bar (5 accept-PASS + parity + anomaly absence): parity ✓, anomaly absence ✓, but L1-L5 abstained in BOTH arms — contradicts r1 baseline (014-era, 5 accept-PASS). Cause is shared across arms → NOT the shadow flag.
+- Candidates (undetermined in this design): 016 reasoner sentence over-triggers absence framing, azure model drift since r1, corpus/index change. Evidence retrieved (1-8 items/run) but hypotheses form ABSENCE and chain gate abstains.
+- Fix status: parity exact + zero anomalies ⇒ the caller-edge change introduces no divergence; NOT rejected. D3 stays open: acceptance still unmet, close-out requires a probe where accept fixtures answer AND parity holds.
+- Next: planned diagnosis (prompt-ablation 016-vs-014 and/or model-version check on a scratch tenant) via new PLAN amendment — no improvisation. Probe tenant rows RETAINED as evidence. Worker restored flag-on steady state.
