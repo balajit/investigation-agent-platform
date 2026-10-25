@@ -25,9 +25,12 @@ poc/
 data/*
 !data/.gitkeep
 
-# Oracle/SQLcl connection material — credentials, never commit
+# Oracle/SQLcl connection material — credentials, never commit.
+# Root-anchored: Python packages named `secrets` under src/ hold code
+# (ports/secrets, infrastructure/secrets), not credentials, and must stay
+# committable.
 connections/
-secrets/
+/secrets/
 *sqlcl-encryption-key*
 .env
 # Secrets never live in the repository (TO_DO-001): ignore all env files
