@@ -1,0 +1,109 @@
+# Stage C run-set d3-stagec-2026-10-26-r4 rule file: exclusion
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1586-1613
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.2b cohort and run-level eligibility)
+
+#### 6.2b Cohort and run-level eligibility (F-PROBE-02)
+
+- Eligible fixtures: the code-bearing L-series battery cases
+  present in the repo at freeze time, enumerated by id in the
+  frozen manifest (no silent substitution; a fixture added
+  later starts a new run set).
+- A run is *eligible* iff it completes without platform error
+  AND evaluates at least one definition-claim candidate at the
+  verify gate under `verifier_version == v2` AND records a
+  native outcome for that candidate. Runs that complete with
+  zero definition-claim candidates are *non-eligible runs*:
+  counted separately, reported, and excluded from the
+  denominator — never retroactively reclassified.
+- Objective exclusion rules (applied identically to every
+  run, pre-registered, never decided post hoc): turn-contained
+  platform errors and timeouts whose error outcome was
+  recorded through the normal channel (excluded attempts,
+  budget consumed; see error-class partition above);
+  non-v2 evaluations; runs whose telemetry or conclude
+  result is missing for reasons other than a counted
+  capture event (treated as ambiguous joins — they void
+  the run set per §6.1); runs executed outside the frozen
+  environment. Platform or infrastructure errors that are
+  *not* contained and recorded as above — worker crash or
+  restart, store unreachable, telemetry pipeline failure,
+  ambiguous ordering or identity — are not exclusions;
+  they void the run set.
+
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A1.md lines 14-24
+## Doc SHA-256: c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f
+## (A1-1 timeout disposition (OD-01))
+
+## A1-1. v1.9 §6.5 item 7 amended — timeout disposition (OD-01)
+
+"An UNRECORDED timeout — or any timeout that prevents the outcome from being
+recorded, corrupts ordering/identity/persistence/the frozen environment, or
+whose containment cannot be proven from the record — voids the affected runs
+(retain artifacts, mark INSUFFICIENT EVIDENCE, never trim/combine/rerun under
+that identity; replacement only by new freeze, new run-set ID, newly
+authorized budget). A RECORDED turn-contained timeout whose error outcome
+arrived through the normal channel with `producing_path` and a joinable
+envelope is an excluded attempt per §6.1 (budget consumed, collection
+continues)."
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A1.md lines 26-32
+## Doc SHA-256: c96ea6c8d5a97f7d75d664d4f1e109840c7a2b2316805dbbd2f629f6d4d7302f
+## (A1-2 superseded-attempt disposition (OD-02))
+
+## A1-2. v1.9 §6.5 item 4 amended — superseded-attempt disposition (OD-02)
+
+"A superseded-attempt observation that is merely present is EXCLUDED from the
+denominator and counted separately per §1.4, never joined, and does not void
+by presence. An attempted cross-execution join of a superseded observation to
+another execution's native result, or inability to prove accepted-attempt
+identity, is an ambiguous join and voids the run set."
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A2.md lines 23-47
+## Doc SHA-256: ddaa518b4a169049a4b44d1e10c3093e7d49e73941bf38e628855a0a6cbe1071
+## (A2-1 eligibility redefined (OD-03))
+
+## A2-1. Eligibility redefined for post-consolidation run sets (OD-03)
+
+v1.9 §0.2 ("eligible turn ... `verifier_version == v2`, on a
+definition-claim candidate") and §6.2b ("evaluates at least one
+definition-claim candidate at the verify gate under
+`verifier_version == v2`") are superseded for run sets collected under a
+freeze that binds this amendment, as follows:
+
+"An eligible turn is a turn with a recorded native outcome AND a recorded
+typed observation under the frozen comparison rule, with
+`active_behavior_version == <frozen-behavior-id>` and
+`protocol_version == <frozen-protocol-id>` (both pinned in the freeze record),
+on a definition-claim candidate. An eligible run completes without platform
+error AND evaluates at least one such candidate at the verify gate AND
+records a native outcome for it. Runs completing with zero such candidates
+are non-eligible runs: counted separately, reported, excluded from the
+denominator — never retroactively reclassified. All other eligibility,
+exclusion, void, and stop rules (§§6.1–6.3, A1 OD-01/OD-02/BUD-01) are
+unchanged."
+
+The frozen behavior id and protocol id are named in the freeze record (e.g.
+behavior `unified-dev-v1`, protocol `v1.9+A1+A2`); the harness validates both
+before any join. `verifier_version` labels on old rows are audit metadata
+only and satisfy no eligibility clause by themselves.
+
+
+## Source: IAP-proof-kernel-d3-phase0-amendment-A2.md lines 48-58
+## Doc SHA-256: ddaa518b4a169049a4b44d1e10c3093e7d49e73941bf38e628855a0a6cbe1071
+## (A2-2 pre-consolidation exclusion (OD-04))
+
+## A2-2. Pre-consolidation rows excluded by default (OD-04)
+
+Rows and observations recorded before the consolidation (any recorded
+`verifier_version` pin of `v1`/`v2`/`v3`, or unmarked rows that ran the
+then-current path) are excluded from the denominator of any run set bound to
+this amendment, unless the owner explicitly re-baselines a named row set in
+the freeze record with a stated migration (row ids, original semantics,
+re-validation evidence). Default is exclusion, never silent reinterpretation.
+The r1/r2 corpora (6 + 12 probe rows retained as evidence) remain under their
+original `v2`-only rule and are inadmissible in the new set, never merged.
+

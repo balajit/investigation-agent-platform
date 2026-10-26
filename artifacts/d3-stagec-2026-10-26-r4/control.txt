@@ -1,0 +1,50 @@
+# Stage C run-set d3-stagec-2026-10-26-r4 rule file: control
+# Verbatim frozen sections. Digest binds these exact bytes.
+
+## Source: IAP-proof-kernel-d3-phase0-approval-package-v1.9.md lines 1731-1752
+## Doc SHA-256: 547aee50446c0fcc674a67e5f239e15de6dcf5f73de52474f3f133ce2be965c3
+## (v1.9 §6.2g shadow-off control arm)
+
+#### 6.2g Shadow-off control arm (F-PROBE-07)
+
+Because unit-level non-interference (F01 differentials) is
+necessary but not sufficient live evidence, the probe
+includes a small control arm: the same fixtures run with
+`IAP_SHADOW_TYPED_DEFINITIONS` unset (default off).
+Control-arm sizing (decided): exactly **one control run per
+fixture exercised in the shadow arm**, and never more
+control runs than shadow attempts on the same fixture —
+the control cohort mirrors the shadow cohort 1:1 at minimum
+and cannot exceed it. Control runs compare native outcomes,
+error behavior, and the *absence* of shadow artifacts (no
+additive keys, no shadow telemetry). Control runs are
+ordinary flag-off runs: they change nothing native and
+require no authority. They are excluded from the
+eligible-turn denominator (they carry no typed observations
+by construction) and reported alongside, as the bounded
+live complement to the unit differentials. If a control run
+and its shadow counterpart diverge natively, the probe
+stops: that is a non-interference failure, not a parity
+signal.
+
+
+## Pairing plan (operator-authored under freeze item 5, bound by control_hash)
+## Run set d3-stagec-2026-10-26-r4. Shadow arm runs first (worker IAP_SHADOW_TYPED_DEFINITIONS=1),
+## then the control arm (worker flag unset) after a worker restart.
+## Per fixture: k-th shadow attempt pairs with k-th control run;
+## both sides carry control_order = per-fixture attempt ordinal (1-based),
+## which must agree per the v1.15 order rule. Stop on native divergence.
+## L2 repeats k=1..5 pair only at k=1 with the single per-fixture
+## control (first-attempt pairing); k=2..5 are repeat-stability runs
+## without control counterparts (one control per fixture per §6.2g).
+
+## L1.json: shadow reservation seq 1 (bucket accept-PASS, L1 rep 1) <-> control ordinal 1
+## L2.json: shadow reservation seq 2 (bucket accept-PASS, L2 rep 1) <-> control ordinal 1
+## L3.json: shadow reservation seq 3 (bucket accept-PASS, L3 rep 1) <-> control ordinal 1
+## L4.json: shadow reservation seq 4 (bucket accept-PASS, L4 rep 1) <-> control ordinal 1
+## L5.json: shadow reservation seq 5 (bucket accept-PASS, L5 rep 1) <-> control ordinal 1
+## L8.json: shadow reservation seq 6 (bucket nonaccept-PASS, L8 rep 1) <-> control ordinal 1
+## L2.json: shadow reservation seq 7 (bucket accept-PASS, L2 rep 2) <-> control ordinal 1 (first-attempt pairing)
+## L2.json: shadow reservation seq 8 (bucket accept-PASS, L2 rep 3) <-> control ordinal 1 (first-attempt pairing)
+## L2.json: shadow reservation seq 9 (bucket accept-PASS, L2 rep 4) <-> control ordinal 1 (first-attempt pairing)
+## L2.json: shadow reservation seq 10 (bucket accept-PASS, L2 rep 5) <-> control ordinal 1 (first-attempt pairing)
