@@ -1191,6 +1191,72 @@ Make the final state explicit without overstating evidence.
 Stop for final user review and explicit permission for any close, merge, push,
 authority, or rollout action.
 
+## 15b. Step 12 close-out record (End A — 2026-10-26)
+
+Verdict: retain Step 11 r4 as INSUFFICIENT. No convergence claimed. No D3
+close, authority, rollout, merge, or push taken. The plan terminates here;
+any future cycle requires fresh authorization (new amendment, freeze record,
+run-set id, and budget, in that order).
+
+Formal evidence (unchanged, recorded for reference):
+
+- `reports/d3-stagec-2026-10-26-r4.md`: 10 shadow + 6 control on probe
+  `iap-probe-2026-10-26-r4`, exact per-fixture parity (L4 via cached-CONFIRMED),
+  capture clean (0 errors, 0 capture/pairing flags), budget spent 10/48.
+  RUN_LOG committed as `85aedd4`. Freeze v4 record `6dcae600…`, code rev
+  `eeecfae`.
+- Pass-rate CIs (Clopper-Pearson 95%, r4 only): L2 5/5 `[0.478, 1.000]`;
+  accept pooled 7/9 `[0.400, 0.972]`; overall 8/10 `[0.444, 0.975]`;
+  L8 nonaccept 1/1 `[0.025, 1.000]`.
+
+Remediation shipped after the verdict (commit `156c6f5`, offline gates green:
+full unit 3645 passed + 2 known pre-existing baseline pins, ruff clean):
+
+- L3 evidence honesty: history misses now bank deterministic discovery-only
+  `SOURCE_CODE` absence rows (never `COMMIT_HISTORY`); `history_proof` and
+  `validate_history_claim` skip `discovery_only` / `match_count==0` rows.
+- L5 pre-claim forcing fallback: a `BEHAVIOR`-typed claim with no
+  `fact_category` heading to VERIFY, with a banked `.java`/`.py` `GET_CODE`
+  lacking a method/field variant, forces one full-window (1–2000) re-read so
+  the model can retype as `SOURCE_VALUE_FACT`. Bounded by the existing
+  2-force budget; `BEHAVIOR` bar and profile doctrine untouched.
+
+Scratch validation (native, fix tree, tenant
+`dev-remediation-l3l5-20261026`, report
+`reports/live_battery_20261026T173731.md` — engineering signal only, no
+formal claim):
+
+- L5 PASS (11.5s, VERIFIED via the model-typed `SOURCE_VALUE_FACT` /
+  `GUARDED_RETURN_LITERAL` route, `res_v2` on a single 6–19 range read). The
+  forcing fallback did not fire (single `GET_CODE` total), so L5 typing
+  variance stands unmeasured.
+- L3 FAIL (`defer_repair_budget_exhausted`) with honest evidence: 3 real
+  stamped `COMMIT_HISTORY` rows + 3 `SOURCE_CODE` search hits, zero
+  fake-`COMMIT_HISTORY` absence rows — the L3 honesty fix is verified live.
+  Blocker scoped to proof shape, not retrieval: the model cited non-latest
+  `ee6b9036` ("Guard null orderType with STANDARD default") while the latest
+  path commit is `0d9982f6` ("Tighten filter eligibility window"), and the
+  statement inserts "a" ("with a STANDARD default"), breaking the exact
+  casefold-substring subject containment.
+
+Residual gaps (retained OPEN, no new cycle authorized):
+
+1. HISTORY content-grounding architecture: `ClaimTarget` carries
+   `commit_id`/`file_path` but no structured subject field, so content
+   grounding relies on exact-substring matching against freeform prose —
+   not a deterministic check for LLM output. Redesign options recorded in
+   session (structured `commit_subject` field; token-set normalization;
+   dropping the content gate; advisory-only demotion); none selected.
+2. Newest-commit rule stands as correct ("most recent" ⊂ "recent change");
+   the L3 miss is a model-citation/formulation gap, and the verifier
+   behaved correctly in refusing it.
+3. L5 typing variance: `BEHAVIOR`-without-category dead-ends in code-only
+   scopes; the fallback is unproven insurance. Measuring it needs repeated
+   scratch runs, not authorized here.
+
+L1/L2/L4/L8 behavior is recorded as converged and stable across both r4
+arms. No authority or rollout decision is implied by this record.
+
 ## 16. Approval record
 
 | Step | Scope approved | Reviewer | Date | Evidence | Next-step permission |
@@ -1206,5 +1272,5 @@ authority, or rollout action.
 | 8 | Pending | | | | Pending |
 | 9 | Pending | | | | Pending |
 | 10 | Pending | | | | Pending |
-| 11 | Pending | | | | Pending |
-| 12 | Pending | | | | Pending |
+| 11 | Formal r4 collection (10 shadow + 6 control) | owner direction (session 2026-10-26) | 2026-10-26 | reports/d3-stagec-2026-10-26-r4.md; RUN_LOG @85aedd4 | Returned to remediation; closed via Step 12 (End A) — no re-collection |
+| 12 | Close-out End A (no convergence claim) | owner direction (session 2026-10-26) | 2026-10-26 | §15b close-out record above | None — plan terminates; future work needs fresh authorization |

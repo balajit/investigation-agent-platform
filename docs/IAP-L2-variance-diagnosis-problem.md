@@ -319,3 +319,16 @@ existing rule.
 - No full obligation-normalization implementation in this step. No re-freeze,
   no new run set, and no verdict changes to r1/r2 records.
 - No verdict changes to r1/r2 records.
+
+## 11. As-built close-out (Step 12, End A — 2026-10-26)
+
+- The caller-edge obligation gap was closed by remediation: hypothesis
+  persistence for every action type, `caller_edge_binding_rows` revision pin,
+  causal-chain synthesis from verified `CALL_EDGE` assessments, verify
+  skipped envelope, worker split + story logging (frozen in `eeecfae`,
+  extended by `156c6f5`; full unit 3645 passed + 2 known pre-existing
+  baseline pins).
+- Formal evidence: r4 L2 5/5 PASS in shadow plus exact flag-off control
+  parity (`reports/d3-stagec-2026-10-26-r4.md`, CI `[0.478, 1.000]`).
+- L2 is recorded converged and stable with no residual gap. The r4
+  INSUFFICIENT-carry is L3/L5-driven; no L2 verdict change beyond that.

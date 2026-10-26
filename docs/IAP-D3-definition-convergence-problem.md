@@ -204,3 +204,19 @@ Freeze consequences:
 
 - No implementation, no live runs, no freeze/re-freeze actions.
 - No D3-family rollout beyond definition; no authority/production claims.
+
+## 7. As-built close-out (Step 12, End A — 2026-10-26)
+
+- r4 formal collection: 10 shadow + 6 control on a fresh probe tenant, exact
+  per-fixture parity (L4 via cached-CONFIRMED), capture clean, budget 10/48
+  (`reports/d3-stagec-2026-10-26-r4.md`; RUN_LOG @`85aedd4`). Verdict
+  retained INSUFFICIENT: L3+L5 abstain in both arms (genuine insufficiency,
+  reproducible, not flaky). No new freeze, run set, or budget followed.
+- L1/L2/L4/L8 converged and stable across arms. Residuals parked OPEN: (1)
+  HISTORY content-grounding needs a structured-field redesign —
+  exact-substring matching on freeform prose is not a deterministic check
+  (`ClaimTarget` has no subject field; options recorded, none selected);
+  (2) the newest-commit rule stands as correct; (3) L5 typing variance
+  unmeasured (single scratch PASS via the model-typed route).
+- No D3 close, authority, rollout, merge, or push. A future cycle needs
+  fresh amendment/freeze/run-set/budget authorization in that order.
