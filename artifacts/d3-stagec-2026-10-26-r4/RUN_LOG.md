@@ -46,3 +46,24 @@ sha256sum artifacts/<RS>/*.txt artifacts/<RS>/*.json  # compare to digests in fr
 - Owner sign-off: "Signed — build and collect" (Step 11 session, 2026-10-26).
 - Budget authorized: fresh 48, 12 per frozen expected-cell bucket.
 - Collection plan: 10 shadow attempts (L2 x5 + L1,L3,L4,L5,L8) + 6 flag-off controls (1/fixture, first-attempt pairing for L2).
+
+## 2026-10-26 collection record (appended post-collection; living log, not freeze-covered)
+
+- Shadow arm (flag on, single poller, API READY): 10/10 terminal COMPLETED.
+  L2 x5 PASS (ROOT_CAUSE_ESTABLISHED), L1 PASS (ANSWERED), L3 FAIL
+  (INSUFFICIENT_EVIDENCE, defer_repair_budget_exhausted), L4 PASS (ANSWERED),
+  L5 FAIL (INSUFFICIENT_EVIDENCE, behavior-needs-runtime), L8 PASS (clean
+  abstain, 0 findings). No capture errors, no pairing failures, 0 ERROR rows.
+- Control arm (flag unset, single poller, API READY): 6/6 recorded.
+  L1/L2/L5/L8 fresh runs match shadow verdicts; L3 FAIL matches; L4 control
+  CANCELLED at create, prior shadow conclusion re-verified CONFIRMED
+  (case-B serve_cached, graded primary). Parity EXACT per fixture.
+- Pass-rate CI (Clopper-Pearson 95%): L2 5/5 [0.478, 1.000]; accept pooled
+  7/9 [0.400, 0.972]; overall 8/10 [0.444, 0.975].
+- Budget: 10/48 spent (9 accept + 1 nonaccept); controls consume none.
+  Remaining 38/48. No exclusions, no voids, no retries.
+- Operator assessment (recommendation only): bar not met (L3+L5 abstain in
+  both arms); retain as INSUFFICIENT, return L3/L5 to named remediation.
+  Formal report: reports/d3-stagec-2026-10-26-r4.md (gitignored scratch).
+  Owner decision pending: close as converged, retain as insufficient, or
+  return to remediation. No close/authority/rollout/merge/push action.
