@@ -1,0 +1,164 @@
+{
+  "schema_version": "g4-evidence-fixture/v1",
+  "fixtures": [
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-001",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "exact_history_binding_candidate",
+      "maps_to": ["HISTORY", "K16"],
+      "expectation": {"class": "CANDIDATE_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_EXACT_BINDING", "reason": "all declared history identities match"},
+      "inputs": {
+        "proposition": {"form": "HISTORICAL", "quantifier": "EXISTENTIAL", "modality": "HISTORY", "predicate": "changed_at_commit(file, commit)", "target": {"repository": "synthetic/service", "commit_id": "cccccccccccccccccccccccccccccccccccccccc", "file_path": "src/service.py", "subject": "Update target handling"}, "scope": {"repository_revision": "dddddddddddddddddddddddddddddddddddddddd"}},
+        "history_premise": {"evidence_id": "ev-history-001", "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "premise_type": "COMMIT_HISTORY", "repository": "synthetic/service", "repository_revision": "dddddddddddddddddddddddddddddddddddddddd", "commit_id": "cccccccccccccccccccccccccccccccccccccccc", "file_path": "src/service.py", "subject": "Update target handling"},
+        "available_evidence_ids": ["ev-history-001"],
+        "manifest": {"evidence_ids": ["ev-history-001"], "content_hashes": {"ev-history-001": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "premise_types": {"ev-history-001": "COMMIT_HISTORY"}, "retrieval_config": {"repository_revision": "dddddddddddddddddddddddddddddddddddddddd"}, "exclusions": [], "coverage": "MATCHES_FOUND"}
+      },
+      "rationale": "Positive candidate for exact historical identity; semantic checking remains Component 2."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-002",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "repository_mismatch",
+      "maps_to": ["HISTORY", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_REPOSITORY_MATCH", "reason": "premise repository differs from proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.repository", "operation": "replace", "value": "synthetic/other"},
+      "rationale": "History from another repository is not evidence for the claim."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-003",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "commit_sha_mismatch",
+      "maps_to": ["HISTORY", "K9"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_FULL_SHA_MATCH", "reason": "commit identity differs"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.commit_id", "operation": "replace", "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+      "rationale": "A different full commit ID cannot satisfy the target commit."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-004",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "abbreviated_commit_sha",
+      "maps_to": ["HISTORY", "K9"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_FULL_SHA_REQUIRED", "reason": "commit ID is abbreviated"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.commit_id", "operation": "replace", "value": "cccccccccccc"},
+      "rationale": "The kernel accepts only a resolved full 40-character commit SHA."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-005",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "uppercase_commit_sha",
+      "maps_to": ["HISTORY", "K9"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_SHA_CANONICAL_CASE", "reason": "commit ID is not lowercase canonical hex"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.commit_id", "operation": "replace", "value": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"},
+      "rationale": "Canonical commit identifiers use lowercase hexadecimal characters."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-006",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "file_path_mismatch",
+      "maps_to": ["HISTORY", "D"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_FILE_MATCH", "reason": "premise file differs from target"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.file_path", "operation": "replace", "value": "src/other.py"},
+      "rationale": "History for another file does not establish the claimed file change."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-007",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "subject_mismatch",
+      "maps_to": ["HISTORY", "D"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_SUBJECT_MATCH", "reason": "premise subject differs from target"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.subject", "operation": "replace", "value": "Different change"},
+      "rationale": "The stated history subject must match the cited record."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-008",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "queried_revision_mismatch",
+      "maps_to": ["HISTORY", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_QUERY_REVISION_MATCH", "reason": "history was queried at another repository revision"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.repository_revision", "operation": "replace", "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+      "rationale": "The premise query context must match the proposition context."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-009",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "history_artifact_missing",
+      "maps_to": ["HISTORY", "K10"],
+      "expectation": {"class": "PREMISE_UNAVAILABLE", "layer": "EVIDENCE", "invariant": "HISTORY_ARTIFACT_AVAILABLE", "reason": "history artifact bytes are unavailable"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.available_evidence_ids", "operation": "replace", "value": []},
+      "rationale": "Unavailable history artifacts cannot establish the proposition."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-010",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "history_artifact_hash_mismatch",
+      "maps_to": ["HISTORY", "K10"],
+      "expectation": {"class": "PREMISE_UNAVAILABLE", "layer": "EVIDENCE", "invariant": "HISTORY_ARTIFACT_HASH_MATCH", "reason": "history artifact bytes do not match manifest digest"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.history_premise.content_hash", "operation": "replace", "value": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+      "rationale": "Hash mismatch makes the history artifact unavailable."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-011",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "branch_or_time_range_without_commit_id",
+      "maps_to": ["HISTORY", "K7"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_REQUIRES_COMMIT_ID", "reason": "branch/time locator is not a concrete commit ID"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.proposition.target.commit_id", "operation": "replace", "value": "main"},
+      "rationale": "A branch label or time range must be resolved before entering the kernel."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-012",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "causal_claim_from_commit_subject",
+      "maps_to": ["HISTORY", "A"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_DOES_NOT_PROVE_CAUSATION", "reason": "commit subject alone does not establish causation"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "mutation": {"baseline_fixture_id": "G4E-HIS-001", "field_path": "inputs.proposition.form", "operation": "replace", "value": "CAUSAL"},
+      "rationale": "History metadata does not entail runtime or causal behavior."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-HIS-013",
+      "component": "G4-C1",
+      "family": "HISTORY",
+      "scenario": "optional_header_fields_omitted",
+      "maps_to": ["HISTORY", "K16"],
+      "expectation": {"class": "CANDIDATE_INPUT", "layer": "EVIDENCE", "invariant": "HISTORY_OPTIONAL_HEADER_FIELDS_OMITTED", "reason": "relation and completeness are absent as specified"},
+      "inputs": {"baseline_fixture_id": "G4E-HIS-001"},
+      "rationale": "Component 1 pins field omission; Component 2 tests canonical byte behavior and explicit-null rejection."
+    }
+  ]
+}

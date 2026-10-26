@@ -36,7 +36,7 @@ from investigation_agent_platform.domain.proof.manifest import (
 )
 
 SCHEMA = json.loads(
-    (Path("tests/fixtures/proof_kernel") / "cert_schema_v1.json").read_text()
+    (Path("tests/fixtures/proof_kernel") / "cert_schema_v2.json").read_text()
 )
 
 
@@ -47,7 +47,15 @@ def _h(text: str) -> str:
 def _definition_setup() -> tuple[Any, Any, Any]:
     """(EvaluationInputs, schema premise entry, artifact record)."""
     window = "class OrderService:\n    pass\n"
-    artifact = {"file_path": "svc.py", "symbol": "OrderService", "text": window}
+    artifact = {
+        "file_path": "svc.py",
+        "repository": "synthetic/service",
+        "revision": "rev-1",
+        "line_start": 10,
+        "line_end": 14,
+        "target": "OrderService",
+        "window_text": window,
+    }
     proposition = {
         "canon_version": "canon/v1",
         "completeness": "PARTIAL_OK",
@@ -65,11 +73,15 @@ def _definition_setup() -> tuple[Any, Any, Any]:
         "premise_type": "RANGE_READ_FACT",
         "scope": {"revision": "rev-1"},
     }
-    manifest = build_manifest(["row-1"], {"row-1": _artifact_hash(artifact)})
+    manifest = build_manifest(
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact)},
+        premise_types={"row-1": "RANGE_READ_FACT"},
+    )
     inputs = EvaluationInputs(
         proposition=dict(proposition),
         manifest=manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -90,7 +102,7 @@ def _request(cert: dict[str, Any], proposition: dict[str, Any], manifest: Any, a
         "certificate": cert,
         "proposition": proposition,
         "manifest": manifest,
-        "rule_bundle_version": "rules/v1",
+        "rule_bundle_version": "rules/v2",
         "model_encoding": {"model": "m"},
         "reconciliation_state": "unreconciled",
         "artifacts": artifacts,
@@ -233,7 +245,7 @@ def test_k3_unbounded_absence_refuses_certification() -> None:
     bad = EvaluationInputs(
         proposition=proposition,
         manifest=inputs.manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -248,12 +260,15 @@ def test_k3_coverage_boundary_missing_incomplete_empty_rejected() -> None:
     proposition = dict(inputs.proposition)
     proposition["form"] = "ABSENCE"
     complete_manifest = build_manifest(
-        ["row-1"], {"row-1": _artifact_hash(artifact)}, coverage=ManifestCoverage.COMPLETE_EMPTY
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact)},
+        coverage=ManifestCoverage.COMPLETE_EMPTY,
+        premise_types={"row-1": "RANGE_READ_FACT"},
     )
     complete_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=complete_manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -271,12 +286,15 @@ def test_k3_coverage_boundary_missing_incomplete_empty_rejected() -> None:
     proposition = dict(inputs.proposition)
     proposition["form"] = "ABSENCE"
     incomplete_manifest = build_manifest(
-        ["row-1"], {"row-1": _artifact_hash(artifact)}, coverage=ManifestCoverage.INCOMPLETE
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact)},
+        coverage=ManifestCoverage.INCOMPLETE,
+        premise_types={"row-1": "RANGE_READ_FACT"},
     )
     incomplete_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=incomplete_manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -286,12 +304,15 @@ def test_k3_coverage_boundary_missing_incomplete_empty_rejected() -> None:
     req = _request(cert, proposition, incomplete_manifest, {"row-1": artifact})
     assert check_certificate(req)[0] == CheckerOutcome.MISSING_PREMISE
     complete_manifest = build_manifest(
-        ["row-1"], {"row-1": _artifact_hash(artifact)}, coverage=ManifestCoverage.COMPLETE_EMPTY
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact)},
+        coverage=ManifestCoverage.COMPLETE_EMPTY,
+        premise_types={"row-1": "RANGE_READ_FACT"},
     )
     complete_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=complete_manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -315,7 +336,7 @@ def test_certify_refuses_non_discharging_artifact_mismatch_and_bad_premise() -> 
         certify(inputs, ["not-a-premise"], {"row-1": artifact})  # type: ignore[list-item]
     assert excinfo.value.code == "BAD_PREMISE"
     tampered = dict(artifact)
-    tampered["text"] = "class SomethingElse:\n    pass\n"
+    tampered["window_text"] = "class SomethingElse:\n    pass\n"
     with pytest.raises(CertificationError) as excinfo:
         certify(inputs, [premise], {"row-1": tampered})
     assert excinfo.value.code == "PREMISE_UNAVAILABLE"
@@ -334,7 +355,10 @@ def _callsite_setup() -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, A
             "callee": "OrderService",
             "call_text": text,
             "file_path": "svc.py",
-            "scope": {"revision": "rev-1"},
+            "repository": "synthetic/service",
+            "revision": "rev-1",
+            "line_start": 20,
+            "line_end": 20,
         }
         for rid, text in texts.items()
     }
@@ -359,12 +383,14 @@ def _callsite_setup() -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, A
         for rid in ("row-1", "row-2")
     ]
     manifest = build_manifest(
-        ["row-1", "row-2"], {rid: _artifact_hash(artifacts[rid]) for rid in artifacts}
+        ["row-1", "row-2"],
+        {rid: _artifact_hash(artifacts[rid]) for rid in artifacts},
+        premise_types={"row-1": "NORMALIZED_CALLSITE_FACT", "row-2": "NORMALIZED_CALLSITE_FACT"},
     )
     inputs = EvaluationInputs(
         proposition=dict(proposition),
         manifest=manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="call_edge/v1",
         rule_version="v1",
@@ -423,7 +449,7 @@ def test_k4_universal_not_established_by_existential_rules() -> None:
     uni_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=inputs.manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -478,7 +504,7 @@ def test_scope_swap_rejected() -> None:
     cert["scope"] = {"revision": "rev-9"}
     req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
     outcome, reasons = check_certificate(req)
-    assert outcome == CheckerOutcome.INVALID_INFERENCE
+    assert outcome == CheckerOutcome.SCOPE_MISMATCH
     assert any("scope mismatch" in r for r in reasons)
 
 
@@ -508,10 +534,22 @@ def test_consistent_rehash_binding_swap_rejected() -> None:
     inputs1, premise1, artifact1 = _definition_setup()
     cert1 = certify(inputs1, [premise1], {"row-1": artifact1})
     window2 = "class SomethingElse:\n    pass\n"
-    artifact2 = {"file_path": "svc.py", "symbol": "SomethingElse", "text": window2}
+    artifact2 = {
+        "file_path": "svc.py",
+        "repository": "synthetic/service",
+        "revision": "rev-1",
+        "line_start": 10,
+        "line_end": 14,
+        "target": "SomethingElse",
+        "window_text": window2,
+    }
     prop2 = dict(inputs1.proposition)
     prop2["target"] = {"file_path": "svc.py", "symbol": "SomethingElse"}
-    manifest2 = build_manifest(["row-1"], {"row-1": _artifact_hash(artifact2)})
+    manifest2 = build_manifest(
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact2)},
+        premise_types={"row-1": "RANGE_READ_FACT"},
+    )
     premise2 = {
         "content_hash": _artifact_hash(artifact2),
         "evidence_id": "row-1",
@@ -521,7 +559,7 @@ def test_consistent_rehash_binding_swap_rejected() -> None:
     inputs2 = EvaluationInputs(
         proposition=prop2,
         manifest=manifest2,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -540,8 +578,9 @@ def test_consistent_rehash_binding_swap_rejected() -> None:
         {
             "evidence_manifest_digest": forged["input_manifest_digest"],
             "model_encoding": {"model": "m"},
+            "proposition_scope": dict(inputs1.proposition["scope"]),
             "reconciliation_state": "unreconciled",
-            "rule_bundle_version": "rules/v1",
+            "rule_bundle_version": "rules/v2",
         },
     )
     forged["derivation_id"] = _derivation_id(
@@ -567,11 +606,12 @@ def test_coverage_universe_mismatch_rejected() -> None:
         {"row-1": _artifact_hash(artifact)},
         coverage=ManifestCoverage.COMPLETE_EMPTY,
         retrieval_config={"scope": "repo@rev:/:query=q"},
+        premise_types={"row-1": "RANGE_READ_FACT"},
     )
     scoped_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=scoped_manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -589,12 +629,15 @@ def test_coverage_missing_universe_or_exclusions_rejected() -> None:
     proposition = dict(inputs.proposition)
     proposition["form"] = "ABSENCE"
     complete_manifest = build_manifest(
-        ["row-1"], {"row-1": _artifact_hash(artifact)}, coverage=ManifestCoverage.COMPLETE_EMPTY
+        ["row-1"],
+        {"row-1": _artifact_hash(artifact)},
+        coverage=ManifestCoverage.COMPLETE_EMPTY,
+        premise_types={"row-1": "RANGE_READ_FACT"},
     )
     complete_inputs = EvaluationInputs(
         proposition=proposition,
         manifest=complete_manifest,
-        rule_bundle_version="rules/v1",
+        rule_bundle_version="rules/v2",
         model_encoding={"model": "m"},
         rule_id="definition/v1",
         rule_version="v1",
@@ -618,6 +661,15 @@ def test_unknown_schema_or_rule_fails_closed() -> None:
     req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
     assert check_certificate(req)[0] == CheckerOutcome.CHECKER_FAILURE
     cert = certify(inputs, [premise], {"row-1": artifact})
-    cert["rule_id"] = "behavior/v1"
+    cert["rule_id"] = "causal/v1"
     req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
     assert check_certificate(req)[0] == CheckerOutcome.UNSUPPORTED_CONSTRUCT
+
+
+def test_cert_v1_rejected_without_reread() -> None:
+    inputs, premise, artifact = _definition_setup()
+    cert = certify(inputs, [premise], {"row-1": artifact})
+    assert cert["schema_version"] == "cert/v2"
+    cert["schema_version"] = "cert/v1"
+    req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
+    assert check_certificate(req)[0] == CheckerOutcome.CHECKER_FAILURE

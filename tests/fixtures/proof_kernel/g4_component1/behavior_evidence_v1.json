@@ -1,0 +1,191 @@
+{
+  "schema_version": "g4-evidence-fixture/v1",
+  "fixtures": [
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-001",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "valid_candidate_test_only_provenance",
+      "maps_to": ["BEHAVIOR", "K16"],
+      "expectation": {"class": "CANDIDATE_INPUT", "layer": "EVIDENCE", "invariant": "BUILD_SOURCE_PROVENANCE", "reason": "test-only mapping authority approved; structurally complete synthetic candidate"},
+      "inputs": {
+        "proposition": {"form": "OBSERVATION", "quantifier": "OBSERVATIONAL", "relation": "RUNTIME_OBSERVATION", "modality": "RUNTIME", "predicate": "returns_status(target)", "asserted_value": 200, "target": {"symbol": "target", "file_path": "src/service.py"}, "scope": {"repository": "synthetic/service", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "build_identity": "build-001", "execution_id": "exec-001", "environment": "test"}},
+        "code_premise": {"evidence_id": "ev-code-001", "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "premise_type": "RANGE_READ_FACT", "repository": "synthetic/service", "file_path": "src/service.py", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "line_start": 10, "line_end": 14, "target": "target", "window_text": "def target():\n    return 200"},
+        "runtime_premise": {"evidence_id": "ev-runtime-001", "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "premise_type": "RUNTIME_OBSERVATION_FACT", "repository": "synthetic/service", "symbol": "target", "predicate": "returns_status(target)", "observed_value": 200, "execution_id": "exec-001", "build_identity": "build-001", "environment": "test", "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        "available_evidence_ids": ["ev-code-001", "ev-runtime-001", "ev-build-map-001"],
+        "manifest": {"evidence_ids": ["ev-code-001", "ev-runtime-001", "ev-build-map-001"], "content_hashes": {"ev-code-001": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ev-runtime-001": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ev-build-map-001": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, "premise_types": {"ev-code-001": "RANGE_READ_FACT", "ev-runtime-001": "RUNTIME_OBSERVATION_FACT", "ev-build-map-001": "BUILD_SOURCE_MAPPING"}, "retrieval_config": {}, "exclusions": [], "coverage": "MATCHES_FOUND"},
+        "build_source_mapping": {"evidence_id": "ev-build-map-001", "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "premise_type": "BUILD_SOURCE_MAPPING", "build_identity": "build-001", "repository": "synthetic/service", "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",         "provenance_ref": "synthetic-test-only-authority-001", "mapping_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
+      },
+      "rationale": "Structurally complete candidate; mapping provenance is unapproved, so no semantic pass is asserted."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-002",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "missing_runtime_premise",
+      "maps_to": ["BEHAVIOR", "P"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "BEHAVIOR_REQUIRES_RUNTIME", "reason": "runtime observation is missing"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise", "operation": "remove", "value": null},
+      "rationale": "Behavior evidence requires both static code and runtime evidence."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-003",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "missing_code_range",
+      "maps_to": ["BEHAVIOR", "P"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "BEHAVIOR_REQUIRES_CODE_RANGE", "reason": "source range premise is missing"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.code_premise", "operation": "remove", "value": null},
+      "rationale": "Runtime observation without the source range cannot establish the code/runtime relation."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-004",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "missing_build_source_mapping",
+      "maps_to": ["BEHAVIOR", "K16"],
+      "expectation": {"class": "UNSUPPORTED_INPUT", "layer": "EVIDENCE", "invariant": "BUILD_SOURCE_PROVENANCE", "reason": "mapping premise is missing"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.build_source_mapping", "operation": "remove", "value": null},
+      "rationale": "Expected disposition is pinned pending the provenance-source decision."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-005",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "mapping_build_identity_mismatch",
+      "maps_to": ["BEHAVIOR", "N"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "BUILD_ID_MATCH", "reason": "mapping build identity differs from proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.build_source_mapping.build_identity", "operation": "replace", "value": "build-002"},
+      "rationale": "The build mapping must refer to the exact proposition/runtime build."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-006",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "mapping_repository_mismatch",
+      "maps_to": ["BEHAVIOR", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "REPOSITORY_MATCH", "reason": "mapping repository differs from code premise"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.build_source_mapping.repository", "operation": "replace", "value": "synthetic/other"},
+      "rationale": "Repository identity must be consistent across code and mapping records."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-007",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "mapping_revision_mismatch",
+      "maps_to": ["BEHAVIOR", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "SOURCE_REVISION_MATCH", "reason": "mapping revision differs from cited source"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.build_source_mapping.source_revision", "operation": "replace", "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+      "rationale": "A mapping to another source revision cannot bind the runtime result to this code range."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-008",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_execution_mismatch",
+      "maps_to": ["BEHAVIOR", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "EXECUTION_ID_MATCH", "reason": "runtime execution differs from claim scope"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.execution_id", "operation": "replace", "value": "exec-002"},
+      "rationale": "An observation from another execution does not establish this claim's runtime behavior."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-009",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_environment_mismatch",
+      "maps_to": ["BEHAVIOR", "K11"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "ENVIRONMENT_MATCH", "reason": "runtime environment differs from claim scope"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.environment", "operation": "replace", "value": "production"},
+      "rationale": "Runtime observations from another environment do not join to the declared scope."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-010",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_predicate_mismatch",
+      "maps_to": ["BEHAVIOR", "D"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "RUNTIME_PREDICATE_MATCH", "reason": "runtime predicate differs from proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.predicate", "operation": "replace", "value": "returns_status(other)"},
+      "rationale": "Runtime evidence must measure the asserted predicate."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-011",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_value_mismatch",
+      "maps_to": ["BEHAVIOR", "D"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "RUNTIME_VALUE_MATCH", "reason": "runtime value contradicts proposition"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.observed_value", "operation": "replace", "value": 500},
+      "rationale": "A runtime observation contradicting the asserted result cannot support the claim."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-012",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_artifact_missing",
+      "maps_to": ["BEHAVIOR", "K10"],
+      "expectation": {"class": "PREMISE_UNAVAILABLE", "layer": "EVIDENCE", "invariant": "RUNTIME_ARTIFACT_AVAILABLE", "reason": "runtime artifact bytes are unavailable"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.available_evidence_ids", "operation": "replace", "value": ["ev-code-001", "ev-build-map-001"]},
+      "rationale": "A referenced runtime record without available bytes is unavailable, not negative evidence."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-013",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_artifact_hash_mismatch",
+      "maps_to": ["BEHAVIOR", "K10"],
+      "expectation": {"class": "PREMISE_UNAVAILABLE", "layer": "EVIDENCE", "invariant": "RUNTIME_ARTIFACT_HASH_MATCH", "reason": "runtime artifact bytes do not match the manifest digest"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.content_hash", "operation": "replace", "value": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+      "rationale": "Hash mismatch makes the premise artifact unavailable for evaluation."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-014",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "duplicate_evidence_id",
+      "maps_to": ["BEHAVIOR", "K14"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "EVIDENCE_ID_UNIQUENESS", "reason": "code and runtime records cannot reuse one evidence ID"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.evidence_id", "operation": "replace", "value": "ev-code-001"},
+      "rationale": "Distinct artifacts require distinct evidence identities."
+    },
+    {
+      "schema_version": "g4-evidence-fixture/v1",
+      "fixture_id": "G4E-BEH-015",
+      "component": "G4-C1",
+      "family": "BEHAVIOR",
+      "scenario": "runtime_float_value",
+      "maps_to": ["BEHAVIOR", "K9"],
+      "expectation": {"class": "REJECT_INPUT", "layer": "EVIDENCE", "invariant": "CANONICAL_SCALAR_ONLY", "reason": "floating-point values are outside the canonical evidence contract"},
+      "inputs": {"baseline_fixture_id": "G4E-BEH-001"},
+      "mutation": {"baseline_fixture_id": "G4E-BEH-001", "field_path": "inputs.runtime_premise.observed_value", "operation": "replace", "value": 200.5},
+      "rationale": "Canonical hashed payloads exclude floats."
+    }
+  ]
+}

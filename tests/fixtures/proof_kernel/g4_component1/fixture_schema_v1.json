@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "g4-evidence-fixture/v1",
+  "title": "G4 Component 1 Evidence Fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "component",
+    "family",
+    "scenario",
+    "maps_to",
+    "expectation",
+    "inputs",
+    "rationale"
+  ],
+  "properties": {
+    "schema_version": {"const": "g4-evidence-fixture/v1"},
+    "fixture_id": {"type": "string", "pattern": "^G4E-(BEH|ABS|HIS)-[0-9]{3}$"},
+    "component": {"const": "G4-C1"},
+    "family": {"enum": ["BEHAVIOR", "ABSENCE", "HISTORY"]},
+    "scenario": {"type": "string", "minLength": 1},
+    "maps_to": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["BEHAVIOR", "ABSENCE", "HISTORY", "K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8", "K9", "K10", "K11", "K12", "K13", "K14", "K15", "K16", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"]}
+    },
+    "expectation": {"$ref": "#/$defs/expectation"},
+    "inputs": {
+      "oneOf": [
+        {"$ref": "#/$defs/behaviorInputs"},
+        {"$ref": "#/$defs/absenceInputs"},
+        {"$ref": "#/$defs/historyInputs"},
+        {"$ref": "#/$defs/derivedInputs"}
+      ]
+    },
+    "mutation": {"$ref": "#/$defs/mutation"},
+    "rationale": {"type": "string", "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"family": {"const": "BEHAVIOR"}}, "required": ["family"]},
+      "then": {"properties": {"fixture_id": {"pattern": "^G4E-BEH-[0-9]{3}$"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "ABSENCE"}}, "required": ["family"]},
+      "then": {"properties": {"fixture_id": {"pattern": "^G4E-ABS-[0-9]{3}$"}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "HISTORY"}}, "required": ["family"]},
+      "then": {"properties": {"fixture_id": {"pattern": "^G4E-HIS-[0-9]{3}$"}}}
+    },
+    {
+      "if": {"properties": {"expectation": {"properties": {"class": {"enum": ["REJECT_INPUT", "UNSUPPORTED_INPUT", "PREMISE_UNAVAILABLE"]}}, "required": ["class"]}}, "required": ["expectation"]},
+      "then": {"required": ["mutation"]}
+    },
+    {
+      "if": {"properties": {"expectation": {"properties": {"class": {"const": "CANDIDATE_INPUT"}}, "required": ["class"]}}, "required": ["expectation"]},
+      "then": {"not": {"required": ["mutation"]}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nonEmpty": {"type": "string", "minLength": 1},
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "layer", "invariant", "reason"],
+      "properties": {
+        "class": {"enum": ["CANDIDATE_INPUT", "REJECT_INPUT", "UNSUPPORTED_INPUT", "OWNER_ADJUDICATION_REQUIRED", "PREMISE_UNAVAILABLE"]},
+        "layer": {"const": "EVIDENCE"},
+        "invariant": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "reason": {"$ref": "#/$defs/nonEmpty"}
+      }
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_fixture_id", "field_path", "operation", "value"],
+      "properties": {
+        "baseline_fixture_id": {"type": "string", "pattern": "^G4E-(BEH|ABS|HIS)-[0-9]{3}$"},
+        "field_path": {"type": "string", "pattern": "^inputs\\."},
+        "operation": {"enum": ["replace", "remove", "duplicate", "corrupt"]},
+        "value": {}
+      }
+    },
+    "derivedInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_fixture_id"],
+      "properties": {
+        "baseline_fixture_id": {"type": "string", "pattern": "^G4E-(BEH|ABS|HIS)-[0-9]{3}$"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/nonEmpty"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "build_identity": {"$ref": "#/$defs/nonEmpty"},
+        "execution_id": {"$ref": "#/$defs/nonEmpty"},
+        "environment": {"$ref": "#/$defs/nonEmpty"},
+        "path_scope": {"$ref": "#/$defs/nonEmpty"},
+        "repository_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "artifactManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_ids", "content_hashes", "premise_types", "retrieval_config", "exclusions", "coverage"],
+      "properties": {
+        "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "content_hashes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}},
+        "premise_types": {"type": "object", "additionalProperties": {"enum": ["RANGE_READ_FACT", "NORMALIZED_CALLSITE_FACT", "RUNTIME_OBSERVATION_FACT", "BUILD_SOURCE_MAPPING", "ABSENCE_COVERAGE_FACT", "COMMIT_HISTORY"]}},
+        "retrieval_config": {"type": "object"},
+        "exclusions": {"type": "array", "items": {"$ref": "#/$defs/nonEmpty"}},
+        "coverage": {"enum": ["COMPLETE_EMPTY", "MATCHES_FOUND", "INCOMPLETE", "FAILED"]}
+      }
+    },
+    "behaviorInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposition", "code_premise", "runtime_premise", "build_source_mapping", "manifest"],
+      "properties": {
+        "proposition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["form", "quantifier", "relation", "modality", "predicate", "asserted_value", "target", "scope"],
+          "properties": {
+            "form": {"const": "OBSERVATION"},
+            "quantifier": {"const": "OBSERVATIONAL"},
+            "relation": {"const": "RUNTIME_OBSERVATION"},
+            "modality": {"const": "RUNTIME"},
+            "predicate": {"$ref": "#/$defs/nonEmpty"},
+            "asserted_value": {"type": ["string", "integer", "boolean", "null"]},
+            "target": {
+              "type": "object", "additionalProperties": false,
+              "required": ["symbol", "file_path"],
+              "properties": {"symbol": {"$ref": "#/$defs/nonEmpty"}, "file_path": {"$ref": "#/$defs/nonEmpty"}}
+            },
+            "scope": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repository", "revision", "build_identity", "execution_id", "environment"],
+              "properties": {
+                "repository": {"$ref": "#/$defs/nonEmpty"},
+                "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "build_identity": {"$ref": "#/$defs/nonEmpty"},
+                "execution_id": {"$ref": "#/$defs/nonEmpty"},
+                "environment": {"$ref": "#/$defs/nonEmpty"}
+              }
+            }
+          }
+        },
+        "code_premise": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "content_hash", "premise_type", "repository", "file_path", "revision", "line_start", "line_end", "target", "window_text"], "properties": {
+          "evidence_id": {"$ref": "#/$defs/nonEmpty"}, "content_hash": {"$ref": "#/$defs/sha256"}, "premise_type": {"const": "RANGE_READ_FACT"}, "repository": {"$ref": "#/$defs/nonEmpty"}, "file_path": {"$ref": "#/$defs/nonEmpty"}, "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "line_start": {"type": "integer", "minimum": 1}, "line_end": {"type": "integer", "minimum": 2}, "target": {"$ref": "#/$defs/nonEmpty"}, "window_text": {"$ref": "#/$defs/nonEmpty"}
+        }},
+        "runtime_premise": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "content_hash", "premise_type", "repository", "symbol", "predicate", "observed_value", "execution_id", "build_identity", "environment", "source_revision"], "properties": {
+          "evidence_id": {"$ref": "#/$defs/nonEmpty"}, "content_hash": {"$ref": "#/$defs/sha256"}, "premise_type": {"const": "RUNTIME_OBSERVATION_FACT"}, "repository": {"$ref": "#/$defs/nonEmpty"}, "symbol": {"$ref": "#/$defs/nonEmpty"}, "predicate": {"$ref": "#/$defs/nonEmpty"}, "observed_value": {"type": ["string", "integer", "boolean", "null"]}, "execution_id": {"$ref": "#/$defs/nonEmpty"}, "build_identity": {"$ref": "#/$defs/nonEmpty"}, "environment": {"$ref": "#/$defs/nonEmpty"}, "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        }},
+        "available_evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "manifest": {"$ref": "#/$defs/artifactManifest"},
+        "build_source_mapping": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "content_hash", "premise_type", "build_identity", "repository", "source_revision", "provenance_ref", "mapping_digest"], "properties": {
+          "evidence_id": {"$ref": "#/$defs/nonEmpty"}, "content_hash": {"$ref": "#/$defs/sha256"}, "premise_type": {"const": "BUILD_SOURCE_MAPPING"}, "build_identity": {"$ref": "#/$defs/nonEmpty"}, "repository": {"$ref": "#/$defs/nonEmpty"}, "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "provenance_ref": {"$ref": "#/$defs/nonEmpty"}, "mapping_digest": {"$ref": "#/$defs/sha256"}
+        }}
+      }
+    },
+    "absenceInputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposition", "coverage_evidence_id", "coverage_evidence", "manifest", "available_evidence_ids"],
+      "properties": {
+        "proposition": {
+          "type": "object", "additionalProperties": false,
+          "required": ["form", "quantifier", "modality", "completeness", "predicate", "target", "scope"],
+          "properties": {
+            "form": {"const": "ABSENCE"}, "quantifier": {"const": "UNIVERSAL"}, "modality": {"const": "STATIC"}, "completeness": {"const": "CLOSED_WORLD"}, "predicate": {"$ref": "#/$defs/nonEmpty"},
+            "target": {"type": "object", "additionalProperties": false, "required": ["universe"], "properties": {"universe": {"$ref": "#/$defs/nonEmpty"}}},
+            "scope": {"type": "object", "additionalProperties": false, "required": ["repository", "revision", "path_scope"], "properties": {"repository": {"$ref": "#/$defs/nonEmpty"}, "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "path_scope": {"$ref": "#/$defs/nonEmpty"}}}
+          }
+        },
+        "coverage_evidence_id": {"$ref": "#/$defs/nonEmpty"},
+        "available_evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "coverage_evidence": {"type": "object", "additionalProperties": false, "required": ["premise_type", "universe", "predicate", "search_status", "search_config_digest", "scope", "exclusions", "coverage_basis", "match_count"], "properties": {
+          "premise_type": {"const": "ABSENCE_COVERAGE_FACT"}, "universe": {"$ref": "#/$defs/nonEmpty"}, "predicate": {"$ref": "#/$defs/nonEmpty"}, "search_status": {"enum": ["COMPLETE_EMPTY", "MATCHES_FOUND", "INCOMPLETE", "FAILED"]}, "search_config_digest": {"$ref": "#/$defs/sha256"}, "scope": {"type": "object", "additionalProperties": false, "required": ["repository", "revision", "path_scope"], "properties": {"repository": {"$ref": "#/$defs/nonEmpty"}, "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "path_scope": {"$ref": "#/$defs/nonEmpty"}}}, "exclusions": {"type": "array", "items": {"$ref": "#/$defs/nonEmpty"}}, "coverage_basis": {"type": "object"}, "match_count": {"type": "integer", "minimum": 0}
+        }},
+        "manifest": {"$ref": "#/$defs/artifactManifest"}
+      }
+    },
+    "historyInputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposition", "history_premise", "available_evidence_ids", "manifest"],
+      "properties": {
+        "proposition": {
+          "type": "object", "additionalProperties": false,
+          "required": ["form", "quantifier", "modality", "predicate", "target", "scope"],
+          "properties": {
+            "form": {"const": "HISTORICAL"},
+            "quantifier": {"const": "EXISTENTIAL"},
+            "modality": {"const": "HISTORY"},
+            "predicate": {"$ref": "#/$defs/nonEmpty"},
+            "target": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repository", "commit_id", "file_path", "subject"],
+              "properties": {
+                "repository": {"$ref": "#/$defs/nonEmpty"},
+                "commit_id": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "file_path": {"$ref": "#/$defs/nonEmpty"},
+                "subject": {"$ref": "#/$defs/nonEmpty"}
+              }
+            },
+            "scope": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repository_revision"],
+              "properties": {"repository_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}
+            }
+          }
+        },
+        "available_evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "history_premise": {
+          "type": "object", "additionalProperties": false,
+          "required": ["evidence_id", "content_hash", "premise_type", "repository", "repository_revision", "commit_id", "file_path", "subject"],
+          "properties": {
+            "evidence_id": {"$ref": "#/$defs/nonEmpty"},
+            "content_hash": {"$ref": "#/$defs/sha256"},
+            "premise_type": {"const": "COMMIT_HISTORY"},
+            "repository": {"$ref": "#/$defs/nonEmpty"},
+            "repository_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "commit_id": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "file_path": {"$ref": "#/$defs/nonEmpty"},
+            "subject": {"$ref": "#/$defs/nonEmpty"}
+          }
+        },
+        "manifest": {"$ref": "#/$defs/artifactManifest"}
+      }
+    }
+  }
+}

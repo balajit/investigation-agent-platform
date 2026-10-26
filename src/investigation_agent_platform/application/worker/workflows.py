@@ -107,6 +107,19 @@ with workflow.unsafe.imports_passed_through():
         summarize_shadow_definitions,
     )
 
+with workflow.unsafe.imports_passed_through():
+    # G3: ledger directive helpers — pure, deterministic, replay-safe
+    # (hashlib/re only at call time; no I/O, no clock, no process-local
+    # ledger reads). Imported passed-through like the shadow helpers
+    # because the application layer is not import-safe in the sandbox.
+    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+        RETRYABLE_ACTIONS,
+        WP_A3_DEFAULT_MAX_ATTEMPTS,
+        _normalize_scope,
+        directive_consumed,
+        recorded_attempt_summaries,
+    )
+
 
 @dataclass
 class RunInvestigationInput:
@@ -375,6 +388,118 @@ def _should_force_walk_stack(
         return params
     except Exception:
         return None
+
+
+def _carry_ledger_directive(verify_data: dict | None, iteration: int) -> dict | None:
+    """G3 directive marker to append to action_history, or None.
+
+    Pure carry step (D3 lifecycle step 2): validates the verify result's
+    ``ledger_requery`` dict minimally (non-empty query, known retryable
+    action type) and returns the ONE new history entry. Never merges
+    into an existing entry. Strictly additive — None for anything
+    unexpected, so a malformed directive never breaks the loop here;
+    full validation happens at convert time. Pure — workflow-safe.
+    """
+    try:
+        data = verify_data if isinstance(verify_data, dict) else {}
+        directive = data.get("ledger_requery")
+        if not isinstance(directive, dict):
+            return None
+        query = str(directive.get("query") or "").strip()
+        if not query:
+            return None
+        action_type = str(directive.get("action_type") or "").upper()
+        if action_type not in RETRYABLE_ACTIONS:
+            return None
+        try:
+            attempt_index = int(directive.get("attempt_index", 0))
+        except (TypeError, ValueError):
+            attempt_index = 0
+        try:
+            max_attempts = int(directive.get("max_attempts", WP_A3_DEFAULT_MAX_ATTEMPTS))
+        except (TypeError, ValueError):
+            max_attempts = WP_A3_DEFAULT_MAX_ATTEMPTS
+        return {
+            "kind": "ledger_requery_directive",
+            "iteration": int(iteration),
+            "claim_ref": str(directive.get("claim_ref") or ""),
+            "query": query,
+            "scope": _normalize_scope(directive.get("scope")),
+            "action_type": action_type,
+            "action_parameters": dict(directive.get("action_parameters") or {}),
+            "attempt_index": attempt_index,
+            "max_attempts": max(1, max_attempts),
+            "turn_issued": int(iteration),
+            "consumed": False,
+        }
+    except Exception:
+        return None
+
+
+def _should_force_ledger_requery(
+    action_history: list | None,
+    recorded_summaries: list | None,
+) -> dict | None:
+    """G3 ledger forcing decision (D3 lifecycle step 3: convert).
+
+    Returns the typed override (``action_type``, ``action_parameters``,
+    ``marker_index``) when an unconsumed directive marker fires, or
+    ``{"mark_consumed": reason, "marker_index": index}`` when the newest
+    unconsumed marker must be retired without dispatch (malformed
+    directive or exhausted budget), or None when the turn proceeds
+    unchanged. Reads only workflow history plus same-turn summaries —
+    never the process-local ledger. Pure — workflow-safe.
+
+    Precedence is enforced by the caller: stack-walk suppresses
+    evaluation entirely, and every later override stands down once
+    ``forced_requery`` is set.
+    """
+    try:
+        entries = list(action_history or [])
+    except Exception:
+        return None
+    try:
+        recorded = list(recorded_summaries or [])
+    except Exception:
+        recorded = []
+    candidate_index: int | None = None
+    for index in range(len(entries) - 1, -1, -1):
+        entry = entries[index]
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") != "ledger_requery_directive":
+            continue
+        if entry.get("consumed"):
+            continue
+        candidate_index = index
+        break
+    if candidate_index is None:
+        return None
+    marker = entries[candidate_index]
+    try:
+        consumed = directive_consumed(marker, entries, recorded)
+    except Exception:
+        return None
+    if consumed:
+        return {"mark_consumed": "budget-exhausted", "marker_index": candidate_index}
+    query = str(marker.get("query") or "").strip()
+    action_type = str(marker.get("action_type") or "").upper()
+    parameters = marker.get("action_parameters")
+    if (
+        not query
+        or action_type not in RETRYABLE_ACTIONS
+        or not isinstance(parameters, dict)
+        or not all(
+            isinstance(k, str) and (v is None or isinstance(v, (str, int, float, bool)))
+            for k, v in parameters.items()
+        )
+    ):
+        return {"mark_consumed": "invalid-directive", "marker_index": candidate_index}
+    return {
+        "action_type": action_type,
+        "action_parameters": dict(parameters),
+        "marker_index": candidate_index,
+    }
 
 
 # D3: failure triage routes (pure, deterministic). The route guides the
@@ -1813,11 +1938,69 @@ class RunInvestigationWorkflow:
                 _reason_data["next_action"] = "WALK_STACK"
                 _reason_data["action_parameters"] = _walk_params
                 _reason_data["forced_walk_stack"] = True
+            # G3: ledger-requery forcing — a bounded re-retrieval for an
+            # unsatisfied claim outranks the remaining gathering rules
+            # but never stack-walk (evaluated only when no walk-stack
+            # force fired this cascade). Same-turn summaries ride from
+            # history entries via recorded_attempt_summaries, which
+            # carries each entry's top-level attempt_id into the attempt
+            # dict — without that stamp, a summary and its persisted
+            # marker count as two attempts and the budget exhausts early.
+            _ledger_marker_ref: dict | None = None
+            # G3 precedence: value-read (intake, like stack-walk) outranks
+            # the ledger requery, so a fired value-read also suppresses
+            # ledger evaluation — the ledger never overwrites it.
+            if not _reason_data.get("forced_walk_stack") and not _reason_data.get(
+                "forced_source_value_read"
+            ):
+                _recorded_summaries = (
+                    recorded_attempt_summaries(action_history or []) or []
+                )
+                _ledger_override = _should_force_ledger_requery(
+                    action_history, _recorded_summaries
+                )
+                if _ledger_override is not None and _ledger_override.get("mark_consumed"):
+                    _mark_idx = _ledger_override.get("marker_index")
+                    try:
+                        _mark_entry = (action_history or [])[_mark_idx]
+                        if isinstance(_mark_entry, dict):
+                            _mark_entry["consumed"] = True
+                            _ledger_marker_ref = None
+                    except (TypeError, IndexError, KeyError):
+                        pass
+                    if _ledger_override.get("mark_consumed") == "invalid-directive":
+                        workflow.logger.warning(
+                            "ledger directive refused (malformed); marker consumed-as-invalid"
+                        )
+                    _ledger_override = None
+                if _ledger_override is not None:
+                    _reason_data = dict(_reason_data)
+                    _reason_data["next_action"] = _ledger_override["action_type"]
+                    _reason_data["action_parameters"] = _ledger_override[
+                        "action_parameters"
+                    ]
+                    _reason_data["forced_requery"] = True
+                    try:
+                        _ledger_marker_ref = (action_history or [])[
+                            _ledger_override["marker_index"]
+                        ]
+                    except (TypeError, IndexError, KeyError):
+                        _ledger_marker_ref = None
+                    if not isinstance(_ledger_marker_ref, dict):
+                        _ledger_marker_ref = None
             # Evidence floor — a committal proposal (formulate/verify/
             # conclude) on fewer than 3 banked rows for a code-shaped
             # incident gathers first instead of committing to a thin
             # theory. Skipped once explicit frames already forced.
-            if not _is_defer and not _absence_forced and not _reason_data.get("forced_walk_stack"):
+            # Union of both lines' guards: skip floor forcing on defer turns
+            # and once absence-forcing fired (L2-D3-fix), and once walk-stack
+            # or requery forcing already fired (g4-closure).
+            if (
+                not _is_defer
+                and not _absence_forced
+                and not _reason_data.get("forced_walk_stack")
+                and not _reason_data.get("forced_requery")
+            ):
                 _floor = _explore_floor_target(
                     _reason_data,
                     evidence_banked_total,
@@ -1845,6 +2028,7 @@ class RunInvestigationWorkflow:
                 )
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
+                and not _reason_data.get("forced_requery")
             ):
                 forced_formulate_count += 1
                 _reason_data = dict(_reason_data)
@@ -1859,6 +2043,7 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_source_value_read")
+                and not _reason_data.get("forced_requery")
             ):
                 if _should_force_synthesis(
                     action_history,
@@ -1881,6 +2066,7 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_source_value_read")
+                and not _reason_data.get("forced_requery")
             ):
                 _reread_path = _reread_target(_reason_data, action_history, forced_reread_count)
                 if _reread_path:
@@ -1900,6 +2086,7 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_reread")
                 and not _reason_data.get("forced_source_value_read")
+                and not _reason_data.get("forced_requery")
             ):
                 _callsite = _callsite_target(
                     _reason_data,
@@ -1925,6 +2112,7 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_callsite")
+                and not _reason_data.get("forced_requery")
             ):
                 _log_params = _should_force_log_search(
                     input_data.description,
@@ -1950,6 +2138,7 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_callsite")
+                and not _reason_data.get("forced_requery")
             ):
                 _replan = _should_force_replan(
                     input_data.description,
@@ -2166,6 +2355,7 @@ class RunInvestigationWorkflow:
                         investigation_id=inv_id,
                         action=_dispatched_action,
                         parameters=dict(_reason_data.get("action_parameters", {})),
+                        iteration=iteration,
                         hypotheses=list(_reason_data.get("hypotheses_evaluated", []) or []),
                         claims=[
                             {**claim, "evidence_ids": list(claim.get("evidence_ids", []) or [])}
@@ -2208,6 +2398,35 @@ class RunInvestigationWorkflow:
                 _exec_data = execute_res.data or {}
                 _outcome = _exec_data.get("action_outcome") or {}
                 _params = dict(reason_res.data.get("action_parameters", {}) or {})
+                # G3: same-turn retrieval summary for the verify-time
+                # fallback (actions not yet flushed to the timeline table)
+                # and the cascade-time budget re-check. All JSON scalars,
+                # Temporal replay-safe. The attempt rides inside
+                # action_outcome (not top-level result data); only the
+                # stable attempt_id is top-level.
+                _exec_attempt = _outcome.get("retrieval_attempt")
+                if not isinstance(_exec_attempt, dict):
+                    _exec_attempt = {}
+                try:
+                    _exec_truncated = int(_exec_attempt.get("truncated_rows") or 0)
+                except (TypeError, ValueError):
+                    _exec_truncated = 0
+                _exec_provider_total = _exec_attempt.get("provider_total_count")
+                try:
+                    _exec_provider_total = (
+                        int(_exec_provider_total)
+                        if _exec_provider_total is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    _exec_provider_total = None
+                _exec_banked = _exec_attempt.get("banked_count")
+                try:
+                    _exec_banked = (
+                        int(_exec_banked) if _exec_banked is not None else None
+                    )
+                except (TypeError, ValueError):
+                    _exec_banked = None
                 action_history[-1].update(
                     {
                         "parameters": {k: str(v)[:200] for k, v in _params.items()},
@@ -2223,13 +2442,40 @@ class RunInvestigationWorkflow:
                         "forced_replan": bool(_reason_data.get("forced_replan", False)),
                         "forced_floor": bool(_reason_data.get("forced_floor", False)),
                         "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
+                        # Union of both lines' history keys: defer/absence-disconf
+                        # flags (L2-D3-fix) plus requery/attempt/retrieval
+                        # telemetry (g4-closure).
                         "disposition": _reason_data.get("disposition"),
                         "defer_repairs_used": _reason_data.get("defer_repairs_used"),
                         "forced_absence_disconfirmation": bool(
                             _reason_data.get("forced_absence_disconfirmation", False)
                         ),
+                        "forced_requery": False,
+                        "attempt_id": _exec_data.get("attempt_id"),
+                        "retrieval_attempt": dict(_exec_attempt) if _exec_attempt else None,
+                        "evidence_ids": [
+                            str(e) for e in (_outcome.get("evidence_ids") or [])
+                        ][:25],
+                        "truncated_rows": _exec_truncated,
+                        "provider_total_count": _exec_provider_total,
+                        "banked_count": _exec_banked,
                     }
                 )
+                # G3: stamp the dispatched turn and retire the marker in
+                # place (exactly once). A failed/degraded dispatch still
+                # stamps — the marker stays consumed, recovery waits for a
+                # fresh evaluation, never a tight retry loop.
+                if _reason_data.get("forced_requery") and isinstance(
+                    _ledger_marker_ref, dict
+                ):
+                    _ledger_marker_ref["consumed"] = True
+                    action_history[-1]["forced_requery"] = {
+                        "claim_ref": str(_ledger_marker_ref.get("claim_ref") or ""),
+                        "query": str(_ledger_marker_ref.get("query") or ""),
+                        "scope": str(_ledger_marker_ref.get("scope") or ""),
+                        "turn": int(iteration),
+                        "outcome_status": _outcome.get("status"),
+                    }
                 # D4 fuzzy orientation rides history (not the prompt): the
                 # next reason turn picks up the latest hint as non-citable
                 # steering. Only set when present to keep history lean.
@@ -2306,10 +2552,23 @@ class RunInvestigationWorkflow:
                     tenant_id=tenant_id,
                     investigation_id=inv_id,
                     triage_route=triage_route,
+                    recent_actions=action_history[-10:],
+                    iteration=iteration,
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=retry_policy,
             )
+            # G3: carry the verify-issued re-retrieval directive (D3
+            # lifecycle step 2). ONE new history entry per directive —
+            # never merged into action_history[-1], which the
+            # post-execution update owns. The next turn's cascade reads
+            # the full history (never the truncated recent_actions view).
+            _ledger_marker = _carry_ledger_directive(
+                verify_res.data if isinstance(verify_res.data, dict) else {},
+                iteration,
+            )
+            if _ledger_marker is not None:
+                action_history.append(_ledger_marker)
             # D3 Phase 0 shadow receipt pairing (compute-only; the loop
             # never branches on the result). T1 observations ride the
             # additive result key; each is paired with this turn's native

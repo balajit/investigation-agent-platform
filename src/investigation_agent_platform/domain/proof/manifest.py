@@ -20,13 +20,17 @@ import re
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from investigation_agent_platform.domain.proof.canonical import (
     CANON_VERSION,
     CanonError,
     CanonicalizationError,
     canonical_dict_bytes,
+)
+from investigation_agent_platform.domain.proof.premises import (
+    CLOSED_PREMISE_TYPES,
+    AbsenceCoverage,
 )
 
 
@@ -40,10 +44,14 @@ class ManifestCoverage(str, Enum):
 
 
 class ManifestError(str, Enum):
-    """Manifest construction failure codes (frozen)."""
+    """Manifest construction failure codes (frozen; append-only)."""
 
     DUPLICATE_PREMISE_ID = "DUPLICATE_PREMISE_ID"
     BAD_CONTENT_HASH = "BAD_CONTENT_HASH"
+    CONTENT_HASH_KEY_MISMATCH = "CONTENT_HASH_KEY_MISMATCH"
+    PREMISE_TYPE_MISMATCH = "PREMISE_TYPE_MISMATCH"
+    UNKNOWN_PREMISE_TYPE = "UNKNOWN_PREMISE_TYPE"
+    COVERAGE_BINDING_MISMATCH = "COVERAGE_BINDING_MISMATCH"
 
 
 class ManifestConstructionError(ValueError):
@@ -60,11 +68,11 @@ _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 class EvidenceManifest(BaseModel):
     """Frozen evidence manifest: ordered premise IDs + content hashes.
 
-    ``content_hashes`` maps premise ID to its full ``sha256:`` digest.
-    Premises listed without a known hash are recorded (the run happened)
-    but unevaluable — :func:`evaluate` reports them PREMISE_UNAVAILABLE
-    instead of proving over them. ``exclusions`` declares universe
-    exclusions (scope carved out, never silently unsearched).
+    ``evidence_ids``, ``content_hashes``, and ``premise_types`` cover
+    exactly the same ID set (enforced at construction): every listed
+    premise carries a known hash and a known closed type, so no consumer
+    can read a different inventory than another. ``exclusions`` declares
+    universe exclusions (scope carved out, never silently unsearched).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -74,6 +82,9 @@ class EvidenceManifest(BaseModel):
     retrieval_config: dict[str, Any] = Field(default_factory=dict)
     exclusions: list[str] = Field(default_factory=list, max_length=50)
     coverage: ManifestCoverage = ManifestCoverage.MATCHES_FOUND
+    premise_types: dict[str, str] = Field(default_factory=dict)
+    coverage_evidence_id: str | None = Field(default=None, max_length=256)
+    coverage_evidence: AbsenceCoverage | None = Field(default=None)
 
 
 def build_manifest(
@@ -82,6 +93,9 @@ def build_manifest(
     retrieval_config: dict[str, Any] | None = None,
     exclusions: list[str] | None = None,
     coverage: ManifestCoverage = ManifestCoverage.MATCHES_FOUND,
+    premise_types: dict[str, str] | None = None,
+    coverage_evidence_id: str | None = None,
+    coverage_evidence: dict[str, Any] | AbsenceCoverage | None = None,
 ) -> EvidenceManifest:
     """Build a manifest (pure; fail-closed on duplicates and bad hashes)."""
     ids = [str(i) for i in evidence_ids or []]
@@ -95,12 +109,67 @@ def build_manifest(
             raise ManifestConstructionError(
                 ManifestError.BAD_CONTENT_HASH, f"{premise_id}={digest!r}"
             )
+    if set(hashes) != set(ids):
+        raise ManifestConstructionError(
+            ManifestError.CONTENT_HASH_KEY_MISMATCH,
+            "content hash map must cover exactly the evidence IDs",
+        )
+    types = {str(k): str(v) for k, v in dict(premise_types or {}).items()}
+    if set(types) != set(ids):
+        raise ManifestConstructionError(
+            ManifestError.PREMISE_TYPE_MISMATCH,
+            "premise type map must cover exactly the evidence IDs",
+        )
+    for premise_id, premise_type in types.items():
+        if premise_type not in CLOSED_PREMISE_TYPES:
+            raise ManifestConstructionError(
+                ManifestError.UNKNOWN_PREMISE_TYPE, f"{premise_id}={premise_type!r}"
+            )
+    coverage_id = (
+        str(coverage_evidence_id) if coverage_evidence_id is not None else None
+    )
+    if (coverage_id is None) != (coverage_evidence is None):
+        raise ManifestConstructionError(
+            ManifestError.COVERAGE_BINDING_MISMATCH,
+            "coverage id and coverage record must be provided together",
+        )
+    coverage_record: AbsenceCoverage | None = None
+    if coverage_id is not None:
+        if coverage_id not in ids:
+            raise ManifestConstructionError(
+                ManifestError.COVERAGE_BINDING_MISMATCH,
+                f"coverage id not in evidence inventory: {coverage_id}",
+            )
+        if types.get(coverage_id) != "ABSENCE_COVERAGE_FACT":
+            raise ManifestConstructionError(
+                ManifestError.COVERAGE_BINDING_MISMATCH,
+                f"coverage id must be ABSENCE_COVERAGE_FACT: {coverage_id}",
+            )
+        raw_coverage = coverage_evidence
+        if isinstance(raw_coverage, AbsenceCoverage):
+            coverage_record = raw_coverage
+        elif isinstance(raw_coverage, dict):
+            try:
+                coverage_record = AbsenceCoverage.model_validate(raw_coverage)
+            except ValidationError as exc:
+                raise ManifestConstructionError(
+                    ManifestError.COVERAGE_BINDING_MISMATCH,
+                    f"coverage record fails strict contract: {exc}",
+                ) from exc
+        else:
+            raise ManifestConstructionError(
+                ManifestError.COVERAGE_BINDING_MISMATCH,
+                "coverage record must be a mapping or AbsenceCoverage",
+            )
     return EvidenceManifest(
         evidence_ids=ids,
         content_hashes=hashes,
         retrieval_config=dict(retrieval_config or {}),
         exclusions=[str(e) for e in exclusions or []],
         coverage=coverage,
+        premise_types=types,
+        coverage_evidence_id=coverage_id,
+        coverage_evidence=coverage_record,
     )
 
 

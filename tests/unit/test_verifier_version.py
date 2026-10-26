@@ -1,4 +1,5 @@
-"""The dev verifier has one active behavior; old labels are audit-only."""
+"""Version-contained verifier routing: unmarked rows run current behavior;
+rows explicitly pinned to a recorded version keep that row's semantics."""
 
 from __future__ import annotations
 
@@ -30,9 +31,12 @@ def test_one_active_dev_verifier_behavior() -> None:
 
 
 def test_resolve_uses_pinned_version() -> None:
-    assert resolve_verifier_version({"verifier_version": "v1"}) == ("v2", "unified-dev")
-    assert resolve_verifier_version({"verifier_version": "v2"}) == ("v2", "unified-dev")
-    assert resolve_verifier_version({"verifier_version": "v3"}) == ("v2", "unified-dev")
+    # Version-contained routing: the recorded pin decides the row's
+    # semantics (g4-closure/L2-D3-fix agreement). Unmarked rows resolve
+    # to current; only explicit pins run their labeled version.
+    assert resolve_verifier_version({"verifier_version": "v1"}) == ("v1", "pinned")
+    assert resolve_verifier_version({"verifier_version": "v2"}) == ("v2", "pinned")
+    assert resolve_verifier_version({"verifier_version": "v3"}) == ("v3", "pinned")
 
 
 def test_resolve_defaults_loaded_unmarked_to_current() -> None:
@@ -101,18 +105,21 @@ async def test_creation_does_not_pin_dev_verifier_version() -> None:
     assert saved[0].metadata["profile_version"] == 3
 
 
-def test_historical_labels_resolve_to_one_active_behavior() -> None:
+def test_pinned_labels_resolve_to_their_row_version() -> None:
+    # Explicit pins are honored per row; unmarked rows resolve to current
+    # (see test_resolve_defaults_loaded_unmarked_to_current). The engine
+    # boundary still exposes the unified evaluate path for current rows.
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine,
     )
 
     assert resolve_verifier_version({"verifier_version": VERIFIER_VERSION_LEGACY}) == (
-        VERIFIER_VERSION_CURRENT,
-        "unified-dev",
+        VERIFIER_VERSION_LEGACY,
+        "pinned",
     )
     assert resolve_verifier_version({"verifier_version": "v3"}) == (
-        VERIFIER_VERSION_CURRENT,
-        "unified-dev",
+        "v3",
+        "pinned",
     )
     engine = VerificationEngine()
     assert hasattr(engine, "evaluate_hypothesis")
@@ -209,7 +216,10 @@ def _spy_result(hyp_id: Any) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_v1_label_uses_unified_current_behavior(monkeypatch: Any) -> None:
+async def test_unmarked_row_uses_unified_current_behavior(monkeypatch: Any) -> None:
+    # Unmarked rows run the unified current behavior (ranked-candidate /
+    # bound-subset routing). v1-pinned rows keep legacy routing instead
+    # (see test_g3_retrieval_benefit legacy tests).
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine,
     )
@@ -220,7 +230,7 @@ async def test_v1_label_uses_unified_current_behavior(monkeypatch: Any) -> None:
 
     inv_id = uuid4()
     h1, h2, rows, _ = _hyps(inv_id)
-    _harness({"verifier_version": "v1"})
+    _harness({})
     from investigation_agent_platform.api.dependencies import get_app_context
 
     ctx = get_app_context()
@@ -393,7 +403,7 @@ async def test_verify_persistence_conflict_is_typed_denial(monkeypatch: Any) -> 
     assert result.data.get("verified") is False
     assert result.data.get("persisted") is False
     assert result.data.get("status") == "VERIFIED"
-    assert result.data.get("verifier_version_source") == "unified-dev"
+    assert result.data.get("verifier_version_source") == "pinned"
 
 
 @pytest.mark.asyncio
@@ -434,7 +444,7 @@ async def test_verify_materialization_failure_is_typed_denial(monkeypatch: Any) 
     assert result.success is False
     assert result.data.get("reason") == "outcome_materialization_failed"
     assert result.data.get("verified") is False
-    assert result.data.get("verifier_version_source") == "unified-dev"
+    assert result.data.get("verifier_version_source") == "pinned"
 
 
 @pytest.mark.asyncio
@@ -469,7 +479,7 @@ async def test_no_repository_uses_unified_version_source(monkeypatch: Any) -> No
     )
     assert result.success is True
     assert result.data.get("verifier_version") == VERIFIER_VERSION_CURRENT
-    assert result.data.get("verifier_version_source") == "unified-dev"
+    assert result.data.get("verifier_version_source") == "no-repository"
 
 
 @pytest.mark.asyncio

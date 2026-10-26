@@ -21,10 +21,12 @@ enforcement for the least-privilege role.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import pytest
@@ -78,6 +80,13 @@ from investigation_agent_platform.infrastructure.persistence.rls import (
 TENANT = "proof-commit-tenant"
 IMPL_DIGEST = RULE_REGISTRY["definition/v1"].implementation_digest
 
+# Fail-closed staging identity (G5 atomicity T13-T16, 2026-10-26). Canonical
+# staging per docs/IAP-L2-D3-fix-test-procedure.md §2 (host/port/db display
+# only, never credentials). A non-staging target fails instead of running.
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1"}
+_ALLOWED_PORT = 5452
+_ALLOWED_DBS = {"iap"}
+
 
 def _pg_url() -> str:
     url = os.environ.get("IAP_PROOF_TEST_PG_URL") or os.environ.get("IAP_DATABASE_URI", "")
@@ -85,6 +94,18 @@ def _pg_url() -> str:
         pytest.skip("no Postgres URL (IAP_DATABASE_URI / IAP_PROOF_TEST_PG_URL)")
     if url.startswith("postgresql://"):
         url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+    parts = urlparse(url)
+    if (
+        parts.hostname not in _ALLOWED_HOSTS
+        or (parts.port or 5432) != _ALLOWED_PORT
+        or (parts.path or "").lstrip("/") not in _ALLOWED_DBS
+    ):
+        pytest.fail(
+            "refusing live run: target is not the staging dev stack "
+            f"(host={parts.hostname}, port={parts.port}, "
+            f"db={(parts.path or '').lstrip('/')}); point "
+            "IAP_PROOF_TEST_PG_URL at localhost:5452/iap"
+        )
     return url
 
 
@@ -168,6 +189,11 @@ async def _hypothesis(live: Any, inv_id: UUID, statement: str = "defined(OrderSe
 
 
 async def _hypothesis_version(live: Any, hyp_id: UUID) -> int:
+    version, _ = await _hypothesis_version_status(live, hyp_id)
+    return version
+
+
+async def _hypothesis_version_status(live: Any, hyp_id: UUID) -> tuple[int, str]:
     async with rls_session(live.factory, TENANT) as session:
         row = (
             (
@@ -181,7 +207,23 @@ async def _hypothesis_version(live: Any, hyp_id: UUID) -> int:
             .first()
         )
         assert row is not None
-        return int(row.version)
+        return int(row.version), str(row.status)
+
+
+async def _hypothesis_with_status(live: Any, inv_id: UUID, status: str) -> Any:
+    async with rls_session(live.factory, TENANT) as session:
+        row = HypothesisORM(
+            tenant_id=TENANT,
+            investigation_id=inv_id,
+            title="probe",
+            description="probe",
+            statement="defined(OrderService)",
+            status=status,
+        )
+        session.add(row)
+        await session.flush()
+        await session.refresh(row, attribute_names=["id", "version", "status"])
+        return row
 
 
 async def _evidence(live: Any, inv_id: UUID, fingerprint: str, key: str) -> None:
@@ -206,9 +248,23 @@ async def _evidence(live: Any, inv_id: UUID, fingerprint: str, key: str) -> None
 def _definition_route(
     symbol: str, window: str, premise_type: str = "RANGE_READ_FACT"
 ) -> RouteInput:
-    artifact = {"file_path": "svc.py", "symbol": symbol, "text": window}
+    # Strict shape (G5 atomicity pre-work 2026-10-26): the kernel's closed
+    # RangeReadFact contract (premises.py) plus the registry-pinned bundle
+    # version. The previous minimal builder predated both and fails at
+    # certify time (UNSUPPORTED_BUNDLE) and checker time (strict parse).
+    # Fields mirror test_certificate_checker._definition_setup.
+    assert premise_type == "RANGE_READ_FACT", "only the definition route is strict-pinned"
+    artifact = {
+        "file_path": "svc.py",
+        "repository": "synthetic/service",
+        "revision": "rev-live",
+        "line_start": 10,
+        "line_end": 14,
+        "target": symbol,
+        "window_text": window,
+    }
     digest = _artifact_hash(artifact)
-    manifest = build_manifest(["row-1"], {"row-1": digest})
+    manifest = build_manifest(["row-1"], {"row-1": digest}, premise_types={"row-1": premise_type})
     proposition = {
         "canon_version": "canon/v1",
         "completeness": "PARTIAL_OK",
@@ -224,6 +280,44 @@ def _definition_route(
         "content_hash": digest,
         "evidence_id": "row-1",
         "premise_type": premise_type,
+        "scope": {"revision": "rev-live"},
+    }
+    rule = RULE_REGISTRY["definition/v1"]
+    return RouteInput(
+        proposition=proposition,
+        manifest=manifest,
+        premises=[premise],
+        artifacts={"row-1": artifact},
+        rule_bundle_version="rules/v2",
+        rule_id=rule.rule_id,
+        rule_version=rule.rule_version,
+        implementation_digest=rule.implementation_digest,
+    )
+
+
+def _forged_route(symbol: str, window: str) -> RouteInput:
+    # Deliberately invalid premise type: exercises the certify-side rejection
+    # (EVALUATION_FAILED). Never a validity claim.
+    artifact = {"file_path": "svc.py", "symbol": symbol, "text": window}
+    digest = _artifact_hash(artifact)
+    manifest = build_manifest(
+        ["row-1"], {"row-1": digest}, premise_types={"row-1": "RANGE_READ_FACT"}
+    )
+    proposition = {
+        "canon_version": "canon/v1",
+        "completeness": "PARTIAL_OK",
+        "form": "EXISTENCE",
+        "modality": "STATIC",
+        "predicate": f"defined({symbol})",
+        "quantifier": "EXISTENTIAL",
+        "relation": "CALL_EDGE",
+        "scope": {"configuration": "default", "execution": "n/a", "revision": "rev-live"},
+        "target": {"file_path": "svc.py", "symbol": symbol},
+    }
+    premise = {
+        "content_hash": digest,
+        "evidence_id": "row-1",
+        "premise_type": "SEARCH_HIT",
         "scope": {"revision": "rev-live"},
     }
     return RouteInput(
@@ -353,14 +447,19 @@ async def test_k5_alternative_survival(live: Any) -> None:
     bad_manifest = build_manifest(
         ["row-1"],
         {"row-1": _artifact_hash(bad_artifact)},
+        premise_types={"row-1": "RANGE_READ_FACT"},
         coverage=ManifestCoverage.COMPLETE_EMPTY,
     )
+    rule = RULE_REGISTRY["definition/v1"]
     bad = RouteInput(
         proposition=bad_prop,
         manifest=bad_manifest,
         premises=list(good.premises),
         artifacts=dict(good.artifacts),
-        implementation_digest=IMPL_DIGEST,
+        rule_bundle_version="rules/v2",
+        rule_id=rule.rule_id,
+        rule_version=rule.rule_version,
+        implementation_digest=rule.implementation_digest,
         universe="repo@rev:/:query=q",
     )
     denied = await svc.commit(TENANT, inv_id, exp, [good, bad], mode="all")
@@ -483,9 +582,7 @@ async def test_forged_and_policy_denied_inputs_write_nothing(live: Any) -> None:
     await _evidence(live, inv_id, "fp-f", "k-f")
     exp = await _expectation(live, hyp)
     svc = ProofPublicationService(live.factory)
-    forged = _definition_route(
-        "OrderService", "class OrderService:\n    pass\n", premise_type="SEARCH_HIT"
-    )
+    forged = _forged_route("OrderService", "class OrderService:\n    pass\n")
     denied = await svc.commit(TENANT, inv_id, exp, [forged])
     assert denied.committed is False
     assert denied.reason.startswith("EVALUATION_FAILED")
@@ -559,3 +656,129 @@ async def test_rls_enforced_for_least_privilege_role(live: Any) -> None:
         finally:
             await conn.execute(text("RESET ROLE"))
             await trans.rollback()
+
+
+@pytest.mark.asyncio
+async def test_T13_concurrent_commits_with_lifecycle_one_winner(live: Any) -> None:
+    # G5 atomicity: barrier-forced concurrent pair, lifecycle on both sides.
+    # The row lock serializes the two transactions; the loser unblocks after
+    # the winner's lifecycle advance to N+1 and denies STALE_VERSION.
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis(live, inv_id)
+    await _evidence(live, inv_id, "fp-t13", "k-t13")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    barrier = asyncio.Barrier(2)
+
+    async def _raced():
+        await barrier.wait()
+        return await svc.commit(
+            TENANT,
+            inv_id,
+            exp,
+            [_definition_route("OrderService", "class OrderService:\n    pass\n")],
+            lifecycle=_lifecycle(),
+            reconciliation_adjudicated=True,
+        )
+
+    first, second = await asyncio.gather(_raced(), _raced())
+    winners = [r for r in (first, second) if r.committed]
+    losers = [r for r in (first, second) if not r.committed]
+    assert len(winners) == 1 and len(losers) == 1, (first.reason, second.reason)
+    assert winners[0].reason == "COMMITTED", winners[0].reason
+    assert losers[0].reason == "STALE_VERSION", losers[0].reason
+    assert await _counts(live, inv_id) == (1, 1, 1, 1)
+    assert await _hypothesis_version_status(live, hyp.id) == (2, "VERIFIED")
+    async with rls_session(live.factory, TENANT) as session:
+        finding = (
+            (await session.execute(select(FindingORM).where(FindingORM.investigation_id == inv_id)))
+            .scalars()
+            .one()
+        )
+        conclusion = (
+            (
+                await session.execute(
+                    select(InvestigationConclusionORM).where(
+                        InvestigationConclusionORM.investigation_id == inv_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert (finding.title, finding.statement) == ("OrderService defined", "OrderService is defined")
+    assert conclusion.root_cause == "OrderService is defined"
+    assert conclusion.status == "ROOT_CAUSE_ESTABLISHED"
+
+
+@pytest.mark.asyncio
+async def test_T14_cross_tenant_commit_denied(live: Any) -> None:
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis(live, inv_id)
+    await _evidence(live, inv_id, "fp-t14", "k-t14")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    denied = await svc.commit(
+        "proof-commit-foreign",
+        inv_id,
+        exp,
+        [_definition_route("OrderService", "class OrderService:\n    pass\n")],
+    )
+    assert denied.committed is False
+    assert denied.reason == "HYPOTHESIS_NOT_FOUND", denied.reason
+    assert denied.derivation_ids == ()
+    assert await _counts(live, inv_id) == (0, 0, 0, 0)
+    assert await _hypothesis_version_status(live, hyp.id) == (1, "SUPPORTED")
+
+
+@pytest.mark.asyncio
+async def test_T15_draft_status_lifecycle_denied(live: Any) -> None:
+    # DESIGNED BAR (pre-registered likely red — see G5 proposal §0/§9):
+    # lifecycle denials must write nothing. Code inspection shows
+    # LIFECYCLE_EDGE_DENIED returns after persistence (service lines 227-269
+    # before 270-284); a red run is a service bug report (prescribed fix:
+    # hoist new_status + _COMMITTABLE_FROM validation to immediately after
+    # the row lock), not a test to weaken.
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis_with_status(live, inv_id, "DRAFT")
+    await _evidence(live, inv_id, "fp-t15", "k-t15")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    denied = await svc.commit(
+        TENANT,
+        inv_id,
+        exp,
+        [_definition_route("OrderService", "class OrderService:\n    pass\n")],
+        lifecycle=_lifecycle(),
+        reconciliation_adjudicated=True,
+    )
+    assert denied.committed is False
+    assert denied.reason == "LIFECYCLE_EDGE_DENIED", denied.reason
+    assert await _counts(live, inv_id) == (0, 0, 0, 0)
+    assert await _hypothesis_version_status(live, hyp.id) == (1, "DRAFT")
+
+
+@pytest.mark.asyncio
+async def test_T16_unsupported_projection_status_denied(live: Any) -> None:
+    # DESIGNED BAR (pre-registered likely red — same post-write shape as T15).
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis(live, inv_id)
+    await _evidence(live, inv_id, "fp-t16", "k-t16")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    bad = _lifecycle()
+    bad = LifecycleProjection(
+        new_status="SUPPORTED", finding=bad.finding, conclusion=bad.conclusion
+    )
+    denied = await svc.commit(
+        TENANT,
+        inv_id,
+        exp,
+        [_definition_route("OrderService", "class OrderService:\n    pass\n")],
+        lifecycle=bad,
+        reconciliation_adjudicated=True,
+    )
+    assert denied.committed is False
+    assert denied.reason == "UNSUPPORTED_PROJECTION_STATUS", denied.reason
+    assert await _counts(live, inv_id) == (0, 0, 0, 0)
+    assert await _hypothesis_version_status(live, hyp.id) == (1, "SUPPORTED")

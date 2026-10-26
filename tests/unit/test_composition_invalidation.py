@@ -138,5 +138,5 @@ def test_duplicate_premise_rejects_k14() -> None:
 
 def test_unknown_rule_rejects() -> None:
     with pytest.raises(CompositionError) as exc:
-        make_node("X", "behavior/v1", ["ev-1"], [])
+        make_node("X", "causal/v1", ["ev-1"], [])
     assert exc.value.code == CompositionErrorCode.UNKNOWN_RULE.value

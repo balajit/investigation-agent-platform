@@ -48,12 +48,21 @@ class SqlAlchemyTimelineRepository:
                     continue
             return out
 
+        try:
+            event_type = TimelineEventType(row.event_type)
+        except ValueError:
+            # Forward tolerance: rows written by a newer code version
+            # (e.g. a future event type) must not break timeline
+            # hydration for this reader — they surface as UNKNOWN with
+            # their attributes intact.
+            event_type = TimelineEventType.UNKNOWN
+
         return TimelineEvent(
             id=row.id,
             tenant_id=row.tenant_id,
             investigation_id=row.investigation_id or row.id,
             timestamp=row.timestamp,
-            event_type=TimelineEventType(row.event_type),
+            event_type=event_type,
             description=row.description,
             attributes=row.attributes,
             entity_ids=_parse_uuids(row.entity_ids),

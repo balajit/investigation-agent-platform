@@ -44,14 +44,20 @@ def _callsite(caller: str, callee: str, text: str) -> dict:
 
 
 def test_registry_is_closed_and_versioned() -> None:
-    assert set(RULE_REGISTRY) == {"definition/v1", "call_edge/v1"}
-    assert RULE_BUNDLE_VERSION == "rules/v1"
+    assert set(RULE_REGISTRY) == {
+        "definition/v1",
+        "call_edge/v1",
+        "behavior/v1",
+        "absence/v1",
+        "history/v1",
+    }
+    assert RULE_BUNDLE_VERSION == "rules/v2"
     rule = get_rule("definition/v1")
     assert rule.rule_version == "v1"
     assert rule.soundness == Soundness.SOUND
     assert rule.implementation_digest.startswith("sha256:")
     with pytest.raises(UnknownRule):
-        get_rule("behavior/v1")
+        get_rule("causal/v1")
 
 
 def test_contract_digests_are_stable() -> None:
@@ -67,13 +73,10 @@ def test_contract_digests_are_stable() -> None:
 def test_kind_routing_abstains_where_unregistered() -> None:
     assert rule_for_kind(ClaimKind.DEFINITION).rule_id == "definition/v1"
     assert rule_for_kind(ClaimKind.CALL_EDGE).rule_id == "call_edge/v1"
-    for kind in (
-        ClaimKind.BEHAVIOR,
-        ClaimKind.ABSENCE,
-        ClaimKind.HISTORY,
-        ClaimKind.CAUSAL,
-    ):
-        assert rule_for_kind(kind) is None
+    assert rule_for_kind(ClaimKind.BEHAVIOR).rule_id == "behavior/v1"
+    assert rule_for_kind(ClaimKind.ABSENCE).rule_id == "absence/v1"
+    assert rule_for_kind(ClaimKind.HISTORY).rule_id == "history/v1"
+    assert rule_for_kind(ClaimKind.CAUSAL) is None
     assert rule_for_kind("DEFINITION").rule_id == "definition/v1"
     assert rule_for_kind(None) is None
 

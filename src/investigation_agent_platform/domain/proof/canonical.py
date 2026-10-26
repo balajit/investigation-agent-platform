@@ -186,11 +186,15 @@ _PROPOSITION_KEYS = (
     "assumptions",
     "canon_version",
     "target",
+    "asserted_value",
 )
 
 #: Target identity fields. Line numbers and commit IDs are context.
 #: caller/callee ride alongside symbol/counterpart per the ClaimTarget
 #: contract (they are the binding keys _claim_bindings reads).
+#: v2 additions (cert/v2): ``universe`` (ABSENCE identity), ``repository``,
+#: ``commit_id``, and ``subject`` (HISTORY identity). Additive only: no
+#: existing vector carries these keys, so no existing digest changes.
 _TARGET_KEYS = (
     "symbol",
     "caller",
@@ -201,6 +205,10 @@ _TARGET_KEYS = (
     "value_semantics",
     "claimed_value",
     "fact_category",
+    "universe",
+    "repository",
+    "commit_id",
+    "subject",
 )
 
 #: Context fields: validated where schema-constrained (paths, lines) but
@@ -233,6 +241,47 @@ _TARGET_CONTEXT_KEYS = (
     "revision",
     "commit",
 )
+
+#: v2 rule-specific target keys (cert/v2, rules/v2). Validators require
+#: the listed keys per rule; the canonical projection includes any listed
+#: key present and never silently drops an unlisted one (unknown keys fail
+#: closed as UNKNOWN_FIELD above).
+V2_TARGET_KEYS: dict[str, frozenset[str]] = {
+    "definition/v1": frozenset({"symbol", "file_path"}),
+    "call_edge/v1": frozenset({"caller", "callee", "counterpart", "symbol"}),
+    "behavior/v1": frozenset({"symbol", "file_path"}),
+    "absence/v1": frozenset({"universe"}),
+    "history/v1": frozenset({"repository", "commit_id", "file_path", "subject"}),
+}
+
+#: v2 rule-specific scope keys (cert/v2, rules/v2). Scope rides in the
+#: context preimage, never in the proposition identity. Validators require
+#: the listed keys per rule; anything else fails closed there.
+V2_SCOPE_KEYS: dict[str, frozenset[str]] = {
+    "definition/v1": frozenset({"revision"}),
+    "call_edge/v1": frozenset({"revision"}),
+    "behavior/v1": frozenset(
+        {"repository", "revision", "build_identity", "execution_id", "environment"}
+    ),
+    "absence/v1": frozenset({"repository", "revision", "path_scope"}),
+    "history/v1": frozenset({"repository_revision"}),
+}
+
+
+def v2_unknown_target_keys(rule_id: str, target: Any) -> list[str]:
+    """Keys in target outside the rule's v2 target contract (sorted)."""
+    allowed = V2_TARGET_KEYS.get(str(rule_id or ""), frozenset())
+    if not isinstance(target, dict):
+        return []
+    return sorted(key for key in target if key not in allowed)
+
+
+def v2_unknown_scope_keys(rule_id: str, scope: Any) -> list[str]:
+    """Keys in scope outside the rule's v2 scope contract (sorted)."""
+    allowed = V2_SCOPE_KEYS.get(str(rule_id or ""), frozenset())
+    if not isinstance(scope, dict):
+        return []
+    return sorted(key for key in scope if key not in allowed)
 
 
 def canonical_dict_bytes(node: dict[str, Any]) -> bytes:
@@ -290,6 +339,8 @@ def canonical_bytes(
     for key in proposition:
         if key not in _PROPOSITION_KEYS and key not in _CONTEXT_KEYS:
             raise CanonicalizationError(CanonError.UNKNOWN_FIELD, f"proposition.{key}")
+    if "scope" in proposition and not isinstance(proposition["scope"], dict):
+        raise CanonicalizationError(CanonError.MISSING_FIELD, "scope must be an object")
     target_keys = proposition.get("target")
     if isinstance(target_keys, dict):
         for key in target_keys:
