@@ -922,6 +922,49 @@ Step 10 is incomplete and does not support a convergence claim. The required
 follow-up is an offline diagnosis/fix of the defer/retrieval budget path before
 any further live run. Step 11 remains blocked.
 
+### Step 10 re-run record (2026-10-26, explicit owner permission)
+
+The defer/retrieval follow-up from the record above is complete (missing
+calibration checkout rebuilt; hypothesis persistence for all action types;
+CALL_EDGE revision pin; call-edge causal synthesis — all verified live).
+With fresh explicit permission, Step 10 was re-executed per the test
+procedure, both arms:
+
+- Offline gates: full unit suite 3642 passed + 2 documented baseline pins;
+  ruff clean on all touched files (7 pre-existing ruff findings in untouched
+  files left alone).
+- Restarted the worker with `IAP_SHADOW_TYPED_DEFINITIONS=1`, verified a
+  single poller tree, API READY. Cleaned the scratch scope via
+  `clean_battery.py --execute` (1 prior PASS row removed; its report kept).
+- Shadow arm: `live_battery --tenant dev-shadow-certify --only L2
+  --no-cleanup-prior` → **PASS (COMPLETED)** in 14.2s. Root cause
+  "OrderServiceRestProxy calls the order service handler via its handler
+  field and submit method"; 1 VERIFIED + 1 PROPOSED hypothesis; 3
+  SOURCE_CODE rows (2 discovery + 1 range read at `0d9982f6`); 2
+  CALL_EDGE_BOUND assessments; conclusion `ROOT_CAUSE_ESTABLISHED`;
+  zero defer/repair turns fired. Report
+  `reports/dev-shadow-L2-20261026T125657.md`.
+- Capture verification (§3.2): 149-record trace, 0 ERROR/CRITICAL, 0
+  capture-error/INVALID_FLOAT/pairing-failure signatures. D3 tap armed
+  (flag on, dispatch table loads, mode=shadow): verify-turn T1
+  observations reproduced as `UNAVAILABLE / not-a-definition-claim`
+  (correct abstention for caller-enumeration; zero capture_error markers).
+  T2 mirror-note sink is wired as engine observer; no drops evidenced.
+- Control arm: restarted worker without the flag, single poller, API READY;
+  re-ran L2 (battery cleanup-prior) → **PASS (COMPLETED)** in 13.1s with
+  the identical root cause, evidence profile (3 SOURCE_CODE, range read at
+  `0d9982f6`), 149-record trace, 0 errors, conclusion
+  `ROOT_CAUSE_ESTABLISHED` and a 1-step causal-chain finding. Native parity
+  holds; D3 keys absent by construction (flag off). Report
+  `reports/dev-shadow-L2-control-20261026T130157.md`.
+- Post-run: scratch holds 1 investigation (control arm); probe
+  `iap-probe-2026-10-26-r3` untouched at 12 rows; `n-batt` untouched.
+
+Engineering signal only: both Step 10 arms pass with native parity and a
+clean capture bill. No formal convergence claim is made; Step 11 (protocol
+amendment, freeze, run-set, budget, formal authorization) remains blocked
+pending owner approval.
+
 ## 9. Step 6 — Decide and, if approved, implement partial-result semantics
 
 ### Objective
