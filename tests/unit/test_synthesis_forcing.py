@@ -899,3 +899,58 @@ def test_callsite_does_not_suppress_same_path_wrong_range_read():
     )
     assert hit is not None
     assert hit["action_parameters"]["start_line"] == 10
+
+
+def test_behavior_without_category_falls_back_to_full_window_read():
+    reason = {
+        "next_action": "VERIFY_HYPOTHESIS",
+        "claims": [{"claim_kind": "BEHAVIOR", "target": {"symbol": "normalize"}}],
+    }
+    history = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 2,
+            "parameters": {"file_path": "src/LegacyCodeMapper.java"},
+        }
+    ]
+    assert _source_value_target(reason, history, 0) == {
+        "file_path": "src/LegacyCodeMapper.java",
+        "start_line": 1,
+        "end_line": 2000,
+    }
+
+
+def test_behavior_fallback_skipped_when_category_typed_or_no_banked_file():
+    behavior = {
+        "next_action": "VERIFY_HYPOTHESIS",
+        "claims": [{"claim_kind": "BEHAVIOR", "target": {"symbol": "normalize"}}],
+    }
+    assert _source_value_target(behavior, [], 0) is None
+    assert _source_value_target(behavior, [{"action": "SEARCH_CODE", "evidence_added": 3}], 0) is None
+    typed = {
+        "next_action": "VERIFY_HYPOTHESIS",
+        "claims": [
+            {
+                "claim_kind": "BEHAVIOR",
+                "fact_category": "SOURCE_VALUE_FACT",
+                "target": {"symbol": "normalize"},
+            }
+        ],
+    }
+    history = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 2,
+            "parameters": {"file_path": "src/LegacyCodeMapper.java"},
+        }
+    ]
+    assert _source_value_target(typed, history, 0) is None
+    assert _source_value_target(behavior, history, 2) is None
+    method_read = [
+        {
+            "action": "GET_CODE",
+            "evidence_added": 1,
+            "parameters": {"file_path": "src/LegacyCodeMapper.java", "method_name": "normalize"},
+        }
+    ]
+    assert _source_value_target(behavior, method_read, 0) is None

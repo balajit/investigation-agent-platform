@@ -2366,11 +2366,12 @@ async def execute_action_activity(
                             _absence_proof_row(
                                 tenant_id=tenant_id,
                                 investigation_id=investigation_id,
-                                evidence_type=(
-                                    _EvidenceType.COMMIT_HISTORY
-                                    if gateway_method == "get_code_history"
-                                    else _EvidenceType.SOURCE_CODE
-                                ),
+                                # History misses bank as discovery-only
+                                # SOURCE_CODE: a COMMIT_HISTORY-typed absence
+                                # row carries no file/revision and can never
+                                # satisfy history_proof, inflating evidence
+                                # counts while reading as "unstamped".
+                                evidence_type=_EvidenceType.SOURCE_CODE,
                                 provider="code-intelligence",
                                 operation=action_label.lower(),
                                 scope=_absence_scope,

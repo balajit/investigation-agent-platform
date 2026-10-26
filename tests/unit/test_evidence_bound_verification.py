@@ -153,6 +153,65 @@ def test_history_claim_requires_matching_latest_commit_subject():
     assert engine.validate_history_claim(wrong, [latest, older], []) is None
 
 
+def test_history_ignores_discovery_only_and_zero_match_rows():
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    path = "service/src/OrderServiceImpl.java"
+    now = datetime.now(UTC)
+    base = _ev(provider="git", etype=EvidenceType.COMMIT_HISTORY)
+    good = base.model_copy(
+        update={
+            "summary": "Tighten eligibility window",
+            "observed_at": now,
+            "provenance": base.provenance.model_copy(
+                update={
+                    "source_location": base.provenance.source_location.model_copy(
+                        update={"file_path": path, "revision": "def22222abc"}
+                    )
+                }
+            ),
+        }
+    )
+    stale_absence = base.model_copy(
+        update={
+            "summary": "Scoped search over repo:history=OrderServiceImpl.java returned zero matches.",
+            "attributes": {"search_scope": "repo:history=x", "match_count": 0, "discovery_only": True},
+        }
+    )
+    hyp = _hyp(
+        "Latest change to OrderServiceImpl.java at def22222: Tighten eligibility window",
+        HypothesisStatus.PROPOSED,
+    )
+    target = ClaimTarget(file_path=path, commit_id="def22222")
+    assessment = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp.id,
+        evidence_id=good.evidence_id,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.STRONG,
+        reason="latest commit",
+        claim_kind=ClaimKind.HISTORY,
+        claim_target=target,
+        commit_id="def22222",
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": [assessment],
+            "supporting_evidence_ids": [good.evidence_id],
+        }
+    )
+    engine = VerificationEngine()
+    ok, _ = VerificationEngine.history_proof([stale_absence], target)
+    assert ok is False
+    assert engine.validate_history_claim(hyp, [stale_absence], []) is None
+    assert engine.validate_history_claim(hyp, [good, stale_absence], []) is not None
+
+
 def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
     from investigation_agent_platform.domain.hypothesis.models import (
         AssessmentStrength,

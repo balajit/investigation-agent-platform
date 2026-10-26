@@ -2856,6 +2856,16 @@ class VerificationEngine:
         for item in evidence_items or []:
             if VerificationEngine._item_type(item) != "COMMIT_HISTORY":
                 continue
+            try:
+                _attrs = getattr(item, "attributes", None) or {}
+                if not isinstance(_attrs, dict):
+                    _attrs = {}
+                if _attrs.get("discovery_only") is True:
+                    continue
+                if _attrs.get("match_count") == 0:
+                    continue
+            except Exception:
+                pass
             if not VerificationEngine._paths_match(target.file_path, VerificationEngine._item_file(item)):
                 continue
             path_rows.append(item)
@@ -2919,6 +2929,16 @@ class VerificationEngine:
         for item in evidence_items or []:
             if VerificationEngine._item_type(item) != "COMMIT_HISTORY":
                 continue
+            try:
+                _vattrs = getattr(item, "attributes", None) or {}
+                if not isinstance(_vattrs, dict):
+                    _vattrs = {}
+                if _vattrs.get("discovery_only") is True:
+                    continue
+                if _vattrs.get("match_count") == 0:
+                    continue
+            except Exception:
+                pass
             if not VerificationEngine._paths_match(target.file_path or "", VerificationEngine._item_file(item)):
                 continue
             revision = str(

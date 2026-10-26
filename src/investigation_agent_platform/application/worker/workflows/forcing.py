@@ -852,6 +852,54 @@ def _source_value_target(
             params["start_line"] = 1
             params["end_line"] = 2000
             return params
+        # L5 fallback: a BEHAVIOR-typed claim with no fact_category heading
+        # to VERIFY can never satisfy the runtime half in a code-only scope,
+        # and the typed method/field path above never fires without a typed
+        # claim (chicken-and-egg: no typed claim -> no method read -> no
+        # resolution -> INCONCLUSIVE). When a banked GET_CODE range read for
+        # a .java/.py file exists without any method/field variant read yet,
+        # force one full-window re-read so the model sees the method bodies
+        # and can retype as SOURCE_VALUE_FACT (prompt-directed) on the next
+        # turn. Bounded by the same forced_count cap; never guesses a method
+        # name, never touches the BEHAVIOR bar or profile doctrine.
+        for claim in data.get("claims", []) or []:
+            if not isinstance(claim, dict):
+                continue
+            if str(claim.get("claim_kind", "") or "").upper() != "BEHAVIOR":
+                continue
+            _fallback_category = str(
+                claim.get("fact_category")
+                or (claim.get("target") or {}).get("fact_category", "")
+            ).strip()
+            if _fallback_category:
+                continue
+            _banked_files: list[str] = []
+            for action in action_history or []:
+                if not isinstance(action, dict):
+                    continue
+                if str(action.get("action", "") or "").upper() != "GET_CODE":
+                    continue
+                if int(action.get("evidence_added", 0) or 0) <= 0:
+                    continue
+                _params = action.get("parameters") or {}
+                if not isinstance(_params, dict):
+                    continue
+                _file = str(_params.get("file_path", "") or "").strip()
+                if not _file or not _file.lower().endswith((".java", ".py")):
+                    continue
+                if str(_params.get("method_name", "") or "").strip():
+                    continue
+                if str(_params.get("field_name", "") or "").strip():
+                    continue
+                if _file not in _banked_files:
+                    _banked_files.append(_file)
+            if not _banked_files:
+                continue
+            return {
+                "file_path": _banked_files[-1],
+                "start_line": 1,
+                "end_line": 2000,
+            }
         return None
 
     except Exception:
