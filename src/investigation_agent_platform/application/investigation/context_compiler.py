@@ -473,6 +473,7 @@ def compile_evidence_excerpts(
             "retrieved_at": str(_get(e, "retrieved_at", "") or ""),
             "provider": str(_get(e, "provider", "") or ""),
             "revision": str(_get(location, "revision", "") or ""),
+            "story": story_block(e),
         }
         if is_code and content:
             excerpt.update(
@@ -492,6 +493,31 @@ def compile_evidence_excerpts(
 
 
 _LOG_GROUP_TYPES = frozenset({"RUNTIME_LOG", "RUNTIME_TRACE", "LOG", "TRACE"})
+
+_STORY_ATTR_KEYS = ("story_comp", "story_func", "story_stage", "story_step",
+                   "story_outcome", "story_event", "story_elapsed_ms")
+
+
+def story_block(e: Any) -> dict[str, Any] | None:
+    """Breadcrumb block for log-type evidence carrying a story envelope.
+
+    Returns the comp/stage/outcome trail (plus capped inputs/outputs) the
+    operator reads in the log — the same logic the investigator follows:
+    typed transitions with inputs/outputs at every boundary, earliest
+    divergence first. None when the evidence carries no envelope.
+    """
+    attrs = _get(e, "attributes", {}) or {}
+    if not isinstance(attrs, dict) or not str(attrs.get("story_comp", "") or ""):
+        return None
+    block: dict[str, Any] = {
+        key[6:]: attrs[key] for key in _STORY_ATTR_KEYS if attrs.get(key) not in (None, "")
+    }
+    for key in ("story_inputs", "story_outputs"):
+        value = attrs.get(key, "")
+        if value not in (None, ""):
+            text = value if isinstance(value, str) else str(value)
+            block[key[6:]] = text[:500]
+    return block
 
 
 def _group_relevance(representative: Any, member_ids: list[str], items: list[Any]) -> float:

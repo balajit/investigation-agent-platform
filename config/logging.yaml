@@ -17,3 +17,42 @@ handlers:
 
 root:
   level: INFO
+
+# Story-log rendering (D9). Call sites emit semantics only
+# (comp/func/stage/step/outcome/inputs/outputs); everything here controls how
+# those render and route. Changing template, order, caps, or levels requires
+# no call-site edits. Precedence: IAP_STORY_* env > this section > code defaults.
+story:
+  # Fixed-head template. {placeholders} are envelope keys.
+  message_template: "[{comp}] {func} · {stage}/{step} · {outcome}"
+  # Envelope key order for ordered rendering (story.py display, pretty console).
+  field_order: [comp, func, stage, step, outcome, elapsed_ms, inputs, outputs,
+                error, error_type, tenant_id, investigation_id, event]
+  caps: {max_keys: 20, max_str: 1000, max_list: 20, max_key_len: 128}
+  # Per-component default level for enter/exit spine lines.
+  component_levels: {API: INFO, TMP-WRKR: INFO, ACTVTY: INFO, WFLW: INFO,
+                     SVC: INFO, DOMAIN: INFO, REPO: DEBUG, PROV: DEBUG, TOOL: INFO}
+  # Per-stage level ceiling: bulk stages never exceed it (volume fuse).
+  stage_ceiling: {persist: DEBUG}
+  # Redaction is APPEND-only: extra keys here join the built-in set.
+  extra_redacted_keys: []
+
+# Logger display names (log customization only — no runtime/import effect).
+# When style is "alias", dotted logger names render via longest-prefix match
+# against aliases (remainder appended): e.g. ...worker.activities.execution
+# renders as ACTVTY.execution. "full" renders record names verbatim.
+logger_names:
+  style: full
+  aliases:
+    investigation_agent_platform.infrastructure.configuration.layers: i.p.i.c.layers
+
+# Hierarchical logger levels, log4j-style (D10). Keys are dotted stdlib logger
+# names; a package prefix covers its whole subtree (children inherit the
+# nearest set ancestor). A single class/module gets its own line to override
+# the package default — no code change, no restart of call sites.
+loggers:
+  investigation_agent_platform: INFO
+  # Examples (uncomment to use):
+  # investigation_agent_platform.application.worker: INFO
+  # investigation_agent_platform.application.worker.activities.execution: DEBUG
+  # investigation_agent_platform.infrastructure.evidence: WARNING

@@ -1,0 +1,1 @@
+psql "$IAP_DATABASE_URI" -tAc "select left(statement,60), assessments_json from hypotheses where investigation_id='1080199f-9cba-4fa0-bcfa-9904a70bb9bf'" 2>&1 | head -20

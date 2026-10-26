@@ -32,17 +32,20 @@ class TestTemporalInterceptor:
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parents[2]
-        wf = (
+        wf_pkg = (
             repo_root
             / "src"
             / "investigation_agent_platform"
             / "application"
             / "worker"
-            / "workflows.py"
+            / "workflows"
         )
-        text = wf.read_text(encoding="utf-8")
-        assert "import opentelemetry" not in text
-        assert "from opentelemetry" not in text
+        modules = sorted(wf_pkg.glob("*.py"))
+        assert modules, "workflows package must contain split modules"
+        for module in modules:
+            text = module.read_text(encoding="utf-8")
+            assert "import opentelemetry" not in text, module.name
+            assert "from opentelemetry" not in text, module.name
 
 
 class TestSamplingPolicy:

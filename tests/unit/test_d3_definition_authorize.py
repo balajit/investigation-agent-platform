@@ -406,8 +406,10 @@ def test_d3p_n19b_no_consumer_outside_definition_modules() -> None:
 
     allowed_suffixes = (
         "domain/proof/definition_shadow.py",
-        "application/worker/activities.py",
-        "application/worker/workflows.py",
+        # Worker split: the verify activity and the activities re-export
+        # shim are the only worker modules allowed to name these imports.
+        "application/worker/activities/verification.py",
+        "application/worker/activities/__init__.py",
     )
     consumers: list[str] = []
     root = Path(defmod.__file__).resolve().parents[4]

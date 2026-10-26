@@ -497,6 +497,131 @@ def test_call_edge_binding_requires_a_range_row_not_a_sibling_search_row():
     assert VerificationEngine.caller_edge_binding_rows([anchor], target, [anchor]) == []
 
 
+def test_call_edge_binding_pins_revision_from_bound_citation():
+    from investigation_agent_platform.domain.hypothesis.models import ClaimTarget
+
+    row = _code_evidence("GET_SOURCE").model_copy(
+        update={"content_snippet": "11| return handler.handle(orderId);"}
+    )
+    row = row.model_copy(
+        update={
+            "provenance": row.provenance.model_copy(
+                update={
+                    "source_location": row.provenance.source_location.model_copy(
+                        update={
+                            "file_path": "src/OrderQualifyHelper.java",
+                            "line_start": 10,
+                            "line_end": 20,
+                            "revision": "abc123",
+                        }
+                    )
+                }
+            )
+        }
+    )
+    # Live L2: the model cited the exact range row but omitted the revision
+    # from the claim target (commit_id None). The bound citation pins it.
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+    )
+    assert target.commit_id is None
+    assert VerificationEngine.caller_edge_binding_rows([row], target, [row]) == [row]
+
+
+def test_call_edge_binding_rejects_disagreeing_bound_revisions():
+    from investigation_agent_platform.domain.hypothesis.models import ClaimTarget
+
+    row = _code_evidence("GET_SOURCE").model_copy(
+        update={"content_snippet": "11| return handler.handle(orderId);"}
+    )
+    row = row.model_copy(
+        update={
+            "provenance": row.provenance.model_copy(
+                update={
+                    "source_location": row.provenance.source_location.model_copy(
+                        update={
+                            "file_path": "src/OrderQualifyHelper.java",
+                            "line_start": 10,
+                            "line_end": 20,
+                            "revision": "abc123",
+                        }
+                    )
+                }
+            )
+        }
+    )
+    other_revision = row.model_copy(
+        update={
+            "provenance": row.provenance.model_copy(
+                update={
+                    "source_location": row.provenance.source_location.model_copy(
+                        update={"revision": "def456"}
+                    )
+                }
+            )
+        }
+    )
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderQualifyHelper",
+        file_path="src/OrderQualifyHelper.java",
+        line_start=10,
+        line_end=12,
+    )
+    assert (
+        VerificationEngine.caller_edge_binding_rows(
+            [row, other_revision], target, [row, other_revision]
+        )
+        == []
+    )
+
+
+def test_caller_edge_causal_chain_synthesizes_bound_call():
+    from investigation_agent_platform.application.worker.activities.lifecycle import (
+        _caller_edge_causal_chain,
+    )
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        ClaimTarget,
+        HypothesisEvidenceAssessment,
+    )
+
+    eid = uuid4()
+    target = ClaimTarget(
+        symbol="OrderServiceHandler.handle",
+        counterpart="OrderServiceRestProxy.submit",
+        file_path="src/OrderServiceRestProxy.java",
+        line_start=10,
+        line_end=12,
+    )
+    hyp = _hyp("OrderServiceRestProxy.submit calls OrderServiceHandler.handle")
+    bound = HypothesisEvidenceAssessment(
+        hypothesis_id=hyp.id,
+        evidence_id=eid,
+        assessment=AssessmentType.SUPPORTS,
+        strength=AssessmentStrength.MODERATE,
+        reason="cited by CALL_EDGE obligation",
+        claim_kind=ClaimKind.CALL_EDGE,
+        claim_target=target,
+        reason_code="CALL_EDGE_BOUND",
+    )
+    assessed = hyp.model_copy(update={"assessments": [bound]})
+    chain = _caller_edge_causal_chain(assessed, {eid: object()})
+    assert len(chain) == 1
+    assert chain[0].cause == "OrderServiceRestProxy.submit"
+    assert chain[0].mechanism == "calls"
+    assert chain[0].evidence_ids == [eid]
+    # No assessments, or bound row absent from this investigation: no chain.
+    assert _caller_edge_causal_chain(hyp, {eid: object()}) == []
+    assert _caller_edge_causal_chain(assessed, {}) == []
+
+
 def test_verify_and_conclude_caller_edge_evaluator_has_one_result():
     engine = VerificationEngine()
     hypothesis = _hyp("the caller edge is unresolved")

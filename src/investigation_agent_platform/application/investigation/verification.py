@@ -2067,12 +2067,33 @@ class VerificationEngine:
         ``bound_set`` is the evidence already bound to this claim. Its
         tenant/investigation and repository anchor the repair. A discovery row
         may identify the edge, but only a same-binding, same-revision range
-        read whose window contains the target range can prove it.
+        read whose window contains the target range can prove it. The
+        revision pins from the claim target, else from the single bound
+        citation (models rarely echo the revision into the claim target).
         """
         if target is None or not target.symbol or not target.counterpart:
             return []
         target_path = str(target.file_path or "").strip()
         target_revision = str(target.commit_id or "").strip()
+        if not target_revision:
+            # Live L2: a BOUND edge with null commit_id rejected an exact
+            # same-revision range read. The claim is about the row it cites,
+            # so the bound citation pins the revision. Still fail closed
+            # when the bound rows carry no single revision.
+            bound_revisions = {
+                str(
+                    getattr(
+                        getattr(getattr(item, "provenance", None), "source_location", None),
+                        "revision",
+                        "",
+                    )
+                    or ""
+                ).strip()
+                for item in bound_set or []
+            }
+            bound_revisions.discard("")
+            if len(bound_revisions) == 1:
+                target_revision = next(iter(bound_revisions))
         target_start = target.line_start
         target_end = target.line_end
         if (

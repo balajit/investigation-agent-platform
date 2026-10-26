@@ -136,5 +136,6 @@ def test_consumer_audit_only_known_readers():
         # G-1: TRACE_JOURNEY handler reads profile-declared identity keys
         # (session/tracking) plus generic service/timestamp labels from log
         # row dicts — deliberate addition, profile-scoped, fail-open.
-        "application/worker/activities.py",
+        # Worker split: the handler lives in activities/execution.py.
+        "application/worker/activities/execution.py",
     }, readers

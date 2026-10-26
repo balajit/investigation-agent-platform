@@ -998,7 +998,7 @@ class TestWalkSessionGraphHandler:
         from types import SimpleNamespace
         from uuid import uuid4
 
-        import investigation_agent_platform.application.worker.activities as act
+        import investigation_agent_platform.application.worker.activities.execution as act_exec
 
         iid = uuid4()
         saved = []
@@ -1065,8 +1065,8 @@ class TestWalkSessionGraphHandler:
             hypothesis_repo=None,
             execute_action_service=lambda: FakeActionService(),
         )
-        real_get_ctx = act._get_ctx
-        act._get_ctx = lambda: ctx
+        real_get_ctx = act_exec._get_ctx
+        act_exec._get_ctx = lambda: ctx
         try:
             from investigation_agent_platform.application.worker.activities import (
                 ExecuteActionInput,
@@ -1085,7 +1085,7 @@ class TestWalkSessionGraphHandler:
 
             result = _asyncio.run(_run())
         finally:
-            act._get_ctx = real_get_ctx
+            act_exec._get_ctx = real_get_ctx
         assert result.success is True
         assert result.data.get("items_count", 0) >= 2
         assert len(saved) >= 2

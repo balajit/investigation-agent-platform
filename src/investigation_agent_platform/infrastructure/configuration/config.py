@@ -225,6 +225,47 @@ class ObjectStorageConfig(BaseModel):
     secret_key: SecretStr = Field(default=SecretStr(""))
 
 
+class StoryCaps(BaseModel):
+    """Bounds for story-log inputs/outputs payloads (D5/D9).
+
+    Operators may lower bounds, never raise them past ``le=`` (same fail-safe
+    convention as EvidenceConfig ceilings).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_keys: int = Field(default=20, ge=1, le=200)
+    max_str: int = Field(default=1000, ge=100, le=10000)
+    max_list: int = Field(default=20, ge=1, le=200)
+    max_key_len: int = Field(default=128, ge=16, le=512)
+
+
+class StoryLoggingConfig(BaseModel):
+    """Single source of truth for story-log rendering (D9).
+
+    Call sites emit semantics only (comp/func/stage/step/outcome/inputs/
+    outputs); template, ordering, caps, and level routing all live here.
+    Runtime resolution order: env > logging.yaml ``story:`` > these defaults.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    message_template: str = Field(
+        default="[{comp}] {func} · {stage}/{step} · {outcome}")
+    field_order: list[str] = Field(
+        default=["comp", "func", "stage", "step", "outcome", "elapsed_ms",
+                 "inputs", "outputs", "error", "error_type",
+                 "tenant_id", "investigation_id", "event"])
+    caps: StoryCaps = Field(default_factory=StoryCaps)
+    component_levels: dict[str, str] = Field(default_factory=lambda: {
+        "API": "INFO", "TMP-WRKR": "INFO", "ACTVTY": "INFO", "WFLW": "INFO",
+        "SVC": "INFO", "DOMAIN": "INFO", "REPO": "DEBUG", "PROV": "DEBUG",
+        "TOOL": "INFO"})
+    stage_ceiling: dict[str, str] = Field(
+        default_factory=lambda: {"persist": "DEBUG"})
+    extra_redacted_keys: list[str] = Field(default_factory=list)
+
+
 class TelemetryConfig(BaseModel):
     """OpenTelemetry instrumentation setup."""
 
@@ -237,6 +278,7 @@ class TelemetryConfig(BaseModel):
     # collector tail-sampling keeping errors). ParentBased: child spans
     # follow the parent decision, so traces stay complete.
     sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    story: StoryLoggingConfig = Field(default_factory=StoryLoggingConfig)
 
 
 class EvidenceConfig(BaseModel):

@@ -7,7 +7,10 @@ line shapes, newest-first:
 
 - structured JSON (``message`` + ``service.{name,environment}`` +
   ``code.{file,line,function}`` + ``trace_id``/``span_id`` +
-  ``exception.details`` + ``extra``);
+  ``exception.details`` + ``extra`` — story envelope keys in ``extra``
+  (``comp/func/stage/step/outcome/elapsed_ms/inputs/outputs``) are carried
+  as evidence attributes so IAP can follow the same breadcrumbs an operator
+  reads in the log);
 - structlog JSON (``event``/``message`` + ``level`` + ``logger`` +
   ``timestamp`` + ``exception``);
 - plain text (whole line is the message, severity INFO).
@@ -107,6 +110,19 @@ class _ParsedLine(BaseModel):
     log_tenant_hint: str = ""
     log_investigation_hint: str = ""
     raw: str = ""
+    # Story envelope (D1): breadcrumbs for machine-following. Present only on
+    # story-formatted lines; absent keys stay empty (never None-vs-missing
+    # ambiguity for consumers). inputs/outputs are re-capped JSON strings —
+    # already truncated+sanitized at log time, capped again here.
+    story_comp: str = ""
+    story_func: str = ""
+    story_stage: str = ""
+    story_step: str = ""
+    story_outcome: str = ""
+    story_event: str = ""
+    story_elapsed_ms: int | None = None
+    story_inputs: str = ""
+    story_outputs: str = ""
 
 
 def _parse_line(line: str) -> _ParsedLine:
@@ -127,10 +143,15 @@ def _parse_line(line: str) -> _ParsedLine:
     )
     extra = doc.get("extra", {})
     tenant_hint, inv_hint = "", ""
+    story: dict[str, Any] = {}
     if isinstance(extra, dict):
         # Hints for triage display only — never trusted for tenant scoping.
         tenant_hint = str(extra.get("tenant_id", "") or "")
         inv_hint = str(extra.get("investigation_id", "") or "")
+        for key in ("comp", "func", "stage", "step", "outcome", "event"):
+            value = extra.get(key, "")
+            if isinstance(value, str) and value:
+                story[key] = value[:128]
     timestamp = _parse_timestamp(doc.get("timestamp", doc.get("time", doc.get("@timestamp"))))
     level = _LEVEL_MAP.get(str(doc.get("level", doc.get("severity", "INFO"))).upper(), "INFO")
     exception = doc.get("exception")
@@ -142,6 +163,14 @@ def _parse_line(line: str) -> _ParsedLine:
     service_name = ""
     if isinstance(service, dict):
         service_name = str(service.get("name", "") or "")
+    elapsed_ms: int | None = None
+    try:
+        raw_elapsed = (extra if isinstance(extra, dict) else {}).get("elapsed_ms")
+        elapsed_ms = int(raw_elapsed) if raw_elapsed is not None else None
+    except (TypeError, ValueError):
+        elapsed_ms = None
+    story_inputs = _capped_json((extra if isinstance(extra, dict) else {}).get("inputs"))
+    story_outputs = _capped_json((extra if isinstance(extra, dict) else {}).get("outputs"))
     return _ParsedLine(
         timestamp=timestamp,
         level=level,
@@ -153,8 +182,28 @@ def _parse_line(line: str) -> _ParsedLine:
         exception_text=(exception_text[:2000] if exception_text else None),
         log_tenant_hint=tenant_hint,
         log_investigation_hint=inv_hint,
+        story_comp=story.get("comp", ""),
+        story_func=story.get("func", ""),
+        story_stage=story.get("stage", ""),
+        story_step=story.get("step", ""),
+        story_outcome=story.get("outcome", ""),
+        story_event=story.get("event", ""),
+        story_elapsed_ms=elapsed_ms,
+        story_inputs=story_inputs,
+        story_outputs=story_outputs,
         raw=text[:4000],
     )
+
+
+def _capped_json(value: Any, limit: int = 2000) -> str:
+    """Serialize an inputs/outputs payload defensively (already capped at log time)."""
+    if value is None or value == "":
+        return ""
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+    except Exception:
+        return ""
+    return text[:limit]
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -360,6 +409,18 @@ class FileLogAdapter:
                 "function": parsed.function,
                 "trace_id": parsed.trace_id,
                 "log_tenant_hint": parsed.log_tenant_hint,
+                # Story breadcrumbs (present only on story-formatted lines):
+                # the same comp/stage/outcome an operator reads, now queryable
+                # as evidence attributes so IAP follows the same trail.
+                "story_comp": parsed.story_comp,
+                "story_func": parsed.story_func,
+                "story_stage": parsed.story_stage,
+                "story_step": parsed.story_step,
+                "story_outcome": parsed.story_outcome,
+                "story_event": parsed.story_event,
+                "story_elapsed_ms": parsed.story_elapsed_ms,
+                "story_inputs": parsed.story_inputs,
+                "story_outputs": parsed.story_outputs,
             },
             provenance=prov,
             freshness=fresh,

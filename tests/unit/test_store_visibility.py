@@ -103,12 +103,18 @@ class TestHeldReporting:
         )
 
         wal = SimpleNamespace(held_count=lambda: 26, path="data/wal")
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="investigation_agent_platform.infrastructure.persistence.buffered",
+        ):
             marker = _report_held_entries(wal, 0)
         assert marker == 26
         assert any(r.levelname == "ERROR" for r in caplog.records)
         caplog.clear()
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="investigation_agent_platform.infrastructure.persistence.buffered",
+        ):
             marker = _report_held_entries(wal, 26)
         assert marker == 26
         assert not any(r.levelname == "ERROR" for r in caplog.records)

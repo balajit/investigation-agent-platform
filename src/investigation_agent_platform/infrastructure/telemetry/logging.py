@@ -191,10 +191,26 @@ class StructuredJsonFormatter(logging.Formatter):
         environment: str = "production",
         fmt: str | None = None,
         datefmt: str | None = None,
+        logger_aliases: dict[str, str] | None = None,
     ) -> None:
         super().__init__(fmt=fmt, datefmt=datefmt)
         self.service_name = service_name
         self.environment = environment
+        # Display-name compression (log customization only): longest dot-boundary
+        # prefix wins; the remainder is appended (ACTVTY.execution).
+        self.logger_aliases = dict(logger_aliases or {})
+
+    def display_logger(self, name: str) -> str:
+        """Map a dotted logger name to its display form (verbatim by default)."""
+        best = ""
+        for prefix in self.logger_aliases:
+            if name == prefix or name.startswith(prefix + "."):
+                if len(prefix) > len(best):
+                    best = prefix
+        if not best:
+            return name
+        short = self.logger_aliases[best]
+        return short if name == best else short + name[len(best) :]
 
     def format(self, record: logging.LogRecord) -> str:
         """Formats a standard logging record into a structured JSON string."""
@@ -203,7 +219,7 @@ class StructuredJsonFormatter(logging.Formatter):
         log_payload: dict[str, Any] = {
             "timestamp": now.isoformat(),
             "level": record.levelname,
-            "logger": record.name,
+            "logger": self.display_logger(record.name),
             "message": record.getMessage(),
             "service": {
                 "name": self.service_name,
@@ -252,6 +268,71 @@ class StructuredJsonFormatter(logging.Formatter):
                 "error_details": {"type": type(err).__name__, "message": str(err)},
             }
             return json.dumps(fallback_payload)
+
+
+class _StoryContextFilter(logging.Filter):
+    """Inject bound story context into records missing the keys (D11).
+
+    Explicit ``extra`` always wins (only absent-or-empty values are filled),
+    so call-site identity is never overwritten — the filter just closes the
+    gap for log lines emitted without explicit tenant/investigation context.
+    """
+
+    _KEYS = ("tenant_id", "investigation_id", "correlation_id")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from investigation_agent_platform.infrastructure.telemetry.story import (
+                story_context,
+            )
+
+            bound = story_context()
+        except Exception:
+            return True
+        for key in self._KEYS:
+            try:
+                if not getattr(record, key, "") and bound.get(key):
+                    setattr(record, key, bound[key])
+            except Exception:
+                continue
+        return True
+
+
+def _apply_hierarchical_levels(topology: dict) -> None:
+    """Apply log4j-style ``loggers:`` levels (D10): package prefix sets the
+    subtree default; a fully-qualified logger name overrides its ancestors.
+
+    Sources: ``logging.yaml`` ``loggers:`` merged under ``IAP_LOG_LOGGERS``
+    (``dotted.name=LEVEL,...``). Unknown levels fall back to INFO; failures
+    never propagate (logging must not break boot).
+    """
+    try:
+        from investigation_agent_platform.infrastructure.telemetry.story import (
+            TRACE_LEVEL,
+        )
+
+        configured: dict[str, str] = {}
+        section = topology.get("loggers", {}) or {}
+        if isinstance(section, dict):
+            for name, level in section.items():
+                configured[str(name)] = str(level).upper()
+        for chunk in str(os.environ.get("IAP_LOG_LOGGERS", "") or "").split(","):
+            chunk = chunk.strip()
+            if "=" in chunk:
+                name, _, level = chunk.partition("=")
+                if name.strip():
+                    configured[name.strip()] = level.strip().upper()
+        for name, level in configured.items():
+            try:
+                target = logging.getLogger(name)
+                if level == "TRACE":
+                    target.setLevel(TRACE_LEVEL)
+                else:
+                    target.setLevel(getattr(logging, level, logging.INFO))
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def _topology(yaml_path: Path) -> dict:
@@ -304,16 +385,39 @@ def configure_logging(
         or (topology.get("root", {}) or {}).get("level", "INFO")
         or "INFO"
     )
+    # Story levels (D8): TRACE is a registered custom level (5, below DEBUG).
+    from investigation_agent_platform.infrastructure.telemetry.story import (
+        TRACE_LEVEL,
+        register_trace_level,
+    )
+
+    register_trace_level()
     try:
-        root.setLevel(resolved_level.upper())
-    except (ValueError, TypeError):
+        if resolved_level.strip().upper() == "TRACE":
+            root.setLevel(TRACE_LEVEL)
+        else:
+            root.setLevel(resolved_level.upper())
+    except (ValueError, TypeError, AttributeError):
         root.setLevel(logging.INFO)
 
     service_name, environment = _service_identity()
-    formatter = StructuredJsonFormatter(service_name=service_name, environment=environment)
+    logger_names = topology.get("logger_names", {}) if isinstance(topology, dict) else {}
+    aliases: dict[str, str] = {}
+    try:
+        if str(logger_names.get("style", "full")).lower() == "alias":
+            raw_aliases = logger_names.get("aliases", {}) or {}
+            if isinstance(raw_aliases, dict):
+                aliases = {str(k): str(v) for k, v in raw_aliases.items()}
+    except Exception:
+        aliases = {}
+    formatter = StructuredJsonFormatter(
+        service_name=service_name, environment=environment, logger_aliases=aliases
+    )
+    context_filter = _StoryContextFilter()
     if console_cfg.get("enabled", True):
         console = logging.StreamHandler()
         console.setFormatter(formatter)
+        console.addFilter(context_filter)
         root.addHandler(console)
 
     active_file: Path | None = None
@@ -333,11 +437,16 @@ def configure_logging(
                 backup_count=int(file_cfg.get("backup_count", 5)),
             )
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(context_filter)
             root.addHandler(file_handler)
             active_file = Path(file_handler.baseFilename)
         except Exception as exc:
             logger.warning("File logging unavailable", extra={"error": str(exc)})
             active_file = None
+    # Log4j-style hierarchy (D10): package prefix sets the subtree default,
+    # a fully-qualified name overrides its ancestors. Applied after the root
+    # level so explicit logger levels always win over the root default.
+    _apply_hierarchical_levels(topology if isinstance(topology, dict) else {})
     _CONFIGURED = True
     logger.info(
         "Logging pipeline ready",

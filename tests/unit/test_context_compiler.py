@@ -112,6 +112,46 @@ def test_non_code_snippet_not_duplicated_into_content():
     assert ctx["evidence_excerpts"][0]["content"] == ""
 
 
+def _story_evidence(**overrides):
+    attrs = {
+        "story_comp": "ACTVTY",
+        "story_func": "execute_action_activity",
+        "story_stage": "execute",
+        "story_step": "dispatch",
+        "story_outcome": "completed",
+        "story_event": "execute_action_activity completed",
+        "story_elapsed_ms": 42,
+        "story_inputs": '{"action": "SEARCH_CODE"}',
+        "story_outputs": '{"banked": 0}',
+    }
+    attrs.update(overrides)
+    base = _evidence(summary="[ACTVTY] execute_action_activity · execute/dispatch · completed")
+    return base.model_copy(update={"attributes": attrs})
+
+
+def test_story_block_reaches_log_excerpt():
+    ctx = compile_reasoning_context(_state([_story_evidence()]))
+    excerpt = ctx["evidence_excerpts"][0]
+    block = excerpt["story"]
+    assert block["comp"] == "ACTVTY"
+    assert block["func"] == "execute_action_activity"
+    assert block["stage"] == "execute"
+    assert block["outcome"] == "completed"
+    assert block["elapsed_ms"] == 42
+    assert block["inputs"] == '{"action": "SEARCH_CODE"}'
+    assert block["outputs"] == '{"banked": 0}'
+
+
+def test_story_block_absent_without_envelope():
+    ctx = compile_reasoning_context(_state([_evidence()]))
+    assert ctx["evidence_excerpts"][0]["story"] is None
+
+
+def test_story_block_inputs_capped():
+    ctx = compile_reasoning_context(_state([_story_evidence(story_inputs="x" * 2000)]))
+    assert len(ctx["evidence_excerpts"][0]["story"]["inputs"]) == 500
+
+
 def _tier_evidence(snippet="def f(): ...", relevance=1.0, age_seconds=0):
     from datetime import timedelta
 

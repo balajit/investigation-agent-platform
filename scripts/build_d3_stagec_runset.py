@@ -10,14 +10,16 @@ freeze_hash is the harness freeze_digest (canonical JSON minus self field).
 Usage:
     uv run python scripts/build_d3_stagec_runset.py [RUN_SET_ID [FREEZE_RECORD_HASH]]
 
-Defaults reproduce the r3 invocation (freeze v3, protocol v1.9+A1+A2,
-prompts 016/015, probe tenant iap-probe-2026-10-26-r3). For a new run set,
+Defaults reproduce the r4 invocation (freeze v4, protocol v1.9+A1+A2,
+prompts 016/015, probe tenant iap-probe-2026-10-26-r4). For a new run set,
 pass the new run-set id and the freeze record hash (or TO-BE-HASHED, patched
 into RUN_LOG.md after the record is hashed). Refuses to overwrite an existing
 run-set directory. The frozen code revision is always the current HEAD;
 governed paths (src, tests, config, pyproject.toml) must be worktree-clean.
 scripts/ itself is ungoverned tooling: adapting this builder does not void a
-signed freeze as long as governed paths are untouched.
+signed freeze as long as governed paths are untouched. L2 repeats (r4):
+PLAN carries L2 five times (seq-distinct reservations, same bucket); the
+pairing plan names first-attempt pairing for the single per-fixture control.
 """
 
 from __future__ import annotations
@@ -47,21 +49,24 @@ from investigation_agent_platform.harness.freeze import (
 )
 from investigation_agent_platform.harness.ledger import AttemptLedger
 
-RS = sys.argv[1] if len(sys.argv) > 1 else "d3-stagec-2026-10-26-r3"
+RS = sys.argv[1] if len(sys.argv) > 1 else "d3-stagec-2026-10-26-r4"
 ART = ROOT / "artifacts" / RS
 DEC = ART / "decisions"
 
 V19 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-approval-package-v1.9.md"
 A1 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-amendment-A1.md"
 A2 = ROOT / "docs" / "IAP-proof-kernel-d3-phase0-amendment-A2.md"
-MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v3.json"
+MANIFEST = ROOT / "docs" / "IAP-proof-kernel-d3-stageC-freeze-manifest-v4.json"
 FREEZE_RECORD_HASH = (
-    sys.argv[2] if len(sys.argv) > 2 else "20b901d1291b7f2ff9fa7fdbf1eadb9079d8e7666291d4eb0e2e6961b4bc3419"
+    sys.argv[2] if len(sys.argv) > 2 else "TO-BE-HASHED"
 )
 GOVERNED = ["src", "tests", "config", "pyproject.toml"]
 
 # Fixture -> expected cell (a priori, from fixture `expect` + §6.1 taxonomy).
-# L1-L5 expect ANSWERED terminals; L8 expects a clean ABSTAIN terminal.
+# L1-L5 expect ANSWERED terminals -> accept-PASS. L8 expects a clean
+# ABSTAIN terminal -> nonaccept-PASS. L2 is repeated five times (r4) for the
+# binomial repeat-stability signal; seq-distinct reservations share the
+# accept-PASS bucket. 10 reservations total (9 accept + 1 nonaccept).
 PLAN: list[tuple[str, str, str]] = [
     ("L1.json", "L1", "accept-PASS"),
     ("L2.json", "L2", "accept-PASS"),
@@ -69,6 +74,10 @@ PLAN: list[tuple[str, str, str]] = [
     ("L4.json", "L4", "accept-PASS"),
     ("L5.json", "L5", "accept-PASS"),
     ("L8.json", "L8", "nonaccept-PASS"),
+    ("L2.json", "L2", "accept-PASS"),
+    ("L2.json", "L2", "accept-PASS"),
+    ("L2.json", "L2", "accept-PASS"),
+    ("L2.json", "L2", "accept-PASS"),
 ]
 
 
@@ -123,8 +132,11 @@ def main() -> None:
     assert prompts["reasoner_prompt_version"] == "v3-claim-grounded-016"
     assert prompts["compiler_prompt_version"] == "v3-claim-grounded-015"
     assert form016 == (
-        "sha256:ffee28d53a66efcf538587cfa7c9110b7c2192841390604cc4c232c701951bcd"
+        "sha256:277ed0ad5caa31ec80a96a2bcd1a44d334d026ac979e07a636503906499259ef"
     ), form016
+    assert form015 == (
+        "sha256:40f9384799f62f39ec101c096ffdbb3f93df191a209b9f517d39977663d43da3"
+    ), form015
 
     # Frozen-doc integrity assertions (file bytes must match frozen hashes).
     v19_hash = "sha256:" + hashlib.sha256(V19.read_bytes()).hexdigest()
@@ -192,12 +204,19 @@ def main() -> None:
         "## Per fixture: k-th shadow attempt pairs with k-th control run;",
         "## both sides carry control_order = per-fixture attempt ordinal (1-based),",
         "## which must agree per the v1.15 order rule. Stop on native divergence.",
+        "## L2 repeats k=1..5 pair only at k=1 with the single per-fixture",
+        "## control (first-attempt pairing); k=2..5 are repeat-stability runs",
+        "## without control counterparts (one control per fixture per §6.2g).",
         "",
     ]
+    _rep_count: dict[str, int] = {}
     for i, (fixture_id, case_id, cell) in enumerate(PLAN, start=1):
+        _rep_count[case_id] = _rep_count.get(case_id, 0) + 1
         plan_lines.append(
-            f"## {fixture_id}: shadow reservation seq {i} (bucket {cell}) <-> "
-            f"control ordinal 1"
+            f"## {fixture_id}: shadow reservation seq {i} (bucket {cell}, "
+            f"{case_id} rep {_rep_count[case_id]}) <-> "
+            f"control ordinal {min(_rep_count[case_id], 1)}"
+            + (" (first-attempt pairing)" if _rep_count[case_id] > 1 else "")
         )
     plan_lines.append("")
     with open(ART / "control.txt", "ab") as fh:
@@ -219,7 +238,7 @@ def main() -> None:
         "database_image: pgvector/pgvector:pg16",
         f"database_server: {manifest['tenant_database']['server_version']}",
         "profile: config/profiles/tranche-b-offer.yaml version 1",
-        "tenant: iap-probe-2026-10-26-r3",
+        "tenant: iap-probe-2026-10-26-r4",
         "",
     ]
     (ART / "dependency.txt").write_bytes(("\n".join(dep_lines)).encode("utf-8"))
@@ -387,10 +406,12 @@ def main() -> None:
                     ensure_ascii=False) + "\n").encode("utf-8")
     )
 
-    # ---- Ledger + 6 reservations (one per live fixture). ----
+    # ---- Ledger + reservations (one per PLAN row; L2 repeated). ----
     ledger = AttemptLedger(run_set_id=RS, freeze_hash=freeze["freeze_hash"])
-    attempt_ids: dict[str, str] = {}
+    attempt_ids: dict[int, str] = {}
+    _rep_seen: dict[str, int] = {}
     for i, (fid, cid, cell) in enumerate(PLAN, start=1):
+        _rep_seen[cid] = _rep_seen.get(cid, 0) + 1
         rec = ledger.reserve(
             fixture_id=fid,
             fixture_version=digests[fid],
@@ -398,7 +419,7 @@ def main() -> None:
             expected_cell=cell,
             budget_token=f"{RS}-s{i:02d}",
         )
-        attempt_ids[fid] = rec["id"]
+        attempt_ids[i] = rec["id"]
     ledger_state = {
         "run_set_id": ledger.run_set_id,
         "freeze_hash": ledger.freeze_hash,
@@ -442,8 +463,13 @@ def main() -> None:
         "## Shadow attempt ids (pre-computed, deterministic)",
         "",
     ]
-    for fid, cid, cell in PLAN:
-        log.append(f"{fid}: {attempt_ids[fid]} (bucket {cell})")
+    _log_rep: dict[str, int] = {}
+    for i, (fid, cid, cell) in enumerate(PLAN, start=1):
+        _log_rep[cid] = _log_rep.get(cid, 0) + 1
+        log.append(
+            f"{fid} (seq {i}, {cid} rep {_log_rep[cid]}): "
+            f"{attempt_ids[i]} (bucket {cell})"
+        )
     log += [
         "",
         "## Control arm",

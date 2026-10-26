@@ -1,8 +1,17 @@
 # tests/unit/test_verify_outcome.py
 """Phase 1 determinism: VERIFY verdicts persist scores, bindings, lifecycle."""
 
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+
+from investigation_agent_platform.api.dependencies import (
+    AppContext,
+    set_app_context,
+)
 from investigation_agent_platform.application.investigation.verification import (
     InvestigationConfidence,
     VerificationResult,
@@ -10,7 +19,9 @@ from investigation_agent_platform.application.investigation.verification import 
     apply_verification_outcome,
 )
 from investigation_agent_platform.application.worker.activities import (
+    VerifyRootCauseInput,
     _latest_fuzzy_orientation,
+    verify_root_cause_activity,
 )
 from investigation_agent_platform.domain.hypothesis.models import (
     Hypothesis,
@@ -125,3 +136,24 @@ def test_latest_fuzzy_orientation_newest_wins():
     assert _latest_fuzzy_orientation([{"action": "x"}]) is None
     assert _latest_fuzzy_orientation([{"fuzzy_orientation": "not-a-dict"}]) is None
     assert _latest_fuzzy_orientation(None) is None
+
+
+@pytest.mark.asyncio
+async def test_verify_no_hypotheses_emits_skipped_envelope(caplog) -> None:  # type: ignore[no-untyped-def]
+    # Story integrity (live trace 3c80875c): verify started twice with zero
+    # completions — the no_hypotheses early return emitted nothing, leaving
+    # dangling starts. The skipped envelope must pair with the started one.
+    ctx = AppContext()
+    ctx.evidence_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=[]))
+    ctx.hypothesis_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=[]))
+    set_app_context(ctx)
+    with caplog.at_level(
+        logging.INFO,
+        logger="investigation_agent_platform.application.worker.activities.verification",
+    ):
+        result = await verify_root_cause_activity(
+            VerifyRootCauseInput(tenant_id="tenant-a", investigation_id=str(uuid4()))
+        )
+    assert result.success is True
+    assert result.data == {"verified": False, "reason": "no_hypotheses"}
+    assert "skipped; no hypotheses to verify" in caplog.text

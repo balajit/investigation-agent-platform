@@ -239,6 +239,55 @@ class TestBudgetAssignment:
         assert len(saved) == 6
 
     @pytest.mark.asyncio
+    async def test_search_code_persists_attached_hypotheses(self) -> None:
+        # Regression (live trace 3c80875c): the reasoner attached a
+        # hypothesis to a SEARCH_CODE action; the dispatch log counted it
+        # (hypotheses_count=1) but it was never persisted — persistence only
+        # ran for FORMULATE_HYPOTHESIS / VERIFY_HYPOTHESIS / CONCLUDE, so the
+        # coordinator kept seeing hypotheses=0 and the run died with
+        # INSUFFICIENT_EVIDENCE. Persistence now runs for every action type.
+        ctx = AppContext()
+        saved_hypos: list = []
+        service = SimpleNamespace(
+            authorize=AsyncMock(return_value=None),
+            execute=AsyncMock(return_value=None),
+        )
+        ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
+        ctx.action_repo = SimpleNamespace(
+            count_by_investigation=AsyncMock(return_value=0)
+        )
+        ctx.evidence_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            save_batch=AsyncMock(return_value=None),
+            save=AsyncMock(return_value=None),
+        )
+        ctx.profile_repo = SimpleNamespace(
+            get_by_application_id=AsyncMock(return_value=None)
+        )
+        ctx.evidence_gateway = SimpleNamespace(
+            search_code=AsyncMock(
+                return_value=SimpleNamespace(items=[], provider_metadata={})
+            )
+        )
+        ctx.hypothesis_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            save=AsyncMock(side_effect=lambda t, h, i, v: saved_hypos.append(h)),
+        )
+        set_app_context(ctx)
+        result = await execute_action_activity(
+            ExecuteActionInput(
+                tenant_id="tenant-a",
+                investigation_id=str(uuid4()),
+                action="SEARCH_CODE",
+                parameters={"query": "OrderFilter"},
+                hypotheses=["order filter drops nulls"],
+            )
+        )
+        assert result.success is True
+        assert len(saved_hypos) == 1
+        assert saved_hypos[0].statement == "order filter drops nulls"
+
+    @pytest.mark.asyncio
     async def test_get_code_degrades_when_provider_absent(self) -> None:
         from investigation_agent_platform.domain.common.exceptions import (
             ExecutionError,

@@ -100,6 +100,44 @@ class TestParseLine:
         assert parsed.message == "plain old log line"
         assert parsed.level == "INFO"
 
+    def test_story_envelope_carried_as_breadcrumbs(self) -> None:
+        line = json.dumps(
+            {
+                "timestamp": "2026-10-26T03:20:00Z",
+                "level": "INFO",
+                "logger": "investigation_agent_platform.application.worker.activities.execution",
+                "message": "[ACTVTY] execute_action_activity · execute/dispatch · completed",
+                "extra": {
+                    "tenant_id": "t1",
+                    "event": "execute_action_activity completed",
+                    "comp": "ACTVTY",
+                    "func": "execute_action_activity",
+                    "stage": "execute",
+                    "step": "dispatch",
+                    "outcome": "completed",
+                    "elapsed_ms": 42,
+                    "inputs": {"action": "SEARCH_CODE"},
+                    "outputs": {"banked": 0},
+                },
+            }
+        )
+        parsed = _parse_line(line)
+        assert parsed.story_comp == "ACTVTY"
+        assert parsed.story_func == "execute_action_activity"
+        assert parsed.story_stage == "execute"
+        assert parsed.story_step == "dispatch"
+        assert parsed.story_outcome == "completed"
+        assert parsed.story_event == "execute_action_activity completed"
+        assert parsed.story_elapsed_ms == 42
+        assert json.loads(parsed.story_inputs) == {"action": "SEARCH_CODE"}
+        assert json.loads(parsed.story_outputs) == {"banked": 0}
+
+    def test_story_envelope_absent_stays_empty(self) -> None:
+        parsed = _parse_line(json.dumps({"level": "INFO", "message": "hi"}))
+        assert parsed.story_comp == ""
+        assert parsed.story_outcome == ""
+        assert parsed.story_elapsed_ms is None
+
 
 class TestSearch:
     def _write(self, tmp_path, name: str, lines: list[str]):  # type: ignore[no-untyped-def]
@@ -127,6 +165,40 @@ class TestSearch:
         assert "checkout failed" in item.summary
         assert item.attributes["file"] == "app.log"
         assert item.fingerprint
+
+    @pytest.mark.asyncio
+    async def test_story_envelope_reaches_evidence_attributes(self, tmp_path) -> None:
+        self._write(
+            tmp_path,
+            "app.log",
+            [
+                json.dumps(
+                    {
+                        "level": "INFO",
+                        "logger": "w",
+                        "message": "[ACTVTY] reason_activity · reason/decide · completed",
+                        "extra": {
+                            "comp": "ACTVTY",
+                            "func": "reason_activity",
+                            "stage": "reason",
+                            "step": "decide",
+                            "outcome": "completed",
+                            "outputs": {"decision": "SEARCH_CODE"},
+                        },
+                    }
+                ),
+            ],
+        )
+        adapter = _adapter(tmp_path)
+        result = await adapter.search_runtime_evidence(
+            "tenant-a", uuid4(), _request(keywords=["reason_activity"]), _profile(["*.log"])
+        )
+        assert result.total_count == 1
+        attrs = result.items[0].attributes
+        assert attrs["story_comp"] == "ACTVTY"
+        assert attrs["story_stage"] == "reason"
+        assert attrs["story_outcome"] == "completed"
+        assert json.loads(attrs["story_outputs"]) == {"decision": "SEARCH_CODE"}
 
     @pytest.mark.asyncio
     async def test_no_declared_sources_serves_nothing(self, tmp_path) -> None:
