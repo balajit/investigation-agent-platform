@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from investigation_agent_platform.application.evidence.retrieval_ledger import (
     RETRYABLE_ACTIONS,
+    all_typed_claims_not_checkable,
     claim_key,
     claim_ref,
 )
@@ -360,6 +361,30 @@ class TestGapFeed:
         feed = build_claim_gaps(hyp, set())
         assert feed["gaps"] == []
         assert len(feed["not_checkable_groups"]) == 1
+
+    def test_shared_opinion_only_predicate(self):
+        # Finding N: one predicate serves the marker, the activities,
+        # and the engine projection — these cases pin its truth table.
+        assert (
+            all_typed_claims_not_checkable(
+                _hyp(assessments=[_asm(ClaimKind.NOT_CHECKABLE, _target())])
+            )
+            is True
+        )
+        assert (
+            all_typed_claims_not_checkable(
+                _hyp(
+                    assessments=[
+                        _asm(ClaimKind.NOT_CHECKABLE, _target()),
+                        _asm(ClaimKind.DEFINITION, _target()),
+                    ]
+                )
+            )
+            is False
+        )
+        assert all_typed_claims_not_checkable(_hyp(assessments=[_asm(None, _target())])) is False
+        assert all_typed_claims_not_checkable(_hyp(assessments=[])) is False
+        assert all_typed_claims_not_checkable(SimpleNamespace()) is False
 
     def test_untyped_and_untargeted_skipped(self):
         hyp = _hyp(

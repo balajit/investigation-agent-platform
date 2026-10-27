@@ -143,6 +143,91 @@ class TestClaimQuerySanitizer:
         assert cleaned["claims"][0]["search_query"] is None
         assert cleaned["claims"][0]["search_scope"] is None
 
+
+class TestCommitSubjectRoundTrip:
+    """Finding A: strict HISTORY proof needs target.commit_subject, so the
+    sanitizer must preserve it and the prompt must emit it."""
+
+    def test_sanitizer_preserves_commit_subject(self):
+        cleaned = _sanitize_decision_dict(
+            {
+                "hypotheses_evaluated": ["s"],
+                "claims": [
+                    {
+                        "statement": "s",
+                        "claim_kind": "HISTORY",
+                        "evidence_ids": [],
+                        "target": {
+                            "file_path": "src/orders.py",
+                            "commit_id": "abc1234",
+                            "commit_subject": "Fix filter edge case",
+                        },
+                    }
+                ],
+            }
+        )
+        assert cleaned["claims"][0]["target"]["commit_subject"] == "Fix filter edge case"
+
+    def test_sanitizer_truncates_commit_subject(self):
+        cleaned = _sanitize_decision_dict(
+            {
+                "hypotheses_evaluated": ["s"],
+                "claims": [
+                    {
+                        "statement": "s",
+                        "claim_kind": "HISTORY",
+                        "evidence_ids": [],
+                        "target": {"commit_subject": "x" * 600},
+                    }
+                ],
+            }
+        )
+        assert cleaned["claims"][0]["target"]["commit_subject"] == "x" * 512
+
+    def test_prompt_emits_commit_subject(self):
+        prompt = build_system_prompt()
+        assert '"commit_subject"' in prompt
+        assert "target.commit_subject" in prompt
+
+    def test_strict_history_proof_matches_sanitized_subject(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            CLAIM_BINDING_CBV2,
+        )
+        from investigation_agent_platform.ports.reasoning.reasoner import DecisionClaim
+
+        cleaned = _sanitize_decision_dict(
+            {
+                "hypotheses_evaluated": ["filter_orders changed recently"],
+                "claims": [
+                    {
+                        "statement": "filter_orders changed recently",
+                        "claim_kind": "HISTORY",
+                        "evidence_ids": [],
+                        "target": {
+                            "file_path": "src/orders.py",
+                            "commit_id": "abc1234",
+                            "commit_subject": "Fix filter edge case",
+                        },
+                    }
+                ],
+            }
+        )
+        claim = DecisionClaim(**cleaned["claims"][0])
+        assert claim.target is not None
+        assert claim.target.commit_subject == "Fix filter edge case"
+        row = SimpleNamespace(
+            evidence_type="COMMIT_HISTORY",
+            attributes={"discovery_only": False, "match_count": 3},
+            provenance=SimpleNamespace(
+                source_location=SimpleNamespace(
+                    file_path="src/orders.py", revision="abc1234def"
+                )
+            ),
+            summary="Fix filter edge case",
+        )
+        ok, _ = VerificationEngine.history_proof([row], claim.target, CLAIM_BINDING_CBV2)
+        assert ok is True
+
     def test_top_level_query_stripped(self):
         # Layering: sanitize passes top-level keys through; the
         # _validate_llm_decision known-fields filter drops them (field
@@ -743,6 +828,177 @@ class TestDirectiveTriggerC:
             ([], {"search_query": "Widget"}),
         ]
         assert select_ledger_requery(hyp, [], recorded, recent, 3) is None
+
+    def test_same_query_different_scope_does_not_suppress_retry(self):
+        # Finding B: stored linkage is query-only, but the durable budget
+        # counts (query, scope). A same-query attempt at another scope must
+        # not suppress the never-retrieved trigger for the stored pair.
+        def _hyp():
+            return _hyp_with(
+                assessments=[
+                    HypothesisEvidenceAssessment(
+                        hypothesis_id=uuid4(),
+                        evidence_id=None,
+                        assessment=AssessmentType.SUPPORTS,
+                        strength=AssessmentStrength.MODERATE,
+                        reason="claim unresolved: no usable evidence",
+                        claim_kind=ClaimKind.DEFINITION,
+                        claim_target=ClaimTarget(symbol="Widget"),
+                        search_query="Widget",
+                        search_scope="src/",
+                        reason_code="CLAIM_UNRESOLVED",
+                        schema_version="v2",
+                    )
+                ]
+            )
+
+        other_scope = [([], {"search_query": "Widget", "scope": "lib/"})]
+        directive = select_ledger_requery(
+            _hyp(), [], other_scope, _recent("SEARCH_CODE", {"query": "Widget"}), 3
+        )
+        assert directive is not None
+        assert directive["scope"] == "src/"
+
+    def test_same_query_same_scope_still_suppresses(self):
+        def _hyp():
+            return _hyp_with(
+                assessments=[
+                    HypothesisEvidenceAssessment(
+                        hypothesis_id=uuid4(),
+                        evidence_id=None,
+                        assessment=AssessmentType.SUPPORTS,
+                        strength=AssessmentStrength.MODERATE,
+                        reason="claim unresolved: no usable evidence",
+                        claim_kind=ClaimKind.DEFINITION,
+                        claim_target=ClaimTarget(symbol="Widget"),
+                        search_query="Widget",
+                        search_scope="src/",
+                        reason_code="CLAIM_UNRESOLVED",
+                        schema_version="v2",
+                    )
+                ]
+            )
+
+        same_scope = [([], {"search_query": "Widget", "scope": "src/"})]
+        assert (
+            select_ledger_requery(
+                _hyp(), [], same_scope, _recent("SEARCH_CODE", {"query": "Widget"}), 3
+            )
+            is None
+        )
+
+class TestStoredScopeDispatch:
+    """Finding C: the stored scope rides the ledger budget key as "scope";
+    the SEARCH_CODE handler must map its path-prefix form onto the
+    path_prefix parameter the provider actually reads."""
+
+    def _ctx_with_capture(self, seen):
+        from investigation_agent_platform.application.worker.activities import (
+            ExecuteActionInput as _In,
+        )
+
+        ctx = AppContext()
+        service = SimpleNamespace(
+            authorize=AsyncMock(return_value=None),
+            execute=AsyncMock(return_value=None),
+        )
+        ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
+        ctx.evidence_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            save_batch=AsyncMock(return_value=None),
+            save=AsyncMock(return_value=None),
+        )
+        ctx.profile_repo = SimpleNamespace(
+            get_by_application_id=AsyncMock(return_value=None)
+        )
+
+        async def _search_code(tenant_id, investigation_id, application_id, req):
+            seen.append(req)
+            return SimpleNamespace(items=[], provider_metadata={})
+
+        ctx.evidence_gateway = SimpleNamespace(search_code=_search_code)
+        ctx.hypothesis_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            save=AsyncMock(return_value=None),
+        )
+        set_app_context(ctx)
+        return _In
+
+    @pytest.mark.asyncio
+    async def test_scope_maps_to_path_prefix(self):
+        from investigation_agent_platform.application.worker.activities import (
+            ExecuteActionInput,
+            execute_action_activity,
+        )
+
+        seen: list = []
+        self._ctx_with_capture(seen)
+        result = await execute_action_activity(
+            ExecuteActionInput(
+                tenant_id="t",
+                investigation_id=str(uuid4()),
+                action="SEARCH_CODE",
+                parameters={"query": "Widget", "scope": "src/"},
+            )
+        )
+        assert result.success is True
+        assert len(seen) == 1
+        assert seen[0].path_prefix == "src/"
+
+    @pytest.mark.asyncio
+    async def test_explicit_path_prefix_wins(self):
+        from investigation_agent_platform.application.worker.activities import (
+            ExecuteActionInput,
+            execute_action_activity,
+        )
+
+        seen: list = []
+        self._ctx_with_capture(seen)
+        result = await execute_action_activity(
+            ExecuteActionInput(
+                tenant_id="t",
+                investigation_id=str(uuid4()),
+                action="SEARCH_CODE",
+                parameters={"query": "Widget", "scope": "src/", "path_prefix": "lib/"},
+            )
+        )
+        assert result.success is True
+        assert seen[0].path_prefix == "lib/"
+
+    @pytest.mark.asyncio
+    async def test_repository_revision_scope_maps_to_no_prefix(self):
+        # Documented limitation: repository@revision scopes carry no path
+        # information, so the handler keeps its default rather than
+        # searching a fabricated prefix.
+        from investigation_agent_platform.application.worker.activities import (
+            ExecuteActionInput,
+            execute_action_activity,
+        )
+
+        seen: list = []
+        self._ctx_with_capture(seen)
+        result = await execute_action_activity(
+            ExecuteActionInput(
+                tenant_id="t",
+                investigation_id=str(uuid4()),
+                action="SEARCH_CODE",
+                parameters={"query": "Widget", "scope": "example-app@abc123"},
+            )
+        )
+        assert result.success is True
+        assert seen[0].path_prefix is None
+
+    def test_scope_path_prefix_unit(self):
+        from investigation_agent_platform.application.worker.activities.execution import (
+            _scope_path_prefix,
+        )
+
+        assert _scope_path_prefix("src/") == "src/"
+        assert _scope_path_prefix("  src/  ") == "src/"
+        assert _scope_path_prefix("example-app@abc123") is None
+        assert _scope_path_prefix("") is None
+        assert _scope_path_prefix(None) is None
 
     def test_match_recent_action_two_pass_scope(self):
         from investigation_agent_platform.application.evidence.retrieval_ledger import (

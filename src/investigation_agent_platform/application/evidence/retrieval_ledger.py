@@ -849,6 +849,82 @@ def _distinct_typed_claims(hypothesis: object) -> list[dict[str, object]]:
     return list(groups.values())
 
 
+#: ClaimKind value marking an unprovable claim (taste/preference/value
+#: judgment or otherwise unfalsifiable). String literal (not an import)
+#: so this pure module stays dependency-free; equals
+#: ``ClaimKind.NOT_CHECKABLE.value``.
+NOT_CHECKABLE_KIND_VALUE = "NOT_CHECKABLE"
+
+
+def all_typed_claims_not_checkable(hypothesis: object) -> bool:
+    """Opinion-only screen (pure): True when the hypothesis carries at
+    least one typed assessment and every typed assessment is
+    NOT_CHECKABLE.
+
+    Finding N: the verify activity early-skip, the conclude early-skip,
+    the conclude NOT_CHECKABLE_SKIPPED marker, and the engine
+    evaluate-level projection all share this predicate — one definition,
+    no drift. Untyped-only or assessment-free hypotheses are never
+    opinion-only. Never raises.
+    """
+    try:
+        raw = getattr(hypothesis, "assessments", None) or []
+        assessments = list(raw) if isinstance(raw, list) else []
+    except Exception:
+        return False
+    try:
+        typed = [a for a in assessments if getattr(a, "claim_kind", None) is not None]
+    except Exception:
+        return False
+    if not typed:
+        return False
+    try:
+        return all(
+            str(
+                getattr(
+                    getattr(a, "claim_kind", None),
+                    "value",
+                    getattr(a, "claim_kind", None),
+                )
+                or ""
+            )
+            == NOT_CHECKABLE_KIND_VALUE
+            for a in typed
+        )
+    except Exception:
+        return False
+
+
+def linked_scope_attempted(
+    ledger: object,
+    recorded_attempts: list[tuple[list[str], dict[str, object] | None]] | None,
+) -> bool:
+    """True when a linked attempt matches the ledger's scope (pure).
+
+    Linkage is query-only, so a same-query attempt at another scope still
+    lands in ``attempt_indexes``. A scope-less stored query was tried
+    anywhere a same-query attempt exists (legacy query-only
+    suppression); a scoped stored pair only matches attempts at its own
+    scope. On unreadable history returns True (fail closed: callers keep
+    the legacy suppression rather than firing extra retrieval).
+    """
+    try:
+        wanted = _normalize_scope(getattr(ledger, "scope", None))
+        attempts = list(recorded_attempts or [])
+        for idx in list(getattr(ledger, "attempt_indexes", None) or []):
+            try:
+                attempt = (attempts[idx] or (None, None))[1]
+            except (IndexError, TypeError):
+                continue
+            if not isinstance(attempt, dict):
+                continue
+            if not wanted or _normalize_scope(attempt.get("scope")) == wanted:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def re_retrieval_directive(
     binding: ClaimRetrievalBinding,
     ledger: ClaimRetrievalLedger,
@@ -891,7 +967,7 @@ def re_retrieval_directive(
     try:
         never_retrieved = (
             str(getattr(ledger, "query_source", "derived") or "") == "stored"
-            and not list(getattr(ledger, "attempt_indexes", None) or [])
+            and not linked_scope_attempted(ledger, recorded_attempts)
             and durable == 0
         )
     except Exception:

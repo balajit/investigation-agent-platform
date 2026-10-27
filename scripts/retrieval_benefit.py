@@ -597,7 +597,10 @@ def truncation_visibility(
     }
 
 
-def shadow_repair_review(evals_by_inv: dict[str, list[dict]]) -> dict:
+def shadow_repair_review(
+    evals_by_inv: dict[str, list[dict]],
+    dispositions: dict[str, str] | None = None,
+) -> dict:
     """Phase 3 gate input: every shadow/applied repair candidate.
 
     Lists each persisted repair with its review identity (claim, target,
@@ -606,10 +609,19 @@ def shadow_repair_review(evals_by_inv: dict[str, list[dict]]) -> dict:
     repaired_truncated or listed-count != counted-total blocks the gate
     (complete=False); recovery is deterministic recompute from persisted
     inputs (see design D4).
+
+    Finding E: ``complete`` is marker integrity only — it says nothing
+    about whether any candidate was actually reviewed. Each candidate
+    carries a ``disposition`` (from ``dispositions``, keyed by
+    disposition_key; default "unreviewed"), and ``reviewed`` is True
+    only when every listed candidate has a non-"unreviewed" disposition.
+    A cbv3 promotion gate must require ``reviewed``, never ``complete``
+    alone. With no disposition source wired, reviewed stays False.
     """
     candidates: list[dict] = []
     truncated_markers: list[dict] = []
     mismatch_markers: list[dict] = []
+    dispositions = dispositions if isinstance(dispositions, dict) else {}
     for inv_id, evals in (evals_by_inv or {}).items():
         for rec in evals or []:
             if not isinstance(rec, dict):
@@ -653,6 +665,23 @@ def shadow_repair_review(evals_by_inv: dict[str, list[dict]]) -> dict:
                     )
                 except Exception:
                     target_summary = {}
+                try:
+                    disp_key = "|".join(
+                        [
+                            str(marker_ref["hypothesis_id"]),
+                            str(marker_ref["turn"]),
+                            str(rep.get("claim_ref") or ""),
+                            str(rep.get("cited_id") or ""),
+                            str(rep.get("donor_id") or ""),
+                            str(rep.get("binding_version") or ""),
+                        ]
+                    )
+                except Exception:
+                    disp_key = ""
+                try:
+                    disp = str(dispositions.get(disp_key, "unreviewed"))
+                except Exception:
+                    disp = "unreviewed"
                 candidates.append(
                     {
                         **marker_ref,
@@ -666,25 +695,22 @@ def shadow_repair_review(evals_by_inv: dict[str, list[dict]]) -> dict:
                         "outcome": str(rep.get("outcome") or ""),
                         "binding_version": str(rep.get("binding_version") or ""),
                         "gate_reason": str(rep.get("gate_reason") or ""),
-                        "disposition_key": "|".join(
-                            [
-                                str(marker_ref["hypothesis_id"]),
-                                str(marker_ref["turn"]),
-                                str(rep.get("claim_ref") or ""),
-                                str(rep.get("cited_id") or ""),
-                                str(rep.get("donor_id") or ""),
-                                str(rep.get("binding_version") or ""),
-                            ]
-                        ),
+                        "donor_snippet": str(rep.get("donor_snippet") or ""),
+                        "disposition_key": disp_key,
+                        "disposition": disp,
                     }
                 )
     complete = not truncated_markers and not mismatch_markers
+    unreviewed = [c for c in candidates if c.get("disposition", "unreviewed") == "unreviewed"]
+    reviewed = bool(candidates) and not unreviewed
     return {
         "candidates": candidates,
         "n_candidates": len(candidates),
         "truncated_markers": truncated_markers,
         "count_mismatch_markers": mismatch_markers,
         "complete": complete,
+        "reviewed": reviewed,
+        "unreviewed_count": len(unreviewed),
     }
 
 
@@ -711,6 +737,7 @@ def compute_report(
     evals_by_inv: dict[str, list[dict]],
     banks_by_inv: dict[str, dict[str, str]],
     verdict_texts: list[str],
+    repair_dispositions: dict[str, str] | None = None,
 ) -> dict:
     """Compute the four G3 metrics plus the pass bar over loaded records.
 
@@ -726,7 +753,7 @@ def compute_report(
     guard = verdict_guard_from_texts(verdict_texts or [])
     # Phase 3: shadow/applied repair review list + gate completeness.
     # Additive — the G3 pass bar is unchanged.
-    repair_review = shadow_repair_review(evals_by_inv or {})
+    repair_review = shadow_repair_review(evals_by_inv or {}, repair_dispositions)
     n_runs = len(cohort or {})
     evaluable_runs = sum(1 for inv in (cohort or {}) if (evals_by_inv or {}).get(str(inv)))
     n_bindings = 0
@@ -814,6 +841,8 @@ def format_report(report: dict) -> str:
         (
             f"repair_review: candidates={repair_review.get('n_candidates')} "
             f"complete={repair_review.get('complete')} "
+            f"reviewed={repair_review.get('reviewed')} "
+            f"unreviewed={repair_review.get('unreviewed_count')} "
             f"truncated_markers={len(repair_review.get('truncated_markers', []))} "
             f"mismatched_markers={len(repair_review.get('count_mismatch_markers', []))}"
         ),
@@ -844,6 +873,28 @@ def format_report(report: dict) -> str:
         "caveat: numbers alone never close G3 — either branch "
         "needs explicit owner sign-off on the sample."
     )
+    # Finding G: the review input is the candidate list, not the counts —
+    # render every unreviewed candidate with its donor snippet excerpt so
+    # match quality is judged from row content, never a bare ID.
+    try:
+        _unreviewed = [
+            c
+            for c in (repair_review.get("candidates") or [])
+            if isinstance(c, dict) and c.get("disposition", "unreviewed") == "unreviewed"
+        ]
+    except Exception:
+        _unreviewed = []
+    for _c in _unreviewed:
+        try:
+            _snip = str(_c.get("donor_snippet") or "")[:200].replace("\n", " ")
+        except Exception:
+            _snip = ""
+        lines.append(
+            f"review: claim_ref={_c.get('claim_ref')} "
+            f"cited={_c.get('cited_id')} donor={_c.get('donor_id')} "
+            f"basis={_c.get('basis')} outcome={_c.get('outcome')} "
+            f"snippet={_snip!r}"
+        )
     return "\n".join(lines)
 
 

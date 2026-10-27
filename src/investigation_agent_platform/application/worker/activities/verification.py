@@ -326,14 +326,42 @@ async def verify_root_cause_activity(
             ranked, evidence_by_id, ("REJECTED", "CONTRADICTED", "VERIFIED")
         )
         if candidate is None:
+            # Finding M: no-candidate/no-hypotheses is an explicit empty
+            # feed (claim_gaps=[]), never a missing key. The carrier turns
+            # [] into a tombstone that supersedes stale feeds; a missing
+            # key means enforcement faulted — distinct states, distinct
+            # signals. Legacy-pinned rows keep their exact keyless shape.
+            _no_candidate_data: dict[str, Any] = {
+                "verified": False,
+                "reason": "no_eligible_hypothesis",
+                "producing_path": "no-candidate",
+            }
+            try:
+                if verifier_version != VERIFIER_VERSION_LEGACY:
+                    _no_candidate_data["claim_gaps"] = []
+            except Exception:
+                pass
             return GenericActivityResult(
                 success=True,
-                data={
-                    "verified": False,
-                    "reason": "no_eligible_hypothesis",
-                    "producing_path": "no-candidate",
-                },
+                data=_no_candidate_data,
             )
+        # Finding L: opinion-only candidates skip every activity-layer
+        # validator (fast paths + repairs). The shared predicate (N)
+        # screens on assessments alone — no evidence, no model, no
+        # retrieval. The general evaluate path below keeps its own
+        # projection as defense in depth; enforcement, gap feed, marker,
+        # and telemetry run unchanged so the INCONCLUSIVE surfaces in
+        # the same evidence-only channel.
+        try:
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                all_typed_claims_not_checkable as _all_nc_early,
+            )
+        except Exception:
+            _all_nc_early = None
+        try:
+            _nc_early = bool(_all_nc_early(candidate)) if _all_nc_early is not None else False
+        except Exception:
+            _nc_early = False
 
         def _resolve(ids: list[Any]) -> list[Any]:
             out = []
@@ -541,7 +569,12 @@ async def verify_root_cause_activity(
                 except Exception:
                     pass
 
-            code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
+            # Finding L: skipped on the opinion-only early path — an
+            # unfalsifiable claim is never code-value validated.
+            if _nc_early:
+                code_value_result = None
+            else:
+                code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
             code_value_claim = (
                 VerificationEngine.claims_field_value(
                     str(getattr(candidate, "statement", "") or "")
@@ -559,19 +592,25 @@ async def verify_root_cause_activity(
                 for h in (hypotheses or [])
                 if getattr(h, "id", None) != getattr(candidate, "id", None)
             ]
-            try:
-                history_result, _history_repairs = engine.revalidate_with_repair(
-                    lambda h, w: engine.validate_history_claim(h, w, contradictions),
-                    candidate,
-                    bound,
-                    list(evidence_by_id.values()),
-                    contradictions,
-                    _verify_siblings,
-                    enforcement=_binding_enforcement,
-                )
-                _verify_repairs.extend(list(_history_repairs or []))
-            except Exception:
-                history_result = engine.validate_history_claim(candidate, bound, contradictions)
+            # Finding L: skipped on the opinion-only early path (no
+            # history proof is attempted for an unfalsifiable claim).
+            if _nc_early:
+                history_result = None
+            else:
+                try:
+                    history_result, _history_repairs = engine.revalidate_with_repair(
+                        lambda h, w: engine.validate_history_claim(h, w, contradictions),
+                        candidate,
+                        bound,
+                        list(evidence_by_id.values()),
+                        contradictions,
+                        _verify_siblings,
+                        enforcement=_binding_enforcement,
+                        expect_kinds=(ClaimKind.HISTORY,),
+                    )
+                    _verify_repairs.extend(list(_history_repairs or []))
+                except Exception:
+                    history_result = engine.validate_history_claim(candidate, bound, contradictions)
             history_answered = history_result is not None and not refuting
             # Init up front: every fast path below assigns only on its taken
             # branch, and the general-build guard is skipped when
@@ -590,23 +629,30 @@ async def verify_root_cause_activity(
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
-            try:
-                location_result, _location_repairs = engine.revalidate_with_repair(
-                    lambda h, w: engine.validate_location_claim(
-                        h, w, contradictions, _definition_observe
-                    ),
-                    candidate,
-                    bound,
-                    list(evidence_by_id.values()),
-                    contradictions,
-                    _verify_siblings,
-                    enforcement=_binding_enforcement,
-                )
-                _verify_repairs.extend(list(_location_repairs or []))
-            except Exception:
-                location_result = engine.validate_location_claim(
-                    candidate, bound, contradictions, _definition_observe
-                )
+            # Finding L: skipped on the opinion-only early path.
+            location_result = None
+            _location_repairs = []
+            if _nc_early:
+                pass
+            else:
+                try:
+                    location_result, _location_repairs = engine.revalidate_with_repair(
+                        lambda h, w: engine.validate_location_claim(
+                            h, w, contradictions, _definition_observe
+                        ),
+                        candidate,
+                        bound,
+                        list(evidence_by_id.values()),
+                        contradictions,
+                        _verify_siblings,
+                        enforcement=_binding_enforcement,
+                        expect_kinds=(ClaimKind.DEFINITION, ClaimKind.CALL_EDGE),
+                    )
+                    _verify_repairs.extend(list(_location_repairs or []))
+                except Exception:
+                    location_result = engine.validate_location_claim(
+                        candidate, bound, contradictions, _definition_observe
+                    )
             location_answered = (
                 location_result is not None
                 and not refuting
@@ -623,10 +669,12 @@ async def verify_root_cause_activity(
                 causal_chain = []
             # T1-1: doc-answer fast path (mirrors location). Skipped under
             # legacy verifier mode like the location path.
+            # Finding L: skipped on the opinion-only early path.
             doc_answered = False
             doc_result = None
             if (
-                not location_answered
+                not _nc_early
+                and not location_answered
                 and not code_value_answered
                 and not history_answered
                 and not code_value_claim
@@ -675,10 +723,12 @@ async def verify_root_cause_activity(
                     )
             # #65: state-answer fast path (mirrors doc). Banked DATABASE_STATE
             # rows answer value questions without causal machinery.
+            # Finding L: skipped on the opinion-only early path.
             state_answered = False
             state_result = None
             if (
-                not location_answered
+                not _nc_early
+                and not location_answered
                 and not code_value_answered
                 and not history_answered
                 and not doc_answered
@@ -787,7 +837,11 @@ async def verify_root_cause_activity(
                 and not code_value_claim
             ):
                 blockers.append("no validated causal chain")
-            if blockers:
+            # Finding L: blockers describe checkable-claim failure modes;
+            # an opinion-only candidate bypasses them to the general path,
+            # whose evaluate-level projection returns the NC-specific
+            # INCONCLUSIVE (same verdict as without the early skip).
+            if blockers and not _nc_early:
                 from investigation_agent_platform.application.investigation.verification import (
                     InvestigationConfidence,
                     VerificationResult,
@@ -834,7 +888,7 @@ async def verify_root_cause_activity(
                 result = history_result
                 producing_path = "history"
                 causal_chain = []
-            elif (
+            elif _nc_early or (
                 not code_value_claim
                 and not location_answered
                 and not history_answered

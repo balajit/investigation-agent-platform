@@ -85,6 +85,41 @@ def is_auto_claim_shape(assessments: list[dict]) -> bool:
     return not assessments
 
 
+def format_repair_rate(applied: int, shadow: int, checkable_total: int) -> str:
+    """Battery repair series (pure; Phase 3 design: applied repairs over
+    checkable claims, numerator + denominator).
+
+    Finding F: the denominator is checkable claim groups (binding rows),
+    not applied+shadow records — the latter measures disposition mix, not
+    repair frequency. Zero checkable claims yields n/a, never a division
+    failure.
+    """
+    try:
+        applied_n = max(0, int(applied or 0))
+    except (TypeError, ValueError):
+        applied_n = 0
+    try:
+        shadow_n = max(0, int(shadow or 0))
+    except (TypeError, ValueError):
+        shadow_n = 0
+    try:
+        checkable_n = max(0, int(checkable_total or 0))
+    except (TypeError, ValueError):
+        checkable_n = 0
+    if checkable_n:
+        return (
+            f"repairs: applied={applied_n} shadow={shadow_n}"
+            f" => repair_rate={applied_n / checkable_n:.2f}"
+            f" ({applied_n}/{checkable_n} checkable)"
+        )
+    if applied_n + shadow_n:
+        return (
+            f"repairs: applied={applied_n} shadow={shadow_n}"
+            " => repair_rate=n/a (no checkable claims in window)"
+        )
+    return "repairs: n/a (no repair records in window)"
+
+
 def _uri() -> str:
     uri = os.environ.get("IAP_DATABASE_URI", "")
     return uri.replace("postgresql+psycopg2://", "postgresql+asyncpg://").replace(
@@ -423,20 +458,12 @@ async def main() -> int:
         )
     else:
         print("stored queries: n/a (no stored-sourced ledgers in window)")
-    _repair_total = _repair_applied + _repair_shadow
-    if _repair_total:
-        print(
-            f"repairs: applied={_repair_applied} shadow={_repair_shadow}"
-            f" => repair_rate={_repair_applied / _repair_total:.2f}"
-            f" ({_repair_applied}/{_repair_total})"
-            + (
-                f" [TRUNCATED markers: {_repair_truncated_markers} — gate blocked]"
-                if _repair_truncated_markers
-                else ""
-            )
-        )
-    else:
-        print("repairs: n/a (no repair records in window)")
+    # Finding F: denominator is checkable binding rows (= _binding_total;
+    # bindings exclude NOT_CHECKABLE by D5), not applied+shadow records.
+    _repair_line = format_repair_rate(_repair_applied, _repair_shadow, _binding_total)
+    if _repair_truncated_markers:
+        _repair_line += f" [TRUNCATED markers: {_repair_truncated_markers} — gate blocked]"
+    print(_repair_line)
     # Phase 4 (claim binding): checkable-only denominator + opinion rate.
     # checkable_binding_total is the binding-row count (bindings exclude
     # NOT_CHECKABLE by D5); not_checkable_count rides the marker extras.

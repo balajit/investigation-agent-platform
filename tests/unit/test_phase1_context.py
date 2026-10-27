@@ -333,7 +333,7 @@ class TestPromptSections:
 
     def test_sections_are_named_and_versioned(self):
         prompt = build_system_prompt()
-        assert prompt.startswith("INVESTIGATION REASONER v3-claim-grounded-017")
+        assert prompt.startswith("INVESTIGATION REASONER v3-claim-grounded-018")
         for header in (
             "## output-contract",
             "## action-authority",

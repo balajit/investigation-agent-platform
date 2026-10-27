@@ -1219,6 +1219,46 @@ async def _gate_conclusion_or_fail(
         and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
     ):
         causal_chain = _caller_edge_causal_chain(candidate, evidence_by_id)
+    # Finding L: opinion-only candidates skip every conclude validator.
+    # The shared predicate (N) screens on assessments alone — no evidence
+    # reads beyond the already-resolved working set, no model calls. The
+    # abstention reasons mirror the full path's reason block for an
+    # all-NC candidate (no validator could answer it by kind-gate), with
+    # the machine-readable NOT_CHECKABLE_SKIPPED marker first — the same
+    # evidence-only channel the conclude stage would have used.
+    try:
+        from investigation_agent_platform.application.evidence.retrieval_ledger import (
+            all_typed_claims_not_checkable as _all_nc_conclude,
+        )
+    except Exception:
+        _all_nc_conclude = None
+    try:
+        _nc_early_conclude = (
+            bool(_all_nc_conclude(candidate)) if _all_nc_conclude is not None else False
+        )
+    except Exception:
+        _nc_early_conclude = False
+    if _nc_early_conclude:
+        _nc_reasons = ["NOT_CHECKABLE_SKIPPED"]
+        try:
+            if not bound:
+                _nc_reasons.append("no bound supporting evidence")
+        except Exception:
+            pass
+        try:
+            if refuting:
+                _nc_reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
+        except Exception:
+            pass
+        try:
+            if not causal_chain:
+                _nc_reasons.append("no validated causal chain")
+        except Exception:
+            pass
+        await _persist_abstention(
+            "refuted" if refuting else "insufficient", _nc_reasons, candidate.id
+        )
+        return InvestigationStatus.COMPLETED
     # G1: location-answer fast path (mirrors verify_root_cause_activity).
     _verify_engine = VerificationEngine(
         verifier_version=verifier_version,
@@ -1246,6 +1286,7 @@ async def _gate_conclusion_or_fail(
             contradictions,
             None,
             enforcement=_conclude_enforcement,
+            expect_kinds=(ClaimKind.HISTORY,),
         )
         _conclude_repairs.extend(list(_c_history_repairs or []))
     except Exception:
@@ -1271,6 +1312,7 @@ async def _gate_conclusion_or_fail(
             contradictions,
             None,
             enforcement=_conclude_enforcement,
+            expect_kinds=(ClaimKind.DEFINITION, ClaimKind.CALL_EDGE),
         )
         _conclude_repairs.extend(list(_c_location_repairs or []))
     except Exception:
@@ -1420,22 +1462,20 @@ async def _gate_conclusion_or_fail(
             reasons.append("code value claim lacks a matching deterministic resolution")
         # Phase 4 (claim binding): opinion-only abstention carries its
         # machine-readable marker. Candidate-scoped (assessments are
-        # hydrated here; the marker is not) — appends only when every
-        # typed assessment is NOT_CHECKABLE.
+        # hydrated here; the marker is not). Finding N: the all-typed-NC
+        # check is the shared predicate, not an inline re-implementation.
         try:
-            _nc_asms = list(getattr(candidate, "assessments", None) or [])
-            _nc_typed = [a for a in _nc_asms if getattr(a, "claim_kind", None) is not None]
-            if _nc_typed and all(
-                str(
-                    getattr(getattr(a, "claim_kind", None), "value", getattr(a, "claim_kind", None))
-                    or ""
-                )
-                == "NOT_CHECKABLE"
-                for a in _nc_typed
-            ):
-                reasons.append("NOT_CHECKABLE_SKIPPED")
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                all_typed_claims_not_checkable as _all_nc,
+            )
         except Exception:
-            pass
+            _all_nc = None
+        try:
+            _opinion_only = bool(_all_nc(candidate)) if _all_nc is not None else False
+        except Exception:
+            _opinion_only = False
+        if _opinion_only:
+            reasons.append("NOT_CHECKABLE_SKIPPED")
         await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
         return InvestigationStatus.COMPLETED
     if caller_edge_validated or location_answered:

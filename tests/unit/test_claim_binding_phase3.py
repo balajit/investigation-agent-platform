@@ -10,6 +10,7 @@ no-ungated-repair enumeration.
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -265,6 +266,25 @@ class TestAttemptClaimRepair:
         assert rep.target.get("symbol") == "handleRequest"
         assert rep.target.get("file_path") == "src/alpha.py"
         assert rep.gate_reason == "no range read with recorded start/end lines"
+
+    def test_repair_carries_donor_snippet_for_review(self):
+        # Finding G: the review input needs row content, never a bare ID.
+        hit, donor = _def_hit(), _def_read()
+        ck, bank = self._ids(hit, donor)
+        _, repairs = attempt_claim_repair(
+            "DEFINITION",
+            ck,
+            _def_target(),
+            [str(hit.evidence_id)],
+            {str(hit.evidence_id)},
+            bank,
+            "cbv2",
+            "no range read with recorded start/end lines",
+        )
+        assert len(repairs) == 1
+        assert repairs[0].donor_snippet == (
+            "40| def handleRequest(req):\n41|     validate(req)\n42|     return dispatch(req)"
+        )
 
     def test_applied_outcome_under_cbv3(self):
         hit, donor = _def_hit(), _def_read()
@@ -759,9 +779,141 @@ class TestEngineEndToEnd:
                 for lim in (result.limitations or [])
             ]
             assert LimitationCode.REPAIRED_CITATION.value in codes
-            assert str(donor.evidence_id) in {
-                str(e) for e in (result.corroborating_evidence_ids or [])
-            }
+
+
+class TestRevalidateFailedProofNone:
+    """Finding D: HISTORY/location validators return None both when
+    inapplicable and when the proof fails on cited rows. A failed proof
+    must reach repair; other None shapes must not broaden the trigger.
+    These tests use the REAL validators, unlike the stub-based class."""
+
+    def _history_hyp(self, cited_id):
+        iid = uuid4()
+        hyp = Hypothesis(
+            tenant_id="t",
+            investigation_id=iid,
+            title="filter_orders changed recently",
+            description="filter_orders changed recently",
+            statement="filter_orders changed recently",
+            status=HypothesisStatus.PROPOSED,
+            supporting_evidence_ids=[cited_id],
+        )
+        asm = HypothesisEvidenceAssessment(
+            hypothesis_id=hyp.id,
+            evidence_id=cited_id,
+            assessment=AssessmentType.SUPPORTS,
+            strength=AssessmentStrength.STRONG,
+            reason="recent change",
+            claim_kind=ClaimKind.HISTORY,
+            claim_target=ClaimTarget(
+                file_path="src/orders.py",
+                commit_id="abc123",
+                commit_subject="Fix filter edge case",
+            ),
+        )
+        return hyp.model_copy(update={"assessments": [asm]})
+
+    def test_failed_history_proof_repairs_under_cbv2(self):
+        # Cited row matches file+commit but not the structured subject:
+        # the real validator returns None (failed proof, not inapplicable)
+        # and repair must still engage.
+        cited = _commit_row("src/orders.py", "abc123", "Unrelated change", "Unrelated change")
+        donor = _commit_row(
+            "src/orders.py", "abc123", "Fix filter edge case", "Fix filter edge case"
+        )
+        # Containment for the donor match: the donor snippet must show (at
+        # least) what the cited row showed, while the cited *subject*
+        # mismatches the structured claim subject (the failed proof).
+        cited = cited.model_copy(update={"content_snippet": "Fix filter"})
+        hyp = self._history_hyp(cited.evidence_id)
+        engine = VerificationEngine(claim_binding_version="cbv2")
+        assert engine.validate_history_claim(hyp, [cited], []) is None
+        result, repairs = engine.revalidate_with_repair(
+            lambda h, w: engine.validate_history_claim(h, w, []),
+            hyp,
+            [cited],
+            [cited, donor],
+            [],
+            None,
+            None,
+            (ClaimKind.HISTORY,),
+        )
+        assert result is None
+        assert len(repairs) == 1 and repairs[0].outcome == "shadow"
+        assert repairs[0].donor_id == str(donor.evidence_id)
+
+    def test_inapplicable_kind_stays_silent(self):
+        # BEHAVIOR hypothesis: the history validator is inapplicable
+        # (kind mismatch), so even with cited rows no repair is attempted.
+        cited = _commit_row("src/orders.py", "abc123", "Unrelated change", "Unrelated change")
+        iid = uuid4()
+        hyp = Hypothesis(
+            tenant_id="t",
+            investigation_id=iid,
+            title="s",
+            description="s",
+            statement="throughput drops under load",
+            status=HypothesisStatus.PROPOSED,
+            supporting_evidence_ids=[cited.evidence_id],
+        )
+        asm = HypothesisEvidenceAssessment(
+            hypothesis_id=hyp.id,
+            evidence_id=cited.evidence_id,
+            assessment=AssessmentType.SUPPORTS,
+            strength=AssessmentStrength.STRONG,
+            reason="behavior",
+            claim_kind=ClaimKind.BEHAVIOR,
+            claim_target=ClaimTarget(symbol="filter_orders"),
+        )
+        hyp = hyp.model_copy(update={"assessments": [asm]})
+        engine = VerificationEngine(claim_binding_version="cbv2")
+        assert engine.validate_history_claim(hyp, [cited], []) is None
+        result, repairs = engine.revalidate_with_repair(
+            lambda h, w: engine.validate_history_claim(h, w, []),
+            hyp,
+            [cited],
+            [cited],
+            [],
+            None,
+            None,
+            (ClaimKind.HISTORY,),
+        )
+        assert result is None
+        assert repairs == []
+
+    def test_uncited_claim_stays_silent(self):
+        # No cited rows: nothing to rebind, no repair even for HISTORY.
+        hyp = self._history_hyp(uuid4())
+        hyp = hyp.model_copy(update={"supporting_evidence_ids": []})
+        asm = hyp.assessments[0].model_copy(update={"evidence_id": None})
+        hyp = hyp.model_copy(update={"assessments": [asm]})
+        engine = VerificationEngine(claim_binding_version="cbv2")
+        result, repairs = engine.revalidate_with_repair(
+            lambda h, w: engine.validate_history_claim(h, w, []),
+            hyp,
+            [],
+            [],
+            [],
+            None,
+            None,
+            (ClaimKind.HISTORY,),
+        )
+        assert result is None
+        assert repairs == []
+
+    def test_legacy_none_without_expect_kinds(self):
+        # No expect_kinds: legacy behavior preserved (None exits).
+        cited = _commit_row("src/orders.py", "abc123", "Unrelated change", "Unrelated change")
+        hyp = self._history_hyp(cited.evidence_id)
+        engine = VerificationEngine(claim_binding_version="cbv2")
+        result, repairs = engine.revalidate_with_repair(
+            lambda h, w: engine.validate_history_claim(h, w, []),
+            hyp,
+            [cited],
+            [cited],
+        )
+        assert result is None
+        assert repairs == []
 
     def test_ghost_never_repairs(self):
         ghost = uuid4()
@@ -1335,10 +1487,347 @@ class TestTelemetryAndMarkers:
         clean = shadow_repair_review({"inv-1": [dict(evals["inv-1"][0])]})
         assert clean["complete"] is True
 
+    def test_complete_does_not_mean_reviewed(self):
+        # Finding E guardrail: marker integrity (complete) must not be
+        # read as review coverage. Default dispositions leave reviewed
+        # False even on a clean marker.
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "retrieval_benefit.py"
+        spec = importlib.util.spec_from_file_location("retrieval_benefit", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        shadow_repair_review = module.shadow_repair_review
+
+        evals = {
+            "inv-1": [
+                {
+                    "turn": 2,
+                    "hypothesis_id": "h1",
+                    "repaired": [
+                        {
+                            "claim_key": "s|DEFINITION",
+                            "claim_ref": "r1",
+                            "target_ref": "t1",
+                            "cited_id": "c1",
+                            "donor_id": "d1",
+                            "basis": "snippet_containment",
+                            "outcome": "shadow",
+                            "binding_version": "cbv2",
+                            "gate_reason": "g",
+                        }
+                    ],
+                    "repaired_truncated": False,
+                    "repaired_count": 0,
+                    "repair_shadow_count": 1,
+                }
+            ]
+        }
+        review = shadow_repair_review(evals)
+        assert review["complete"] is True
+        assert review["reviewed"] is False
+        assert review["unreviewed_count"] == 1
+        assert review["candidates"][0]["disposition"] == "unreviewed"
+        key = review["candidates"][0]["disposition_key"]
+        approved = shadow_repair_review(evals, {key: "approved"})
+        assert approved["reviewed"] is True
+        assert approved["unreviewed_count"] == 0
+        assert approved["candidates"][0]["disposition"] == "approved"
+        empty = shadow_repair_review({"inv-1": []})
+        assert empty["reviewed"] is False
+
+    def test_review_carries_donor_snippet_and_renders_it(self):
+        # Finding G: the review input is row content, never a bare ID —
+        # the loader carries donor_snippet and the human-readable report
+        # renders each unreviewed candidate with its snippet excerpt.
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "retrieval_benefit.py"
+        spec = importlib.util.spec_from_file_location("retrieval_benefit_g", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        evals = {
+            "inv-1": [
+                {
+                    "turn": 2,
+                    "hypothesis_id": "h1",
+                    "repaired": [
+                        {
+                            "claim_key": "s|DEFINITION",
+                            "claim_ref": "r1",
+                            "target_ref": "t1",
+                            "target": {"symbol": "S", "file_path": "f.py"},
+                            "cited_id": "c1",
+                            "donor_id": "d1",
+                            "basis": "snippet_containment",
+                            "outcome": "shadow",
+                            "binding_version": "cbv2",
+                            "gate_reason": "g",
+                            "donor_snippet": "40| def handleRequest(req):",
+                        }
+                    ],
+                    "repaired_truncated": False,
+                    "repaired_count": 0,
+                    "repair_shadow_count": 1,
+                }
+            ]
+        }
+        review = module.shadow_repair_review(evals)
+        assert review["candidates"][0]["donor_snippet"] == "40| def handleRequest(req):"
+        text = module.format_report(
+            {
+                "n_runs": 1,
+                "evaluable_runs": 1,
+                "n_attempts": 0,
+                "n_claims": 1,
+                "n_evaporation_events": 0,
+                "n_missing_obligations": 0,
+                "coverage": {},
+                "attribution": {},
+                "recovery": {},
+                "truncation": {"flags": [], "truncation_seen": False, "applicable": True},
+                "verdict_guard": {},
+                "shadow_repair_review": review,
+                "branch_recovery": False,
+                "branch_diagnostic": False,
+                "inconclusive": True,
+                "pass": False,
+            }
+        )
+        assert "review: claim_ref=r1 cited=c1 donor=d1" in text
+        assert "40| def handleRequest(req):" in text
+
 
 # ---------------------------------------------------------------------------
-# Verify-activity spot (sites 1-2 through the real activity)
+# Finding L: opinion-only early-skip through the real verify activity
 # ---------------------------------------------------------------------------
+
+
+class TestVerifyActivityNotCheckableEarlySkip:
+    def _activity_ctx(self, inv_metadata, hyp, rows, events):
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.api.dependencies import (
+            AppContext,
+            set_app_context,
+        )
+
+        ctx = AppContext()
+        ctx.investigation_repo = SimpleNamespace(
+            get_by_id=AsyncMock(
+                return_value=SimpleNamespace(metadata=dict(inv_metadata), application_id="app")
+            )
+        )
+        ctx.evidence_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=list(rows))
+        )
+        ctx.hypothesis_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[hyp]),
+            save=AsyncMock(),
+        )
+        ctx.timeline_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=list(events)),
+            append=AsyncMock(return_value=None),
+        )
+        set_app_context(ctx)
+        return ctx
+
+    def _nc_hyp(self, inv_id):
+        from investigation_agent_platform.domain.hypothesis.models import (
+            AssessmentStrength,
+            AssessmentType,
+            ClaimKind,
+            ClaimTarget,
+            Hypothesis,
+            HypothesisEvidenceAssessment,
+            HypothesisStatus,
+        )
+
+        hyp = Hypothesis(
+            tenant_id="t",
+            investigation_id=inv_id,
+            title="Editors are better than IDEs"[:256],
+            description="Editors are better than IDEs",
+            statement="Editors are better than IDEs",
+            status=HypothesisStatus.PROPOSED,
+        )
+        asm = HypothesisEvidenceAssessment(
+            hypothesis_id=hyp.id,
+            evidence_id=None,
+            assessment=AssessmentType.NEUTRAL,
+            strength=AssessmentStrength.WEAK,
+            reason="taste judgment",
+            claim_kind=ClaimKind.NOT_CHECKABLE,
+            claim_target=ClaimTarget(),
+        )
+        return hyp.model_copy(update={"assessments": [asm], "supporting_evidence_ids": []})
+
+    @pytest.mark.asyncio
+    async def test_all_nc_skips_activity_validators(self):
+        from unittest.mock import patch
+
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+        from investigation_agent_platform.application.worker.activities import (
+            VerifyRootCauseInput,
+            verify_root_cause_activity,
+        )
+
+        inv_id = uuid4()
+        hyp = self._nc_hyp(inv_id)
+        self._activity_ctx(
+            {"claim_binding_version": "cbv3", "verifier_version": "v2"},
+            hyp,
+            [],
+            [],
+        )
+        with (
+            patch.object(
+                VerificationEngine,
+                "validate_code_value_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_history_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_location_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_doc_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_state_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+        ):
+            result = await verify_root_cause_activity(
+                VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+            )
+        assert result.success is True
+        assert result.data.get("status") == "INCONCLUSIVE"
+        assert result.data.get("verified") is False
+        assert result.data.get("producing_path") == "general"
+
+
+# ---------------------------------------------------------------------------
+# Finding L: opinion-only early-skip through the real conclude gate
+# ---------------------------------------------------------------------------
+
+
+class TestConcludeNotCheckableEarlySkip:
+    def _conclude_ctx(self, inv_metadata, hyp):
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.api.dependencies import (
+            AppContext,
+            set_app_context,
+        )
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationStatus,
+        )
+
+        saved: dict[str, Any] = {}
+
+        async def _save_conclusion(tenant_id, conclusion):
+            saved["conclusion"] = conclusion
+            return conclusion
+
+        ctx = AppContext()
+        ctx.investigation_repo = SimpleNamespace(
+            get_by_id=AsyncMock(
+                return_value=SimpleNamespace(
+                    metadata=dict(inv_metadata),
+                    application_id="app",
+                    status=InvestigationStatus.COMPLETED,
+                )
+            ),
+            save=AsyncMock(),
+        )
+        ctx.evidence_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=[]))
+        ctx.hypothesis_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[hyp]),
+            save=AsyncMock(),
+        )
+        ctx.finding_repo = SimpleNamespace(
+            save_conclusion=AsyncMock(side_effect=_save_conclusion),
+            save_finding=AsyncMock(return_value=None),
+        )
+        ctx.timeline_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            append=AsyncMock(return_value=None),
+        )
+        set_app_context(ctx)
+        return ctx, saved
+
+    @pytest.mark.asyncio
+    async def test_all_nc_conclude_skips_validators(self):
+        from unittest.mock import patch
+
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+        from investigation_agent_platform.application.worker.activities.inputs import (
+            ConcludeInvestigationInput,
+        )
+        from investigation_agent_platform.application.worker.activities.lifecycle import (
+            conclude_investigation_activity,
+        )
+
+        inv_id = uuid4()
+        hyp = TestVerifyActivityNotCheckableEarlySkip()._nc_hyp(inv_id)
+        _, saved = self._conclude_ctx(
+            {"claim_binding_version": "cbv3", "verifier_version": "v2"},
+            hyp,
+        )
+        with (
+            patch.object(
+                VerificationEngine,
+                "validate_code_value_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_history_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_location_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_doc_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+            patch.object(
+                VerificationEngine,
+                "validate_state_claim",
+                side_effect=AssertionError("must not run on NC"),
+            ),
+        ):
+            result = await conclude_investigation_activity(
+                ConcludeInvestigationInput(
+                    tenant_id="t", investigation_id=str(inv_id), status="COMPLETED"
+                )
+            )
+        assert result.success is True
+        conclusion = saved.get("conclusion")
+        assert conclusion is not None
+        assert "NOT_CHECKABLE_SKIPPED" in list(getattr(conclusion, "limitations", None) or [])
 
 
 class TestVerifyActivityRepair:
@@ -1414,3 +1903,103 @@ class TestVerifyActivityRepair:
         assert result.data.get("status") == "INCONCLUSIVE"
         assert int(result.data.get("claim_binding_repair_shadow", 0)) >= 1
         assert int(result.data.get("claim_binding_repaired", 0)) == 0
+
+
+# ---------------------------------------------------------------------------
+# Finding M: no-candidate runs carry an explicit empty feed
+# ---------------------------------------------------------------------------
+
+
+class TestNoCandidateExplicitEmptyFeed:
+    def _ctx(self, inv_metadata, hyp, rows):
+        from unittest.mock import AsyncMock
+
+        from investigation_agent_platform.api.dependencies import (
+            AppContext,
+            set_app_context,
+        )
+
+        ctx = AppContext()
+        ctx.investigation_repo = SimpleNamespace(
+            get_by_id=AsyncMock(
+                return_value=SimpleNamespace(metadata=dict(inv_metadata), application_id="app")
+            )
+        )
+        ctx.evidence_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=list(rows))
+        )
+        ctx.hypothesis_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[hyp]),
+            save=AsyncMock(),
+        )
+        ctx.timeline_repo = SimpleNamespace(
+            find_by_investigation_id=AsyncMock(return_value=[]),
+            append=AsyncMock(return_value=None),
+        )
+        set_app_context(ctx)
+        return ctx
+
+    def _rejected_hyp(self, inv_id):
+        from investigation_agent_platform.domain.hypothesis.models import (
+            Hypothesis,
+            HypothesisStatus,
+        )
+
+        return Hypothesis(
+            tenant_id="t",
+            investigation_id=inv_id,
+            title="rejected"[:256],
+            description="rejected",
+            statement="rejected",
+            status=HypothesisStatus.REJECTED,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_candidate_current_carries_empty_feed(self):
+        from investigation_agent_platform.application.worker.activities import (
+            VerifyRootCauseInput,
+            verify_root_cause_activity,
+        )
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_claim_gap_feed,
+        )
+
+        inv_id = uuid4()
+        self._ctx(
+            {"claim_binding_version": "cbv3", "verifier_version": "v2"},
+            self._rejected_hyp(inv_id),
+            [],
+        )
+        result = await verify_root_cause_activity(
+            VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+        )
+        assert result.success is True
+        assert result.data.get("producing_path") == "no-candidate"
+        # Finding M: explicit empty feed, never a missing key — the
+        # carrier writes a tombstone (supersedes stale feeds) instead of
+        # the fault signal (None, no marker).
+        assert result.data.get("claim_gaps") == []
+        marker = _carry_claim_gap_feed(dict(result.data), 3)
+        assert marker is not None
+        assert marker["kind"] == "claim_gap_feed"
+        assert marker["gaps"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_candidate_legacy_keeps_keyless_shape(self):
+        from investigation_agent_platform.application.worker.activities import (
+            VerifyRootCauseInput,
+            verify_root_cause_activity,
+        )
+
+        inv_id = uuid4()
+        self._ctx(
+            {"claim_binding_version": "cbv1", "verifier_version": "v1"},
+            self._rejected_hyp(inv_id),
+            [],
+        )
+        result = await verify_root_cause_activity(
+            VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+        )
+        assert result.success is True
+        assert result.data.get("producing_path") == "no-candidate"
+        assert "claim_gaps" not in dict(result.data)

@@ -1412,6 +1412,28 @@ class TestBindingTelemetry:
         assert telemetry["claim_binding_unmapped"] == 0
         assert telemetry["claim_binding_version"] == "cbv2"
 
+    def test_loop_telemetry_accepts_cbv3(self):
+        # Finding H: cbv3 is a legal pin (repair-applied cohort) — the
+        # closed telemetry label must carry it, not drop it.
+        from investigation_agent_platform.application.worker.activities.inputs import (
+            _derive_loop_telemetry,
+        )
+
+        telemetry = _derive_loop_telemetry(
+            {"llm_tokens_total": 1, "claim_binding_version": "cbv3"},
+            {},
+            0,
+        )
+        assert telemetry is not None
+        assert telemetry["claim_binding_version"] == "cbv3"
+        dropped = _derive_loop_telemetry(
+            {"llm_tokens_total": 1, "claim_binding_version": "cbv9"},
+            {},
+            0,
+        )
+        assert dropped is not None
+        assert "claim_binding_version" not in dropped
+
 
 def _two_caller_rows():
     """Two exact CALL_EDGE range reads (Step 5-passing shape), distinct callers."""

@@ -21,8 +21,12 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
     claim_ref,
     count_persisted_attempts,
     extract_search_query,
+    linked_scope_attempted,
     re_retrieval_directive,
     target_group_key,
+)
+from investigation_agent_platform.application.evidence.retrieval_ledger import (
+    all_typed_claims_not_checkable as _all_typed_claims_not_checkable,
 )
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
@@ -522,6 +526,13 @@ class RepairedBinding(BaseModel):
         max_length=512,
         description="The kind-gate (False, reason) that authorized this "
         "attempt. Review input, never a decision input.",
+    )
+    donor_snippet: str = Field(
+        default="",
+        max_length=2000,
+        description="Truncated donor row content_snippet at repair time. "
+        "Review rendering only (finding G): the reviewer judges match "
+        "quality from the snippet, never a bare ID. Never a decision input.",
     )
 
 
@@ -1237,6 +1248,9 @@ def attempt_claim_repair(
                         outcome=outcome,
                         binding_version=binding_version,
                         gate_reason=str(gate_reason or "")[:512],
+                        donor_snippet=str(
+                            getattr(donor_row, "content_snippet", "") or ""
+                        )[:500],
                     )
                 )
             except Exception:
@@ -1594,11 +1608,20 @@ def select_ledger_requery(
                 latest = None
             group_cited_ids = list(group_cited) if isinstance(group_cited, list) else []
             durable = count_persisted_attempts(recorded, ledger.search_query, ledger.scope)
+            # Finding B: linkage is query-only, so a same-query attempt at
+            # a different scope still lands in attempt_indexes. Only a
+            # scope-matching linked attempt suppresses the never-retrieved
+            # trigger — the durable budget already counts (query, scope).
+            # Shared with re_retrieval_directive via linked_scope_attempted.
+            try:
+                _scope_hit = linked_scope_attempted(ledger, recorded)
+            except Exception:
+                _scope_hit = True
             never_retrieved = (
                 not group_cited_ids
                 and not binding.unknown
                 and getattr(ledger, "query_source", "derived") == "stored"
-                and not list(getattr(ledger, "attempt_indexes", None) or [])
+                and not _scope_hit
                 and durable == 0
             )
             failed_retry = latest == RetrievalOutcome.SEARCH_FAILED.value
@@ -5777,6 +5800,41 @@ class VerificationEngine:
         except Exception:
             return result
 
+    def _failed_proof_for_repair(self, hypothesis: Any, expect_kinds: tuple[Any, ...]) -> bool:
+        """True when a None validator result is a failed proof (pure).
+
+        Mirrors the wrapped validator's own kind gate: the hypothesis's
+        effective kind must be one the validator handles, and a
+        DEFINITION/HISTORY group (repair's own domain) must cite rows.
+        Kind mismatch, concession-shaped, vetoed, and uncited hypotheses
+        stay ineligible, so the repair trigger does not broaden. Never
+        raises.
+        """
+        try:
+            kind = VerificationEngine.effective_claim_kind(hypothesis)
+        except Exception:
+            return False
+        try:
+            if kind not in tuple(expect_kinds or ()):
+                return False
+        except Exception:
+            return False
+        try:
+            groups = _distinct_typed_claims(hypothesis) or []
+        except Exception:
+            return False
+        for group in groups:
+            try:
+                if not isinstance(group, dict):
+                    continue
+                if str(group.get("kind_value") or "") not in ("DEFINITION", "HISTORY"):
+                    continue
+                if list(group.get("cited_ids") or []):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def revalidate_with_repair(
         self,
         run_fn: Any,
@@ -5786,6 +5844,7 @@ class VerificationEngine:
         contradictions: list[Any] | None = None,
         sibling_hypotheses: list[Any] | None = None,
         enforcement: Any | None = None,
+        expect_kinds: tuple[Any, ...] | None = None,
     ) -> tuple[Any, list[RepairedBinding]]:
         """Run a fast-path validate fn with one repair pass (Phase 3).
 
@@ -5798,6 +5857,16 @@ class VerificationEngine:
         (kept + rebound donors, via enforcement_with_repairs). Returns
         (result, repairs); shadow repairs are returned for diagnostics
         attachment, never applied. Never raises.
+
+        Finding D: HISTORY/location validators return None both when
+        inapplicable (kind mismatch, concession, veto) and when the
+        proof fails on cited rows. A failed proof must reach repair;
+        an inapplicable validator must not broaden the trigger.
+        ``expect_kinds`` names the kinds the wrapped validator handles
+        (history: HISTORY; location: DEFINITION/CALL_EDGE); a None
+        result proceeds to repair only when the hypothesis's effective
+        kind matches and a DEFINITION/HISTORY group cites rows. Veto and
+        pin gating stay inside repair_failed_groups.
         """
         try:
             result = run_fn(hypothesis, working_items)
@@ -5809,17 +5878,28 @@ class VerificationEngine:
             return result, []
         if version not in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
             return result, []
+        _failed_proof = False
         if result is None:
-            return None, []
-        try:
-            status = str(
-                getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
-            )
-            corroborating = list(getattr(result, "corroborating_evidence_ids", None) or [])
-        except Exception:
-            return result, []
-        if status != VerificationStatus.INCONCLUSIVE.value or corroborating:
-            return result, []
+            # Failed proof (validator declined on cited rows) vs
+            # inapplicable (kind mismatch, concession, veto): only the
+            # former reaches repair, and only for the wrapped
+            # validator's own kinds.
+            if expect_kinds is not None and self._failed_proof_for_repair(
+                hypothesis, tuple(expect_kinds)
+            ):
+                _failed_proof = True
+            else:
+                return None, []
+        if not _failed_proof:
+            try:
+                status = str(
+                    getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
+                )
+                corroborating = list(getattr(result, "corroborating_evidence_ids", None) or [])
+            except Exception:
+                return result, []
+            if status != VerificationStatus.INCONCLUSIVE.value or corroborating:
+                return result, []
         try:
             rebound, repairs = self.repair_failed_groups(
                 hypothesis, evidence_bank, contradictions, sibling_hypotheses
@@ -6173,7 +6253,18 @@ class VerificationEngine:
             _typed = [a for a in _asms if getattr(a, "claim_kind", None) is not None]
         except Exception:
             _typed = []
-        if _typed and len(_checkable_asms) == 0:
+        # Finding N: opinion-only screen is the shared predicate (not an
+        # inline re-implementation) so the marker, the activities, and
+        # this projection cannot drift apart. Import failure falls back
+        # to the pre-N inline condition, never to a pass-through.
+        try:
+            _opinion_only = bool(_all_typed_claims_not_checkable(hypothesis))
+        except Exception:
+            try:
+                _opinion_only = bool(_typed and len(_checkable_asms) == 0)
+            except Exception:
+                _opinion_only = False
+        if _opinion_only:
             return self._not_checkable_inconclusive(hypothesis)
         if 0 < len(_checkable_asms) < len(_asms):
             try:

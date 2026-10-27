@@ -345,7 +345,7 @@ def _derive_loop_telemetry(
             telemetry[key] = max(0, value)
         try:
             _cbv = str(passed.get("claim_binding_version", "") or "")
-            if _cbv in ("cbv1", "cbv2"):
+            if _cbv in ("cbv1", "cbv2", "cbv3"):
                 telemetry["claim_binding_version"] = _cbv
         except Exception:
             pass

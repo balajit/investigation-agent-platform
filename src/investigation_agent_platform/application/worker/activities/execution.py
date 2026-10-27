@@ -583,6 +583,25 @@ async def fallback_call_graph_to_search(
         outcome_detail["miss_reason"] = marker
     return record_outcome(banked)
 
+
+def _scope_path_prefix(scope: object) -> str | None:
+    """Path-prefix form of a stored scope, or None (pure).
+
+    Stored scopes are "path prefix or repository@revision". Only the
+    plain-path form maps to the SEARCH_CODE ``path_prefix`` parameter;
+    a ``repository@revision`` scope carries no path information, so the
+    handler keeps its default ("/") rather than searching a fabricated
+    prefix. Never raises.
+    """
+    try:
+        text = str(scope or "").strip()
+    except Exception:
+        return None
+    if not text or "@" in text:
+        return None
+    return text
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def execute_action_activity(
@@ -2457,7 +2476,12 @@ async def execute_action_activity(
                     revision=str(parameters.get("revision", "HEAD")),
                     query=str(parameters.get("query", "")),
                     language=parameters.get("language"),
-                    path_prefix=parameters.get("path_prefix"),
+                    # Stored scopes ride the ledger budget key as "scope";
+                    # map the path-prefix form onto the handler parameter
+                    # the provider actually reads. An explicit path_prefix
+                    # (prior action's own prefix) always wins.
+                    path_prefix=parameters.get("path_prefix")
+                    or _scope_path_prefix(parameters.get("scope")),
                     limit=min(int(parameters.get("limit", 20)), 100),
                     # Fail-closed opt-in: when the caller requires the
                     # provider to honor a pinned revision, an incapable
