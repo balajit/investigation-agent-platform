@@ -156,13 +156,15 @@ def _call_shown(callee: str, snippet: str) -> bool:
         if sep in callee:
             names.add(callee.rsplit(sep, 1)[-1])
     for raw in (snippet or "").splitlines():
-        line = raw.split("| ", 1)[1] if ("| " in raw and raw.split("|", 1)[0].strip().isdigit()) else raw
+        line = (
+            raw.split("| ", 1)[1]
+            if ("| " in raw and raw.split("|", 1)[0].strip().isdigit())
+            else raw
+        )
         for name in names:
             if not name:
                 continue
-            for match in re.finditer(
-                r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*\(", line
-            ):
+            for match in re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*\(", line):
                 if _DECLARATION_PREFIX.search(line[: match.start()]):
                     continue
                 return True
@@ -324,7 +326,9 @@ def _check_rival_exemption(case: dict, expect: dict, conclusion: dict, hypothese
     return (True, "")
 
 
-def score_supported(case: dict, conclusion: dict, findings: dict, evidence: dict, hyps: dict) -> tuple:
+def score_supported(
+    case: dict, conclusion: dict, findings: dict, evidence: dict, hyps: dict
+) -> tuple:
     """Grade the conclusion, not the corpus.
 
     PASS requires the expected answer status plus every applicable
@@ -340,6 +344,21 @@ def score_supported(case: dict, conclusion: dict, findings: dict, evidence: dict
     if want_status == "ABSTAIN":
         if cstatus in ABSTAIN_SET:
             rows = _supporting_rows(concl, hyps, _rows_by_id(evidence))
+            # Phase 4 (claim binding): opinion-probe dimension. The
+            # hypothesis API items carry no assessments, so the check is
+            # made on the conclusion surface the verify activity controls:
+            # ABSTAIN + zero supporting rows (retrieval skipped) + the
+            # NOT_CHECKABLE_SKIPPED limitation the conclude path emits.
+            if str((expect or {}).get("claim", "") or "") == "not_checkable":
+                if rows:
+                    return ("PARTIAL", f"cites {len(rows)} supporting rows for an opinion claim")
+                limitations = list((concl or {}).get("limitations") or [])
+                if "NOT_CHECKABLE_SKIPPED" not in limitations:
+                    return ("PARTIAL", "abstained without NOT_CHECKABLE_SKIPPED limitation")
+                ok, reason = _check_no_failure(rows)
+                if not ok:
+                    return ("PARTIAL", reason)
+                return ("PASS", f"honest abstention ({cstatus}), retrieval skipped")
             ok, reason = _check_no_failure(rows)
             if not ok:
                 return ("PARTIAL", reason)
@@ -410,9 +429,15 @@ def main() -> int:
             continue
         print(f"--- {case['id']}: {case['symptom'][:70]}", flush=True)
         st, data = api(
-            args.api_base, args.tenant, "POST", "/api/v1/investigations",
-            {"application_id": APP_ID, "problem_description": case["symptom"],
-             "initial_context": case["context"]},
+            args.api_base,
+            args.tenant,
+            "POST",
+            "/api/v1/investigations",
+            {
+                "application_id": APP_ID,
+                "problem_description": case["symptom"],
+                "initial_context": case["context"],
+            },
         )
         iid = data.get("id")
         if not iid:

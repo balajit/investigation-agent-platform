@@ -388,13 +388,47 @@ def compile_evidence_excerpts(
     # arrives. Code is promoted ahead of logs because a claim's decisive
     # range must not be crowded out by newer log rows (Phase 1.1). The 500
     # pool bounds the sort cost; the [:100] keeps the highest-priority 100.
+    # Phase 4 (claim binding): fetch_reason rows (smallest-fetch banked,
+    # uncited) sort into their own partition between bound and code, and
+    # beyond-cut fetch rows are carried into the pool (bounded ≤10 by the
+    # forcing caps). Hydration is unordered (no ORDER BY), so without the
+    # carry any fetch row past the cut may shed regardless of age.
+    def _has_fetch_reason(row: Any) -> bool:
+        try:
+            attrs = _get(row, "attributes", {}) or {}
+            return isinstance(attrs, dict) and str(attrs.get("fetch_reason") or "").startswith(
+                "smallest_fetch:"
+            )
+        except Exception:
+            return False
+
     pool = list(evidence_items[:MAX_EVIDENCE_POOL])
+    try:
+        _seen_pool = {_eid(r) for r in pool}
+        for r in evidence_items[MAX_EVIDENCE_POOL:]:
+            try:
+                if _has_fetch_reason(r):
+                    _rid = _eid(r)
+                    if _rid and _rid not in _seen_pool:
+                        pool.append(r)
+                        _seen_pool.add(_rid)
+            except Exception:
+                continue
+    except Exception:
+        pass
     bound_items = sorted([e for e in pool if _eid(e) in bound], key=_sort_key, reverse=True)
+    fetch_items = sorted(
+        [e for e in pool if _eid(e) not in bound and _has_fetch_reason(e)],
+        key=_sort_key,
+        reverse=True,
+    )
+    fetch_ids = {_eid(e) for e in fetch_items}
     code_items = sorted(
         [
             e
             for e in pool
             if _eid(e) not in bound
+            and _eid(e) not in fetch_ids
             and _is_code_type(str(_get(_get(e, "evidence_type", ""), "value", e) or ""))
         ],
         key=_code_sort_key,
@@ -402,16 +436,37 @@ def compile_evidence_excerpts(
     )
     code_ids = {_eid(e) for e in code_items}
     rest = sorted(
-        [e for e in pool if _eid(e) not in bound and _eid(e) not in code_ids],
+        [
+            e
+            for e in pool
+            if _eid(e) not in bound and _eid(e) not in fetch_ids and _eid(e) not in code_ids
+        ],
         key=_sort_key,
         reverse=True,
     )
-    items = (bound_items + code_items + rest)[:MAX_VISIBLE_EXCERPTS]
+    items = (bound_items + fetch_items + code_items + rest)[:MAX_VISIBLE_EXCERPTS]
+    _by_id = {_eid(_it): _it for _it in items}
+    # Phase 4 code-body queue: bound bodies first, then fetch bodies, then
+    # unbound code — a fetch body displaces unbound code, never a bound
+    # body. Bounded by MAX_CODE_EXCERPTS like before.
+    _body_ids: set[str] = set()
+    try:
+        _queue: list[str] = []
+        for _e in bound_items + fetch_items + code_items:
+            try:
+                if _is_code_type(str(_get(_get(_e, "evidence_type", ""), "value", _e) or "")):
+                    _iid = _eid(_e)
+                    if _iid and _iid not in _queue:
+                        _queue.append(_iid)
+            except Exception:
+                continue
+        _body_ids = set(_queue[:MAX_CODE_EXCERPTS])
+    except Exception:
+        _body_ids = set()
     recent_ids = _most_recent_ids(items, tier1_recent_count())
     floor = tier1_relevance_floor()
     units = _group_log_items(items, log_group)
     excerpts: list[dict[str, Any]] = []
-    code_count = 0
     for representative, member_ids in units:
         e = representative
         summary = str(_get(e, "summary", "") or "")
@@ -419,6 +474,19 @@ def compile_evidence_excerpts(
         etype = str(_get(_get(e, "evidence_type", ""), "value", e) or "")
         evidence_id = str(_get(e, "evidence_id", ""))
         relevance = _group_relevance(e, member_ids, items)
+        # Phase 4 (claim binding): fetch_reason rows stay Tier 1 until
+        # cited (bound pin takes over) — checked on the representative
+        # and on grouped members, so a grouped fetch row is not demoted.
+        _fetch_pinned = _has_fetch_reason(e)
+        if not _fetch_pinned:
+            try:
+                for _mid in member_ids or []:
+                    _mrow = _by_id.get(str(_mid))
+                    if _mrow is not None and _has_fetch_reason(_mrow):
+                        _fetch_pinned = True
+                        break
+            except Exception:
+                pass
         tier = 1
         if (
             evidence_id
@@ -427,13 +495,13 @@ def compile_evidence_excerpts(
             and relevance < floor
             and evidence_id not in recent_ids
             and not (set(member_ids) & recent_ids)
+            and not _fetch_pinned
         ):
             tier = 2
         is_code = _is_code_type(etype)
         content = ""
         content_truncated = False
-        if tier == 1 and is_code and snippet and code_count < MAX_CODE_EXCERPTS:
-            code_count += 1
+        if tier == 1 and is_code and snippet and evidence_id in _body_ids:
             if len(snippet) > MAX_CODE_EXCERPT_CHARS:
                 content = snippet[:MAX_CODE_EXCERPT_CHARS]
                 content_truncated = True
@@ -494,8 +562,15 @@ def compile_evidence_excerpts(
 
 _LOG_GROUP_TYPES = frozenset({"RUNTIME_LOG", "RUNTIME_TRACE", "LOG", "TRACE"})
 
-_STORY_ATTR_KEYS = ("story_comp", "story_func", "story_stage", "story_step",
-                   "story_outcome", "story_event", "story_elapsed_ms")
+_STORY_ATTR_KEYS = (
+    "story_comp",
+    "story_func",
+    "story_stage",
+    "story_step",
+    "story_outcome",
+    "story_event",
+    "story_elapsed_ms",
+)
 
 
 def story_block(e: Any) -> dict[str, Any] | None:

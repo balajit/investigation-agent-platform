@@ -13,6 +13,7 @@
     "L10.json": "54ec6acc663cb5470d2a67cdaaa0b454fa8cdd9e37aad681ab0816631c91d621",
     "L11.json": "046bd1ddcfa2722b47a192e6006cbf17e6c152f4255cc79cb4f7aab2d230ba29",
     "L12.json": "f0bb74495929c161282ddd5a5b01663cab7d5f28d2dad9136fbf0fcbc9ff21fb",
+    "L13.json": "2b3f575da423a0e0564bb667ccfb40f3eba1a862e095722ad1466061cf675941",
     "L2.json": "23b26c867b0230ce251fff8b3fd3b793af713a40600c6cea3aa09bb0a9e62b75",
     "L3.json": "658a364e931bc732183aa7c0e7ea432f594c3390a0a50176f54dee59cd8e45d7",
     "L4.json": "3e24c2eddfa2112187f8ae49d530a16d3d86e9a9618e1702318feeef48d6cff6",
@@ -25,6 +26,7 @@
     "L10.json",
     "L11.json",
     "L12.json",
+    "L13.json",
     "L2.json",
     "L3.json",
     "L4.json",
@@ -32,7 +34,7 @@
     "L8.json",
     "L9.json"
   ],
-  "git_rev": "1389471dd566039e5433fab3df2fd226d0ca4c8a",
+  "git_rev": "a3e7fddb859f21aa6753bd3ac04eb82343a3fe72",
   "live_trace_status": "pending: per-claim retrieved/bound IDs attach here after a live run",
   "note": "TEST-ONLY frozen baseline. No production code reads these files.",
   "version": "baseline/v1"

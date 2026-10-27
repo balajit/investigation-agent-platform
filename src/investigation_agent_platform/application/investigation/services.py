@@ -237,9 +237,12 @@ class CreateInvestigationService:
             code_issue_fingerprint=fingerprint,
             # Part 11.2: pin the exact profile revision this investigation
             # was created against, for reproducibility as profiles evolve.
+            # Phase 1 (claim binding): explicit behavior pin so in-flight
+            # rows keep the semantics they started with.
             metadata={
                 "profile_version": profile.version,
                 "disposition": disposition.to_metadata(),
+                "claim_binding_version": "cbv1",
             },
         )
 

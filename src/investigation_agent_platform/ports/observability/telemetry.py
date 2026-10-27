@@ -99,8 +99,38 @@ class ObservabilityPort(Protocol):
 
     def record_location_answer(self, context: SpanContext, has_untested_rival: bool) -> None: ...
 
-    def record_revision_check(
-        self, context: SpanContext, operation: str, match: bool
-    ) -> None: ...
+    def record_revision_check(self, context: SpanContext, operation: str, match: bool) -> None: ...
 
     def record_claim(self, context: SpanContext, source: str) -> None: ...
+
+    # Phase 1 (claim binding): closed-vocabulary counters. Label sets are
+    # frozen — claim kinds (DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|
+    # CAUSAL|unspecified), partition dispositions (claim_local|
+    # bank_fallback|evaporated|unmapped|no_citations), binding versions
+    # (cbv1|cbv2|cbv3), subject outcomes (matched_exact|matched_token_set|
+    # mismatched_subject|missing_subject|missing_row), newest-rule states
+    # (satisfied|violated|not_applicable), version sources (pinned|
+    # unmarked). Phase 3 adds repair bases (snippet_containment|
+    # overlap_and_containment) and repair outcomes (applied|shadow).
+    # High-cardinality values (paths, ranges, SHAs, subjects,
+    # statements) never appear as labels. All methods are fire-and-forget:
+    # adapters must never raise into an investigation.
+
+    def record_claim_binding(
+        self, context: SpanContext, claim_kind: str, disposition: str, binding_version: str
+    ) -> None: ...
+
+    def record_claim_repair(
+        self,
+        context: SpanContext,
+        claim_kind: str,
+        basis: str,
+        outcome: str,
+        binding_version: str,
+    ) -> None: ...
+
+    def record_history_subject(
+        self, context: SpanContext, outcome: str, newest_rule: str
+    ) -> None: ...
+
+    def record_binding_version(self, context: SpanContext, version: str, source: str) -> None: ...

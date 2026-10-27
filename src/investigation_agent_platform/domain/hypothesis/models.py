@@ -43,6 +43,11 @@ class ClaimKind(StrEnum):
         search proof; an empty result alone is never proof.
     HISTORY: "file F changed in commit C" — needs a matching COMMIT_HISTORY row.
     CAUSAL: root-cause mechanism — the existing causal-chain path.
+    NOT_CHECKABLE: model-declared unfalsifiable (taste/preference/value
+        judgment, or a claim no observable could ever settle). Predictions
+        that name an observable outcome stay checkable even without a
+        current code anchor. Never retrieves, never grounds, never
+        obligates; excluded from checkable denominators (Phase 4).
     """
 
     DEFINITION = "DEFINITION"
@@ -51,6 +56,9 @@ class ClaimKind(StrEnum):
     ABSENCE = "ABSENCE"
     HISTORY = "HISTORY"
     CAUSAL = "CAUSAL"
+    # Phase 4: model-declared unfalsifiable. Never retrieves, never
+    # grounds, never obligates; excluded from checkable denominators.
+    NOT_CHECKABLE = "NOT_CHECKABLE"
 
 
 class ClaimTarget(BaseModel):
@@ -71,6 +79,12 @@ class ClaimTarget(BaseModel):
     scope: str | None = Field(default=None, max_length=512)
     declaring_type: str | None = Field(default=None, max_length=512)
     commit_id: str | None = Field(default=None, max_length=64)
+    # Phase 1 (claim binding): structured commit subject the HISTORY claim
+    # asserts. Compared deterministically against the cited COMMIT_HISTORY
+    # row summary; never matched by substring against freeform model prose.
+    # None = legacy/unstructured subject (pre-Phase-1 rows and untyped
+    # claims); readers must treat absence as "unknown", never guess.
+    commit_subject: str | None = Field(default=None, max_length=512)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
@@ -96,6 +110,15 @@ class HypothesisEvidenceAssessment(BaseModel):
     claim_kind: ClaimKind | None = None
     claim_target: ClaimTarget | None = None
     commit_id: str | None = Field(default=None, max_length=64)
+    # Phase 1 (claim binding): denormalized mirror of
+    # ``claim_target.commit_subject`` so verifiers need not chase the target
+    # object. None = unstructured legacy subject.
+    commit_subject: str | None = Field(default=None, max_length=512)
+    # Phase 2 (claim binding): stored retrieval hint carried from
+    # DecisionClaim at FORMULATE. None = legacy/omitted (derived fallback).
+    # Never proof, never identity.
+    search_query: str | None = Field(default=None, max_length=1024)
+    search_scope: str | None = Field(default=None, max_length=512)
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
@@ -209,7 +232,11 @@ class Hypothesis(BaseModel):
         for asm in self.assessments:
             if (
                 asm.assessment == AssessmentType.SUPPORTS
-                and asm.reason_code != "CALL_EDGE_UNRESOLVED"
+                # Unresolved obligations carry no evidence by construction:
+                # per-caller (CALL_EDGE) and per-claim (CLAIM_UNRESOLVED,
+                # Phase 2) placeholders persist the query for the directive
+                # instead of citing a row.
+                and asm.reason_code not in ("CALL_EDGE_UNRESOLVED", "CLAIM_UNRESOLVED")
                 and asm.evidence_id not in self.supporting_evidence_ids
             ):
                 raise ValueError(

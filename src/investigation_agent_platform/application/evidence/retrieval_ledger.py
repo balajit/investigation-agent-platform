@@ -29,6 +29,7 @@ import hashlib
 import os
 import re
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -414,9 +415,7 @@ MAX_PARTITION_IDS = 50
 
 #: Action types the ledger directive may re-issue: exactly the set
 #: extract_search_query() understands. Anything else is rejected.
-RETRYABLE_ACTIONS = frozenset(
-    {"SEARCH_CODE", "FIND_SYMBOL", "FIND_CALL_GRAPH", "GET_CODE_HISTORY"}
-)
+RETRYABLE_ACTIONS = frozenset({"SEARCH_CODE", "FIND_SYMBOL", "FIND_CALL_GRAPH", "GET_CODE_HISTORY"})
 
 
 def _normalize_scope(value: object) -> str:
@@ -460,9 +459,19 @@ class ClaimRetrievalLedger(BaseModel):
         default_factory=list,
         description="Positions into the investigation attempt list, oldest first.",
     )
-    link_source: str = Field(
+    query_source: Literal["stored", "derived"] = Field(
+        default="derived",
+        description="Where the effective (query, scope) came from: stored "
+        "(Phase 2 per-claim hint present and non-empty) or derived "
+        "(legacy heuristic fallback). Bounded closed vocabulary; never "
+        "model text. Set to stored even when nothing linked.",
+    )
+    link_source: Literal["id_overlap", "query_match", "stored_query_match"] = Field(
         default="id_overlap",
-        description="How attempts were linked: id_overlap or query_match.",
+        description="How attempts were linked: id_overlap, query_match, or "
+        "stored_query_match (precedence: stored > derived > overlap-label). "
+        "Query bases link attempts for directive purposes only; only "
+        "banked-ID overlap confers locality in the authoritative partition.",
     )
     target_ref: str = Field(
         default="",
@@ -606,6 +615,20 @@ def attempt_id_for(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _normalize_stored_query(value: object, limit: int) -> str:
+    """Normalize a stored/attempt query for join comparison (pure).
+
+    Strip + truncate to the extraction cap, case-SENSITIVE (queries are
+    code symbols — no casefold). Never raises; unusable input yields "".
+    """
+    try:
+        if isinstance(value, str):
+            return value.strip()[:limit]
+        return ""
+    except Exception:
+        return ""
+
+
 def build_claim_ledger(
     statement: str,
     claim_kind: str | None,
@@ -614,6 +637,8 @@ def build_claim_ledger(
     bank_ids: set[str],
     attempts: list[tuple[list[str], dict[str, object] | None]],
     target_ref: str | None = None,
+    stored_query: str | None = None,
+    stored_scope: str | None = None,
 ) -> tuple[ClaimRetrievalLedger, ClaimRetrievalBinding, list[str]]:
     """Join one claim to the investigation's recorded attempts (pure).
 
@@ -621,6 +646,15 @@ def build_claim_ledger(
     group (fingerprint, NO_TARGET, or None for callers without grouping).
     It rides both records so target-distinct claims sharing a claim_key
     stay separately joinable downstream.
+
+    ``stored_query``/``stored_scope`` is the Phase 2 per-claim hint
+    carried from FORMULATE (None = legacy/omitted). When present and
+    non-empty after normalization, it replaces the derived guess as the
+    ledger's (query, scope); otherwise derive_claim_query() output is
+    used unchanged. Linkage is query-only for both bases and never
+    confers locality — ID overlap still exclusively decides the
+    authoritative partition; query matches only link attempts for
+    directive purposes.
     """
     key = claim_key(statement, claim_kind)
     ref = claim_ref(key)
@@ -628,11 +662,23 @@ def build_claim_ledger(
         target_value = str(target_ref or "")
     except Exception:
         target_value = ""
-    query, scope = derive_claim_query(statement, claim_kind, claim_target)
+    normalized_stored = _normalize_stored_query(stored_query, 1024)
+    query_source: Literal["stored", "derived"]
+    if normalized_stored:
+        query = normalized_stored
+        try:
+            scope = str(stored_scope or "").strip()[:512] or None
+        except Exception:
+            scope = None
+        query_source = "stored"
+    else:
+        query, scope = derive_claim_query(statement, claim_kind, claim_target)
+        query_source = "derived"
+    norm_query = _normalize_stored_query(query, 1024)
     cited = [str(i or "") for i in (cited_ids or []) if str(i or "")]
     linked: list[int] = []
     local_ids: set[str] = set()
-    link_source = "id_overlap"
+    link_source: Literal["id_overlap", "query_match", "stored_query_match"] = "id_overlap"
     for index, (banked, attempt) in enumerate(attempts or []):
         banked_set = {str(i or "") for i in (banked or []) if str(i or "")}
         overlap = set(cited) & banked_set
@@ -640,10 +686,10 @@ def build_claim_ledger(
             linked.append(index)
             local_ids |= overlap
             continue
-        if isinstance(attempt, dict) and query:
-            if str(attempt.get("search_query") or "") == query:
+        if isinstance(attempt, dict) and norm_query:
+            if _normalize_stored_query(attempt.get("search_query"), 1024) == norm_query:
                 linked.append(index)
-                link_source = "query_match"
+                link_source = "stored_query_match" if query_source == "stored" else "query_match"
     linked = linked[:MAX_CLAIM_ATTEMPTS]
     bank_set = {str(i or "") for i in (bank_ids or set()) if str(i or "")}
     if not linked:
@@ -656,6 +702,7 @@ def build_claim_ledger(
                 scope=scope,
                 checkable=bool(query),
                 attempt_indexes=[],
+                query_source=query_source,
                 link_source="id_overlap",
                 target_ref=target_value,
             ),
@@ -680,6 +727,7 @@ def build_claim_ledger(
             scope=scope,
             checkable=bool(query),
             attempt_indexes=linked,
+            query_source=query_source,
             link_source=link_source,
             target_ref=target_value,
         ),
@@ -696,6 +744,28 @@ def build_claim_ledger(
         ),
         unknown,
     )
+
+
+def target_group_key(target: object) -> tuple[str, dict[str, object]]:
+    """Target-distinctness key for one claim target (pure).
+
+    Returns ``(target_key, target_dict)`` where ``target_key`` is the
+    16-hex fingerprint of the normalized target mapping, or NO_TARGET
+    when the target carries no identity. Shared by grouping and
+    verification so both resolve the same per-(kind, target) identity.
+    """
+    try:
+        target_dict = _normalize_target_mapping(target)
+    except Exception:
+        target_dict = {}
+    try:
+        fingerprint = hashlib.sha256(
+            str(sorted((str(k), str(v)) for k, v in target_dict.items())).encode("utf-8")
+        ).hexdigest()[:16]
+    except Exception:
+        fingerprint = "NOTARGET"
+    target_key = fingerprint if target_dict else "NO_TARGET"
+    return target_key, target_dict
 
 
 def _distinct_typed_claims(hypothesis: object) -> list[dict[str, object]]:
@@ -723,16 +793,17 @@ def _distinct_typed_claims(hypothesis: object) -> list[dict[str, object]]:
             kind_value = "UNTYPED"
         try:
             target = getattr(item, "claim_target", None)
-            target_dict = _normalize_target_mapping(target)
+            target_key, target_dict = target_group_key(target)
         except Exception:
-            target_dict = {}
+            target_key, target_dict = "NO_TARGET", {}
         try:
-            fingerprint = hashlib.sha256(
-                str(sorted((str(k), str(v)) for k, v in target_dict.items())).encode("utf-8")
-            ).hexdigest()[:16]
+            stored_query = str(getattr(item, "search_query", None) or "").strip()[:1024] or None
         except Exception:
-            fingerprint = "NOTARGET"
-        target_key = fingerprint if target_dict else "NO_TARGET"
+            stored_query = None
+        try:
+            stored_scope = str(getattr(item, "search_scope", None) or "").strip()[:512] or None
+        except Exception:
+            stored_scope = None
         group_key = (kind_value, target_key)
         entry = groups.get(group_key)
         if entry is None:
@@ -742,12 +813,33 @@ def _distinct_typed_claims(hypothesis: object) -> list[dict[str, object]]:
                 "target_dict": target_dict,
                 "target_key": target_key,
                 "cited_ids": [],
+                "stored_query": stored_query,
+                "stored_scope": stored_scope,
             }
             groups[group_key] = entry
+        else:
+            # The first complete pair in assessment order wins. Do not fill
+            # query and scope independently from different assessments.
+            try:
+                if not entry.get("stored_query") and stored_query:
+                    entry["stored_query"] = stored_query
+                    entry["stored_scope"] = stored_scope
+            except Exception:
+                pass
         try:
             cited = list(getattr(item, "cited_ids", None) or [])
         except Exception:
             cited = []
+        if not cited:
+            # Production assessments carry a single evidence_id, not a
+            # cited_ids list (test doubles use the latter). Collect it so
+            # per-claim joins bind real rows; unparseable IDs are skipped.
+            try:
+                single = getattr(item, "evidence_id", None)
+            except Exception:
+                single = None
+            if single:
+                cited = [single]
         existing = entry.get("cited_ids")
         if isinstance(existing, list):
             for cid in cited:
@@ -778,9 +870,7 @@ def re_retrieval_directive(
         budget = max(1, int(max_attempts))
     except (TypeError, ValueError):
         budget = WP_A3_DEFAULT_MAX_ATTEMPTS
-    durable = count_persisted_attempts(
-        recorded_attempts, ledger.search_query, ledger.scope
-    )
+    durable = count_persisted_attempts(recorded_attempts, ledger.search_query, ledger.scope)
     if durable >= budget:
         return None
     if not ledger.search_query:
@@ -793,7 +883,20 @@ def re_retrieval_directive(
         return None
     failed_retry = str(latest_outcome or "") == RetrievalOutcome.SEARCH_FAILED.value
     unknown_retry = bool(binding.unknown) and durable == 0
-    if not (failed_retry or unknown_retry):
+    # Trigger (c), Phase 2: never-retrieved stored query — a stored-sourced
+    # ledger with no linked attempts and zero durable attempts dispatches
+    # even with an empty cited set (e.g. CLAIM_UNRESOLVED). Query-text
+    # matching here authorizes a bounded retry only; it never confers
+    # locality in the authoritative partition.
+    try:
+        never_retrieved = (
+            str(getattr(ledger, "query_source", "derived") or "") == "stored"
+            and not list(getattr(ledger, "attempt_indexes", None) or [])
+            and durable == 0
+        )
+    except Exception:
+        never_retrieved = False
+    if not (failed_retry or unknown_retry or never_retrieved):
         return None
     return {
         "action": "RETRIEVE",
@@ -830,9 +933,7 @@ def recorded_retrieval_attempts(events: list) -> list[tuple[list[str], dict]]:
             top_id = attributes.get("attempt_id")
             if top_id and not attempt_dict.get("attempt_id"):
                 attempt_dict["attempt_id"] = str(top_id)
-        out.append(
-            ([str(i) for i in (banked or []) if str(i)], attempt_dict)
-        )
+        out.append(([str(i) for i in (banked or []) if str(i)], attempt_dict))
     return out
 
 
@@ -862,9 +963,7 @@ def recorded_attempt_summaries(entries: list) -> list[tuple[list[str], dict]] | 
         if top_id and not attempt_dict.get("attempt_id"):
             attempt_dict["attempt_id"] = str(top_id)
         banked = entry.get("evidence_ids") or []
-        out.append(
-            ([str(i) for i in (banked or []) if str(i)], attempt_dict)
-        )
+        out.append(([str(i) for i in (banked or []) if str(i)], attempt_dict))
     return out or None
 
 

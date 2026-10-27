@@ -1,0 +1,10 @@
+{
+  "id": "L13",
+  "symptom": "Is the order filtering implementation beautiful?",
+  "context": "Phase 4 L13: pure-taste probe — beauty has no observable; must declare NOT_CHECKABLE, skip retrieval, and abstain honestly.",
+  "live": true,
+  "expect": {
+    "status": "ABSTAIN",
+    "claim": "not_checkable"
+  }
+}

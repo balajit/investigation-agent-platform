@@ -96,10 +96,20 @@ class TestFixtureIntegrity:
     def test_all_fixtures_load_with_required_shape(self):
         cases = battery.load_cases()
         assert {c["id"] for c in cases} == {
-            "L1", "L2", "L3", "L4", "L5", "L8", "L9", "L10", "L11", "L12",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13",
         }
         live = {c["id"] for c in cases if c.get("live", True)}
-        assert live == {"L1", "L2", "L3", "L4", "L5", "L8"}
+        assert live == {"L1", "L2", "L3", "L4", "L5", "L8", "L13"}
         for case in cases:
             assert case["expect"]["status"] in ("ANSWERED", "ABSTAIN")
 
@@ -185,7 +195,11 @@ class TestCallerGrading:
         )
         root = "OrderQualifyHelper calls OrderServiceHandler.handle from the qualify branch."
         verdict, _ = battery.score_supported(
-            self._caller_case(), _conclusion(root=root, supporting=["e1"]), {}, _ev([row]), _hyps([])
+            self._caller_case(),
+            _conclusion(root=root, supporting=["e1"]),
+            {},
+            _ev([row]),
+            _hyps([]),
         )
         assert verdict == "PASS"
 
@@ -231,8 +245,11 @@ class TestValuesHistoryAbstention:
         )
         root = "A null orderType falls back to STANDARD per the LegacyCodeMapper default branch."
         case = _case(
-            expect={"status": "ANSWERED", "claim": "values",
-                    "expect_values": ["STANDARD", "orderType", "LegacyCodeMapper"]}
+            expect={
+                "status": "ANSWERED",
+                "claim": "values",
+                "expect_values": ["STANDARD", "orderType", "LegacyCodeMapper"],
+            }
         )
         verdict, _ = battery.score_supported(
             case, _conclusion(root=root, supporting=["e1"]), {}, _ev([row]), _hyps([])
@@ -261,11 +278,14 @@ class TestValuesHistoryAbstention:
         row = _row(
             "e1",
             file_path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
-            snippet="8|             return \"STANDARD\";",
+            snippet='8|             return "STANDARD";',
         )
         case = _case(
-            expect={"status": "ANSWERED", "claim": "values",
-                    "expect_values": ["STANDARD", "LegacyCodeMapper"]}
+            expect={
+                "status": "ANSWERED",
+                "claim": "values",
+                "expect_values": ["STANDARD", "LegacyCodeMapper"],
+            }
         )
         root = "When orderType is null, LegacyCodeMapper.normalize returns 'STANDARD'."
         verdict, _ = battery.score_supported(
@@ -277,11 +297,14 @@ class TestValuesHistoryAbstention:
         row = _row(
             "e1",
             file_path="service/src/main/java/com/sample/orders/legacy/OtherMapper.java",
-            snippet="8|             return \"STANDARD\";",
+            snippet='8|             return "STANDARD";',
         )
         case = _case(
-            expect={"status": "ANSWERED", "claim": "values",
-                    "expect_values": ["STANDARD", "LegacyCodeMapper"]}
+            expect={
+                "status": "ANSWERED",
+                "claim": "values",
+                "expect_values": ["STANDARD", "LegacyCodeMapper"],
+            }
         )
         root = "When orderType is null, LegacyCodeMapper.normalize returns 'STANDARD'."
         verdict, detail = battery.score_supported(
@@ -324,17 +347,24 @@ class TestValuesHistoryAbstention:
 
 class TestOfflineDimensions:
     def test_rival_exemption_accepted(self):
-        row = _row("e1", file_path="src/a/OrderServiceImpl.java",
-                   snippet="10| public boolean isEligible")
-        hyps = _hyps([
-            _hyp("h1", "isEligible in a/OrderServiceImpl handles null", ["e1"]),
-            _hyp("h2", "isEligible in b/OrderServiceImpl handles null", []),
-        ])
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "definition",
-            "cited_path": "OrderServiceImpl.java", "expect_symbol": "isEligible",
-            "rival_untested_exempt": True,
-        })
+        row = _row(
+            "e1", file_path="src/a/OrderServiceImpl.java", snippet="10| public boolean isEligible"
+        )
+        hyps = _hyps(
+            [
+                _hyp("h1", "isEligible in a/OrderServiceImpl handles null", ["e1"]),
+                _hyp("h2", "isEligible in b/OrderServiceImpl handles null", []),
+            ]
+        )
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "definition",
+                "cited_path": "OrderServiceImpl.java",
+                "expect_symbol": "isEligible",
+                "rival_untested_exempt": True,
+            }
+        )
         root = "isEligible is defined in src/a/OrderServiceImpl.java."
         verdict, _ = battery.score_supported(
             case, _conclusion(root=root, supporting=["e1"], hyps=["h1"]), {}, _ev([row]), hyps
@@ -342,44 +372,66 @@ class TestOfflineDimensions:
         assert verdict == "PASS"
 
     def test_rival_demoted_location_fails_exemption(self):
-        row = _row("e1", file_path="src/a/OrderServiceImpl.java",
-                   snippet="10| public boolean isEligible")
-        hyps = _hyps([
-            _hyp("h1", "isEligible in a handles null", ["e1"]),
-            _hyp("h2", "isEligible in b handles null", []),
-        ])
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "definition",
-            "cited_path": "OrderServiceImpl.java", "expect_symbol": "isEligible",
-            "rival_untested_exempt": True,
-        })
+        row = _row(
+            "e1", file_path="src/a/OrderServiceImpl.java", snippet="10| public boolean isEligible"
+        )
+        hyps = _hyps(
+            [
+                _hyp("h1", "isEligible in a handles null", ["e1"]),
+                _hyp("h2", "isEligible in b handles null", []),
+            ]
+        )
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "definition",
+                "cited_path": "OrderServiceImpl.java",
+                "expect_symbol": "isEligible",
+                "rival_untested_exempt": True,
+            }
+        )
         root = "isEligible is defined in src/a/OrderServiceImpl.java."
-        concl = _conclusion(root=root, supporting=["e1"], hyps=["h1"],
-                            limitations=["RIVAL_UNTESTED: 1 rival never evaluated"])
+        concl = _conclusion(
+            root=root,
+            supporting=["e1"],
+            hyps=["h1"],
+            limitations=["RIVAL_UNTESTED: 1 rival never evaluated"],
+        )
         verdict, detail = battery.score_supported(case, concl, {}, _ev([row]), hyps)
         assert verdict == "PARTIAL"
         assert "exemption" in detail
 
     def test_revision_match_passes(self):
         row = _row("e1", revision="abc123")
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "definition",
-            "cited_path": "SampleOrderFilter.java", "expect_symbol": "SampleOrderFilter",
-            "incident_revision": "abc123",
-        })
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "definition",
+                "cited_path": "SampleOrderFilter.java",
+                "expect_symbol": "SampleOrderFilter",
+                "incident_revision": "abc123",
+            }
+        )
         verdict, _ = battery.score_supported(
             case,
-            _conclusion(supporting=["e1"]), {}, _ev([row]), _hyps([]),
+            _conclusion(supporting=["e1"]),
+            {},
+            _ev([row]),
+            _hyps([]),
         )
         assert verdict == "PASS"
 
     def test_head_row_against_pinned_incident_is_partial(self):
         row = _row("e1", revision="deadbeef-head-sha")
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "definition",
-            "cited_path": "SampleOrderFilter.java", "expect_symbol": "SampleOrderFilter",
-            "incident_revision": "abc123",
-        })
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "definition",
+                "cited_path": "SampleOrderFilter.java",
+                "expect_symbol": "SampleOrderFilter",
+                "incident_revision": "abc123",
+            }
+        )
         verdict, detail = battery.score_supported(
             case, _conclusion(supporting=["e1"]), {}, _ev([row]), _hyps([])
         )
@@ -405,14 +457,23 @@ class TestOfflineDimensions:
 
     def test_scoped_absence_proof_passes(self):
         proof = _row(
-            "e1", etype="DATABASE_STATE", file_path="", line_start=None, line_end=None,
-            revision="", snippet="0 rows",
+            "e1",
+            etype="DATABASE_STATE",
+            file_path="",
+            line_start=None,
+            line_end=None,
+            revision="",
+            snippet="0 rows",
             attributes={"search_scope": "audit_log/order-9", "match_count": 0},
         )
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "absence",
-            "absent_subject": "audit", "scope": "audit_log/order-9",
-        })
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "absence",
+                "absent_subject": "audit",
+                "scope": "audit_log/order-9",
+            }
+        )
         root = "No audit row was written: scoped query over audit_log/order-9 returned zero rows."
         verdict, _ = battery.score_supported(
             case, _conclusion(root=root, supporting=["e1"]), {}, _ev([proof]), _hyps([])
@@ -420,10 +481,14 @@ class TestOfflineDimensions:
         assert verdict == "PASS"
 
     def test_empty_search_alone_is_partial(self):
-        case = _case(expect={
-            "status": "ANSWERED", "claim": "absence",
-            "absent_subject": "audit", "scope": "audit_log/order-9",
-        })
+        case = _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "absence",
+                "absent_subject": "audit",
+                "scope": "audit_log/order-9",
+            }
+        )
         verdict, _ = battery.score_supported(
             case,
             _conclusion(root="No audit rows found.", supporting=[]),

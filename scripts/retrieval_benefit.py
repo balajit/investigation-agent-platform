@@ -131,9 +131,7 @@ class _BatteryUnreadable(Exception):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """CLI flags: --tenant ID scopes the battery, --days N sets the window."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--tenant", default=None, help="Tenant ID to scope the battery (required)."
-    )
+    parser.add_argument("--tenant", default=None, help="Tenant ID to scope the battery (required).")
     parser.add_argument("--days", type=int, default=30, help="Trailing window in days.")
     return parser.parse_args(argv)
 
@@ -199,9 +197,7 @@ def _claim_identity(binding_or_ledger: dict) -> tuple[str, str]:
         return ("", "")
 
 
-def _eval_ledgers_for_identity(
-    eval_record: dict, identity: tuple[str, str]
-) -> list[dict]:
+def _eval_ledgers_for_identity(eval_record: dict, identity: tuple[str, str]) -> list[dict]:
     return [
         ledger
         for ledger in (eval_record.get("ledgers") or [])
@@ -242,7 +238,7 @@ def _claim_unit_signal(
     if not str(claim_key_value or ""):
         return False
     binding: dict | None = None
-    for candidate in (eval_record.get("bindings") or []):
+    for candidate in eval_record.get("bindings") or []:
         if isinstance(candidate, dict) and _claim_identity(candidate) == identity:
             binding = candidate
             break
@@ -257,7 +253,7 @@ def _claim_unit_signal(
         query = str(ledger.get("search_query") or "").strip()
         if query:
             keys.add((query, _normalize_scope(ledger.get("scope"))))
-        if str(ledger.get("link_source") or "") == "query_match":
+        if str(ledger.get("link_source") or "") in {"query_match", "stored_query_match"}:
             query_matched = True
     if not keys:
         return False
@@ -279,9 +275,7 @@ def _claim_unit_signal(
             continue
         if query_matched:
             return True
-        banked = {
-            str(i or "") for i in (rec.get("banked_ids") or []) if str(i or "")
-        }
+        banked = {str(i or "") for i in (rec.get("banked_ids") or []) if str(i or "")}
         if banked & universe:
             return True
     return False
@@ -301,13 +295,13 @@ def attempt_coverage(
     """
     eligible_ids: set[str] = set()
     for _inv, info in (cohort or {}).items():
-        for aid in ((info or {}).get("eligible_action_ids") or []):
+        for aid in (info or {}).get("eligible_action_ids") or []:
             if str(aid or ""):
                 eligible_ids.add(str(aid))
     recorded_ids: set[str] = set()
     recorded_attempts = 0
-    for inv in (cohort or {}):
-        for rec in ((attempts_by_inv or {}).get(str(inv), [])):
+    for inv in cohort or {}:
+        for rec in (attempts_by_inv or {}).get(str(inv), []):
             if not isinstance(rec, dict):
                 continue
             recorded_attempts += 1
@@ -317,9 +311,7 @@ def attempt_coverage(
     matched = eligible_ids & recorded_ids
     runs_covered = 0
     for inv, info in (cohort or {}).items():
-        ids = {
-            str(a) for a in (((info or {}).get("eligible_action_ids")) or []) if str(a or "")
-        }
+        ids = {str(a) for a in (((info or {}).get("eligible_action_ids")) or []) if str(a or "")}
         if ids and ids <= recorded_ids:
             runs_covered += 1
     return {
@@ -355,21 +347,15 @@ def evaporation_attribution(
         if latest is None:
             continue
         as_of = _ts(latest.get("timestamp"))
-        attempts = [
-            r for r in ((attempts_by_inv or {}).get(str(inv), [])) if isinstance(r, dict)
-        ]
+        attempts = [r for r in ((attempts_by_inv or {}).get(str(inv), [])) if isinstance(r, dict)]
         for binding in latest.get("bindings") or []:
             if not isinstance(binding, dict):
                 continue
-            unknowns = [
-                str(u or "") for u in (binding.get("unknown") or []) if str(u or "")
-            ]
+            unknowns = [str(u or "") for u in (binding.get("unknown") or []) if str(u or "")]
             if not unknowns:
                 continue
             identity = _claim_identity(binding)
-            signaled = bool(identity[0]) and _claim_unit_signal(
-                identity, latest, attempts, as_of
-            )
+            signaled = bool(identity[0]) and _claim_unit_signal(identity, latest, attempts, as_of)
             events += len(unknowns)
             if signaled:
                 attributed += len(unknowns)
@@ -424,12 +410,8 @@ def lift_recovery_chains(
     """
     chains: list[dict] = []
     for inv, evals in (evals_by_inv or {}).items():
-        ordered = sorted(
-            [e for e in (evals or []) if isinstance(e, dict)], key=_eval_order_key
-        )
-        attempts = [
-            r for r in ((attempts_by_inv or {}).get(str(inv), [])) if isinstance(r, dict)
-        ]
+        ordered = sorted([e for e in (evals or []) if isinstance(e, dict)], key=_eval_order_key)
+        attempts = [r for r in ((attempts_by_inv or {}).get(str(inv), [])) if isinstance(r, dict)]
         bank_times: dict[str, str] = dict(banks_by_inv.get(str(inv), {}) or {})
         bank = set(bank_times)
         claim_evals: dict[tuple[str, str], list[dict]] = {}
@@ -463,16 +445,10 @@ def lift_recovery_chains(
                     ),
                     {},
                 )
-                pre_local = {
-                    str(i or "") for i in (pre_b.get("claim_local") or []) if str(i or "")
-                }
-                pre_unknown = [
-                    str(u or "") for u in (pre_b.get("unknown") or []) if str(u or "")
-                ]
+                pre_local = {str(i or "") for i in (pre_b.get("claim_local") or []) if str(i or "")}
+                pre_unknown = [str(u or "") for u in (pre_b.get("unknown") or []) if str(u or "")]
                 post_local = {
-                    str(i or "")
-                    for i in (post_b.get("claim_local") or [])
-                    if str(i or "")
+                    str(i or "") for i in (post_b.get("claim_local") or []) if str(i or "")
                 }
                 if pre_local or not pre_unknown or not post_local:
                     continue
@@ -482,9 +458,7 @@ def lift_recovery_chains(
                 for ledger in _eval_ledgers_for_identity(post, identity):
                     ledger_query = str(ledger.get("search_query") or "").strip()
                     if ledger_query:
-                        post_keys.add(
-                            (ledger_query, _normalize_scope(ledger.get("scope")))
-                        )
+                        post_keys.add((ledger_query, _normalize_scope(ledger.get("scope"))))
                 if not post_keys:
                     continue
                 t0 = _eval_order_key(pre)
@@ -496,9 +470,7 @@ def lift_recovery_chains(
                 for rec in attempts:
                     key = _attempt_key(rec.get("attempt"))
                     rts = _ts(rec.get("timestamp"))
-                    banked = [
-                        str(i or "") for i in (rec.get("banked_ids") or []) if str(i or "")
-                    ]
+                    banked = [str(i or "") for i in (rec.get("banked_ids") or []) if str(i or "")]
                     outcome = rec.get("attempt") or {}
                     banking = bool(banked) or str(outcome.get("outcome") or "") in (
                         RetrievalOutcome.ROWS_RETURNED.value,
@@ -523,8 +495,7 @@ def lift_recovery_chains(
                 novel_timed = {
                     row
                     for row in post_local
-                    if row in bank
-                    and t0[0] < _ts(bank_times.get(row)) <= t1[0]
+                    if row in bank and t0[0] < _ts(bank_times.get(row)) <= t1[0]
                 }
                 # Either proof contributes only rows the post binding
                 # actually cites; incidental durable rows never veto. The
@@ -626,6 +597,97 @@ def truncation_visibility(
     }
 
 
+def shadow_repair_review(evals_by_inv: dict[str, list[dict]]) -> dict:
+    """Phase 3 gate input: every shadow/applied repair candidate.
+
+    Lists each persisted repair with its review identity (claim, target,
+    candidate, donor, basis, outcome, version, gate reason) keyed for
+    per-candidate dispositions. Fails closed: any marker with
+    repaired_truncated or listed-count != counted-total blocks the gate
+    (complete=False); recovery is deterministic recompute from persisted
+    inputs (see design D4).
+    """
+    candidates: list[dict] = []
+    truncated_markers: list[dict] = []
+    mismatch_markers: list[dict] = []
+    for inv_id, evals in (evals_by_inv or {}).items():
+        for rec in evals or []:
+            if not isinstance(rec, dict):
+                continue
+            listed = [r for r in (rec.get("repaired") or []) if isinstance(r, dict)]
+            try:
+                applied_n = int(rec.get("repaired_count") or 0)
+            except (TypeError, ValueError):
+                applied_n = 0
+            try:
+                shadow_n = int(rec.get("repair_shadow_count") or 0)
+            except (TypeError, ValueError):
+                shadow_n = 0
+            marker_ref = {
+                "investigation_id": str(inv_id),
+                "turn": rec.get("turn"),
+                "hypothesis_id": str(rec.get("hypothesis_id") or ""),
+            }
+            if bool(rec.get("repaired_truncated", False)):
+                truncated_markers.append(dict(marker_ref))
+            if len(listed) != applied_n + shadow_n:
+                mismatch_markers.append(
+                    {**marker_ref, "listed": len(listed), "counted": applied_n + shadow_n}
+                )
+            for rep in listed:
+                try:
+                    target = rep.get("target")
+                    target_summary = (
+                        {
+                            k: target.get(k)
+                            for k in (
+                                "symbol",
+                                "file_path",
+                                "commit_id",
+                                "commit_subject",
+                            )
+                            if isinstance(target, dict) and target.get(k)
+                        }
+                        if isinstance(target, dict)
+                        else {}
+                    )
+                except Exception:
+                    target_summary = {}
+                candidates.append(
+                    {
+                        **marker_ref,
+                        "claim_key": str(rep.get("claim_key") or ""),
+                        "claim_ref": str(rep.get("claim_ref") or ""),
+                        "target_ref": str(rep.get("target_ref") or ""),
+                        "target": target_summary,
+                        "cited_id": str(rep.get("cited_id") or ""),
+                        "donor_id": str(rep.get("donor_id") or ""),
+                        "basis": str(rep.get("basis") or ""),
+                        "outcome": str(rep.get("outcome") or ""),
+                        "binding_version": str(rep.get("binding_version") or ""),
+                        "gate_reason": str(rep.get("gate_reason") or ""),
+                        "disposition_key": "|".join(
+                            [
+                                str(marker_ref["hypothesis_id"]),
+                                str(marker_ref["turn"]),
+                                str(rep.get("claim_ref") or ""),
+                                str(rep.get("cited_id") or ""),
+                                str(rep.get("donor_id") or ""),
+                                str(rep.get("binding_version") or ""),
+                            ]
+                        ),
+                    }
+                )
+    complete = not truncated_markers and not mismatch_markers
+    return {
+        "candidates": candidates,
+        "n_candidates": len(candidates),
+        "truncated_markers": truncated_markers,
+        "count_mismatch_markers": mismatch_markers,
+        "complete": complete,
+    }
+
+
 def verdict_guard_from_texts(verdict_texts: list[str]) -> dict:
     """Battery-side no-repair tripwire over persisted verdict text.
 
@@ -659,22 +721,19 @@ def compute_report(
     """
     coverage = attempt_coverage(cohort or {}, attempts_by_inv or {})
     attribution = evaporation_attribution(evals_by_inv or {}, attempts_by_inv or {})
-    recovery = lift_recovery_chains(
-        attempts_by_inv or {}, evals_by_inv or {}, banks_by_inv or {}
-    )
+    recovery = lift_recovery_chains(attempts_by_inv or {}, evals_by_inv or {}, banks_by_inv or {})
     truncation = truncation_visibility(evals_by_inv or {}, attempts_by_inv or {})
     guard = verdict_guard_from_texts(verdict_texts or [])
+    # Phase 3: shadow/applied repair review list + gate completeness.
+    # Additive — the G3 pass bar is unchanged.
+    repair_review = shadow_repair_review(evals_by_inv or {})
     n_runs = len(cohort or {})
-    evaluable_runs = sum(
-        1 for inv in (cohort or {}) if (evals_by_inv or {}).get(str(inv))
-    )
+    evaluable_runs = sum(1 for inv in (cohort or {}) if (evals_by_inv or {}).get(str(inv)))
     n_bindings = 0
-    for inv in (cohort or {}):
+    for inv in cohort or {}:
         latest = _latest_eval(list((evals_by_inv or {}).get(str(inv), [])))
         if latest is not None:
-            n_bindings += len(
-                [b for b in (latest.get("bindings") or []) if isinstance(b, dict)]
-            )
+            n_bindings += len([b for b in (latest.get("bindings") or []) if isinstance(b, dict)])
     n_attempt_records = sum(len(v) for v in (attempts_by_inv or {}).values())
     branch_r = (
         bool(guard["clean"])
@@ -705,6 +764,7 @@ def compute_report(
         "recovery": recovery,
         "truncation": truncation,
         "verdict_guard": guard,
+        "shadow_repair_review": repair_review,
         "branch_recovery": branch_r,
         "branch_diagnostic": branch_d,
         "inconclusive": inconclusive,
@@ -719,6 +779,7 @@ def format_report(report: dict) -> str:
     rec = report.get("recovery", {})
     trunc = report.get("truncation", {})
     guard = report.get("verdict_guard", {})
+    repair_review = report.get("shadow_repair_review", {})
     lines = [
         "## G3 retrieval-benefit battery",
         (
@@ -751,6 +812,12 @@ def format_report(report: dict) -> str:
             f"rows_scanned={guard.get('rows_scanned')} hits={len(guard.get('hits', []))}"
         ),
         (
+            f"repair_review: candidates={repair_review.get('n_candidates')} "
+            f"complete={repair_review.get('complete')} "
+            f"truncated_markers={len(repair_review.get('truncated_markers', []))} "
+            f"mismatched_markers={len(repair_review.get('count_mismatch_markers', []))}"
+        ),
+        (
             f"branch_recovery={report.get('branch_recovery')} "
             f"branch_diagnostic={report.get('branch_diagnostic')} "
             f"inconclusive={report.get('inconclusive')}"
@@ -763,15 +830,20 @@ def format_report(report: dict) -> str:
             "attribution or recovery (no VERIFY_EVALUATION rows)."
         )
     if report.get("inconclusive"):
-        lines.append("caveat: below sample floors — gate stays PARTIAL, "
-                      "inconclusive is never a pass.")
+        lines.append(
+            "caveat: below sample floors — gate stays PARTIAL, inconclusive is never a pass."
+        )
     if not trunc.get("applicable"):
-        lines.append("caveat: no truncation in window — truncation is "
-                      "not-applicable (neither pass nor fail input).")
+        lines.append(
+            "caveat: no truncation in window — truncation is "
+            "not-applicable (neither pass nor fail input)."
+        )
     # D5: explicit owner sign-off is required on every sample — passing
     # numbers included — so the caveat is unconditional, not fail-only.
-    lines.append("caveat: numbers alone never close G3 — either branch "
-                  "needs explicit owner sign-off on the sample.")
+    lines.append(
+        "caveat: numbers alone never close G3 — either branch "
+        "needs explicit owner sign-off on the sample."
+    )
     return "\n".join(lines)
 
 
@@ -843,9 +915,7 @@ async def _attest_schema(session, table_name: str) -> None:
         problems.append(f"{qualified}.event_type column absent from catalog")
     else:
         row = dict(col_rows[0])
-        if row.get("data_type") != "character varying" or row.get(
-            "character_maximum_length"
-        ) != 64:
+        if row.get("data_type") != "character varying" or row.get("character_maximum_length") != 64:
             problems.append(
                 f"{qualified}.event_type is "
                 f"{row.get('data_type')}({row.get('character_maximum_length')}), "
@@ -887,9 +957,7 @@ async def _attest_schema(session, table_name: str) -> None:
         raise _BatteryUnreadable("schema_not_verified: " + "; ".join(problems))
 
 
-async def _load_records(
-    tenant_id: str, days: int
-) -> tuple[dict, dict, dict, dict, list[str]]:
+async def _load_records(tenant_id: str, days: int) -> tuple[dict, dict, dict, dict, list[str]]:
     """Load cohort, attempts, evaluations, bank, and verdict texts (read-only).
 
     Tenant scope is mandatory: every read runs inside the application's
@@ -967,19 +1035,13 @@ async def _load_records(
                         banked = attrs.get("evidence_ids") or list(
                             getattr(event, "evidence_ids", None) or []
                         )
-                        attempts_by_inv.setdefault(
-                            str(event.investigation_id), []
-                        ).append(
+                        attempts_by_inv.setdefault(str(event.investigation_id), []).append(
                             {
                                 "banked_ids": [
                                     str(i or "") for i in (banked or []) if str(i or "")
                                 ],
-                                "attempt": dict(attempt)
-                                if isinstance(attempt, dict)
-                                else None,
-                                "action_execution_id": str(
-                                    attrs.get("action_execution_id") or ""
-                                )
+                                "attempt": dict(attempt) if isinstance(attempt, dict) else None,
+                                "action_execution_id": str(attrs.get("action_execution_id") or "")
                                 or None,
                                 "timestamp": stamp,
                             }
@@ -994,12 +1056,18 @@ async def _load_records(
                             {
                                 "timestamp": stamp,
                                 "turn": turn_value,
+                                "hypothesis_id": str(attrs.get("hypothesis_id") or ""),
                                 "bindings": list(attrs.get("bindings") or []),
                                 "ledgers": list(attrs.get("ledgers") or []),
-                                "missing_obligations": list(
-                                    attrs.get("missing_obligations") or []
-                                ),
+                                "missing_obligations": list(attrs.get("missing_obligations") or []),
                                 "evaporated_count": attrs.get("evaporated_count", 0),
+                                # Phase 3 (claim binding): bounded repair
+                                # dumps plus uncapped counts (fail-closed
+                                # gate inputs — see shadow_repair_review).
+                                "repaired": list(attrs.get("repaired") or []),
+                                "repaired_truncated": bool(attrs.get("repaired_truncated", False)),
+                                "repaired_count": attrs.get("repaired_count", 0),
+                                "repair_shadow_count": attrs.get("repair_shadow_count", 0),
                             }
                         )
 
@@ -1019,9 +1087,9 @@ async def _load_records(
                         banked_ts = ev.retrieved_at.isoformat()
                     except Exception:
                         banked_ts = ""
-                    banks_by_inv.setdefault(str(ev.investigation_id), {})[
-                        str(ev.evidence_key)
-                    ] = banked_ts
+                    banks_by_inv.setdefault(str(ev.investigation_id), {})[str(ev.evidence_key)] = (
+                        banked_ts
+                    )
 
             verdict_texts: list[str] = []
             if inv_ids:
@@ -1050,9 +1118,7 @@ async def _load_records(
 
 def run_battery(tenant_id: str | None, days: int) -> dict:
     """Load persisted records and compute the report (DB errors raise)."""
-    cohort, attempts, evals, banks, verdict_texts = asyncio.run(
-        _load_records(tenant_id, days)
-    )
+    cohort, attempts, evals, banks, verdict_texts = asyncio.run(_load_records(tenant_id, days))
     return compute_report(cohort, attempts, evals, banks, verdict_texts)
 
 
@@ -1060,8 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry: print the report; 0 pass / 1 bar-missed / 2 unreadable."""
     args = parse_args(argv)
     if not str(args.tenant or "").strip():
-        print("battery unreadable: missing --tenant — unscoped runs are refused",
-              file=sys.stderr)
+        print("battery unreadable: missing --tenant — unscoped runs are refused", file=sys.stderr)
         return 2
     try:
         report = run_battery(tenant_id=args.tenant, days=args.days)

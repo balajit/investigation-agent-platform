@@ -124,7 +124,10 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             created_at=start,
             updated_at=now,
             version=1,
-            metadata={},
+            # Phase 1 (claim binding): explicit behavior pin; unmarked
+            # rows would resolve to CLAIM_BINDING_CURRENT identically,
+            # but seeded rows carry the mark for audit clarity.
+            metadata={"claim_binding_version": "cbv1"},
         )
 
     showcase = _make_inv(

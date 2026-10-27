@@ -3,10 +3,10 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.application.evidence.retrieval_ledger import (
     RETRYABLE_ACTIONS,
@@ -17,9 +17,12 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
     _distinct_typed_claims,
     _normalize_scope,
     build_claim_ledger,
+    claim_key,
+    claim_ref,
     count_persisted_attempts,
     extract_search_query,
     re_retrieval_directive,
+    target_group_key,
 )
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
@@ -40,9 +43,7 @@ from investigation_agent_platform.domain.hypothesis.models import (
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 
-def _record_gate_note(
-    observer: Callable[[dict], None] | None, note: dict[str, Any]
-) -> None:
+def _record_gate_note(observer: Callable[[dict], None] | None, note: dict[str, Any]) -> None:
     """D3 Phase 0 mirror tap: record-only, never feeds back (package §1.2).
 
     The observer appends a note to the activity's per-execution list.
@@ -397,6 +398,21 @@ class LimitationCode(str, Enum):
     # rival — the same rows establish two stories, so confidence pays a
     # rival-shared penalty and the conclusion publishes as likely at best.
     RIVAL_SHARED_EVIDENCE = "RIVAL_SHARED_EVIDENCE"
+    # Phase 1 (claim binding): a claim verified only on bank-fallback rows
+    # with no claim-local retrieval — not proof of claim-local retrieval.
+    UNMAPPED_CITATION = "UNMAPPED_CITATION"
+    # Phase 1 (claim binding): some cited IDs resolved to no bound row;
+    # the evaporation is named here instead of silently dropped.
+    EVAPORATED_CITATION = "EVAPORATED_CITATION"
+    # Phase 3 (claim binding): a cited row was rebound to a same-file,
+    # same-revision donor that grounds the claim; the verdict rests on
+    # the donor, not on the cited row as written.
+    REPAIRED_CITATION = "REPAIRED_CITATION"
+    # Phase 4 (claim binding): an opinion-only claim never verifies —
+    # taste/preference/value judgments and unfalsifiable claims are
+    # skipped, never grounded. Additive member, same frozen-enum
+    # discipline as REPAIRED_CITATION.
+    NOT_CHECKABLE_SKIPPED = "NOT_CHECKABLE_SKIPPED"
 
 
 class VerificationLimitation(BaseModel):
@@ -461,6 +477,54 @@ class MissingObligation(BaseModel):
     next_action: str | None = Field(default=None, max_length=1024)
 
 
+class RepairedBinding(BaseModel):
+    """Phase 3 (claim binding): one citation rebound to a donor row.
+
+    Output-only diagnostics. ``basis``, ``outcome``, and
+    ``binding_version`` are Literal-typed: out-of-vocabulary
+    construction raises ValidationError.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    claim_ref: str = Field(description="16-hex claim reference (never the full key).")
+    claim_key: str = Field(
+        default="",
+        max_length=560,
+        description="Full human-readable claim identity (statement|kind).",
+    )
+    target_ref: str = Field(
+        default="",
+        max_length=32,
+        description="Target-distinctness fingerprint pairing with claim_key "
+        "to join the exact (kind, target) group. Join key only.",
+    )
+    target: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The group's normalized target mapping (symbol, "
+        "file_path, line range, commit_id/commit_subject, ...).",
+    )
+    cited_id: str = Field(description="The misattributed cited evidence ID.")
+    donor_id: str = Field(description="The banked donor row that grounds the claim.")
+    basis: Literal["snippet_containment", "overlap_and_containment"] = Field(
+        description="How the donor matched the candidate (overlap alone never matches)."
+    )
+    outcome: Literal["applied", "shadow"] = Field(
+        description='"applied" (cbv3, verdict rests on the donor) or '
+        '"shadow" (cbv2, recorded only, verdict unchanged).',
+    )
+    binding_version: Literal["cbv2", "cbv3"] = Field(
+        description="Pin that produced this record (redundant with outcome "
+        "by design: shadow<->cbv2, applied<->cbv3)."
+    )
+    gate_reason: str = Field(
+        default="",
+        max_length=512,
+        description="The kind-gate (False, reason) that authorized this "
+        "attempt. Review input, never a decision input.",
+    )
+
+
 class VerificationDiagnostics(BaseModel):
     """Diagnostics-only annotations attached to a VerificationResult.
 
@@ -472,9 +536,7 @@ class VerificationDiagnostics(BaseModel):
     schema_version: str = Field(default="v1", max_length=16)
     evaporated_ids: list[EvaporatedId] = Field(default_factory=list, max_length=100)
     demotions: list[Demotion] = Field(default_factory=list, max_length=10)
-    missing_obligations: list[MissingObligation] = Field(
-        default_factory=list, max_length=10
-    )
+    missing_obligations: list[MissingObligation] = Field(default_factory=list, max_length=10)
     reason_codes: list[str] = Field(default_factory=list, max_length=20)
     # G3: per-distinct-claim retrieval partitions (diagnostics-only, default
     # empty — legacy rows validate unchanged). Never alters verdicts.
@@ -483,6 +545,12 @@ class VerificationDiagnostics(BaseModel):
     # order, same cap). Persisted so the benefit battery measures changed
     # bindings from recorded state instead of recomputing the join.
     claim_ledgers: list[ClaimRetrievalLedger] = Field(default_factory=list, max_length=100)
+    # Phase 3: per-group misattribution repairs (applied or shadow).
+    # Additive, default empty — legacy rows validate unchanged.
+    # Keep the full in-memory repair set until marker serialization applies
+    # its explicit review cap and truncation flag. A pre-marker cap would
+    # make omitted repairs indistinguishable from a complete marker.
+    repaired: list[RepairedBinding] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):
@@ -530,6 +598,104 @@ _MISSING_OBLIGATION_DIRECTIVES = {
     "CAUSAL": "Bind supporting evidence to each causal step, then re-verify.",
 }
 _DEFAULT_MISSING_OBLIGATION_DIRECTIVE = "Bind supporting evidence to the claim, then re-verify."
+
+# Phase 4 (claim binding): kinds eligible for smallest-fetch forcing.
+_SMALLEST_FETCH_ORDER = ("DEFINITION", "HISTORY", "BEHAVIOR", "ABSENCE", "CAUSAL")
+
+
+def build_claim_gaps(
+    hypothesis: Any,
+    cited_group_ids: set[str] | None,
+) -> dict[str, Any]:
+    """Machine-readable smallest-fetch obligations for one hypothesis (pure).
+
+    Returns {"gaps": [...], "not_checkable_groups": ["KIND|target_key", ...]}.
+
+    A gap names one typed group (kind, target) with NO citation in this
+    hypothesis: openness is membership in ``cited_group_ids`` (the
+    enforcement's ``cited_groups``, "KIND|target_key" strings) — uncited
+    groups have no kept rows by construction, so no kept join exists or
+    is needed. Cited groups are repair/obligation territory even when
+    their gate failed, never smallest-fetch. NOT_CHECKABLE groups never
+    appear as gaps; they are inventoried into not_checkable_groups.
+    Kinds outside KIND_FETCH (CALL_EDGE, UNTYPED, NO_TARGET/empty
+    targets) never appear. Identity is the group identity
+    (kind + target_key); claim_ref is informational only. Import failure
+    returns an "error"-bearing envelope (never a silent empty feed).
+    Sorted in SMALLEST_FETCH evaluation order. Never raises.
+    """
+    try:
+        order = {k: i for i, k in enumerate(_SMALLEST_FETCH_ORDER)}
+        cited = set(cited_group_ids or [])
+        gaps: list[dict[str, Any]] = []
+        inventoried: list[str] = []
+        try:
+            groups = [
+                g for g in list(_distinct_typed_claims(hypothesis) or []) if isinstance(g, dict)
+            ]
+        except Exception:
+            return {
+                "gaps": [],
+                "not_checkable_groups": [],
+                "error": "ledger_import_failed",
+            }
+        for group in groups:
+            try:
+                kind_value = str(group.get("kind_value") or "")
+                _raw_target = group.get("target_dict")
+                target: dict[str, Any] = (
+                    _raw_target if isinstance(_raw_target, dict) else {}
+                )
+                ref = ""
+                try:
+                    key = claim_key(str(group.get("statement") or ""), kind_value)
+                    ref = claim_ref(key)
+                except Exception:
+                    ref = ""
+                tkey = ""
+                try:
+                    tkey, _ = target_group_key(target)
+                except Exception:
+                    tkey = ""
+                if not ref or not tkey or tkey == "NO_TARGET":
+                    continue
+                gid = str(kind_value) + "|" + tkey
+                if kind_value == ClaimKind.NOT_CHECKABLE.value:
+                    inventoried.append(gid)
+                    continue
+                if kind_value not in order:
+                    continue
+                if gid in cited:
+                    continue
+                gaps.append(
+                    {
+                        "gap_id": gid,
+                        "claim_ref": ref,
+                        "kind": kind_value,
+                        "target_key": tkey,
+                        "target": dict(target),
+                        "query": str(group.get("stored_query") or ""),
+                        "scope": str(group.get("stored_scope") or ""),
+                    }
+                )
+            except Exception:
+                continue
+        try:
+            gaps.sort(
+                key=lambda g: (
+                    order.get(str(g.get("kind") or ""), 9),
+                    str(g.get("target_key") or ""),
+                )
+            )
+        except Exception:
+            pass
+        return {"gaps": gaps, "not_checkable_groups": sorted(set(inventoried))}
+    except Exception:
+        return {
+            "gaps": [],
+            "not_checkable_groups": [],
+            "error": "ledger_import_failed",
+        }
 
 
 def collect_verification_diagnostics(
@@ -585,9 +751,7 @@ def collect_verification_diagnostics(
             pass
         # G3: one retrieval binding per distinct typed claim. Legacy rows
         # (recorded_attempts None) degrade to unmapped, never fail.
-        recorded: list[tuple[list[str], dict[str, Any] | None]] = list(
-            recorded_attempts or []
-        )
+        recorded: list[tuple[list[str], dict[str, Any] | None]] = list(recorded_attempts or [])
         claim_bindings: list[ClaimRetrievalBinding] = []
         claim_ledgers: list[ClaimRetrievalLedger] = []
         unknown_to_ref: dict[str, str] = {}
@@ -609,6 +773,8 @@ def collect_verification_diagnostics(
                         bank_ids=set(bound),
                         attempts=recorded,
                         target_ref=str(group.get("target_key") or "") or None,
+                        stored_query=str(group.get("stored_query") or "") or None,
+                        stored_scope=str(group.get("stored_scope") or "") or None,
                     )
                 except Exception:
                     continue
@@ -680,9 +846,7 @@ def collect_verification_diagnostics(
                 try:
                     kind = VerificationEngine.effective_claim_kind(hypothesis)
                     if kind is not None:
-                        kind_value = str(
-                            getattr(kind, "value", kind) or ""
-                        ).strip() or None
+                        kind_value = str(getattr(kind, "value", kind) or "").strip() or None
                 except Exception:
                     kind_value = None
                 try:
@@ -718,6 +882,370 @@ def collect_verification_diagnostics(
         )
     except Exception:
         return None
+
+
+# Phase 1 (claim binding): version pin for authoritative claim-local
+# resolution. The ``cb``-prefixed values are deliberately distinct from
+# VERIFIER_VERSION_* (v1/v2/v3) so dashboards, log queries, and telemetry
+# labels never conflate the two pins. Defined ahead of first use because
+# repair_citation's default pin references CURRENT at def time.
+CLAIM_BINDING_CBV1 = "cbv1"
+CLAIM_BINDING_CBV2 = "cbv2"
+# Phase 3 (claim binding): cbv2 semantics plus applied misattribution
+# repair. Stamped only via a separate owner amendment after the
+# shadow-first gate; no creation path emits it.
+CLAIM_BINDING_CBV3 = "cbv3"
+# Rollout value: unmarked rows resolve here, preserving byte-identical
+# pre-Phase-1 behavior. Repointing to CLAIM_BINDING_CBV2 requires a
+# separate owner amendment, never a silent constant change.
+CLAIM_BINDING_CURRENT = CLAIM_BINDING_CBV1
+KNOWN_CLAIM_BINDING_VERSIONS = frozenset(
+    {CLAIM_BINDING_CBV1, CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3}
+)
+
+
+class ClaimBindingEnforcement(BaseModel):
+    """Authoritative Phase 1 partition outcome for one hypothesis.
+
+    ``kept_ids`` is the union of claim-local hits plus explicitly admitted
+    bank-fallback rows (admitted with UNMAPPED_CITATION, never for
+    CALL_EDGE completeness or HISTORY newest-commit matching).
+    ``cited_kept_count`` counts cited IDs surviving in kept — the verdict
+    trigger is defined over it, never over raw kept emptiness, so uncited
+    orientation/context rows (including statement-matched range rows) can
+    never substitute for zero cited survival. ``unmapped`` marks
+    hypotheses with no claim-local linkage (no timeline-backed attempts,
+    or attempts that retrieved nothing cited); their bank-fallback rows
+    verify only with UNMAPPED_CITATION, never for CALL_EDGE completeness
+    or HISTORY newest-commit matching.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cited_ids: list[str] = Field(default_factory=list, max_length=200)
+    kept_ids: list[str] = Field(default_factory=list, max_length=200)
+    evaporated_ids: list[str] = Field(default_factory=list, max_length=100)
+    local_kinds: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Claim kinds with at least one cited ID retrieved by that "
+        "claim's own linked attempts (per-claim locality, never borrowed).",
+    )
+    cited_kinds: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Claim kinds with at least one cited ID.",
+    )
+    local_groups: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Per-(kind, target) group identities (KIND|target_key) "
+        "with at least one claim-local kept ID. Locality never crosses "
+        "groups — not even between two targets of the same kind.",
+    )
+    cited_groups: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Per-(kind, target) group identities with at least one cited ID.",
+    )
+    unmapped_kinds: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Claim kinds with at least one cited group lacking "
+        "claim-local hits. Drives the CALL_EDGE/HISTORY refusal and the "
+        "UNMAPPED limitation.",
+    )
+    linkage_observed: bool = Field(
+        default=False,
+        description="True when timeline-backed attempts existed to join "
+        "against. Locality enforcement (claim-local vs bank-fallback) "
+        "applies only when observed; without it the partition degrades "
+        "to unmapped bank-path.",
+    )
+    fault: bool = Field(
+        default=False,
+        description="True when partitioning itself faulted under cbv2. "
+        "Fail closed: the claim is INCONCLUSIVE, never legacy-decided.",
+    )
+    cited_kept_count: int = Field(default=0, ge=0)
+    unmapped: bool = Field(default=True)
+    has_claim_local: bool = Field(default=False)
+    limitation_codes: list[str] = Field(default_factory=list, max_length=10)
+    next_action: str | None = Field(default=None, max_length=1024)
+    # Phase 3 (claim binding): rebound donor IDs (applied, cbv3) and
+    # shadow-recorded donor IDs (record-only, cbv2). Bounded, additive,
+    # default empty — verify/conclude telemetry and the conclude waiver
+    # block observe repairs without recomputing them.
+    repaired_ids: list[str] = Field(default_factory=list, max_length=30)
+    repair_shadow_ids: list[str] = Field(default_factory=list, max_length=30)
+
+
+def bound_kept_evidence_only(
+    evidence_items: list[Any], kept_ids: set[str], cited_ids: set[str]
+) -> tuple[list[Any], list[str], int]:
+    """Filter a verify/conclude working set down to kept citations.
+
+    Returns ``(kept_items, evaporated_ids, cited_kept_count)``. Rows whose
+    IDs are not cited pass through untouched (orientation/context, never
+    proof) and never count toward ``cited_kept_count``. Cited rows outside
+    ``kept_ids`` are dropped here AND returned as evaporated so the caller
+    records them — never silently omitted. Pure function; callers own the
+    Demotion/MissingObligation records.
+    """
+    kept: list[Any] = []
+    evaporated: list[str] = []
+    cited_kept_count = 0
+    for item in evidence_items or []:
+        try:
+            eid = str(getattr(item, "evidence_id", "") or "")
+        except Exception:
+            continue
+        if eid and eid in cited_ids:
+            if eid not in kept_ids:
+                evaporated.append(eid)
+                continue
+            cited_kept_count += 1
+        kept.append(item)
+    return kept, evaporated, cited_kept_count
+
+
+def repair_citation(
+    claim_kind: str | None,
+    target: Any | None,
+    candidate_row: Any,
+    donor_row: Any,
+    binding_version: str = CLAIM_BINDING_CURRENT,
+) -> bool:
+    """Phase 3 repair predicate (live behind the cbv3/shadow gate).
+
+    Returns True only when the donor row may stand in for a misattributed
+    citation: same file path and revision as the cited row (normalized
+    suffix match, exact revision), and kind-grounded for the claim
+    target. Content equality is checked by the caller. The HISTORY
+    strict-subject rule follows binding_version (cbv2 AND cbv3 enforce
+    it); DEFINITION has no pin branch.
+    """
+    try:
+        if not _paths_match_for_repair(candidate_row, donor_row):
+            return False
+        try:
+            kind = ClaimKind(str(claim_kind)) if claim_kind else None
+        except Exception:
+            return False
+        if kind == ClaimKind.DEFINITION:
+            ok, _ = VerificationEngine.definition_window_proof([donor_row], target)
+            return bool(ok)
+        if kind == ClaimKind.HISTORY:
+            ok, _ = VerificationEngine.history_proof([donor_row], target, binding_version)
+            return bool(ok)
+        return False
+    except Exception:
+        return False
+
+
+def _paths_match_for_repair(candidate_row: Any, donor_row: Any) -> bool:
+    """Same file path (normalized suffix match) and revision on both rows.
+
+    Pure. Uses the same ``_paths_match`` the kind gates use so
+    locator-qualified vs repo-relative pairs agree with the gate;
+    revision comparison stays exact string equality.
+    """
+    try:
+        candidate_file = VerificationEngine._item_file(candidate_row)
+        donor_file = VerificationEngine._item_file(donor_row)
+        if not VerificationEngine._paths_match(candidate_file, donor_file):
+            return False
+        candidate_rev = str(
+            getattr(
+                getattr(getattr(candidate_row, "provenance", None), "source_location", None),
+                "revision",
+                "",
+            )
+            or ""
+        )
+        donor_rev = str(
+            getattr(
+                getattr(getattr(donor_row, "provenance", None), "source_location", None),
+                "revision",
+                "",
+            )
+            or ""
+        )
+        return bool(candidate_rev) and candidate_rev == donor_rev
+    except Exception:
+        return False
+
+
+def _content_matches_for_repair(
+    candidate_row: Any, donor_row: Any
+) -> Literal["snippet_containment", "overlap_and_containment"] | None:
+    """Donor shows (at least) what the candidate showed (pure).
+
+    Returns "snippet_containment" when the normalized donor snippet
+    contains the normalized candidate snippet (non-empty);
+    "overlap_and_containment" when containment holds AND both rows
+    carry line ranges that overlap. Otherwise None (including
+    overlap-without-containment — overlap alone never matches).
+    Never raises. Normalization is case-sensitive strip +
+    single-space collapse.
+    """
+    try:
+        candidate_snippet = str(getattr(candidate_row, "content_snippet", "") or "")
+        donor_snippet = str(getattr(donor_row, "content_snippet", "") or "")
+
+        def _normalize(text: str) -> str:
+            return re.sub(r"\s+", " ", str(text or "")).strip()
+
+        norm_candidate = _normalize(candidate_snippet)
+        norm_donor = _normalize(donor_snippet)
+        if not norm_candidate or norm_candidate not in norm_donor:
+            return None
+        try:
+            candidate_location = getattr(
+                getattr(candidate_row, "provenance", None), "source_location", None
+            )
+            donor_location = getattr(
+                getattr(donor_row, "provenance", None), "source_location", None
+            )
+            candidate_start = int(getattr(candidate_location, "line_start", 0) or 0)
+            candidate_end = int(getattr(candidate_location, "line_end", 0) or 0)
+            donor_start = int(getattr(donor_location, "line_start", 0) or 0)
+            donor_end = int(getattr(donor_location, "line_end", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return "snippet_containment"
+        if min(candidate_start, candidate_end, donor_start, donor_end) < 1:
+            return "snippet_containment"
+        if max(candidate_start, donor_start) <= min(candidate_end, donor_end):
+            return "overlap_and_containment"
+        return "snippet_containment"
+    except Exception:
+        return None
+
+
+def attempt_claim_repair(
+    claim_kind: str | None,
+    claim_key_value: str,
+    target: Any | None,
+    candidate_ids: list[str],
+    cited_ids: set[str],
+    evidence_by_id: dict[str, Any],
+    binding_version: Literal["cbv2", "cbv3"],
+    gate_reason: str = "",
+    max_repairs: int = 3,
+) -> tuple[list[str], list[RepairedBinding]]:
+    """Try to rebind misattributed citations to donor rows (pure).
+
+    candidate_ids are cited, banked IDs that failed THIS group's kind
+    gate for THIS group's target; claim_key_value is the caller's
+    existing claim_key() over the group's statement+kind. Donor pool is
+    banked rows cited by NO group of the hypothesis, scanned in sorted
+    evidence-ID order; the first donor passing repair_citation() under
+    binding_version plus _content_matches_for_repair() rebinds that
+    citation. Returns (rebound_ids, repairs). Never raises; never
+    touches unknown (evaporated) IDs; caps at max_repairs rebinds.
+    binding_version stamps each repair's outcome/binding_version
+    (cbv2->shadow, cbv3->applied). claim_ref/target_ref/inline target
+    derive via the existing claim_ref()/target_group_key(); gate_reason
+    is recorded as passed. Review-only fields, none used in decisions.
+    """
+    rebound: list[str] = []
+    repairs: list[RepairedBinding] = []
+    # One uncited donor may ground several citations of the same
+    # group (each use independently gated and recorded); the
+    # per-group cap counts performed rebinds, not unique donors.
+    done = 0
+    try:
+        cap = max(1, int(max_repairs or 3))
+    except Exception:
+        cap = 3
+    try:
+        kind_value = str(claim_kind) if claim_kind else ""
+    except Exception:
+        kind_value = ""
+    if kind_value not in ("DEFINITION", "HISTORY"):
+        return [], []
+    try:
+        ref = claim_ref(str(claim_key_value or ""))
+    except Exception:
+        return [], []
+    try:
+        target_key, _target_dict = target_group_key(target)
+    except Exception:
+        return [], []
+    try:
+        target_dict: dict[str, Any] = dict(_target_dict or {})
+    except Exception:
+        return [], []
+    try:
+        target_model = ClaimTarget(**{k: v for k, v in target_dict.items()})
+    except Exception:
+        return [], []
+    try:
+        outcome: Literal["applied", "shadow"] = (
+            "applied" if binding_version == CLAIM_BINDING_CBV3 else "shadow"
+        )
+    except Exception:
+        outcome = "shadow"
+    try:
+        pool = sorted(
+            str(eid or "")
+            for eid in (evidence_by_id or {})
+            if str(eid or "") and str(eid or "") not in (cited_ids or set())
+        )
+    except Exception:
+        return [], []
+    for candidate_id in list(candidate_ids or []):
+        if done >= cap:
+            break
+        try:
+            cid = str(candidate_id or "").strip()
+        except Exception:
+            continue
+        if not cid:
+            continue
+        candidate_row = (evidence_by_id or {}).get(cid)
+        if candidate_row is None:
+            continue
+        for donor_id in pool:
+            donor_row = (evidence_by_id or {}).get(donor_id)
+            if donor_row is None:
+                continue
+            try:
+                if not repair_citation(
+                    kind_value,
+                    target_model,
+                    candidate_row,
+                    donor_row,
+                    binding_version,
+                ):
+                    continue
+                basis = _content_matches_for_repair(candidate_row, donor_row)
+            except Exception:
+                continue
+            if not basis:
+                continue
+            try:
+                repairs.append(
+                    RepairedBinding(
+                        claim_ref=ref,
+                        claim_key=str(claim_key_value or "")[:560],
+                        target_ref=str(target_key or "")[:32],
+                        target=dict(target_dict),
+                        cited_id=cid,
+                        donor_id=str(donor_id),
+                        basis=basis,
+                        outcome=outcome,
+                        binding_version=binding_version,
+                        gate_reason=str(gate_reason or "")[:512],
+                    )
+                )
+            except Exception:
+                continue
+            done += 1
+            if str(donor_id) not in rebound:
+                rebound.append(str(donor_id))
+            break
+    return rebound, repairs
 
 
 def _latest_linked_outcome(
@@ -834,6 +1362,13 @@ def build_verify_evaluation_attributes(
             "ledgers": [],
             "missing_obligations": [],
             "evaporated_count": 0,
+            # Phase 3 (claim binding): bounded repair dumps plus uncapped
+            # counts. A truncated list sets repaired_truncated so the
+            # Phase 3 gate fails closed instead of reviewing a partial set.
+            "repaired": [],
+            "repaired_truncated": False,
+            "repaired_count": 0,
+            "repair_shadow_count": 0,
         }
         if diagnostics is None:
             return skeleton
@@ -841,6 +1376,7 @@ def build_verify_evaluation_attributes(
         ledgers = list(getattr(diagnostics, "claim_ledgers", None) or [])
         missing = list(getattr(diagnostics, "missing_obligations", None) or [])
         evaporated = list(getattr(diagnostics, "evaporated_ids", None) or [])
+        repaired_all = list(getattr(diagnostics, "repaired", None) or [])
         binding_dicts: list[dict[str, Any]] = []
         for binding in bindings[:100]:
             try:
@@ -863,17 +1399,52 @@ def build_verify_evaluation_attributes(
                         "claim": str(getattr(item, "claim", "") or "")[:1024],
                         "claim_kind": getattr(item, "claim_kind", None),
                         "reason_code": str(
-                            getattr(getattr(item, "reason_code", ""), "value", "")
-                            or ""
+                            getattr(getattr(item, "reason_code", ""), "value", "") or ""
                         ),
                     }
                 )
             except Exception:
                 continue
+        repaired_dicts: list[dict[str, Any]] = []
+        repaired_truncated = False
+        try:
+            ordered = sorted(
+                repaired_all,
+                key=lambda r: (
+                    str(getattr(r, "claim_ref", "") or ""),
+                    str(getattr(r, "cited_id", "") or ""),
+                    str(getattr(r, "donor_id", "") or ""),
+                ),
+            )
+        except Exception:
+            ordered = list(repaired_all)
+        for item in ordered:
+            if len(repaired_dicts) >= 10:
+                repaired_truncated = True
+                break
+            try:
+                dumped = item.model_dump(mode="json") if hasattr(item, "model_dump") else {}
+                repaired_dicts.append(dict(dumped) if isinstance(dumped, dict) else {})
+            except Exception:
+                continue
+        repaired_count = 0
+        repair_shadow_count = 0
+        for item in repaired_all:
+            try:
+                if str(getattr(item, "outcome", "") or "") == "applied":
+                    repaired_count += 1
+                else:
+                    repair_shadow_count += 1
+            except Exception:
+                repair_shadow_count += 1
         skeleton["bindings"] = binding_dicts
         skeleton["ledgers"] = ledger_dicts
         skeleton["missing_obligations"] = missing_dicts
         skeleton["evaporated_count"] = len(evaporated)
+        skeleton["repaired"] = repaired_dicts
+        skeleton["repaired_truncated"] = repaired_truncated
+        skeleton["repaired_count"] = repaired_count
+        skeleton["repair_shadow_count"] = repair_shadow_count
         return skeleton
     except Exception:
         return None
@@ -885,13 +1456,25 @@ def _match_recent_action(
     """Find the recent typed action behind a claim's ledger query.
 
     Prefers a history summary carrying the same retrieval attempt
-    (query + normalized scope); falls back to a retryable action whose
-    parameters derive to the same key. Returns (None, None) when no
-    typed, validated action matches — the directive is then skipped.
+    (normalized query + normalized scope); falls back to a retryable
+    action whose parameters derive to the same key. Stored ledgers
+    (Phase 2) get a second query-only pass: scope never gates the
+    match, it only parameterizes dispatch — the second pass reuses the
+    query-matching action and lets the caller parameterize scope from
+    the ledger's stored scope. Returns (None, None) when no typed,
+    validated action matches — the directive is then skipped.
     """
     try:
-        query = str(getattr(ledger, "search_query", "") or "")
+
+        def _norm_query(value: object) -> str:
+            try:
+                return str(value or "").strip()[:1024]
+            except Exception:
+                return ""
+
+        query = _norm_query(getattr(ledger, "search_query", ""))
         scope = _normalize_scope(getattr(ledger, "scope", None))
+        stored = str(getattr(ledger, "query_source", "derived") or "") == "stored"
     except Exception:
         return None, None
     if not query:
@@ -900,34 +1483,53 @@ def _match_recent_action(
         entries = list(recent_actions or [])
     except Exception:
         return None, None
-    for entry in reversed(entries):
-        if not isinstance(entry, dict):
-            continue
-        try:
-            attempt = entry.get("retrieval_attempt")
-            if isinstance(attempt, dict):
-                if str(attempt.get("search_query") or "") != query:
-                    continue
-                if _normalize_scope(attempt.get("scope")) != scope:
-                    continue
-            else:
+
+    def _scan(
+        require_scope: bool,
+    ) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+        for entry in reversed(entries):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                attempt = entry.get("retrieval_attempt")
+                if isinstance(attempt, dict):
+                    if _norm_query(attempt.get("search_query")) != query:
+                        continue
+                    if require_scope and _normalize_scope(attempt.get("scope")) != scope:
+                        continue
+                else:
+                    action = str(entry.get("action") or "").strip().upper()
+                    params = entry.get("parameters")
+                    if action not in RETRYABLE_ACTIONS or not isinstance(params, dict):
+                        continue
+                    derived_query, derived_scope, _provider = extract_search_query(action, params)
+                    if _norm_query(derived_query) != query:
+                        continue
+                    if require_scope and _normalize_scope(derived_scope) != scope:
+                        continue
                 action = str(entry.get("action") or "").strip().upper()
                 params = entry.get("parameters")
                 if action not in RETRYABLE_ACTIONS or not isinstance(params, dict):
                     continue
-                derived_query, derived_scope, _provider = extract_search_query(
-                    action, params
-                )
-                if derived_query != query or _normalize_scope(derived_scope) != scope:
-                    continue
-            action = str(entry.get("action") or "").strip().upper()
-            params = entry.get("parameters")
-            if action not in RETRYABLE_ACTIONS or not isinstance(params, dict):
+                return action, {str(k): v for k, v in params.items()}
+            except Exception:
                 continue
-            return action, {str(k): v for k, v in params.items()}
-        except Exception:
-            continue
-    return None, None
+        return None, None
+
+    action_type, params = _scan(True)
+    if (action_type is None or params is None) and stored:
+        action_type, params = _scan(False)
+    if action_type is None or params is None:
+        return None, None
+    if stored:
+        # The query-only fallback may find an action recorded with a
+        # provider-generated scope. Re-dispatch it using the stored claim
+        # scope so the action and the ledger's durable budget key agree.
+        stored_scope = _normalize_scope(getattr(ledger, "scope", None))
+        if stored_scope:
+            params = dict(params)
+            params["scope"] = stored_scope
+    return action_type, params
 
 
 def select_ledger_requery(
@@ -981,6 +1583,8 @@ def select_ledger_requery(
                     bank_ids=set(bound),
                     attempts=recorded,
                     target_ref=str(group.get("target_key") or "") or None,
+                    stored_query=str(group.get("stored_query") or "") or None,
+                    stored_scope=str(group.get("stored_scope") or "") or None,
                 )
             except Exception:
                 continue
@@ -988,9 +1592,19 @@ def select_ledger_requery(
                 latest = _latest_linked_outcome(ledger, recorded)
             except Exception:
                 latest = None
-            if not binding.unknown and latest != RetrievalOutcome.SEARCH_FAILED.value:
+            group_cited_ids = list(group_cited) if isinstance(group_cited, list) else []
+            durable = count_persisted_attempts(recorded, ledger.search_query, ledger.scope)
+            never_retrieved = (
+                not group_cited_ids
+                and not binding.unknown
+                and getattr(ledger, "query_source", "derived") == "stored"
+                and not list(getattr(ledger, "attempt_indexes", None) or [])
+                and durable == 0
+            )
+            failed_retry = latest == RetrievalOutcome.SEARCH_FAILED.value
+            if not (binding.unknown or never_retrieved or failed_retry):
                 continue
-            if count_persisted_attempts(recorded, ledger.search_query, ledger.scope) >= budget:
+            if durable >= budget:
                 continue
             try:
                 action_type, params = _match_recent_action(ledger, recent_actions or [])
@@ -1076,37 +1690,48 @@ _LIKELY_SOURCE = {**_VERIFIED_SOURCE, "max_verdict": "LIKELY"}
 
 CATEGORY_PROOF_RULES: dict[JavaFactCategory, CategoryProofRule] = {
     JavaFactCategory.DECLARATION_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE"}), **_VERIFIED_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE"}),
+        **_VERIFIED_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.SOURCE_VALUE_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_VERIFIED_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}),
+        **_VERIFIED_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.LANGUAGE_SEMANTIC_FACT: CategoryProofRule(
         frozenset({"SOURCE_RANGE", "LANGUAGE_RULE_VERSION", "ANALYZER_RESOLUTION"}),
         **_VERIFIED_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.CONTROL_FLOW_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}),
+        **_LIKELY_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.DATA_FLOW_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}),
+        **_LIKELY_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.CALL_TARGET_FACT: CategoryProofRule(
         frozenset({"CALL_SITE_RANGE", "TARGET_DECLARATION_RANGE", "ANALYZER_RESOLUTION"}),
         **_LIKELY_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.POSSIBLE_EFFECT_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE", "ANALYZER_RESOLUTION"}),
+        **_LIKELY_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.CONFIGURATION_FACT: CategoryProofRule(
-        frozenset({"SOURCE_RANGE", "CONFIGURATION_SOURCE"}), **_LIKELY_SOURCE  # type: ignore[arg-type]
+        frozenset({"SOURCE_RANGE", "CONFIGURATION_SOURCE"}),
+        **_LIKELY_SOURCE,  # type: ignore[arg-type]
     ),
     JavaFactCategory.RUNTIME_OBSERVATION_FACT: CategoryProofRule(
         frozenset({"RUNTIME_OBSERVATION"}), True, True, False, True, False, "LIKELY"
     ),
     JavaFactCategory.CAUSAL_CLAIM: CategoryProofRule(
         frozenset({"SOURCE_RANGE", "RUNTIME_OBSERVATION", "CAUSAL_STEP_BINDINGS"}),
-        True, True, True, True, False, "LIKELY",
+        True,
+        True,
+        True,
+        True,
+        False,
+        "LIKELY",
     ),
 }
 
@@ -1139,6 +1764,57 @@ class VerifierVersionUnavailable(ValueError):
     """Version information could not be obtained (fail closed)."""
 
 
+def resolve_claim_binding_version(metadata: Any) -> tuple[str, str]:
+    """Resolve the claim-binding behavior version for one investigation.
+
+    Returns ``(version, source)`` where source is ``"pinned"`` or
+    ``"unmarked"``. Unmarked rows resolve to CLAIM_BINDING_CURRENT,
+    preserving the historical default path per the version-pinned-behavior
+    contract. Raises :class:`UnknownVerifierVersion` for pins outside
+    :data:`KNOWN_CLAIM_BINDING_VERSIONS` and
+    :class:`VerifierVersionUnavailable` when version information could not
+    be obtained at all. Callers must fail closed on either exception.
+    Pure function; no I/O, no environment reads.
+    """
+    if metadata is None:
+        raise VerifierVersionUnavailable(
+            f"no claim binding version metadata: {type(metadata).__name__}"
+        )
+    try:
+        if hasattr(metadata, "model_dump"):
+            mapping = dict(metadata.model_dump() or {})
+        elif isinstance(metadata, dict):
+            mapping = dict(metadata)
+        else:
+            raise VerifierVersionUnavailable(
+                f"no claim binding version metadata: {type(metadata).__name__}"
+            )
+    except (UnknownVerifierVersion, VerifierVersionUnavailable):
+        raise
+    except Exception as exc:
+        raise VerifierVersionUnavailable(
+            f"claim binding version metadata unreadable: {exc}"
+        ) from exc
+    pinned = str(mapping.get("claim_binding_version") or "").strip()
+    if not pinned:
+        return CLAIM_BINDING_CURRENT, "unmarked"
+    if pinned not in KNOWN_CLAIM_BINDING_VERSIONS:
+        raise UnknownVerifierVersion(f"unrecognized claim binding pin: {pinned!r}")
+    return pinned, "pinned"
+
+
+class HistorySubjectInput(BaseModel):
+    """HISTORY subject comparison input (structured, never freeform prose)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    claimed_subject: str | None = Field(default=None, max_length=512)
+    stored_summary: str | None = Field(default=None, max_length=1024)
+    target_file: str = Field(max_length=512)
+    target_commit: str = Field(max_length=64)
+    investigation_id: UUID
+
+
 def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
     """Resolve the recorded verifier version for an investigation.
 
@@ -1158,9 +1834,7 @@ def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
     their exact v1 shape; unmarked rows resolve to current. Never env-switched.
     """
     if metadata is None or not isinstance(metadata, dict):
-        raise VerifierVersionUnavailable(
-            f"no version metadata: {type(metadata).__name__}"
-        )
+        raise VerifierVersionUnavailable(f"no version metadata: {type(metadata).__name__}")
     pinned = str(metadata.get("verifier_version") or "").strip()
     if not pinned:
         return VERIFIER_VERSION_CURRENT, "unmarked"
@@ -1199,10 +1873,26 @@ class VerificationEngine:
         "missing extraction",
     )
 
-    def __init__(self, verifier_version: str = VERIFIER_VERSION_CURRENT) -> None:
-        # Kept as an API-compatible argument for shadow/protocol callers. It
-        # does not select behavior in the unified dev runtime.
+    def __init__(
+        self,
+        verifier_version: str = VERIFIER_VERSION_CURRENT,
+        claim_binding_version: str = CLAIM_BINDING_CURRENT,
+    ) -> None:
+        # Kept as API-compatible arguments for shadow/protocol callers. The
+        # verifier version does not select behavior in the unified dev
+        # runtime; the claim binding version selects Phase 1 strictness
+        # (cbv1 bank-path legacy vs cbv2 authoritative partitions).
         self.verifier_version = VERIFIER_VERSION_CURRENT
+        if claim_binding_version not in KNOWN_CLAIM_BINDING_VERSIONS:
+            raise UnknownVerifierVersion(
+                f"unrecognized claim binding pin: {claim_binding_version!r}"
+            )
+        self.claim_binding_version = claim_binding_version
+        # Phase 3 (claim binding): counts repair evaluations actually
+        # executed (per-group helper calls). Tests assert cbv1 runs
+        # execute zero repair paths via this counter plus the absence
+        # of records — absence alone also matches a skipped path.
+        self._repair_calls = 0
 
     @staticmethod
     def canonical_caller_edge_key(
@@ -1216,6 +1906,7 @@ class VerificationEngine:
         identically on both sides (backslash → slash, strip whitespace and
         leading/trailing slashes).
         """
+
         def _escape(value: Any) -> str:
             return str(value or "").strip().replace("|", "%7C")
 
@@ -1271,9 +1962,9 @@ class VerificationEngine:
                 caller = str(getattr(target, "counterpart", "") or "").strip()
                 if not caller:
                     continue
-                (proven if getattr(assessment, "evidence_id", None) is not None else unresolved).add(
-                    caller
-                )
+                (
+                    proven if getattr(assessment, "evidence_id", None) is not None else unresolved
+                ).add(caller)
         proven_callers = sorted(proven, key=str.casefold)
         unresolved_callers = sorted(unresolved - proven, key=str.casefold)
         required = VerificationEngine.required_caller_edge_keys(hypothesis)
@@ -1414,9 +2105,7 @@ class VerificationEngine:
                     continue
                 try:
                     return (
-                        source
-                        if isinstance(source, JavaFactCategory)
-                        else JavaFactCategory(source)
+                        source if isinstance(source, JavaFactCategory) else JavaFactCategory(source)
                     )
                 except ValueError:
                     return None
@@ -1691,7 +2380,10 @@ class VerificationEngine:
                     f"{category.value} is never source-verifiable without runtime evidence",
                 )
             if category == JavaFactCategory.CAUSAL_CLAIM:
-                return (False, "causal claims require per-step bound evidence; never analyzer-verified")
+                return (
+                    False,
+                    "causal claims require per-step bound evidence; never analyzer-verified",
+                )
         if rule.requires_immutable_source_or_observation_identity:
             if category == JavaFactCategory.RUNTIME_OBSERVATION_FACT:
                 if not resolution.runtime_source_identity or resolution.runtime_observed_at is None:
@@ -1712,7 +2404,10 @@ class VerificationEngine:
             str(eid) for eid in resolution.source_evidence_ids
         ):
             return (False, "resolution source evidence is not bound to the claim")
-        if rule.requires_source_window_for_each_location and resolution.declaration_location is not None:
+        if (
+            rule.requires_source_window_for_each_location
+            and resolution.declaration_location is not None
+        ):
             matched = []
             expected_ids = {str(eid) for eid in resolution.source_evidence_ids}
             for item in evidence_items or []:
@@ -1746,7 +2441,12 @@ class VerificationEngine:
                     continue
                 start = resolution.declaration_location.line_start
                 end = resolution.declaration_location.line_end
-                if start is not None and end is not None and window[0] <= start and end <= window[1]:
+                if (
+                    start is not None
+                    and end is not None
+                    and window[0] <= start
+                    and end <= window[1]
+                ):
                     contained = True
                     break
             if not contained:
@@ -1782,9 +2482,8 @@ class VerificationEngine:
                         False,
                         f"claim statement conflicts with resolved source value {resolution.resolved_value!r}",
                     )
-                subject = (
-                    str(getattr(target, "symbol", "") or "")
-                    or str(getattr(target, "subject_identity", "") or "")
+                subject = str(getattr(target, "symbol", "") or "") or str(
+                    getattr(target, "subject_identity", "") or ""
                 )
                 expected_subjects = {
                     str(resolution.subject_identity or ""),
@@ -1827,7 +2526,9 @@ class VerificationEngine:
         if "runtime" in lowered or "runtime" in codes_text.lower():
             return VerificationLimitation(
                 code=LimitationCode.NO_RUNTIME_OBSERVATION,
-                detail=(f"Java fact abstained ({codes_text or reason}); runtime evidence required.")[:500],
+                detail=(
+                    f"Java fact abstained ({codes_text or reason}); runtime evidence required."
+                )[:500],
             )
         return VerificationLimitation(
             code=LimitationCode.RELATION_UNDEMONSTRATED,
@@ -2157,9 +2858,7 @@ class VerificationEngine:
         anchor_repositories = {_repository(item) for item in bound_set if _repository(item)}
         target_scope = str(target.scope or "").strip()
         target_repository = (
-            target_scope.split("@", 1)[0].strip().casefold()
-            if "@" in target_scope
-            else ""
+            target_scope.split("@", 1)[0].strip().casefold() if "@" in target_scope else ""
         )
         if target_repository:
             anchor_repositories.add(target_repository)
@@ -2279,9 +2978,7 @@ class VerificationEngine:
         return False
 
     @staticmethod
-    def _call_shown(
-        callee: str, snippet: str, *, exclude_construction: bool = False
-    ) -> bool:
+    def _call_shown(callee: str, snippet: str, *, exclude_construction: bool = False) -> bool:
         """True when the snippet contains a call expression for ``callee``.
 
         A declaration line (``def callee(``) matches ``callee(`` too, so
@@ -2306,9 +3003,7 @@ class VerificationEngine:
                 for match in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", line):
                     if VerificationEngine._DECLARATION_PREFIX.search(line[: match.start()]):
                         continue
-                    if exclude_construction and re.search(
-                        r"\bnew\s*$", line[: match.start()]
-                    ):
+                    if exclude_construction and re.search(r"\bnew\s*$", line[: match.start()]):
                         continue
                     return True
         return False
@@ -2324,9 +3019,7 @@ class VerificationEngine:
         file — a declaration without a shown invocation proves nothing.
         """
         try:
-            if not callee_class or any(
-                sep in callee_class for sep in ("::", ".", "#")
-            ):
+            if not callee_class or any(sep in callee_class for sep in ("::", ".", "#")):
                 return []
             # Declaration and invocation must come from one file — a field
             # typed X in file A never proves a call in file B.
@@ -2525,9 +3218,7 @@ class VerificationEngine:
             return False
 
     @staticmethod
-    def absence_outcome(
-        evidence_items: list[Any], target: ClaimTarget | None
-    ) -> tuple[str, str]:
+    def absence_outcome(evidence_items: list[Any], target: ClaimTarget | None) -> tuple[str, str]:
         """Classify whether bound evidence can support an absence claim.
 
         - NO_SCOPE: claim states no search scope (target-resolution failure).
@@ -2541,9 +3232,7 @@ class VerificationEngine:
         - PRESENCE_CONFLICT: same-scope, same-binding positive evidence defeats
           the absence claim without proving the positive claim by itself.
         """
-        scope = (
-            (getattr(target, "scope", "") or "").strip() if target is not None else ""
-        )
+        scope = (getattr(target, "scope", "") or "").strip() if target is not None else ""
         if not scope:
             return ("NO_SCOPE", "absence claim states no search scope (set target.scope)")
 
@@ -2560,9 +3249,7 @@ class VerificationEngine:
             if not tenant:
                 tenant = str(getattr(provenance, "tenant_id", "") or "").strip()
             if not investigation:
-                investigation = str(
-                    getattr(provenance, "investigation_id", "") or ""
-                ).strip()
+                investigation = str(getattr(provenance, "investigation_id", "") or "").strip()
             if not tenant or not investigation:
                 return None
             return (tenant, investigation)
@@ -2596,7 +3283,9 @@ class VerificationEngine:
             else:
                 scoped_rows.append(item)
         if not scoped_rows:
-            if discovery_rows and any(_scope(item).casefold() == scope.casefold() for item in discovery_rows):
+            if discovery_rows and any(
+                _scope(item).casefold() == scope.casefold() for item in discovery_rows
+            ):
                 return (
                     "DISCOVERY_ONLY",
                     "ABSENCE_PROOF_DISCOVERY_ONLY: matching empty-search evidence is discovery-only and cannot prove absence",
@@ -2648,6 +3337,13 @@ class VerificationEngine:
         kind = VerificationEngine.effective_claim_kind(hypothesis)
         if kind is None or kind == ClaimKind.CAUSAL:
             return None
+        # Phase 4 (defense in depth): NOT_CHECKABLE never verifies. The
+        # primary skip is the evaluate-level projection, so no opinion
+        # group should reach a gate; a (False, ...) return routes to the
+        # existing gate-fail INCONCLUSIVE path. (True, ...) is forbidden
+        # here — it would VERIFY an opinion claim.
+        if kind == ClaimKind.NOT_CHECKABLE:
+            return (False, LimitationCode.NOT_CHECKABLE_SKIPPED.value)
         target = getattr(hypothesis, "claim_target", None)
         statement = str(getattr(hypothesis, "statement", "") or "")
         if kind == ClaimKind.DEFINITION:
@@ -2677,8 +3373,7 @@ class VerificationEngine:
                         f"CALL_EDGE_INCOMPLETE_ENUMERATION: unresolved edge {missing}",
                     )
                 evidence_by_id = {
-                    str(getattr(item, "evidence_id", "")): item
-                    for item in evidence_items or []
+                    str(getattr(item, "evidence_id", "")): item for item in evidence_items or []
                 }
                 proven_callers: set[str] = set()
                 for assessment in edge_assessments:
@@ -2725,7 +3420,10 @@ class VerificationEngine:
                                 proven_callers.add(_part.casefold())
                 named_callers: list[str] = []
                 for item in evidence_items or []:
-                    if VerificationEngine._item_type(item) not in VerificationEngine.CODE_EVIDENCE_TYPES:
+                    if (
+                        VerificationEngine._item_type(item)
+                        not in VerificationEngine.CODE_EVIDENCE_TYPES
+                    ):
                         continue
                     if VerificationEngine._item_window(item) is None:
                         continue
@@ -2735,9 +3433,7 @@ class VerificationEngine:
                     ):
                         continue
                     file_stem = (
-                        VerificationEngine._item_file(item)
-                        .rsplit("/", 1)[-1]
-                        .rsplit(".", 1)[0]
+                        VerificationEngine._item_file(item).rsplit("/", 1)[-1].rsplit(".", 1)[0]
                     )
                     if file_stem and re.search(
                         rf"(?<![A-Za-z0-9_]){re.escape(file_stem)}(?![A-Za-z0-9_])",
@@ -2745,7 +3441,10 @@ class VerificationEngine:
                     ):
                         named_callers.append(file_stem.casefold())
                 if set(named_callers) - proven_callers:
-                    return (False, "caller enumeration names a caller without its own CALL_EDGE claim")
+                    return (
+                        False,
+                        "caller enumeration names a caller without its own CALL_EDGE claim",
+                    )
                 required = self.required_caller_edge_keys(hypothesis)
                 proven_keys = {
                     self.caller_edge_key(a.claim_target)
@@ -2781,9 +3480,7 @@ class VerificationEngine:
                             False,
                             "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
                         )
-                    edge_ok, edge_reason = VerificationEngine.call_site_proof(
-                        rows, edge, statement
-                    )
+                    edge_ok, edge_reason = VerificationEngine.call_site_proof(rows, edge, statement)
                     if not edge_ok:
                         return (False, edge_reason)
                 return (True, "")
@@ -2807,7 +3504,9 @@ class VerificationEngine:
         if kind == ClaimKind.ABSENCE:
             return VerificationEngine.absence_proof(evidence_items, target)
         if kind == ClaimKind.HISTORY:
-            return VerificationEngine.history_proof(evidence_items, target)
+            return VerificationEngine.history_proof(
+                evidence_items, target, self.claim_binding_version
+            )
         return None
 
     def evaluate_caller_edge(
@@ -2844,13 +3543,99 @@ class VerificationEngine:
             return []
         return [target.model_copy(update={"counterpart": name}) for name in names]
 
+    # Phase 1 (claim binding): frozen HISTORY subject comparison.
+    _COMMIT_TYPE_PREFIX = re.compile(r"^[a-z][a-z0-9_-]*(\([^)]*\))?(!)?:\s+")
+    # 0.70 operating point, pinned by unit vectors: one-word insertions in
+    # >=4-token subjects pass (motivating rewording scores 0.75); one-word
+    # insertions in <=3-token subjects fail (generic collision scores
+    # 0.667); any single-token drift fails (<=0.5).
+    _SUBJECT_TOKEN_THRESHOLD = 0.70
+
+    @staticmethod
+    def _canonical_subject(text: Any) -> str:
+        """Canonicalize a commit subject for deterministic comparison.
+
+        Fixed order, pinned by unit vectors: casefold, trim, balanced
+        outer-quote strip (one layer, matching quote kinds only),
+        conventional-commit type-prefix strip, whitespace collapse.
+        """
+        lowered = str(text or "").casefold().strip()
+        if len(lowered) >= 2 and lowered[0] == lowered[-1] and lowered[0] in {"'", '"'}:
+            lowered = lowered[1:-1].strip()
+        lowered = VerificationEngine._COMMIT_TYPE_PREFIX.sub("", lowered)
+        return re.sub(r"\s+", " ", lowered).strip()
+
+    @staticmethod
+    def _subject_tokens(canonical: str) -> frozenset[str]:
+        return frozenset(re.findall(r"[a-z0-9]+", canonical or ""))
+
+    @staticmethod
+    def subject_match_outcome(claimed: Any | None, stored: Any | None) -> str:
+        """Closed-vocabulary HISTORY subject outcome for telemetry.
+
+        One of matched_exact | matched_token_set | mismatched_subject |
+        missing_subject | missing_row. Pure function; mirrors
+        subjects_match so counters and gates can never disagree.
+        """
+        try:
+            left = VerificationEngine._canonical_subject(claimed)
+            right = VerificationEngine._canonical_subject(stored)
+        except Exception:
+            return "mismatched_subject"
+        if not left:
+            return "missing_subject"
+        if not right:
+            return "missing_row"
+        if left == right:
+            return "matched_exact"
+        if VerificationEngine.subjects_match(claimed, stored):
+            return "matched_token_set"
+        return "mismatched_subject"
+
+    @staticmethod
+    def subjects_match(claimed: Any | None, stored: Any | None) -> bool:
+        """Deterministic structured-subject comparison for HISTORY grounding.
+
+        Exact match after canonicalization wins. Otherwise token-set
+        Jaccard at or above the frozen threshold wins. Empty either side
+        never matches. Pure function; no model prose is consulted.
+        """
+        left = VerificationEngine._canonical_subject(claimed)
+        right = VerificationEngine._canonical_subject(stored)
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        left_tokens = VerificationEngine._subject_tokens(left)
+        right_tokens = VerificationEngine._subject_tokens(right)
+        if not left_tokens or not right_tokens:
+            return False
+        union = left_tokens | right_tokens
+        if not union:
+            return False
+        return (len(left_tokens & right_tokens) / len(union)) >= (
+            VerificationEngine._SUBJECT_TOKEN_THRESHOLD
+        )
+
     @staticmethod
     def history_proof(
-        evidence_items: list[Any], target: ClaimTarget | None
+        evidence_items: list[Any],
+        target: ClaimTarget | None,
+        claim_binding_version: str = CLAIM_BINDING_CURRENT,
     ) -> tuple[bool, str]:
-        """A cited commit row must identify the claimed file and commit."""
+        """A cited commit row must identify the claimed file and commit.
+
+        Under pin ``cbv2`` the row must additionally match the structured
+        ``target.commit_subject`` (deterministic comparison, never
+        freeform-prose substring); an empty structured subject never
+        matches. Under ``cbv1``/unmarked the legacy predicate applies
+        byte-identically (path + commit prefix + non-empty description).
+        """
         if target is None or not target.file_path or not target.commit_id:
             return (False, "history claim must identify target.file_path and target.commit_id")
+        strict_subject = claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+        if strict_subject and not str(getattr(target, "commit_subject", "") or "").strip():
+            return (False, "history claim must identify target.commit_subject")
         path_rows: list[Any] = []
         matching_rows: list[Any] = []
         for item in evidence_items or []:
@@ -2866,7 +3651,9 @@ class VerificationEngine:
                     continue
             except Exception:
                 pass
-            if not VerificationEngine._paths_match(target.file_path, VerificationEngine._item_file(item)):
+            if not VerificationEngine._paths_match(
+                target.file_path, VerificationEngine._item_file(item)
+            ):
                 continue
             path_rows.append(item)
             revision = str(
@@ -2887,15 +3674,22 @@ class VerificationEngine:
             )
             # Require a meaningful commit description in the same row;
             # matching a path and hash alone does not ground "what changed".
+            # Under cbv2 the description must match the structured subject.
             description = str(getattr(item, "summary", "") or "").strip()
+            if strict_subject and not VerificationEngine.subjects_match(
+                getattr(target, "commit_subject", ""), description
+            ):
+                continue
             if description and content.strip():
                 matching_rows.append(item)
         if path_rows and matching_rows:
             newest = max(
                 path_rows,
-                key=lambda item: getattr(item, "observed_at", None)
-                or getattr(item, "retrieved_at", None)
-                or datetime.min.replace(tzinfo=UTC),
+                key=lambda item: (
+                    getattr(item, "observed_at", None)
+                    or getattr(item, "retrieved_at", None)
+                    or datetime.min.replace(tzinfo=UTC)
+                ),
             )
             if newest in matching_rows:
                 return (True, "")
@@ -2915,15 +3709,29 @@ class VerificationEngine:
             return None
         if any(
             getattr(c, "resolution_status", "") == "UNRESOLVED"
-            and str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))).upper()
+            and str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", ""))
+            ).upper()
             in {"HIGH", "CRITICAL"}
             for c in contradictions or []
         ):
             return None
         target = getattr(hypothesis, "claim_target", None)
-        proof_ok, _ = VerificationEngine.history_proof(evidence_items, target)
+        proof_ok, _ = VerificationEngine.history_proof(
+            evidence_items, target, self.claim_binding_version
+        )
         if not proof_ok or target is None:
             return None
+        strict_subject = self.claim_binding_version in (
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
+        )
+        # Under cbv2/cbv3 the structured subject decides; the claim text is
+        # never consulted. Under cbv1 the legacy statement-substring
+        # check applies byte-identically (see history_proof branch).
+        claimed_subject = (
+            str(getattr(target, "commit_subject", "") or "") if strict_subject else None
+        )
         matching: list[Any] = []
         path_commits: list[Any] = []
         for item in evidence_items or []:
@@ -2939,7 +3747,9 @@ class VerificationEngine:
                     continue
             except Exception:
                 pass
-            if not VerificationEngine._paths_match(target.file_path or "", VerificationEngine._item_file(item)):
+            if not VerificationEngine._paths_match(
+                target.file_path or "", VerificationEngine._item_file(item)
+            ):
                 continue
             revision = str(
                 getattr(
@@ -2954,7 +3764,12 @@ class VerificationEngine:
             path_commits.append(item)
             commit_id = str(target.commit_id or "").lower()
             subject = str(getattr(item, "summary", "") or "").strip()
-            if (
+            if strict_subject:
+                if (
+                    revision.startswith(commit_id) or commit_id.startswith(revision)
+                ) and VerificationEngine.subjects_match(claimed_subject, subject):
+                    matching.append(item)
+            elif (
                 (revision.startswith(commit_id) or commit_id.startswith(revision))
                 and subject
                 and subject.casefold() in statement.casefold()
@@ -2964,9 +3779,11 @@ class VerificationEngine:
             return None
         newest = max(
             path_commits,
-            key=lambda item: getattr(item, "observed_at", None)
-            or getattr(item, "retrieved_at", None)
-            or datetime.min.replace(tzinfo=UTC),
+            key=lambda item: (
+                getattr(item, "observed_at", None)
+                or getattr(item, "retrieved_at", None)
+                or datetime.min.replace(tzinfo=UTC)
+            ),
         )
         if newest not in matching:
             return None
@@ -3460,7 +4277,9 @@ class VerificationEngine:
             {
                 "tap": "T2a",
                 "input_set": "CITED_LOCATION",
-                "kind": str(getattr(kind, "value", kind)) if (kind := VerificationEngine.effective_claim_kind(hypothesis)) is not None else "UNKNOWN",
+                "kind": str(getattr(kind, "value", kind))
+                if (kind := VerificationEngine.effective_claim_kind(hypothesis)) is not None
+                else "UNKNOWN",
                 "ok": None if kind_gate is None else bool(kind_gate[0]),
                 "reason": "" if kind_gate is None else str(kind_gate[1]),
             },
@@ -3980,9 +4799,7 @@ class VerificationEngine:
 
         cited: list[str] = []
         try:
-            for ids in (
-                getattr(hypothesis, "supporting_evidence_ids", None) or [],
-            ):
+            for ids in (getattr(hypothesis, "supporting_evidence_ids", None) or [],):
                 for raw in ids:
                     text = str(raw or "")
                     if text and text not in cited:
@@ -4187,9 +5004,7 @@ class VerificationEngine:
             attrs = getattr(item, "attributes", None) or {}
             if not isinstance(attrs, dict):
                 return out
-            payload = attrs.get("code_fact_resolution_v2") or attrs.get(
-                "code_fact_resolution"
-            )
+            payload = attrs.get("code_fact_resolution_v2") or attrs.get("code_fact_resolution")
             if payload is None:
                 return out
             if isinstance(payload, dict):
@@ -4396,9 +5211,7 @@ class VerificationEngine:
                     blobs.append(str(text))
             for blob in blobs:
                 stems = VerificationEngine._text_stems(blob)
-                if any(t in stems for t in cause_tokens) and any(
-                    t in stems for t in effect_tokens
-                ):
+                if any(t in stems for t in cause_tokens) and any(t in stems for t in effect_tokens):
                     return True
             return False
         except Exception:
@@ -4567,9 +5380,7 @@ class VerificationEngine:
                     "past the method-only slice), then re-verify."
                 )
             if any("empty-search" in t or "absence" in t for t in lowered):
-                return (
-                    "Narrow or re-scope the empty-search proof to the claimed scope, then re-verify."
-                )
+                return "Narrow or re-scope the empty-search proof to the claimed scope, then re-verify."
             if any(
                 t == "no validated causal chain" or "no causal chain established" in t
                 for t in lowered
@@ -4578,6 +5389,730 @@ class VerificationEngine:
             return f"Resolve '{texts[0][:300]}', then re-verify."
         except Exception:
             return None
+
+    def claim_binding_enforcement(
+        self,
+        hypothesis: Any,
+        evidence_items: list[Any],
+        recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None,
+    ) -> ClaimBindingEnforcement | None:
+        """Compute the authoritative Phase 1 partition for one hypothesis.
+
+        Returns None when the pin is not cbv2/cbv3 (legacy bank path
+        decides, byte-identically). Under cbv2/cbv3 a partitioning fault
+        yields a fault enforcement that the caller turns INCONCLUSIVE
+        (fail closed, never legacy-decided). When
+        timeline-backed attempts are unavailable, every cited row is
+        bank-fallback (unmapped): unknown (cited-but-unbanked) IDs still
+        evaporate, bank-fallback-only citations verify only with an
+        UNMAPPED_CITATION limitation, and CALL_EDGE/HISTORY verification
+        without a claim-local kept edge is refused.
+        """
+        if self.claim_binding_version not in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            return None
+        try:
+            return self._claim_binding_partition(hypothesis, evidence_items, recorded_attempts)
+        except Exception:
+            # Fail closed: a partitioning fault under cbv2 never degrades
+            # to the legacy bank path (which could VERIFY on evaporated
+            # rows). The caller turns a fault enforcement INCONCLUSIVE.
+            return ClaimBindingEnforcement(fault=True)
+
+    # -- Phase 3 (claim binding): misattribution repair --------------------
+
+    def _repair_vetoed(
+        self,
+        hypothesis: Any,
+        evidence_items: list[Any] | None,
+        contradictions: list[Any] | None,
+        sibling_hypotheses: list[Any] | None,
+    ) -> bool:
+        """True when repair must not run for this hypothesis.
+
+        Vetoes: concession phrasing or orientation-only support
+        (abstention-shaped claims never verify), any UNRESOLVED
+        HIGH/CRITICAL contradiction, any bound refuting evidence, and an
+        already-VERIFIED sibling (a rival block — the answer is taken).
+        Fail-closed: any inspection fault vetoes. Pure; never raises.
+        """
+        try:
+            if VerificationEngine.concedes_claim(str(getattr(hypothesis, "statement", "") or "")):
+                return True
+        except Exception:
+            return True
+        try:
+            orientation_only, _orientation_reason = VerificationEngine.cites_only_orientation(
+                hypothesis, list(evidence_items or [])
+            )
+            if orientation_only:
+                return True
+        except Exception:
+            return True
+        try:
+            for item in contradictions or []:
+                if getattr(item, "resolution_status", "") != "UNRESOLVED":
+                    continue
+                severity = getattr(
+                    getattr(item, "severity", ""), "value", getattr(item, "severity", "")
+                )
+                if str(severity or "").upper() in ("HIGH", "CRITICAL"):
+                    return True
+        except Exception:
+            return True
+        try:
+            if list(getattr(hypothesis, "refuting_evidence_ids", None) or []):
+                return True
+        except Exception:
+            return True
+        try:
+            for sibling in sibling_hypotheses or []:
+                try:
+                    status = getattr(sibling, "status", None)
+                    if str(getattr(status, "value", status) or "") == "VERIFIED":
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            return True
+        return False
+
+    def repair_failed_groups(
+        self,
+        hypothesis: Any,
+        evidence_items: list[Any],
+        contradictions: list[Any] | None = None,
+        sibling_hypotheses: list[Any] | None = None,
+        binding_version: str | None = None,
+        evidence_bank: list[Any] | None = None,
+    ) -> tuple[list[str], list[RepairedBinding]]:
+        """Per-(kind, target) gate-failure recovery (Phase 3).
+
+        Iterates the hypothesis's _distinct_typed_claims groups (sorted
+        group-ID order) with kind DEFINITION/HISTORY. For each group
+        whose kind gate explicitly returns (False, reason) over the
+        group's cited banked rows, runs attempt_claim_repair over the
+        cited banked rows that fail the gate individually. Gate rows and
+        the donor pool resolve against the bank (evidence_bank when
+        given — the full investigation bank, which the verdict's working
+        set may exclude — else evidence_items); donors are bank rows
+        cited by NO group. Returns (rebound_ids, repairs); under cbv1
+        (or unmarked) returns ([], []) without touching the helper —
+        the execution counter stays zero. Vetoed hypotheses
+        (concession, orientation-only support, blocking contradiction,
+        refuting evidence, verified rival) return ([], []). Never raises.
+        """
+        try:
+            version = binding_version or self.claim_binding_version
+        except Exception:
+            version = CLAIM_BINDING_CBV1
+        if version not in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            return [], []
+        try:
+            if self._repair_vetoed(hypothesis, evidence_items, contradictions, sibling_hypotheses):
+                return [], []
+        except Exception:
+            return [], []
+        try:
+            raw_groups = list(_distinct_typed_claims(hypothesis) or [])
+            groups: list[dict[str, Any]] = [g for g in raw_groups if isinstance(g, dict)]
+        except Exception:
+            return [], []
+        try:
+            bank_items = evidence_bank if evidence_bank is not None else evidence_items
+            evidence_by_id: dict[str, Any] = {}
+            for item in bank_items or []:
+                try:
+                    key = str(getattr(item, "evidence_id", "") or "").strip()
+                except Exception:
+                    continue
+                if key and key not in evidence_by_id:
+                    evidence_by_id[key] = item
+        except Exception:
+            return [], []
+        try:
+            all_cited: set[str] = set()
+            for group in groups:
+                try:
+                    for raw in group.get("cited_ids") or []:
+                        cid = str(raw or "").strip()
+                        if cid:
+                            all_cited.add(cid)
+                except Exception:
+                    continue
+        except Exception:
+            return [], []
+        rebound_all: list[str] = []
+        repairs_all: list[RepairedBinding] = []
+        try:
+            statement = str(getattr(hypothesis, "statement", "") or "")
+        except Exception:
+            statement = ""
+
+        def _group_sort_key(group: Any) -> str:
+            try:
+                return f"{group.get('kind_value') or ''}|{group.get('target_key') or ''}"
+            except Exception:
+                return ""
+
+        for group in sorted(groups, key=_group_sort_key):
+            try:
+                kind_value = str(group.get("kind_value") or "")
+            except Exception:
+                continue
+            if kind_value not in ("DEFINITION", "HISTORY"):
+                continue
+            try:
+                target_dict = dict(group.get("target_dict") or {})
+            except Exception:
+                continue
+            try:
+                target_model = ClaimTarget(**target_dict)
+            except Exception:
+                continue
+            try:
+                group_cited = [
+                    str(raw or "").strip()
+                    for raw in (group.get("cited_ids") or [])
+                    if str(raw or "").strip() in evidence_by_id
+                ]
+            except Exception:
+                continue
+            if not group_cited:
+                continue
+            try:
+                rows = [evidence_by_id[cid] for cid in group_cited]
+                if kind_value == "DEFINITION":
+                    gate_ok, gate_reason = VerificationEngine.definition_window_proof(
+                        rows, target_model
+                    )
+                else:
+                    gate_ok, gate_reason = VerificationEngine.history_proof(
+                        rows, target_model, version
+                    )
+            except Exception:
+                continue
+            if gate_ok:
+                continue
+            try:
+                candidates = []
+                for cid in group_cited:
+                    try:
+                        if kind_value == "DEFINITION":
+                            ok, _ = VerificationEngine.definition_window_proof(
+                                [evidence_by_id[cid]], target_model
+                            )
+                        else:
+                            ok, _ = VerificationEngine.history_proof(
+                                [evidence_by_id[cid]], target_model, version
+                            )
+                        if not ok:
+                            candidates.append(cid)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+            if not candidates:
+                continue
+            try:
+                self._repair_calls += 1
+            except Exception:
+                pass
+            try:
+                ck = claim_key(statement, kind_value)
+            except Exception:
+                continue
+            try:
+                rebound, repairs = attempt_claim_repair(
+                    kind_value,
+                    ck,
+                    target_model,
+                    candidates,
+                    all_cited,
+                    evidence_by_id,
+                    cast(Literal["cbv2", "cbv3"], version),
+                    str(gate_reason or ""),
+                )
+            except Exception:
+                continue
+            rebound_all.extend(rebound)
+            repairs_all.extend(repairs)
+        return rebound_all, repairs_all
+
+    @staticmethod
+    def _bank_index_for(items: list[Any] | None) -> dict[str, Any]:
+        """Evidence rows keyed by string evidence ID (pure, never raises)."""
+        index: dict[str, Any] = {}
+        try:
+            for row in items or []:
+                try:
+                    key = str(getattr(row, "evidence_id", "") or "").strip()
+                except Exception:
+                    continue
+                if key and key not in index:
+                    index[key] = row
+        except Exception:
+            pass
+        return index
+
+    def _hypothesis_with_rebound_ids(self, hypothesis: Any, mapping: dict[str, Any]) -> Any | None:
+        """Hypothesis copy with candidate cited IDs replaced by donors.
+
+        mapping keys are string cited IDs; values are the donor row's
+        evidence_id object verbatim (ID types preserved — UUIDs stay
+        UUIDs). Substitutes in supporting_evidence_ids, per-assessment
+        evidence_id, and causal-step evidence_ids. Returns None on any
+        fault (fail closed — the caller keeps the original verdict).
+        """
+        try:
+            if not mapping:
+                return None
+            updates: dict[str, Any] = {}
+            try:
+                supporting = [
+                    mapping.get(str(raw), raw)
+                    for raw in (getattr(hypothesis, "supporting_evidence_ids", None) or [])
+                ]
+                updates["supporting_evidence_ids"] = supporting
+            except Exception:
+                pass
+            try:
+                rebound_assessments = []
+                for asm in getattr(hypothesis, "assessments", None) or []:
+                    try:
+                        eid = getattr(asm, "evidence_id", None)
+                        if eid is not None and str(eid) in mapping:
+                            rebound_assessments.append(
+                                asm.model_copy(update={"evidence_id": mapping[str(eid)]})
+                            )
+                        else:
+                            rebound_assessments.append(asm)
+                    except Exception:
+                        rebound_assessments.append(asm)
+                updates["assessments"] = rebound_assessments
+            except Exception:
+                pass
+            try:
+                rebound_steps = []
+                for step in getattr(hypothesis, "causal_steps", None) or []:
+                    try:
+                        ids = [
+                            mapping.get(str(raw), raw)
+                            for raw in (getattr(step, "evidence_ids", None) or [])
+                        ]
+                        rebound_steps.append(step.model_copy(update={"evidence_ids": ids}))
+                    except Exception:
+                        rebound_steps.append(step)
+                updates["causal_steps"] = rebound_steps
+            except Exception:
+                pass
+            return hypothesis.model_copy(update=updates)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _repair_mapping(repairs: list[RepairedBinding]) -> dict[str, Any] | None:
+        """Build a citation substitution map, or fail closed on conflicts.
+
+        One evidence ID can be cited by multiple typed groups. Applying two
+        different donors through a hypothesis-wide ID map would make the last
+        group's authorization rewrite the other group. Conflicting donor
+        choices therefore disable applied revalidation for the turn.
+        """
+        try:
+            mapping: dict[str, Any] = {}
+            for repair in repairs or []:
+                cited = str(getattr(repair, "cited_id", "") or "").strip()
+                donor = str(getattr(repair, "donor_id", "") or "").strip()
+                if not cited or not donor:
+                    continue
+                prior = mapping.get(cited)
+                if prior is not None and str(prior) != donor:
+                    return None
+                mapping[cited] = donor
+            return mapping
+        except Exception:
+            return None
+
+    @staticmethod
+    def attach_repairs(result: Any, repairs: list[RepairedBinding]) -> Any:
+        """Attach repair records to a result's diagnostics (pure-ish).
+
+        Appends to diagnostics.repaired without an in-memory cap; marker
+        serialization applies the explicit review cap and truncation flag.
+        Attaches REPAIRED_CITATION when the verdict is VERIFIED with applied
+        repairs. Returns the (possibly copied) result. Never raises.
+        """
+        try:
+            if not repairs:
+                return result
+            diagnostics = getattr(result, "diagnostics", None)
+            if diagnostics is None:
+                try:
+                    diagnostics = VerificationDiagnostics()
+                except Exception:
+                    return result
+            existing = list(getattr(diagnostics, "repaired", None) or [])
+            merged = [*existing, *[r for r in repairs if r not in existing]]
+            try:
+                diagnostics = diagnostics.model_copy(update={"repaired": merged})
+            except Exception:
+                return result
+            try:
+                result = result.model_copy(update={"diagnostics": diagnostics})
+            except Exception:
+                return result
+            try:
+                status = str(
+                    getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
+                )
+                applied = [r for r in repairs if str(getattr(r, "outcome", "")) == "applied"]
+                if status == VerificationStatus.VERIFIED.value and applied:
+                    engine_self = VerificationEngine()
+                    result = engine_self._apply_binding_limitations(
+                        result, [LimitationCode.REPAIRED_CITATION.value]
+                    )
+            except Exception:
+                pass
+            return result
+        except Exception:
+            return result
+
+    def revalidate_with_repair(
+        self,
+        run_fn: Any,
+        hypothesis: Any,
+        working_items: list[Any],
+        evidence_bank: list[Any],
+        contradictions: list[Any] | None = None,
+        sibling_hypotheses: list[Any] | None = None,
+        enforcement: Any | None = None,
+    ) -> tuple[Any, list[RepairedBinding]]:
+        """Run a fast-path validate fn with one repair pass (Phase 3).
+
+        Runs run_fn(hypothesis, working_items) verbatim (identical to
+        the unwrapped call, including under cbv1); when the pin is
+        cbv2/cbv3 and the outcome is INCONCLUSIVE with empty
+        corroborating evidence, runs one per-group repair pass over
+        evidence_bank and — under cbv3 with rebinds — re-runs run_fn
+        once on the rebound hypothesis with a kept-filtered working set
+        (kept + rebound donors, via enforcement_with_repairs). Returns
+        (result, repairs); shadow repairs are returned for diagnostics
+        attachment, never applied. Never raises.
+        """
+        try:
+            result = run_fn(hypothesis, working_items)
+        except Exception:
+            return None, []
+        try:
+            version = self.claim_binding_version
+        except Exception:
+            return result, []
+        if version not in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            return result, []
+        if result is None:
+            return None, []
+        try:
+            status = str(
+                getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
+            )
+            corroborating = list(getattr(result, "corroborating_evidence_ids", None) or [])
+        except Exception:
+            return result, []
+        if status != VerificationStatus.INCONCLUSIVE.value or corroborating:
+            return result, []
+        try:
+            rebound, repairs = self.repair_failed_groups(
+                hypothesis, evidence_bank, contradictions, sibling_hypotheses
+            )
+        except Exception:
+            return result, []
+        if version != CLAIM_BINDING_CBV3 or not rebound or not repairs:
+            return result, repairs
+        if enforcement is None:
+            return result, repairs
+        try:
+            bank_index = self._bank_index_for(evidence_bank)
+            mapping = self._repair_mapping(repairs)
+            if mapping is None:
+                # The same cited ID can belong to multiple typed groups.
+                # Conflicting donor choices cannot be represented by a
+                # hypothesis-wide substitution map, so keep the original
+                # verdict and retain the repair records for shadow review.
+                return result, repairs
+            mapped_ids: dict[str, Any] = {}
+            for cited_id, donor_id in mapping.items():
+                try:
+                    donor_row = bank_index.get(str(donor_id))
+                    if donor_row is not None:
+                        mapped_ids[cited_id] = donor_row.evidence_id
+                except Exception:
+                    continue
+            mapping = mapped_ids
+            if not mapping:
+                return result, repairs
+            rebound_hyp = self._hypothesis_with_rebound_ids(hypothesis, mapping)
+            if rebound_hyp is None:
+                return result, repairs
+            extended = self.enforcement_with_repairs(enforcement, rebound)
+            try:
+                kept2 = set(extended.kept_ids or [])
+                cited2 = {str(mapping.get(str(c), c)) for c in (extended.cited_ids or [])}
+                working2, _, _ = bound_kept_evidence_only(list(evidence_bank or []), kept2, cited2)
+            except Exception:
+                return result, repairs
+            result = run_fn(rebound_hyp, working2)
+            return self.attach_repairs(result, repairs), repairs
+        except Exception:
+            return result, repairs
+
+    @staticmethod
+    def enforcement_with_repairs(
+        enforcement: ClaimBindingEnforcement, rebound_ids: list[str]
+    ) -> ClaimBindingEnforcement:
+        """Enforcement copy extended with applied rebinds (Phase 3).
+
+        kept_ids gains the rebound donor IDs (bounded at 200) and
+        repaired_ids records them; cited_kept_count counts each rebind
+        as kept so the conclude waiver treats a rebound citation as
+        surviving. Pure; returns the input unchanged on any fault.
+        """
+        try:
+            if not rebound_ids:
+                return enforcement
+            rebound = [str(rid) for rid in rebound_ids if str(rid or "").strip()]
+            if not rebound:
+                return enforcement
+            kept = list(enforcement.kept_ids or [])
+            have = set(kept)
+            for rid in rebound:
+                if rid not in have:
+                    kept.append(rid)
+                    have.add(rid)
+            prior_repaired = list(enforcement.repaired_ids or [])
+            merged_repaired = [*prior_repaired]
+            for rid in rebound:
+                if rid not in merged_repaired:
+                    merged_repaired.append(rid)
+            try:
+                base_count = int(enforcement.cited_kept_count or 0)
+            except Exception:
+                base_count = 0
+            return enforcement.model_copy(
+                update={
+                    "kept_ids": kept[:200],
+                    "repaired_ids": merged_repaired[:30],
+                    "cited_kept_count": base_count + len(rebound),
+                }
+            )
+        except Exception:
+            return enforcement
+
+    def _claim_binding_partition(
+        self,
+        hypothesis: Any,
+        evidence_items: list[Any],
+        recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None,
+    ) -> ClaimBindingEnforcement | None:
+        """Pure partition computation (raises on fault; wrapper closes it)."""
+        bank: set[str] = set()
+        for item in evidence_items or []:
+            try:
+                key = str(getattr(item, "evidence_id", "") or "").strip()
+            except Exception:
+                continue
+            if key:
+                bank.add(key)
+        cited: list[str] = []
+        seen: set[str] = set()
+
+        def _cite(raw: Any) -> None:
+            try:
+                key = str(raw or "").strip()
+            except Exception:
+                return
+            if key and key not in seen:
+                seen.add(key)
+                cited.append(key)
+
+        try:
+            for raw in getattr(hypothesis, "supporting_evidence_ids", []) or []:
+                _cite(raw)
+            for raw in getattr(hypothesis, "refuting_evidence_ids", []) or []:
+                _cite(raw)
+            for asm in getattr(hypothesis, "assessments", []) or []:
+                _cite(getattr(asm, "evidence_id", None))
+            for step in getattr(hypothesis, "causal_steps", []) or []:
+                for raw in getattr(step, "evidence_ids", []) or []:
+                    _cite(raw)
+        except Exception:
+            pass
+        recorded = list(recorded_attempts or [])
+        # Per-claim locality: each distinct typed claim resolves its cited
+        # IDs against ITS OWN linked attempts only. A fetch for one claim
+        # never makes another claim's citation appear claim-local — the
+        # cross-claim borrowing this phase exists to prevent. Causal-step
+        # IDs ride the hypothesis-wide bank path (causal_step_grounding
+        # already requires banked grounding rows per step).
+        from investigation_agent_platform.application.evidence.retrieval_ledger import (
+            partition_citations as _partition_citations,
+        )
+
+        step_ids: set[str] = set()
+        try:
+            for step in getattr(hypothesis, "causal_steps", []) or []:
+                for raw in getattr(step, "evidence_ids", []) or []:
+                    try:
+                        key = str(raw or "").strip()
+                    except Exception:
+                        continue
+                    if key:
+                        step_ids.add(key)
+        except Exception:
+            pass
+        per_claim_local: set[str] = set()
+        per_claim_fallback: set[str] = set()
+        per_claim_unknown: set[str] = set()
+        local_kinds: set[str] = set()
+        cited_kinds: set[str] = set()
+        # Per-(kind, target) group identity: "KIND|target_key". Locality is
+        # recorded per group so one claim's retrieval can never satisfy
+        # another claim's locality — including two targets of the SAME
+        # kind (e.g. two CALL_EDGE callers).
+        local_groups: set[str] = set()
+        cited_groups: set[str] = set()
+        distinct_groups: list[dict[str, Any]] = []
+        try:
+            distinct_groups = list(_distinct_typed_claims(hypothesis) or [])
+        except Exception:
+            distinct_groups = []
+        for group in distinct_groups or []:
+            try:
+                group_cited = [str(i or "") for i in (group.get("cited_ids") or []) if str(i or "")]
+                if not group_cited:
+                    continue
+                kind_value = str(group.get("kind_value") or "") or "UNTYPED"
+                target_key = str(group.get("target_key") or "") or "NO_TARGET"
+                group_id = f"{kind_value}|{target_key}"
+                # Identity-overlap linkage only: an attempt links to this
+                # claim iff it actually banked one of the claim's cited
+                # rows. Query-text matching alone never confers locality —
+                # the linked set is drawn from banked IDs, never from the
+                # query string.
+                linked_g: set[str] = set()
+                for banked, _attempt in recorded:
+                    try:
+                        banked_set = {
+                            str(raw or "").strip() for raw in banked or [] if str(raw or "").strip()
+                        }
+                    except Exception:
+                        continue
+                    if banked_set & set(group_cited):
+                        linked_g |= banked_set
+                local_g, fallback_g, unknown_g = _partition_citations(group_cited, linked_g, bank)
+                # Linked-but-unbanked IDs (retrieved, since pruned) are
+                # evaporated: cited, but no bound row exists.
+                for lid in sorted((set(group_cited) & linked_g) - bank):
+                    if lid not in unknown_g:
+                        unknown_g.append(lid)
+                if local_g:
+                    local_kinds.add(kind_value)
+                    local_groups.add(group_id)
+                cited_kinds.add(kind_value)
+                cited_groups.add(group_id)
+                per_claim_local |= set(local_g)
+                per_claim_fallback |= set(fallback_g)
+                per_claim_unknown |= set(unknown_g)
+            except Exception:
+                continue
+        cited_set = set(cited)
+        step_kept = sorted(step_ids & bank)
+        kept = sorted(set(per_claim_local) | set(per_claim_fallback) | set(step_kept))
+        # Unknown: cited IDs in neither the bank nor any claim's linked
+        # set (plus linked-but-unbanked, computed per claim above).
+        linked_all: set[str] = set()
+        for banked, _attempt in recorded:
+            for raw in banked or []:
+                try:
+                    key = str(raw or "").strip()
+                except Exception:
+                    continue
+                if key:
+                    linked_all.add(key)
+        unknown = sorted((cited_set - bank - linked_all) | per_claim_unknown)
+        has_local = bool(per_claim_local)
+        unmapped = not bool(cited_set & linked_all)
+        linkage_observed = bool(recorded)
+        # A kind is only partially bound when at least one of its cited
+        # groups lacks claim-local hits — that, not kind-level locality,
+        # drives the CALL_EDGE/HISTORY refusal and the UNMAPPED limitation.
+        unmapped_kinds = sorted(
+            {gid.split("|", 1)[0] for gid in cited_groups if gid not in local_groups}
+        )
+        limitations: list[str] = []
+        if cited_set and unmapped_kinds:
+            limitations.append(LimitationCode.UNMAPPED_CITATION.value)
+        if unknown:
+            limitations.append(LimitationCode.EVAPORATED_CITATION.value)
+        next_action: str | None = None
+        if cited_set and not kept:
+            try:
+                kind = VerificationEngine.effective_claim_kind(hypothesis)
+                kind_value = str(getattr(kind, "value", kind) or "") if kind is not None else ""
+            except Exception:
+                kind_value = ""
+            next_action = (
+                _MISSING_OBLIGATION_DIRECTIVES.get(kind_value or "")
+                or _DEFAULT_MISSING_OBLIGATION_DIRECTIVE
+            )
+        return ClaimBindingEnforcement(
+            cited_ids=cited[:200],
+            kept_ids=kept[:200],
+            evaporated_ids=sorted(unknown)[:100],
+            local_kinds=sorted(local_kinds)[:20],
+            cited_kinds=sorted(cited_kinds)[:20],
+            local_groups=sorted(local_groups)[:100],
+            cited_groups=sorted(cited_groups)[:100],
+            unmapped_kinds=sorted(unmapped_kinds)[:20],
+            cited_kept_count=len(set(kept) & cited_set),
+            unmapped=unmapped,
+            has_claim_local=has_local,
+            linkage_observed=linkage_observed,
+            limitation_codes=limitations[:10],
+            next_action=next_action,
+        )
+
+    def _apply_binding_limitations(
+        self, result: VerificationResult, codes: list[str]
+    ) -> VerificationResult:
+        """Attach Phase 1 limitation codes to a VERIFIED result (additive)."""
+        try:
+            existing = list(getattr(result, "limitations", None) or [])
+            have = set()
+            for lim in existing:
+                try:
+                    have.add(
+                        str(getattr(getattr(lim, "code", ""), "value", getattr(lim, "code", "")))
+                    )
+                except Exception:
+                    continue
+            additions = []
+            for code in codes or []:
+                if code in have:
+                    continue
+                try:
+                    additions.append(
+                        VerificationLimitation(
+                            code=LimitationCode(code),
+                            detail=f"Phase 1 claim binding: {code}.",
+                        )
+                    )
+                except Exception:
+                    continue
+            if not additions:
+                return result
+            return result.model_copy(update={"limitations": [*existing, *additions]})
+        except Exception:
+            return result
 
     @traced("reason", require_scope=False, extra_from=_verification_extra)
     def evaluate_hypothesis(
@@ -4590,37 +6125,455 @@ class VerificationEngine:
         sibling_hypotheses: list[Any] | None = None,
         observer: Callable[[dict[str, Any]], None] | None = None,
         recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None = None,
+        evidence_bank: list[Any] | None = None,
     ) -> VerificationResult:
-        """Public verdict entry point (WP-A2 wrapper): verdicts unchanged.
+        """Public verdict entry point (WP-A2 wrapper + Phase 1 binding).
 
-        Runs the inner evaluator, then attaches diagnostics-only
-        annotations (evaporated IDs, demotions, missing obligations, G3
-        claim bindings). Diagnostics never alter status, tier,
-        explanation, confidence, or corroborating IDs — ambiguous
-        results stay exactly as evaluated. The optional observer
+        Under pin cbv2 the working evidence set is filtered to kept
+        citations before the inner evaluator runs, and a hypothesis whose
+        cited set keeps zero IDs evaluates INCONCLUSIVE (never VERIFIED).
+        Under cbv1/unmarked the legacy bank path decides byte-identically.
+        Diagnostics (evaporated IDs, demotions, missing obligations, G3
+        claim bindings) are attached afterwards; ``recorded_attempts``
+        (timeline-backed, oldest first; ``None`` for legacy callers)
+        feeds G3 bindings and Phase 1 linkage. ``evidence_bank`` (the
+        full investigation bank; ``None`` for legacy callers) feeds only
+        the Phase 3 donor pool and re-run join — the verdict's working
+        set stays ``evidence_items``. The optional observer
         carries the T2b mirror note through to the inner gate; ``None``
         (all existing callers) preserves the exact legacy call shape.
-        ``recorded_attempts`` (timeline-backed, oldest first; ``None``
-        for legacy callers) feeds G3 bindings only.
+
+        Phase 4: the assessment projection runs first. NOT_CHECKABLE
+        groups are discarded from the working hypothesis before binding
+        and verification; if the projection is empty the opinion-only
+        result returns here and no kind gate ever sees these claims.
         """
+        # Phase 4 (claim binding): partition assessments by kind. An
+        # assessment-level scan (not hypothesis-level claim_kind) so mixed
+        # hypotheses project correctly. NOT_CHECKABLE groups are discarded
+        # from the working hypothesis before binding and verification; the
+        # original ID is preserved so joins stay stable.
+        try:
+            _asms = list(getattr(hypothesis, "assessments", None) or [])
+        except Exception:
+            _asms = []
+        try:
+            _checkable_asms = [
+                a
+                for a in _asms
+                if str(
+                    getattr(getattr(a, "claim_kind", None), "value", getattr(a, "claim_kind", None))
+                    or ""
+                )
+                != ClaimKind.NOT_CHECKABLE.value
+            ]
+        except Exception:
+            _checkable_asms = list(_asms)
+        try:
+            _typed = [a for a in _asms if getattr(a, "claim_kind", None) is not None]
+        except Exception:
+            _typed = []
+        if _typed and len(_checkable_asms) == 0:
+            return self._not_checkable_inconclusive(hypothesis)
+        if 0 < len(_checkable_asms) < len(_asms):
+            try:
+                _copy = hypothesis.model_copy(update={"assessments": list(_checkable_asms)})
+            except Exception:
+                _copy = None
+            if _copy is not None:
+                hypothesis = _copy
+        enforcement = self.claim_binding_enforcement(
+            hypothesis, list(evidence_items or []), recorded_attempts
+        )
+        if enforcement is not None and enforcement.fault:
+            # Fail closed: partitioning faulted under cbv2. Never fall
+            # through to the legacy bank path (which could VERIFY on
+            # evaporated rows).
+            return self._fault_inconclusive(hypothesis)
+        working_items = list(evidence_items or [])
+        if enforcement is not None:
+            try:
+                kept = set(enforcement.kept_ids)
+                cited = set(enforcement.cited_ids)
+                working_items, _, _ = bound_kept_evidence_only(working_items, kept, cited)
+            except Exception:
+                working_items = list(evidence_items or [])
         result = self._evaluate_hypothesis_inner(
             hypothesis,
-            evidence_items,
+            working_items,
             contradictions,
             causal_chain,
             policy,
             sibling_hypotheses,
             observer,
         )
+        # Phase 3 (claim binding): gate-failure recovery on INCONCLUSIVE
+        # with empty corroborating evidence. Shadow (cbv2) records only;
+        # applied (cbv3) substitutes donors and re-runs the inner once.
+        repair_records: list[RepairedBinding] = []
+        if enforcement is not None and self.claim_binding_version in (
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
+        ):
+            try:
+                _status = str(
+                    getattr(
+                        getattr(result, "status", ""),
+                        "value",
+                        getattr(result, "status", ""),
+                    )
+                )
+                _corr = list(getattr(result, "corroborating_evidence_ids", None) or [])
+            except Exception:
+                _status, _corr = "", [None]
+            if _status == VerificationStatus.INCONCLUSIVE.value and not _corr:
+                try:
+                    _rebound, repair_records = self.repair_failed_groups(
+                        hypothesis,
+                        list(evidence_items or []),
+                        contradictions,
+                        sibling_hypotheses,
+                        evidence_bank=evidence_bank,
+                    )
+                except Exception:
+                    _rebound, repair_records = [], []
+                if _rebound and repair_records and self.claim_binding_version == CLAIM_BINDING_CBV3:
+                    try:
+                        _bank_index = self._bank_index_for(
+                            list(evidence_bank or []) or list(evidence_items or [])
+                        )
+                        _mapping = self._repair_mapping(repair_records)
+                        if _mapping is not None:
+                            _mapping = {
+                                str(_cited): _bank_index[str(_donor)].evidence_id
+                                for _cited, _donor in _mapping.items()
+                                if str(_donor) in _bank_index
+                            }
+                        if _mapping:
+                            _rerun_mapping = dict(_mapping)
+                            _rebound_hyp = self._hypothesis_with_rebound_ids(hypothesis, _mapping)
+                        else:
+                            _rerun_mapping = {}
+                            _rebound_hyp = None
+                    except Exception:
+                        _rebound_hyp = None
+                    if _rebound_hyp is not None:
+                        try:
+                            _kept2 = set(enforcement.kept_ids or []) | set(_rebound)
+                            _cited2 = {
+                                str(_rerun_mapping.get(str(c), c))
+                                for c in (enforcement.cited_ids or [])
+                            }
+                            # Donor rows may live only in the bank (the
+                            # verdict's working set can exclude uncited
+                            # rows); join them before kept-filtering.
+                            _rerun_pool = list(evidence_items or [])
+                            try:
+                                _have = set()
+                                for _wrow in _rerun_pool:
+                                    try:
+                                        _have.add(str(getattr(_wrow, "evidence_id", "") or ""))
+                                    except Exception:
+                                        continue
+                                for _did in _rebound:
+                                    if _did not in _have and _did in _bank_index:
+                                        _rerun_pool.append(_bank_index[_did])
+                            except Exception:
+                                pass
+                            _working2, _, _ = bound_kept_evidence_only(_rerun_pool, _kept2, _cited2)
+                        except Exception:
+                            _working2 = list(evidence_items or [])
+                        try:
+                            result = self._evaluate_hypothesis_inner(
+                                _rebound_hyp,
+                                _working2,
+                                contradictions,
+                                causal_chain,
+                                policy,
+                                sibling_hypotheses,
+                                observer,
+                            )
+                            enforcement = self.enforcement_with_repairs(enforcement, _rebound)
+                        except Exception:
+                            pass
+        if enforcement is not None:
+            result = self.enforce_claim_binding(hypothesis, result, enforcement)
         try:
             diagnostics = collect_verification_diagnostics(
                 hypothesis, evidence_items, result, recorded_attempts
             )
             if diagnostics is not None:
-                result = result.model_copy(update={"diagnostics": diagnostics})
+                existing = getattr(result, "diagnostics", None)
+                if (
+                    enforcement is not None
+                    and list(enforcement.cited_ids or [])
+                    and enforcement.cited_kept_count == 0
+                    and existing is not None
+                ):
+                    # Zero-kept enforcement already recorded authoritative
+                    # evaporated/demotion/missing records; merge only the
+                    # recomputed bindings/ledgers instead of replacing them.
+                    try:
+                        result = result.model_copy(
+                            update={
+                                "diagnostics": existing.model_copy(
+                                    update={
+                                        "claim_bindings": diagnostics.claim_bindings,
+                                        "claim_ledgers": diagnostics.claim_ledgers,
+                                    }
+                                )
+                            }
+                        )
+                    except Exception:
+                        result = result.model_copy(update={"diagnostics": diagnostics})
+                else:
+                    result = result.model_copy(update={"diagnostics": diagnostics})
+        except Exception:
+            pass
+        # Phase 3: attach repair records (shadow or applied) to the
+        # diagnostics collected on the original hypothesis (the audit
+        # trail of what was cited), plus REPAIRED_CITATION when an
+        # applied repair verifies.
+        try:
+            if repair_records:
+                result = self.attach_repairs(result, repair_records)
         except Exception:
             pass
         return result
+
+    def _not_checkable_inconclusive(self, hypothesis: Any) -> VerificationResult:
+        """Opinion-only verdict: every typed claim is NOT_CHECKABLE (pure).
+
+        No gates run, no obligations emit — unfalsifiable claims are
+        skipped, never grounded. Mixed hypotheses never reach here (the
+        evaluate-level projection filters before this point).
+        """
+        try:
+            hid = getattr(hypothesis, "id", None) or uuid4()
+        except Exception:
+            hid = uuid4()
+        return VerificationResult(
+            hypothesis_id=hid,
+            status=VerificationStatus.INCONCLUSIVE,
+            corroborating_evidence_ids=[],
+            explanation=(
+                "All typed claims are NOT_CHECKABLE (taste/preference/value "
+                "judgments or unfalsifiable claims); skipped, never verified."
+            ),
+            confidence=InvestigationConfidence(
+                coverage_score=0.0,
+                reliability_score=0.0,
+                causal_score=0.0,
+                contradiction_penalty=0.0,
+            ),
+            limitations=[
+                VerificationLimitation(
+                    code=LimitationCode.NOT_CHECKABLE_SKIPPED,
+                    detail="opinion-only hypothesis: skipped, never verified",
+                )
+            ],
+        )
+
+    @staticmethod
+    def _fault_inconclusive(hypothesis: Any) -> VerificationResult:
+        """Fail-closed verdict for a binding enforcement fault (pure)."""
+        try:
+            hid = getattr(hypothesis, "id", None) or uuid4()
+        except Exception:
+            hid = uuid4()
+        return VerificationResult(
+            hypothesis_id=hid,
+            status=VerificationStatus.INCONCLUSIVE,
+            corroborating_evidence_ids=[],
+            explanation=(
+                "Claim binding enforcement faulted; failing closed to "
+                "INCONCLUSIVE rather than deciding on an unpartitioned bank."
+            ),
+            confidence=InvestigationConfidence(
+                coverage_score=0.0,
+                reliability_score=0.0,
+                causal_score=0.0,
+                contradiction_penalty=0.0,
+            ),
+        )
+
+    def enforce_claim_binding(
+        self,
+        hypothesis: Any,
+        result: VerificationResult,
+        enforcement: ClaimBindingEnforcement,
+    ) -> VerificationResult:
+        """Apply the authoritative verdict branch for a cbv2 partition.
+
+        Cited-but-kept-zero can never VERIFY; bank-fallback-only
+        CALL_EDGE/HISTORY verification is refused; otherwise limitations
+        are attached additively and corroborating IDs are filtered to
+        kept citations. A fault enforcement fails closed to INCONCLUSIVE
+        (this is the single choke point, so fast paths are covered).
+        """
+        try:
+            if getattr(enforcement, "fault", False):
+                return self._fault_inconclusive(hypothesis)
+            cited = list(enforcement.cited_ids or [])
+            kept = set(enforcement.kept_ids or [])
+            if cited and enforcement.cited_kept_count == 0:
+                try:
+                    kind = VerificationEngine.effective_claim_kind(hypothesis)
+                    kind_value = (
+                        str(getattr(kind, "value", kind) or "") if kind is not None else None
+                    )
+                except Exception:
+                    kind_value = None
+                try:
+                    statement = str(getattr(hypothesis, "statement", "") or "").strip()
+                except Exception:
+                    statement = ""
+                missing = MissingObligation(
+                    claim=statement[:1024],
+                    claim_kind=kind_value,
+                    next_action=(enforcement.next_action or _DEFAULT_MISSING_OBLIGATION_DIRECTIVE),
+                )
+                evaporated = [
+                    EvaporatedId(cited_id=c, cited_by=str(getattr(hypothesis, "id", "") or "")[:64])
+                    for c in enforcement.evaporated_ids[:100]
+                ]
+                try:
+                    demotion_hyp_id = getattr(hypothesis, "id", None) or result.hypothesis_id
+                except Exception:
+                    demotion_hyp_id = result.hypothesis_id
+                demotion = Demotion(
+                    hypothesis_id=demotion_hyp_id,
+                    from_tier="established",
+                    to_tier="likely",
+                    reason_code=DiagnosticReasonCode.CITED_ID_EVAPORATED,
+                    cause_codes=list(enforcement.limitation_codes or [])[:10],
+                    detail=(
+                        "Phase 1 claim binding: cited evidence kept zero "
+                        "bound rows; claim is INCONCLUSIVE with a smallest-fetch "
+                        f"next action ({missing.next_action or 're-verify'})."
+                    )[:500],
+                )
+                diagnostics = VerificationDiagnostics(
+                    evaporated_ids=evaporated,
+                    demotions=[demotion],
+                    missing_obligations=[missing],
+                    reason_codes=sorted(
+                        {e.reason_code.value for e in evaporated}
+                        | {demotion.reason_code.value, missing.reason_code.value}
+                    ),
+                )
+                return VerificationResult(
+                    hypothesis_id=getattr(hypothesis, "id", None) or result.hypothesis_id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=(
+                        "Claim cites evidence but zero cited IDs resolve to "
+                        "bound rows (evaporated); INCONCLUSIVE pending the "
+                        "smallest-fetch re-retrieval."
+                    ),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                    diagnostics=diagnostics,
+                )
+            # Corroborating IDs are filtered to kept citations — but only
+            # for claims that cite evidence. Uncited claims (target-declared
+            # proof, the existing vocabulary) keep the gate's corroborating
+            # set untouched; the zero-kept branch above already handled
+            # cited-but-unbound.
+            if cited:
+                # Phase 3 (claim binding): rebound donor IDs survive the
+                # kept filter — a successful rebind stands in for its
+                # citation. repaired_ids is empty outside applied repair.
+                try:
+                    _repaired = set(enforcement.repaired_ids or [])
+                except Exception:
+                    _repaired = set()
+                try:
+                    corroborating = [
+                        eid
+                        for eid in (getattr(result, "corroborating_evidence_ids", None) or [])
+                        if str(eid) in kept or str(eid) in _repaired
+                    ]
+                except Exception:
+                    corroborating = list(getattr(result, "corroborating_evidence_ids", None) or [])
+                try:
+                    result = result.model_copy(update={"corroborating_evidence_ids": corroborating})
+                except Exception:
+                    pass
+            # Locality refusal is per (kind, target) group and applies only
+            # when linkage was observed: without timeline attempts there
+            # is no linkage to be absent from, so unmapped bank-path rows
+            # verify with the UNMAPPED limitation instead of being refused
+            # for missing telemetry. A CALL_EDGE/HISTORY claim is refused
+            # when any cited group of that kind retrieved nothing
+            # claim-local — including a second target of the same kind
+            # whose sibling target is local (no cross-claim borrowing).
+            _refuse_locality = False
+            if cited and enforcement.linkage_observed:
+                try:
+                    kind = VerificationEngine.effective_claim_kind(hypothesis)
+                    kind_value = str(getattr(kind, "value", kind) or "") if kind is not None else ""
+                except Exception:
+                    kind = None
+                    kind_value = ""
+                _refuse_locality = kind in (
+                    ClaimKind.CALL_EDGE,
+                    ClaimKind.HISTORY,
+                ) and kind_value in (enforcement.unmapped_kinds or [])
+            if _refuse_locality:
+                try:
+                    _status_value = str(
+                        getattr(
+                            getattr(result, "status", ""), "value", getattr(result, "status", "")
+                        )
+                    )
+                except Exception:
+                    _status_value = ""
+                if _status_value == VerificationStatus.VERIFIED.value:
+                    # Bank-fallback-only CALL_EDGE/HISTORY verification is
+                    # refused: the verified claim's own group retrieved
+                    # nothing claim-local.
+                    return self.enforce_claim_binding(
+                        hypothesis,
+                        result.model_copy(
+                            update={
+                                "status": VerificationStatus.INCONCLUSIVE,
+                                "corroborating_evidence_ids": [],
+                            }
+                        ),
+                        enforcement.model_copy(update={"cited_kept_count": 0, "kept_ids": []}),
+                    )
+            result = self._apply_binding_limitations(
+                result,
+                [LimitationCode.UNMAPPED_CITATION.value]
+                if LimitationCode.UNMAPPED_CITATION.value in (enforcement.limitation_codes or [])
+                else [],
+            )
+            if enforcement.limitation_codes:
+                result = self._apply_binding_limitations(result, enforcement.limitation_codes)
+            return result
+        except Exception:
+            # Fail closed: an enforcement fault never returns the
+            # pre-enforcement (possibly VERIFIED) result.
+            try:
+                return self._fault_inconclusive(hypothesis)
+            except Exception:
+                return VerificationResult(
+                    hypothesis_id=result.hypothesis_id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=("Claim binding enforcement faulted; failing closed."),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                )
 
     def _evaluate_hypothesis_inner(
         self,
@@ -4674,9 +6627,10 @@ class VerificationEngine:
                     contradiction_penalty=0.0,
                 ),
             )
-        if VerificationEngine.claims_field_value(
-            getattr(hypothesis, "statement", "")
-        ) or VerificationEngine._fact_category_of(hypothesis) is not None:
+        if (
+            VerificationEngine.claims_field_value(getattr(hypothesis, "statement", ""))
+            or VerificationEngine._fact_category_of(hypothesis) is not None
+        ):
             java_category = VerificationEngine._fact_category_of(hypothesis)
             if java_category is not None:
                 java_result = self.validate_java_fact_claim(
@@ -4726,7 +6680,9 @@ class VerificationEngine:
             {
                 "tap": "T2b",
                 "input_set": "BOUND_FULL",
-                "kind": str(getattr(_gate_kind, "value", _gate_kind)) if _gate_kind is not None else "UNKNOWN",
+                "kind": str(getattr(_gate_kind, "value", _gate_kind))
+                if _gate_kind is not None
+                else "UNKNOWN",
                 "ok": None if kind_gate is None else bool(kind_gate[0]),
                 "reason": "" if kind_gate is None else str(kind_gate[1]),
                 "behavior_likely_only": False,
