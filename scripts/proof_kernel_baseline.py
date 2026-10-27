@@ -31,6 +31,16 @@ CLAIMS = FIXDIR / "baseline_claims_v1.json"
 
 VERSION = "baseline/v1"
 
+# git_rev is provenance, not content: recorded at freeze time so a reader
+# knows which revision produced the dataset, but excluded from equality so
+# committing the freeze does not self-invalidate the pin. Content
+# reproducibility is carried by battery_case_digests.
+PROVENANCE_KEYS = ("git_rev",)
+
+
+def comparable(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in PROVENANCE_KEYS}
+
 # Failure-attribution buckets (closure-harness vocabulary). Live runs fill
 # `bucket` per claim; the frozen baseline only declares the taxonomy.
 ATTRIBUTION_BUCKETS = [
@@ -177,14 +187,12 @@ def main(check_only: bool = False) -> int:
         except (OSError, json.JSONDecodeError) as e:
             errors.append(f"unreadable {path.name}: {e}")
             continue
-        if committed != doc and not (
-            path == MANIFEST and committed.get("git_rev") != doc.get("git_rev")
-        ):
+        if comparable(committed) != comparable(doc):
             errors.append(f"stale frozen baseline: {path.name} (regenerate with the script)")
         if path == MANIFEST and committed.get("git_rev") != doc.get("git_rev"):
-            errors.append(
-                f"baseline pinned to {committed.get('git_rev')}, worktree is {doc.get('git_rev')}: "
-                "re-freeze deliberately or stay pinned"
+            print(
+                f"baseline provenance: frozen at {committed.get('git_rev')}, "
+                f"worktree {doc.get('git_rev')} (informational only)"
             )
 
     if errors:

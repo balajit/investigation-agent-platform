@@ -31,7 +31,9 @@ def test_baseline_is_frozen_and_reproducible():
     manifest = json.loads((FIXDIR / "baseline_manifest_v1.json").read_bytes())
     dataset = json.loads((FIXDIR / "baseline_claims_v1.json").read_bytes())
     fresh_manifest, fresh_dataset = baseline.build()
-    assert manifest == fresh_manifest
+    assert baseline.comparable(manifest) == baseline.comparable(fresh_manifest), (
+        "baseline content drifted: re-freeze deliberately"
+    )
     assert dataset == fresh_dataset
 
 
