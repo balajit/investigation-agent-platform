@@ -117,6 +117,13 @@ class ExecuteActionInput:
     # G3: workflow loop iteration driving this action. None (legacy
     # callers) means the attempt id is left untagged rather than guessed.
     iteration: int | None = None
+    # Phase 4 (claim binding): workflow-only smallest-fetch identity
+    # ({"kind", "gap_id", "claim_ref"}) carried beside params, never
+    # inside them. None (legacy callers and non-forced actions) means
+    # no fetch_reason stamp. The execution bank helper stamps banked
+    # rows from this context; it is never forwarded to providers,
+    # never enters extract_search_query, and never touches ledger keys.
+    smallest_fetch_context: dict[str, Any] | None = None
 
 
 @dataclass
@@ -321,6 +328,27 @@ def _derive_loop_telemetry(
                 except (TypeError, ValueError):
                     continue
                 telemetry[key] = max(0, value)
+        # Phase 1 (claim binding): bounded per-run binding counts from the
+        # workflow-accumulated verify-turn totals (non-negative ints only;
+        # absent on legacy runs). Version is a closed label, never free text.
+        for key in (
+            "claim_binding_kept",
+            "claim_binding_evaporated",
+            "claim_binding_unmapped",
+            "claim_binding_repaired",
+            "claim_binding_repair_shadow",
+        ):
+            try:
+                value = int(passed.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            telemetry[key] = max(0, value)
+        try:
+            _cbv = str(passed.get("claim_binding_version", "") or "")
+            if _cbv in ("cbv1", "cbv2", "cbv3"):
+                telemetry["claim_binding_version"] = _cbv
+        except Exception:
+            pass
         try:
             telemetry["evidence_banked_repo"] = max(0, int(evidence_banked or 0))
         except (TypeError, ValueError):
@@ -347,11 +375,19 @@ def _derive_loop_telemetry(
                     entry = {
                         k: turn.get(k)
                         for k in (
-                            "iteration", "recorded", "selected", "match",
-                        "cause", "shadow_terminal", "capture_error",
-                        "evidence_banked_total", "prev_outcome", "params",
-                        "forced", "owed",
-                    )
+                            "iteration",
+                            "recorded",
+                            "selected",
+                            "match",
+                            "cause",
+                            "shadow_terminal",
+                            "capture_error",
+                            "evidence_banked_total",
+                            "prev_outcome",
+                            "params",
+                            "forced",
+                            "owed",
+                        )
                     }
                     if isinstance(entry.get("iteration"), bool):
                         continue
@@ -394,9 +430,15 @@ def _derive_loop_telemetry(
                 telemetry["shadow_definition_summary"] = {
                     k: max(0, int(dsummary.get(k, 0) or 0))
                     for k in (
-                        "turns", "admissible", "abstained", "unavailable",
-                        "capture_errors", "mirror_notes", "dropped_count",
-                        "duplicate_count", "telemetry_omissions",
+                        "turns",
+                        "admissible",
+                        "abstained",
+                        "unavailable",
+                        "capture_errors",
+                        "mirror_notes",
+                        "dropped_count",
+                        "duplicate_count",
+                        "telemetry_omissions",
                     )
                 }
                 # §1.6 frozen-inventory breakdowns (additive dicts, key/value

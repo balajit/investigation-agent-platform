@@ -727,7 +727,7 @@ def _caller_edge_causal_chain(candidate: Any, evidence_by_id: dict[Any, Any]) ->
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
 
     chain: list[Any] = []
-    for _assessment in (getattr(candidate, "assessments", None) or []):
+    for _assessment in getattr(candidate, "assessments", None) or []:
         if getattr(_assessment, "claim_kind", None) != ClaimKind.CALL_EDGE:
             continue
         _target = getattr(_assessment, "claim_target", None)
@@ -767,11 +767,19 @@ async def _gate_conclusion_or_fail(
     (Part 11.7+) depend on this corpus actually existing.
     """
     from investigation_agent_platform.application.investigation.verification import (
+        CLAIM_BINDING_CBV1,
+        CLAIM_BINDING_CBV2,
+        CLAIM_BINDING_CBV3,
         VERIFIER_VERSION_CURRENT,
+        ClaimBindingEnforcement,
         ConclusionGate,
         RootCauseVerificationPolicy,
+        UnknownVerifierVersion,
         VerificationEngine,
         VerificationStatus,
+        VerifierVersionUnavailable,
+        bound_kept_evidence_only,
+        resolve_claim_binding_version,
     )
     from investigation_agent_platform.domain.finding.models import (
         ConclusionStatus,
@@ -838,6 +846,12 @@ async def _gate_conclusion_or_fail(
                 out.append(item)
         return out
 
+    # Phase 1 (claim binding) linkage state, initialized before any
+    # abstention path can read it (early returns call _persist_abstention
+    # before the timeline read below runs).
+    _conclude_recorded: list[Any] | None = None
+    _conclude_enforcement = None
+
     async def _persist_abstention(
         kind: str, limitations: list[str], hypothesis_id: Any = None
     ) -> None:
@@ -851,6 +865,54 @@ async def _gate_conclusion_or_fail(
             if VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
             else ([], [], None)
         )
+        # Phase 1 (claim binding): an abstention record must never present
+        # an unretrieved caller as proven. When linkage was observed,
+        # proven callers are restricted to claim-local kept edges; callers
+        # whose only evidence is bank-fallback stay unresolved. Unobserved
+        # linkage keeps the Step 5 diagnostics byte-identically.
+        if (
+            claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+            and _conclude_enforcement is not None
+            and _conclude_enforcement.linkage_observed
+            and _proven_callers
+        ):
+            try:
+                _kept_ids = set(_conclude_enforcement.kept_ids or [])
+                _linked_ids: set[str] = set()
+                for _banked, _att in _conclude_recorded or []:
+                    for _raw in _banked or []:
+                        _s = str(_raw or "").strip()
+                        if _s:
+                            _linked_ids.add(_s)
+                _local_ids = _kept_ids & _linked_ids
+                _caller_evidence: dict[str, str] = {}
+                for _asm in getattr(candidate, "assessments", None) or []:
+                    try:
+                        if getattr(_asm, "claim_kind", None) != ClaimKind.CALL_EDGE:
+                            continue
+                        _t = getattr(_asm, "claim_target", None)
+                        _c = str(getattr(_t, "counterpart", "") or "").strip()
+                        _e = str(getattr(_asm, "evidence_id", "") or "")
+                        if _c and _e and _c not in _caller_evidence:
+                            _caller_evidence[_c] = _e
+                    except Exception:
+                        continue
+                _proven_local = sorted(
+                    [c for c in _proven_callers if _caller_evidence.get(c) in _local_ids],
+                    key=str.casefold,
+                )
+                _demoted_callers = sorted(
+                    {c for c in _proven_callers if c not in set(_proven_local)},
+                    key=str.casefold,
+                )
+                _proven_callers = _proven_local
+                if _demoted_callers:
+                    _unresolved_callers = sorted(
+                        set(_unresolved_callers) | set(_demoted_callers),
+                        key=str.casefold,
+                    )
+            except Exception:
+                pass
         status = (
             ConclusionStatus.NO_ROOT_CAUSE_FOUND
             if kind == "refuted"
@@ -926,12 +988,45 @@ async def _gate_conclusion_or_fail(
         except Exception:
             return []
 
-    engine = VerificationEngine()
     policy = RootCauseVerificationPolicy()
 
     verifier_version = VERIFIER_VERSION_CURRENT
     _version_source = "unified-dev"
     _inv = None
+    # Phase 1 (claim binding): resolve the recorded pin on the same
+    # metadata contract as verify. Unknown/unreadable pins fail closed
+    # (deny COMPLETED); unmarked resolves to current (cbv1 in rollout).
+    claim_binding_version = CLAIM_BINDING_CBV1
+    _binding_source = "unmarked"
+    _cb_repo = getattr(ctx, "investigation_repo", None)
+    if _cb_repo is not None:
+        try:
+            _cb_inv = await _cb_repo.get_by_id(tenant_id, investigation_id)
+        except Exception as exc:
+            await _persist_abstention(
+                "refuted",
+                [
+                    f"claim binding version unavailable: repository read failed ({type(exc).__name__})"
+                ],
+            )
+            return InvestigationStatus.FAILED
+        if _cb_inv is None:
+            await _persist_abstention(
+                "refuted", ["claim binding version unavailable: investigation not found"]
+            )
+            return InvestigationStatus.FAILED
+        try:
+            claim_binding_version, _binding_source = resolve_claim_binding_version(
+                getattr(_cb_inv, "metadata", None)
+            )
+        except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
+            await _persist_abstention("refuted", [f"claim binding version unavailable: {exc}"])
+            return InvestigationStatus.FAILED
+        _inv = _cb_inv
+    engine = VerificationEngine(
+        verifier_version=verifier_version,
+        claim_binding_version=claim_binding_version,
+    )
     ranked = rank_hypotheses(list(hypotheses))
     # G9: same resolvable-citation preference as the verify activity.
     candidate = select_verifiable_candidate(ranked, evidence_by_id)
@@ -940,18 +1035,98 @@ async def _gate_conclusion_or_fail(
         return InvestigationStatus.COMPLETED
     bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
     refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
+    # Phase 3 (claim binding): fast-path repair records collected by the
+    # location/history wraps below. Initialized up front so the waiver and
+    # enforcement blocks never read an unbound name.
+    _conclude_repairs: list[Any] = []
+    # Phase 1 (claim binding): timeline-backed linkage for the conclude
+    # working set. Fail-open to None (unmapped degradation); a read fault
+    # never blocks the conclusion path. (Initialized to None above so early
+    # abstention returns stay safe.)
+    if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+        try:
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                recorded_retrieval_attempts as _conclude_timeline_attempts,
+            )
+
+            _conclude_tl_repo = getattr(ctx, "timeline_repo", None)
+            if _conclude_tl_repo is not None:
+                try:
+                    _conclude_events = await _conclude_tl_repo.find_by_investigation_id(
+                        tenant_id, investigation_id
+                    )
+                except Exception:
+                    _conclude_events = None
+                if _conclude_events is not None:
+                    _conclude_recorded = _conclude_timeline_attempts(_conclude_events or [])
+        except Exception:
+            _conclude_recorded = None
     # Tranche B: same statement-matched range-read inclusion as verify.
+    # Under cbv2 the inclusion is gated: only claim-local-linked or
+    # explicitly cited rows join; it can never substitute for zero
+    # cited-kept survival.
     try:
         _bound_ids = {getattr(e, "evidence_id", None) for e in bound}
-        for _extra in VerificationEngine.statement_range_reads(
-            str(getattr(candidate, "statement", "") or ""),
-            list(evidence_by_id.values()),
-        ):
-            if getattr(_extra, "evidence_id", None) not in _bound_ids:
-                _bound_ids.add(getattr(_extra, "evidence_id", None))
+        if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            _c_cited: set[str] = set()
+            try:
+                for _raw in getattr(candidate, "supporting_evidence_ids", []) or []:
+                    _c_cited.add(str(_raw))
+                for _asm in getattr(candidate, "assessments", []) or []:
+                    _c_cited.add(str(getattr(_asm, "evidence_id", "") or ""))
+                for _step in getattr(candidate, "causal_steps", []) or []:
+                    for _raw in getattr(_step, "evidence_ids", []) or []:
+                        _c_cited.add(str(_raw))
+            except Exception:
+                pass
+            _c_linked: set[str] = set()
+            try:
+                for _banked, _att in _conclude_recorded or []:
+                    for _raw in _banked or []:
+                        _c_linked.add(str(_raw))
+            except Exception:
+                pass
+            _c_allow = _c_cited | _c_linked
+            for _extra in VerificationEngine.statement_range_reads(
+                str(getattr(candidate, "statement", "") or ""),
+                list(evidence_by_id.values()),
+            ):
+                _c_xid = getattr(_extra, "evidence_id", None)
+                if _c_xid in _bound_ids:
+                    continue
+                if str(_c_xid) not in _c_allow:
+                    continue
+                _bound_ids.add(_c_xid)
                 bound.append(_extra)
+        else:
+            for _extra in VerificationEngine.statement_range_reads(
+                str(getattr(candidate, "statement", "") or ""),
+                list(evidence_by_id.values()),
+            ):
+                if getattr(_extra, "evidence_id", None) not in _bound_ids:
+                    _bound_ids.add(getattr(_extra, "evidence_id", None))
+                    bound.append(_extra)
     except Exception:
         pass
+    # Phase 1 (claim binding): filter the conclude working set to kept
+    # citations before any validate_* fast path runs. Under cbv1 this
+    # block is skipped byte-identically.
+    if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+        try:
+            _conclude_enforcement = engine.claim_binding_enforcement(
+                candidate,
+                list(evidence_by_id.values()),
+                _conclude_recorded,
+            )
+            if _conclude_enforcement is not None:
+                _c_kept = set(_conclude_enforcement.kept_ids or [])
+                _c_cited = set(_conclude_enforcement.cited_ids or [])
+                bound, _c_evap, _c_ckept = bound_kept_evidence_only(bound, _c_kept, _c_cited)
+        except Exception:
+            # Fail closed: without a partition the filtered set is
+            # untrusted; a fault enforcement forces abstention via the
+            # waiver block instead of concluding on it.
+            _conclude_enforcement = ClaimBindingEnforcement(fault=True)
     # D3 Phase 0 shadow tap T3 (read-only; never feeds back). Mirrors T1
     # on conclude-time loaded rows; observations join the conclude gate
     # outcome as CONCLUDE_GATE. Same isolation: any fault records a
@@ -1044,16 +1219,80 @@ async def _gate_conclusion_or_fail(
         and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
     ):
         causal_chain = _caller_edge_causal_chain(candidate, evidence_by_id)
+    # Finding L: opinion-only candidates skip every conclude validator.
+    # The shared predicate (N) screens on assessments alone — no evidence
+    # reads beyond the already-resolved working set, no model calls. The
+    # abstention reasons mirror the full path's reason block for an
+    # all-NC candidate (no validator could answer it by kind-gate), with
+    # the machine-readable NOT_CHECKABLE_SKIPPED marker first — the same
+    # evidence-only channel the conclude stage would have used.
+    try:
+        from investigation_agent_platform.application.evidence.retrieval_ledger import (
+            all_typed_claims_not_checkable as _all_nc_conclude,
+        )
+    except Exception:
+        _all_nc_conclude = None
+    try:
+        _nc_early_conclude = (
+            bool(_all_nc_conclude(candidate)) if _all_nc_conclude is not None else False
+        )
+    except Exception:
+        _nc_early_conclude = False
+    if _nc_early_conclude:
+        _nc_reasons = ["NOT_CHECKABLE_SKIPPED"]
+        try:
+            if not bound:
+                _nc_reasons.append("no bound supporting evidence")
+        except Exception:
+            pass
+        try:
+            if refuting:
+                _nc_reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
+        except Exception:
+            pass
+        try:
+            if not causal_chain:
+                _nc_reasons.append("no validated causal chain")
+        except Exception:
+            pass
+        await _persist_abstention(
+            "refuted" if refuting else "insufficient", _nc_reasons, candidate.id
+        )
+        return InvestigationStatus.COMPLETED
     # G1: location-answer fast path (mirrors verify_root_cause_activity).
-    _verify_engine = VerificationEngine(verifier_version=verifier_version)
+    _verify_engine = VerificationEngine(
+        verifier_version=verifier_version,
+        claim_binding_version=claim_binding_version,
+    )
     code_value_verification = _verify_engine.validate_code_value_claim(
         candidate, bound, contradictions
     )
-    code_value_claim = VerificationEngine.claims_field_value(
-        str(getattr(candidate, "statement", "") or "")
-    ) or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
+    code_value_claim = (
+        VerificationEngine.claims_field_value(str(getattr(candidate, "statement", "") or ""))
+        or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
+    )
     code_value_answered = code_value_verification is not None and not refuting
-    history_verification = _verify_engine.validate_history_claim(candidate, bound, contradictions)
+    # Phase 3 (claim binding): fast-path repair wraps (D6 sites 3/5).
+    # revalidate_with_repair runs each validate call verbatim —
+    # identical under cbv1 — and performs one repair pass under
+    # cbv2/cbv3. Repairs collect here for the waiver amendment,
+    # enforcement extension, and diagnostics attachment below.
+    try:
+        history_verification, _c_history_repairs = _verify_engine.revalidate_with_repair(
+            lambda h, w: _verify_engine.validate_history_claim(h, w, contradictions),
+            candidate,
+            bound,
+            list(evidence_by_id.values()),
+            contradictions,
+            None,
+            enforcement=_conclude_enforcement,
+            expect_kinds=(ClaimKind.HISTORY,),
+        )
+        _conclude_repairs.extend(list(_c_history_repairs or []))
+    except Exception:
+        history_verification = _verify_engine.validate_history_claim(
+            candidate, bound, contradictions
+        )
     history_answered = history_verification is not None and not refuting
     if code_value_claim and not code_value_answered:
         await _persist_abstention(
@@ -1062,9 +1301,24 @@ async def _gate_conclusion_or_fail(
             candidate.id,
         )
         return InvestigationStatus.COMPLETED
-    location_verification = _verify_engine.validate_location_claim(
-        candidate, bound, contradictions, _conclude_observe
-    )
+    try:
+        location_verification, _c_location_repairs = _verify_engine.revalidate_with_repair(
+            lambda h, w: _verify_engine.validate_location_claim(
+                h, w, contradictions, _conclude_observe
+            ),
+            candidate,
+            bound,
+            list(evidence_by_id.values()),
+            contradictions,
+            None,
+            enforcement=_conclude_enforcement,
+            expect_kinds=(ClaimKind.DEFINITION, ClaimKind.CALL_EDGE),
+        )
+        _conclude_repairs.extend(list(_c_location_repairs or []))
+    except Exception:
+        location_verification = _verify_engine.validate_location_claim(
+            candidate, bound, contradictions, _conclude_observe
+        )
     location_answered = (
         location_verification is not None
         and not refuting
@@ -1081,14 +1335,17 @@ async def _gate_conclusion_or_fail(
         and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
     ):
         caller_edge_gate = _verify_engine.evaluate_caller_edge(candidate, bound)
-        caller_edge_validated = bool(caller_edge_gate is not None and caller_edge_gate[0]) and not refuting
+        caller_edge_validated = (
+            bool(caller_edge_gate is not None and caller_edge_gate[0]) and not refuting
+        )
     # T1-1: doc validation up front so the abstention check below sees it.
     doc_answered = False
     doc_verification = None
     try:
-        doc_verification = VerificationEngine(verifier_version=verifier_version).validate_doc_claim(
-            candidate, bound, contradictions
-        )
+        doc_verification = VerificationEngine(
+            verifier_version=verifier_version,
+            claim_binding_version=claim_binding_version,
+        ).validate_doc_claim(candidate, bound, contradictions)
         doc_answered = doc_verification is not None and not refuting
     except Exception:
         pass
@@ -1103,15 +1360,74 @@ async def _gate_conclusion_or_fail(
         and not code_value_claim
     ):
         try:
-            state_verification = VerificationEngine(verifier_version=verifier_version).validate_state_claim(
-                candidate, bound, contradictions
-            )
+            state_verification = VerificationEngine(
+                verifier_version=verifier_version,
+                claim_binding_version=claim_binding_version,
+            ).validate_state_claim(candidate, bound, contradictions)
             state_answered = state_verification is not None and not refuting
+        except Exception:
+            pass
+    # Phase 1 (claim binding): zero cited-kept survival forces the
+    # abstention path even when *_validated flags would otherwise waive
+    # the causal-chain requirement (D6 gate-waiver block). Under cbv1
+    # this is always False: no behavior change.
+    # Phase 3 (claim binding, D6 site 4): applied rebinds extend the
+    # enforcement before the waiver so a rebound donor stands in for
+    # its citation in the kept count; the waiver amendment is pinned
+    # by a conclude-publishes-with-repair test plus a
+    # shadow-still-abstains test.
+    if (
+        claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+        and _conclude_enforcement is not None
+        and _conclude_repairs
+    ):
+        try:
+            _c_applied_donors = [
+                str(getattr(r, "donor_id", "") or "")
+                for r in _conclude_repairs
+                if str(getattr(r, "outcome", "") or "") == "applied"
+                and str(getattr(r, "donor_id", "") or "")
+            ]
+            if _c_applied_donors:
+                _conclude_enforcement = VerificationEngine.enforcement_with_repairs(
+                    _conclude_enforcement, _c_applied_donors
+                )
+        except Exception:
+            pass
+    _conclude_binding_blocks = False
+    if (
+        claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+        and _conclude_enforcement is not None
+    ):
+        try:
+            _cb_cited = list(_conclude_enforcement.cited_ids or [])
+            # Zero cited-kept survival always blocks, as does a binding
+            # fault (fail closed, never conclude on an unpartitioned set).
+            # Unmapped-only verification (observed linkage, nothing
+            # claim-local) blocks the causal-chain waiver only: with a
+            # causal chain present, the gate does not need the waiver and
+            # the UNMAPPED limitation rides the published conclusion instead.
+            # enforcement_with_repairs folds applied rebinds into
+            # cited_kept_count, so a rebound citation counts as kept.
+            if _conclude_enforcement.fault or (
+                _cb_cited
+                and (
+                    _conclude_enforcement.cited_kept_count == 0
+                    or (
+                        _conclude_enforcement.unmapped
+                        and not _conclude_enforcement.has_claim_local
+                        and _conclude_enforcement.linkage_observed
+                        and not causal_chain
+                    )
+                )
+            ):
+                _conclude_binding_blocks = True
         except Exception:
             pass
     if (
         not bound
         or refuting
+        or _conclude_binding_blocks
         or (
             not causal_chain
             and not location_answered
@@ -1125,6 +1441,11 @@ async def _gate_conclusion_or_fail(
         reasons = []
         if not bound:
             reasons.append("no bound supporting evidence")
+        if _conclude_binding_blocks:
+            reasons.append(
+                "claim citations kept zero bound rows (evaporated); "
+                "INCONCLUSIVE pending smallest-fetch re-retrieval"
+            )
         if refuting:
             reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
         if (
@@ -1139,6 +1460,22 @@ async def _gate_conclusion_or_fail(
             reasons.append("no validated causal chain")
         if code_value_claim and not code_value_answered:
             reasons.append("code value claim lacks a matching deterministic resolution")
+        # Phase 4 (claim binding): opinion-only abstention carries its
+        # machine-readable marker. Candidate-scoped (assessments are
+        # hydrated here; the marker is not). Finding N: the all-typed-NC
+        # check is the shared predicate, not an inline re-implementation.
+        try:
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                all_typed_claims_not_checkable as _all_nc,
+            )
+        except Exception:
+            _all_nc = None
+        try:
+            _opinion_only = bool(_all_nc(candidate)) if _all_nc is not None else False
+        except Exception:
+            _opinion_only = False
+        if _opinion_only:
+            reasons.append("NOT_CHECKABLE_SKIPPED")
         await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
         return InvestigationStatus.COMPLETED
     if caller_edge_validated or location_answered:
@@ -1151,6 +1488,66 @@ async def _gate_conclusion_or_fail(
         verification = doc_verification
     elif state_answered and state_verification is not None:
         verification = state_verification
+    # Phase 1 (claim binding): route the selected fast-path verification
+    # through authoritative enforcement (fast paths bypass the engine's
+    # internal enforcement). Flips the answered flags on an enforced
+    # INCONCLUSIVE so the general branch re-evaluates consistently.
+    # Under cbv1 _conclude_enforcement is None: no-op.
+    try:
+        _enforce_target = verification
+    except NameError:
+        # No fast path taken: nothing selected to enforce; the general
+        # branch below evaluates (and enforces) from scratch.
+        _enforce_target = None
+    # Phase 3 (claim binding, D6 site 5): the enforcement was already
+    # extended with applied rebinds before the waiver block, so the
+    # choke below keeps donor corroborating. Repairs attach to the
+    # taken verification's diagnostics afterwards.
+    if (
+        claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+        and _conclude_enforcement is not None
+        and _enforce_target is not None
+        and (
+            caller_edge_validated
+            or location_answered
+            or code_value_answered
+            or history_answered
+            or doc_answered
+            or state_answered
+        )
+    ):
+        try:
+            verification = VerificationEngine.attach_repairs(
+                engine.enforce_claim_binding(candidate, _enforce_target, _conclude_enforcement),
+                _conclude_repairs,
+            )
+            try:
+                _enf_status = str(
+                    getattr(
+                        getattr(verification, "status", ""),
+                        "value",
+                        getattr(verification, "status", ""),
+                    )
+                    or ""
+                )
+            except Exception:
+                _enf_status = ""
+                if _enf_status != VerificationStatus.VERIFIED.value:
+                    caller_edge_validated = False
+                    location_answered = False
+                    code_value_answered = False
+                    history_answered = False
+                    doc_answered = False
+                    state_answered = False
+        except Exception:
+            # Fail closed (NEW-1): an enforcement fault must never leave a
+            # taken fast-path VERIFIED standing. Force the abstention path
+            # below instead of concluding on an unenforced verdict.
+            _conclude_binding_blocks = True
+            try:
+                verification = engine._fault_inconclusive(candidate)
+            except Exception:
+                pass
     if (
         not location_answered
         and not code_value_answered
@@ -1161,16 +1558,36 @@ async def _gate_conclusion_or_fail(
         and not code_value_claim
     ):
         _gate_candidate_id = getattr(candidate, "id", None)
-        verification = engine.evaluate_hypothesis(
-            candidate,
-            bound,
-            contradictions,
-            causal_chain,
-            policy,
-            sibling_hypotheses=[
-                h for h in (hypotheses or []) if getattr(h, "id", None) != _gate_candidate_id
-            ],
-            observer=_conclude_observe,
+        _conclude_kwargs: dict[str, Any] = {}
+        # Phase 1 (claim binding): timeline-backed linkage for the
+        # general-branch enforcement; marker-less legacy keeps the exact
+        # legacy call shape.
+        if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3) and _conclude_recorded:
+            _conclude_kwargs["recorded_attempts"] = _conclude_recorded
+        # Phase 3 (claim binding): the full bank feeds the repair donor
+        # pool (the working set may exclude uncited donors). cbv2/cbv3
+        # runs only — legacy keeps the exact call shape.
+        if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            try:
+                _conclude_kwargs["evidence_bank"] = list(evidence_by_id.values())
+            except Exception:
+                pass
+        # Engine-branch repairs are already attached in-engine; the
+        # outer attach only adds fast-path-wrap repairs (dedupes).
+        verification = VerificationEngine.attach_repairs(
+            engine.evaluate_hypothesis(
+                candidate,
+                bound,
+                contradictions,
+                causal_chain,
+                policy,
+                sibling_hypotheses=[
+                    h for h in (hypotheses or []) if getattr(h, "id", None) != _gate_candidate_id
+                ],
+                observer=_conclude_observe,
+                **_conclude_kwargs,
+            ),
+            _conclude_repairs,
         )
     gate = ConclusionGate()
     decision = await gate.evaluate(
@@ -1627,9 +2044,9 @@ async def conclude_investigation_activity(
                                                     "verification bar within budget."
                                                 )
                                             ],
-                                        next_check=_epistemic_check,
-                                        verifier_version=VERIFIER_VERSION_CURRENT,
-                                    ),
+                                            next_check=_epistemic_check,
+                                            verifier_version=VERIFIER_VERSION_CURRENT,
+                                        ),
                                     )
                                     # Phase 4.2: abstention volume counter.
                                     try:
@@ -1681,9 +2098,7 @@ async def conclude_investigation_activity(
                     # covers verify + conclude turns together.
                     _loop_telemetry_input = data.get("loop_telemetry")
                     try:
-                        _t3_candidates = [
-                            o for o in _conclude_shadow_notes if isinstance(o, dict)
-                        ]
+                        _t3_candidates = [o for o in _conclude_shadow_notes if isinstance(o, dict)]
                         if _t3_candidates and isinstance(_loop_telemetry_input, dict):
                             _t3_native = {
                                 "verified": False,
@@ -1700,14 +2115,12 @@ async def conclude_investigation_activity(
                                 _t3_native,
                                 _t3_identity,
                             )
-                            _combined = list(
-                                _loop_telemetry_input.get("definition_shadow_trace", [])
-                                or []
-                            ) + _t3_envs
+                            _combined = (
+                                list(_loop_telemetry_input.get("definition_shadow_trace", []) or [])
+                                + _t3_envs
+                            )
                             _combined_obs = [
-                                e.get("observation", e)
-                                for e in _combined
-                                if isinstance(e, dict)
+                                e.get("observation", e) for e in _combined if isinstance(e, dict)
                             ]
                             _prior_summary = _loop_telemetry_input.get(
                                 "shadow_definition_summary", {}

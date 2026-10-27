@@ -52,7 +52,39 @@ def _decision_extra(decision: Any) -> dict[str, Any]:
         return {}
 
 
-REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-016"
+REASONING_PROMPT_SECTIONS_VERSION = "v3-claim-grounded-018"
+
+CLAIM_QUERY_INSTRUCTION = (
+    "For each claim, also emit the retrieval that would find its evidence: "
+    '"search_query" (the query string to run: symbol, file path, commit id, '
+    'or distinctive statement fragment) and "search_scope" (the scope you '
+    "searched or would search: path prefix or repository@revision, empty "
+    "when unscoped — a plain human scope, NOT the recorded action-scope "
+    "form). The query is a retrieval hint only — it never substitutes for "
+    "citing evidence IDs, an unlinked query never makes a citation "
+    "claim-local, and scope never gates linkage (linkage is on query text; "
+    "scope only parameterizes re-retrieval)."
+)
+
+
+def _clean_claim_query(value: object, limit: int) -> str | None:
+    """Coerce a model-emitted query/scope to a bounded string or None.
+
+    Pure function; never raises. Non-strings that stringify cleanly
+    (numbers, bools) are accepted; dicts/lists/objects yield None.
+    Empty-after-strip yields None (absent, never fabricated).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, (int, float, bool)):
+        text = str(value).strip()
+    else:
+        return None
+    if not text:
+        return None
+    return text[:limit]
 
 
 def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -106,6 +138,11 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
             "scope",
             "declaring_type",
             "commit_id",
+            # Phase 1/2 (claim binding): strict HISTORY proof under
+            # cbv2/cbv3 matches target.commit_subject deterministically;
+            # dropping it here silently unprovables every
+            # reasoner-generated strict HISTORY claim.
+            "commit_subject",
             "guard_condition",
         ):
             if key in raw:
@@ -129,15 +166,19 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
     if raw_defer is not None:
         if not isinstance(raw_defer, dict):
             raise ValueError("defer_gathering must be an object")
-        defer = {key: raw_defer.get(key) for key in (
-            "reason",
-            "missing_proof_kind",
-            "next_action",
-            "next_action_parameters",
-            "target",
-            "scope",
-            "remaining_repair_budget",
-        ) if key in raw_defer}
+        defer = {
+            key: raw_defer.get(key)
+            for key in (
+                "reason",
+                "missing_proof_kind",
+                "next_action",
+                "next_action_parameters",
+                "target",
+                "scope",
+                "remaining_repair_budget",
+            )
+            if key in raw_defer
+        }
         for key, limit in (
             ("reason", 1024),
             ("missing_proof_kind", 64),
@@ -170,7 +211,9 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("defer_gathering.next_action must be a gathering action")
         budget = defer.get("remaining_repair_budget")
         if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= 2:
-            raise ValueError("defer_gathering.remaining_repair_budget must be an integer from 0 to 2")
+            raise ValueError(
+                "defer_gathering.remaining_repair_budget must be an integer from 0 to 2"
+            )
         parsed["defer_gathering"] = defer
 
     clean: dict[str, Any] = dict(parsed)
@@ -190,8 +233,14 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
             item = {k: v for k, v in entry.items() if k in known_claim}
             item["statement"] = statement[:2048]
             kind = item.get("claim_kind")
-            if kind is not None and str(kind) not in valid_kinds:
-                item["claim_kind"] = ClaimKind.CAUSAL.value
+            if kind is not None:
+                # Phase 4: normalize case/whitespace before membership so a
+                # model-emitted "not_checkable" does not silently coerce to
+                # CAUSAL. Unknown values still coerce to CAUSAL.
+                normalized = str(kind).strip().upper()
+                item["claim_kind"] = (
+                    normalized if normalized in valid_kinds else ClaimKind.CAUSAL.value
+                )
             ev_ids = item.get("evidence_ids")
             if ev_ids is None:
                 item["evidence_ids"] = []
@@ -207,6 +256,10 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
                 item["claimed_value"] = _clean_opt_str(item["claimed_value"], 512)
             if "target" in item:
                 item["target"] = _clean_target(item["target"])
+            if "search_query" in item:
+                item["search_query"] = _clean_claim_query(item["search_query"], 1024)
+            if "search_scope" in item:
+                item["search_scope"] = _clean_claim_query(item["search_scope"], 512)
             raw_edges = item.get("caller_edges")
             if isinstance(raw_edges, list):
                 clean_edges: list[dict[str, Any]] = []
@@ -225,6 +278,8 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
                                 if isinstance(edge_ids, list)
                                 else []
                             ),
+                            "search_query": _clean_claim_query(raw_edge.get("search_query"), 1024),
+                            "search_scope": _clean_claim_query(raw_edge.get("search_scope"), 512),
                         }
                     )
                 item["caller_edges"] = clean_edges
@@ -235,6 +290,7 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
     else:
         clean["claims"] = []
     return clean
+
 
 # Reasoner sampling temperature (Phase 4 battery readout). First-turn
 # branch dominance at the 0.7 default produced opposite verdicts on
@@ -256,7 +312,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "defer_gathering": {"reason": "...", "missing_proof_kind": "...", "next_action": "<one gathering action>", "next_action_parameters": {...}, "target": "...", "scope": "...", "remaining_repair_budget": 0-2},
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; mandatory for ordinary committed reasoning, but empty for DEFER_GATHERING"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL|NOT_CHECKABLE", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "commit_subject": "<exact subject for HISTORY claims; omit otherwise>", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale". For DEFER_GATHERING, do not commit a hypothesis; select exactly one bounded gathering action and let the workflow own the repair budget.
 Do NOT include execution_hash (derived server-side).""",
@@ -279,7 +335,11 @@ When citing code, cite the range-read evidence ID (GET_CODE result), not just th
 A log line merely NAMING a symbol is not a location citation — hedged claims like 'referenced in logs, suggesting X lives in Y' never verify without a code row for Y whose window contains the symbol.
 A location answer verifies on code citations alone only when the cited range-read window contains the asserted symbol or line; that is what 'location citation' means.
 Behavior claims need code that shows the mechanism plus runtime evidence (logs, state, or a live probe). Code alone establishes structure, not observed behavior.
-Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit does not prove a call. For caller enumeration, emit one CALL_EDGE claim per caller, each with its own call-site row. You may instead emit one aggregate CALL_EDGE claim with caller_edges, where every entry has one target.counterpart and only that caller's evidence IDs; unresolved edges must remain unresolved. A single-caller answer to a caller-enumeration question is incomplete; the enumeration is incomplete unless every required caller edge is proven. HISTORY: for recent-change questions, cite one COMMIT_HISTORY row per claim, set target.file_path and target.commit_id from that row, and include that exact commit subject in the statement; do not use CAUSAL or require runtime evidence. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS.""",
+Every claim carries a claim_kind and its OWN evidence_ids — rival claims must cite the evidence that bears on each, never a shared list. DEFINITION: evidence_ids must include a range read whose window contains target.symbol (set target.symbol and target.file_path). For a value assertion also set target.value_semantics and target.claimed_value exactly from the matching code_fact_resolution; never promote an initializer/default to POST_CONSTRUCTION or RUNTIME_EFFECTIVE. CALL_EDGE: target.symbol is the callee and target.counterpart the caller; cite a code row that shows the call expression itself — a search hit does not prove a call. For caller enumeration, emit one CALL_EDGE claim per caller, each with its own call-site row. You may instead emit one aggregate CALL_EDGE claim with caller_edges, where every entry has one target.counterpart and only that caller's evidence IDs; unresolved edges must remain unresolved. A single-caller answer to a caller-enumeration question is incomplete; the enumeration is incomplete unless every required caller edge is proven. HISTORY: for recent-change questions, cite one COMMIT_HISTORY row per claim, set target.file_path and target.commit_id from that row, set target.commit_subject to that row's exact subject, and include that exact commit subject in the statement; do not use CAUSAL or require runtime evidence. BEHAVIOR: cite both a code range read and a runtime observation. ABSENCE: set target.scope to exactly what was searched (path prefix and revision); an empty result without a stated scope proves nothing. CAUSAL: cite the evidence for each causal step in VERIFY_HYPOTHESIS. NOT_CHECKABLE: taste/preference/value/aesthetic judgments, or claims no observable could ever settle ("best practice", "should be cleaner") — emit no search_query, cite no evidence; these claims are skipped, never verified. Predictions that name an observable outcome are checkable even without a code anchor ("will fail under load" stays BEHAVIOR) and must never use this kind. Deontic "should" with a checkable action stays checkable ("the handler should be called once per submit" is BEHAVIOR).""",
+    ),
+    (
+        "claim-queries",
+        CLAIM_QUERY_INSTRUCTION,
     ),
     (
         "code-reading",
@@ -360,9 +420,9 @@ def fuzzy_orientation_block(orientation: Any | None) -> dict[str, Any] | None:
             "type": "fuzzy_orientation",
             "unverified": bool(data.get("unverified", True)),
             "miss": str(data.get("miss", "") or "")[:64],
-            "suggested_symbols": [
-                str(s) for s in (data.get("suggested_symbols") or []) if str(s)
-            ][:10],
+            "suggested_symbols": [str(s) for s in (data.get("suggested_symbols") or []) if str(s)][
+                :10
+            ],
             "steering_note": str(data.get("steering_note", "") or "")[:512],
         }
     except Exception:
@@ -558,8 +618,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         action_raw = clean.get("action")
         if isinstance(action_raw, list):
             raise TypeError(
-                "LLM decision proposes an 'action' list; "
-                "exactly one action object is allowed"
+                "LLM decision proposes an 'action' list; exactly one action object is allowed"
             )
         _next_raw = parsed.get("next_action")
         if isinstance(action_raw, dict) and isinstance(_next_raw, str) and _next_raw:
@@ -709,7 +768,11 @@ class ReasoningCoordinator(InvestigationReasoner):
         )
         try:
             decision = await self._reason_inner(
-                tenant_id, state, recent_actions, orientation_notes, hub_orientation,
+                tenant_id,
+                state,
+                recent_actions,
+                orientation_notes,
+                hub_orientation,
                 fuzzy_orientation,
             )
         except Exception:
@@ -1033,9 +1096,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                     # Cardinality failures carry no .errors(); log the
                     # exception type as the repair signal instead.
                     _fields = [type(_last_exc).__name__]
-                _resample_reasons.append(
-                    f"{type(_last_exc).__name__}:{','.join(_fields[:5])}"
-                )
+                _resample_reasons.append(f"{type(_last_exc).__name__}:{','.join(_fields[:5])}")
                 logger.warning(
                     "LLM decision failed validation; hidden resample %d/2",
                     _attempt + 1,

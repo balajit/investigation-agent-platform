@@ -402,6 +402,14 @@ class ErrorIntakeService:
         )
         seed = dict(intake_seed or {})
         metadata: dict[str, Any] = {}
+        # Phase 1 (claim binding): explicit behavior pin so in-flight rows
+        # keep the semantics they started with. Unmarked rows resolve to
+        # CLAIM_BINDING_CURRENT; stamping makes the default explicit.
+        from investigation_agent_platform.application.investigation.verification import (
+            CLAIM_BINDING_CBV1,
+        )
+
+        metadata["claim_binding_version"] = CLAIM_BINDING_CBV1
         if seed:
             metadata["intake_seed"] = seed
         # Phase 0.5: target identity lives on the investigation, not only

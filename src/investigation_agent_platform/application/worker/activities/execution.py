@@ -154,6 +154,37 @@ def _symbol_evidence_packets(
     return packets
 
 
+def _with_fetch_reason(item: Any, fetch_reason: str) -> Any:
+    """Stamp a banked row's attributes with a smallest-fetch reason (pure).
+
+    Phase 4 (claim binding): the workflow-only smallest-fetch context
+    reaches the bank boundary here — never through provider parameters.
+    Empty reason returns the item unchanged. Dict and BaseModel
+    (frozen) shapes are both tolerated; anything else passes through.
+    Never raises.
+    """
+    try:
+        reason = str(fetch_reason or "")
+        if not reason or not reason.startswith("smallest_fetch:"):
+            return item
+        if isinstance(item, dict):
+            attrs = dict(item.get("attributes", {}) or {})
+            attrs["fetch_reason"] = reason
+            item["attributes"] = attrs
+            return item
+        try:
+            attrs = dict(getattr(item, "attributes", None) or {})
+        except Exception:
+            return item
+        attrs["fetch_reason"] = reason
+        try:
+            return item.model_copy(update={"attributes": attrs})
+        except Exception:
+            return item
+    except Exception:
+        return item
+
+
 def _absence_proof_row(
     *,
     tenant_id: Any,
@@ -552,6 +583,25 @@ async def fallback_call_graph_to_search(
         outcome_detail["miss_reason"] = marker
     return record_outcome(banked)
 
+
+def _scope_path_prefix(scope: object) -> str | None:
+    """Path-prefix form of a stored scope, or None (pure).
+
+    Stored scopes are "path prefix or repository@revision". Only the
+    plain-path form maps to the SEARCH_CODE ``path_prefix`` parameter;
+    a ``repository@revision`` scope carries no path information, so the
+    handler keeps its default ("/") rather than searching a fabricated
+    prefix. Never raises.
+    """
+    try:
+        text = str(scope or "").strip()
+    except Exception:
+        return None
+    if not text or "@" in text:
+        return None
+    return text
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def execute_action_activity(
@@ -593,6 +643,20 @@ async def execute_action_activity(
         inv_id_str = str(data.get("investigation_id", ""))
         action_type = str(data.get("action", "QUERY_STATE"))
         parameters: dict[str, Any] = dict(data.get("parameters", {}))
+        # Phase 4 (claim binding): workflow-only smallest-fetch identity
+        # ({"kind", "gap_id", "claim_ref"}) carried beside params, never
+        # inside them. Stamped onto banked rows at the bank boundary;
+        # never forwarded to providers, never in ledger keys.
+        _fetch_reason = ""
+        try:
+            _sfetch_ctx = data.get("smallest_fetch_context")
+            if isinstance(_sfetch_ctx, dict):
+                _sf_kind = str(_sfetch_ctx.get("kind", "") or "")
+                _sf_gap = str(_sfetch_ctx.get("gap_id", "") or "")
+                if _sf_kind and _sf_gap:
+                    _fetch_reason = f"smallest_fetch:{_sf_kind}:{_sf_gap}"
+        except Exception:
+            _fetch_reason = ""
         # Reason-proposed hypothesis strings for FORMULATE_HYPOTHESIS.
         proposed_hypotheses: list[str] = [
             str(h) for h in (data.get("hypotheses", []) or []) if str(h).strip()
@@ -950,6 +1014,16 @@ async def execute_action_activity(
                 outcome_detail["truncated_rows"] = len(items) - len(kept)
             except Exception:
                 pass
+            # Phase 4 (claim binding): stamp banked rows with the
+            # smallest-fetch reason at the single shared bank helper, so
+            # every _bank(...) path (and only forced turns, via the
+            # workflow-passed context) carries it. Empty reason returns
+            # items unchanged.
+            if _fetch_reason:
+                try:
+                    kept = [_with_fetch_reason(item, _fetch_reason) for item in kept]
+                except Exception:
+                    pass
             return kept
 
         try:
@@ -1130,13 +1204,16 @@ async def execute_action_activity(
                     )[:512]
                     await evidence_repo.save(
                         tenant_id,
-                        _absence_proof_row(
-                            tenant_id=tenant_id,
-                            investigation_id=investigation_id,
-                            evidence_type=_EvidenceType.DATABASE_STATE,
-                            provider="state-provider",
-                            operation="query_state",
-                            scope=_state_scope,
+                        _with_fetch_reason(
+                            _absence_proof_row(
+                                tenant_id=tenant_id,
+                                investigation_id=investigation_id,
+                                evidence_type=_EvidenceType.DATABASE_STATE,
+                                provider="state-provider",
+                                operation="query_state",
+                                scope=_state_scope,
+                            ),
+                            _fetch_reason,
                         ),
                         investigation_id,
                     )
@@ -1342,8 +1419,11 @@ async def execute_action_activity(
             )
             merged_attributes = dict(getattr(evidence, "attributes", None) or {})
             merged_attributes["read_mode"] = read_mode
-            if read_mode == "path_only":
-                merged_attributes["discovery_only"] = True
+            merged_attributes["discovery_only"] = True
+            # Phase 4 (claim binding): same fetch_reason stamp as the
+            # shared _bank helper (GET_CODE banks via singleton save).
+            if _fetch_reason:
+                merged_attributes["fetch_reason"] = _fetch_reason
             fact_field = str(parameters.get("field_name", "") or "").strip()
             fact_method = str(parameters.get("method_name", "") or "").strip()
             _evidence_path = str(
@@ -2363,18 +2443,21 @@ async def execute_action_activity(
                     if _absence_scope:
                         await evidence_repo.save(
                             tenant_id,
-                            _absence_proof_row(
-                                tenant_id=tenant_id,
-                                investigation_id=investigation_id,
-                                # History misses bank as discovery-only
-                                # SOURCE_CODE: a COMMIT_HISTORY-typed absence
-                                # row carries no file/revision and can never
-                                # satisfy history_proof, inflating evidence
-                                # counts while reading as "unstamped".
-                                evidence_type=_EvidenceType.SOURCE_CODE,
-                                provider="code-intelligence",
-                                operation=action_label.lower(),
-                                scope=_absence_scope,
+                            _with_fetch_reason(
+                                _absence_proof_row(
+                                    tenant_id=tenant_id,
+                                    investigation_id=investigation_id,
+                                    # History misses bank as discovery-only
+                                    # SOURCE_CODE: a COMMIT_HISTORY-typed absence
+                                    # row carries no file/revision and can never
+                                    # satisfy history_proof, inflating evidence
+                                    # counts while reading as "unstamped".
+                                    evidence_type=_EvidenceType.SOURCE_CODE,
+                                    provider="code-intelligence",
+                                    operation=action_label.lower(),
+                                    scope=_absence_scope,
+                                ),
+                                _fetch_reason,
                             ),
                             investigation_id,
                         )
@@ -2393,7 +2476,12 @@ async def execute_action_activity(
                     revision=str(parameters.get("revision", "HEAD")),
                     query=str(parameters.get("query", "")),
                     language=parameters.get("language"),
-                    path_prefix=parameters.get("path_prefix"),
+                    # Stored scopes ride the ledger budget key as "scope";
+                    # map the path-prefix form onto the handler parameter
+                    # the provider actually reads. An explicit path_prefix
+                    # (prior action's own prefix) always wins.
+                    path_prefix=parameters.get("path_prefix")
+                    or _scope_path_prefix(parameters.get("scope")),
                     limit=min(int(parameters.get("limit", 20)), 100),
                     # Fail-closed opt-in: when the caller requires the
                     # provider to honor a pinned revision, an incapable
@@ -3234,13 +3322,14 @@ async def execute_action_activity(
                                 },
                             }
                         )
+                        _read = _with_fetch_reason(_read, _fetch_reason)
                         await evidence_repo.save(tenant_id, _read, investigation_id)
                         _banked_here.append(str(_read.evidence_id))
                 if _banked_here:
                     try:
-                        outcome_detail["evidence_ids"] = list(
-                            outcome_detail.get("evidence_ids") or []
-                        ) + _banked_here
+                        outcome_detail["evidence_ids"] = (
+                            list(outcome_detail.get("evidence_ids") or []) + _banked_here
+                        )
                     except Exception:
                         pass
                     return banked_count + len(_banked_here)

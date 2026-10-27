@@ -442,6 +442,14 @@ _KNOWN_LIMITATION_CODES = frozenset(
         "SINGLE_PROVIDER",
         "CONCLUSION_UNMAPPED",
         "RELATION_UNDEMONSTRATED",
+        # Phase 1 (claim binding) additions; unknown codes still coerce
+        # to "other" with the signal counted, never dropped silently.
+        "NO_RUNTIME_OBSERVATION",
+        "RIVAL_SHARED_EVIDENCE",
+        "UNMAPPED_CITATION",
+        "EVAPORATED_CITATION",
+        # Phase 3 (claim binding): repaired-verdict marker.
+        "REPAIRED_CITATION",
     }
 )
 
@@ -484,6 +492,20 @@ def _limitation_kind(text: Any) -> str:
         return "other"
 
 
+_BINDING_KIND_LABELS = frozenset(
+    {
+        "DEFINITION",
+        "CALL_EDGE",
+        "BEHAVIOR",
+        "ABSENCE",
+        "HISTORY",
+        "CAUSAL",
+        "UNTYPED",
+        "unspecified",
+    }
+)
+
+
 def _emit_verify_telemetry(
     ctx: Any,
     tenant_id: Any,
@@ -491,8 +513,19 @@ def _emit_verify_telemetry(
     candidate: Any,
     result: Any,
     siblings: list[Any] | None,
+    binding_version: str = "cbv1",
+    binding_source: str = "unmarked",
+    recorded: list[Any] | None = None,
+    evidence: list[Any] | None = None,
 ) -> None:
-    """Verification decision + location-exemption counters (Phase 4.2)."""
+    """Verification decision + location-exemption counters (Phase 4.2).
+
+    Phase 1 (claim binding) additions: per-claim binding dispositions,
+    one binding-version stamp per turn, and one HISTORY subject outcome
+    per turn — all closed-vocabulary, all fire-and-forget. ``recorded``
+    is the timeline-backed attempt list (``None`` degrades to unmapped);
+    ``evidence`` is the investigation bank for subject recomputation.
+    """
     try:
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
@@ -520,6 +553,158 @@ def _emit_verify_telemetry(
             _emit_telemetry(
                 ctx, tenant_id, investigation_id, "record_location_answer", bool(untested)
             )
+    except Exception:
+        pass
+    # Phase 1 (claim binding) counters: never raise, never block.
+    try:
+        _emit_telemetry(
+            ctx,
+            tenant_id,
+            investigation_id,
+            "record_binding_version",
+            str(binding_version or "cbv1"),
+            str(binding_source or "unmarked"),
+        )
+    except Exception:
+        pass
+    try:
+        from investigation_agent_platform.application.investigation.verification import (
+            collect_verification_diagnostics as _collect_diag,
+        )
+
+        _diag = None
+        try:
+            _diag = _collect_diag(candidate, list(evidence or []), result, recorded)
+        except Exception:
+            _diag = getattr(result, "diagnostics", None)
+        if _diag is None:
+            _diag = getattr(result, "diagnostics", None)
+        for _binding in list(getattr(_diag, "claim_bindings", None) or []):
+            try:
+                _raw_key = str(getattr(_binding, "claim_key", "") or "")
+                _k = _raw_key.rsplit("|", 1)[-1].strip() if "|" in _raw_key else "UNTYPED"
+                _k = _k if _k in _BINDING_KIND_LABELS else "unspecified"
+                if list(getattr(_binding, "claim_local", None) or []):
+                    _disp = "claim_local"
+                elif list(getattr(_binding, "bank_fallback", None) or []):
+                    _disp = "bank_fallback"
+                elif list(getattr(_binding, "unknown", None) or []):
+                    _disp = "evaporated"
+                elif bool(getattr(_binding, "unmapped", False)):
+                    _disp = "unmapped"
+                else:
+                    _disp = "no_citations"
+                _emit_telemetry(
+                    ctx,
+                    tenant_id,
+                    investigation_id,
+                    "record_claim_binding",
+                    _k,
+                    _disp,
+                    str(binding_version or "cbv1"),
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine as _VE,
+        )
+
+        _hkind = _VE.effective_claim_kind(candidate)
+        _hkind_value = str(getattr(_hkind, "value", _hkind) or "") if _hkind is not None else ""
+        if _hkind_value == "HISTORY":
+            _outcome = "mismatched_subject"
+            _newest = "not_applicable"
+            try:
+                _hstatus = str(
+                    getattr(getattr(result, "status", ""), "value", getattr(result, "status", ""))
+                    or ""
+                )
+                _target = getattr(candidate, "claim_target", None)
+                _claimed = (
+                    str(getattr(_target, "commit_subject", "") or "") if _target is not None else ""
+                )
+                _best = "mismatched_subject"
+                _claimed_empty = not _claimed
+                _cited_rows = list(getattr(result, "corroborating_evidence_ids", None) or [])
+                if _claimed_empty:
+                    _outcome = "missing_subject"
+                elif not _cited_rows:
+                    _outcome = "missing_row"
+                elif _hstatus == "VERIFIED":
+                    _by_id: dict[str, Any] = {}
+                    for _row in evidence or []:
+                        try:
+                            _by_id[str(getattr(_row, "evidence_id", "") or "")] = _row
+                        except Exception:
+                            continue
+                    _seen_row = False
+                    for _raw_corro in _cited_rows:
+                        try:
+                            _row = _by_id.get(_raw_corro)
+                            if _row is None:
+                                try:
+                                    _row = _by_id.get(str(_raw_corro))
+                                except Exception:
+                                    continue
+                            if _row is None:
+                                continue
+                            _seen_row = True
+                            _summary = str(getattr(_row, "summary", "") or "")
+                        except Exception:
+                            continue
+                        _o = _VE.subject_match_outcome(_claimed, _summary)
+                        if _o == "matched_exact":
+                            _best = _o
+                            break
+                        if _o == "matched_token_set" and _best != "matched_exact":
+                            _best = _o
+                    if not _seen_row:
+                        _best = "missing_row"
+                    _outcome = _best
+                    _newest = "satisfied"
+                else:
+                    _outcome = "mismatched_subject"
+                    _newest = "not_applicable"
+            except Exception:
+                _outcome = "mismatched_subject"
+                _newest = "not_applicable"
+            _emit_telemetry(
+                ctx,
+                tenant_id,
+                investigation_id,
+                "record_history_subject",
+                _outcome,
+                _newest,
+            )
+    except Exception:
+        pass
+    # Phase 3 (claim binding): per-record repair counters. Closed
+    # vocabularies only — kind parsed from the record's claim_key tail
+    # (same rule as bindings above), basis/outcome/version coerced by
+    # the adapter. Snippets, paths, SHAs, and statements never reach
+    # labels. Fire-and-forget: never raises, never blocks.
+    try:
+        _rdiag = getattr(result, "diagnostics", None)
+        for _rep in list(getattr(_rdiag, "repaired", None) or []):
+            try:
+                _rkey = str(getattr(_rep, "claim_key", "") or "")
+                _rk = _rkey.rsplit("|", 1)[-1].strip() if "|" in _rkey else "UNTYPED"
+                _rk = _rk if _rk in _BINDING_KIND_LABELS else "unspecified"
+                _emit_telemetry(
+                    ctx,
+                    tenant_id,
+                    investigation_id,
+                    "record_claim_repair",
+                    _rk,
+                    str(getattr(_rep, "basis", "") or ""),
+                    str(getattr(_rep, "outcome", "") or ""),
+                    str(getattr(_rep, "binding_version", "") or ""),
+                )
+            except Exception:
+                continue
     except Exception:
         pass
 
@@ -582,15 +767,22 @@ def _story_truncate(value: Any, *, max_str: int = 1000, max_list: int = 20) -> A
     if isinstance(value, str):
         return value[:max_str]
     if isinstance(value, (list, tuple)):
-        return [_story_truncate(v, max_str=max_str, max_list=max_list) for v in list(value)[:max_list]]
+        return [
+            _story_truncate(v, max_str=max_str, max_list=max_list) for v in list(value)[:max_list]
+        ]
     if isinstance(value, dict):
-        return {str(k)[:128]: _story_truncate(v, max_str=max_str, max_list=max_list) for k, v in list(value.items())[:max_list]}
+        return {
+            str(k)[:128]: _story_truncate(v, max_str=max_str, max_list=max_list)
+            for k, v in list(value.items())[:max_list]
+        }
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return str(value)[:max_str]
 
 
-def _story_debug(*, tenant_id: str = "", investigation_id: Any = "", event: str, **data: Any) -> None:
+def _story_debug(
+    *, tenant_id: str = "", investigation_id: Any = "", event: str, **data: Any
+) -> None:
     """Emit one DEBUG story event with the full (truncated, sanitized) payload.
 
     No-op cost at INFO: ``logger.debug`` arguments are built only when the

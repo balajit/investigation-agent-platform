@@ -566,6 +566,7 @@ def _callsite_target(
         claims = (reason_data or {}).get("claims") or []
         if not isinstance(claims, list):
             return None
+
         def _edge_identity(target: dict[str, Any]) -> tuple[str, ...]:
             path = str(target.get("file_path", "") or "").replace("\\", "/")
             path = path.strip().strip("/").lstrip("./")
@@ -638,9 +639,8 @@ def _callsite_target(
                     file_path = str(target.get("file_path", "") or "").strip()
                     if not file_path:
                         continue
-                    normalized = (
-                        file_path.replace("\\", "/").strip().strip("/").lstrip("./")
-                    )
+                    normalized = file_path.replace("\\", "/").strip().strip("/").lstrip("./")
+
                     # Must match VerificationEngine.canonical_caller_edge_key:
                     # identical normalization, `|` escaped as `%7C`.
                     def _escape(value: Any) -> str:
@@ -653,15 +653,11 @@ def _callsite_target(
                                 _escape(target.get("symbol", "")),
                                 _escape(target.get("counterpart", "")),
                                 normalized.replace("|", "%7C"),
-                                _escape(
-                                    target.get("commit_id", target.get("revision", ""))
-                                ),
+                                _escape(target.get("commit_id", target.get("revision", ""))),
                             )
                         ),
                         "caller_edge_symbol": str(target.get("symbol", "") or ""),
-                        "caller_edge_counterpart": str(
-                            target.get("counterpart", "") or ""
-                        ),
+                        "caller_edge_counterpart": str(target.get("counterpart", "") or ""),
                         "caller_edge_scope": str(target.get("scope", "") or ""),
                         "caller_edge_tenant_id": str(tenant_id or ""),
                         "caller_edge_investigation_id": str(investigation_id or ""),
@@ -743,26 +739,19 @@ def _callsite_target(
                                 .strip()
                                 .replace("|", "%7C"),
                                 normalized.replace("|", "%7C"),
-                                str(
-                                    target.get("commit_id", target.get("revision", ""))
-                                    or ""
-                                )
+                                str(target.get("commit_id", target.get("revision", "")) or "")
                                 .strip()
                                 .replace("|", "%7C"),
                             )
                         ),
                         "caller_edge_symbol": str(target.get("symbol", "") or ""),
-                        "caller_edge_counterpart": str(
-                            target.get("counterpart", "") or ""
-                        ),
+                        "caller_edge_counterpart": str(target.get("counterpart", "") or ""),
                         "caller_edge_scope": str(target.get("scope", "") or ""),
                         "caller_edge_tenant_id": str(tenant_id or ""),
                         "caller_edge_investigation_id": str(investigation_id or ""),
                     }
                 )
-                revision = str(
-                    target.get("commit_id", target.get("revision", "")) or ""
-                ).strip()
+                revision = str(target.get("commit_id", target.get("revision", "")) or "").strip()
                 if revision:
                     call_params["revision"] = revision
                 if _edge_identity(target) in read_obligations:
@@ -795,20 +784,19 @@ def _source_value_target(
                 or (claim.get("target") or {}).get("value_semantics", "")
             ).upper()
             fact_category = str(
-                claim.get("fact_category")
-                or (claim.get("target") or {}).get("fact_category", "")
+                claim.get("fact_category") or (claim.get("target") or {}).get("fact_category", "")
             ).upper()
-            method_return = fact_category == "SOURCE_VALUE_FACT" and semantics == "GUARDED_RETURN_LITERAL"
-            field_value = (
-                str(claim.get("claim_kind", "")).upper() == "DEFINITION"
-                and semantics
-                in {
-                    "EXPLICIT_INITIALIZER",
-                    "LANGUAGE_DEFAULT",
-                    "PARAMETER_DEFAULT_EXPRESSION",
-                    "FRAMEWORK_DEFAULT",
-                }
+            method_return = (
+                fact_category == "SOURCE_VALUE_FACT" and semantics == "GUARDED_RETURN_LITERAL"
             )
+            field_value = str(
+                claim.get("claim_kind", "")
+            ).upper() == "DEFINITION" and semantics in {
+                "EXPLICIT_INITIALIZER",
+                "LANGUAGE_DEFAULT",
+                "PARAMETER_DEFAULT_EXPRESSION",
+                "FRAMEWORK_DEFAULT",
+            }
             if not (method_return or field_value):
                 continue
             target = claim.get("target") or {}
@@ -868,8 +856,7 @@ def _source_value_target(
             if str(claim.get("claim_kind", "") or "").upper() != "BEHAVIOR":
                 continue
             _fallback_category = str(
-                claim.get("fact_category")
-                or (claim.get("target") or {}).get("fact_category", "")
+                claim.get("fact_category") or (claim.get("target") or {}).get("fact_category", "")
             ).strip()
             if _fallback_category:
                 continue
@@ -941,6 +928,7 @@ def _absence_disconfirmation_target(
             if path:
                 read_files.add(path.replace("\\", "/").strip().strip("/").lstrip("./"))
         candidates: list[tuple[str, Any, dict[str, Any]]] = []
+
         def _get(item: Any, key: str, default: Any = None) -> Any:
             if isinstance(item, dict):
                 return item.get(key, default)
@@ -997,9 +985,10 @@ def _absence_disconfirmation_target(
                     str(end),
                 )
             )
-            key = "ABSENCE_DISCONFIRMATION|" + hashlib.sha256(
-                obligation_material.encode()
-            ).hexdigest()
+            key = (
+                "ABSENCE_DISCONFIRMATION|"
+                + hashlib.sha256(obligation_material.encode()).hexdigest()
+            )
             params: dict[str, Any] = {
                 "file_path": path,
                 "start_line": start,
@@ -1372,3 +1361,429 @@ def _degraded_empty_result(action: str, miss_reason: str) -> Any:
             },
         }
     )
+
+
+# Phase 4 (claim binding): smallest-fetch forcing. Pure, deterministic,
+# replay-safe helpers (no I/O, no clock) following the _callsite_target
+# precedent. Gap identity is the group identity (kind|target_key);
+# claim_ref rides along as informational context only.
+
+SMALLEST_FETCH_ORDER: tuple[str, ...] = (
+    "DEFINITION",
+    "HISTORY",
+    "BEHAVIOR",
+    "ABSENCE",
+    "CAUSAL",
+)
+
+SMALLEST_FETCH_ACTIONS_BY_KIND: dict[str, frozenset[str]] = {
+    "DEFINITION": frozenset({"GET_CODE"}),
+    "HISTORY": frozenset({"GET_CODE_HISTORY"}),
+    "BEHAVIOR": frozenset({"SEARCH_LOGS", "QUERY_STATE"}),
+    "ABSENCE": frozenset({"SEARCH_CODE"}),
+    "CAUSAL": frozenset({"GET_CODE"}),
+}
+
+_FORCED_SMALLEST_FETCH_DEFAULT_CAP = 2
+
+
+def _definition_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
+    """GET_CODE params for a DEFINITION gap (pure)."""
+    try:
+        _raw_target = gap.get("target")
+        target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
+        file_path = str(target.get("file_path", "") or "").strip()
+        if not file_path:
+            return None
+        params: dict[str, Any] = {"file_path": file_path}
+        try:
+            start = int(target.get("line_start") or 0)
+            end = int(target.get("line_end") or 0)
+        except (TypeError, ValueError):
+            start, end = 0, 0
+        if start >= 1:
+            params["start_line"] = start
+        if end >= 1:
+            params["end_line"] = end
+        scope = str(gap.get("scope") or "").strip()
+        # F2: gap scope carries Phase 2 search-scope semantics (a path
+        # prefix), not a revision. Only forward machine-shaped revisions
+        # (HEAD or a hex SHA); anything else (path prefixes, branch names
+        # with slashes) would burn a capped fire on a malformed revision.
+        if scope == "HEAD" or (
+            7 <= len(scope) <= 40 and all(c in "0123456789abcdefABCDEF" for c in scope)
+        ):
+            params["revision"] = scope
+        else:
+            params["revision"] = "HEAD"
+        return params
+    except Exception:
+        return None
+
+
+def _history_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
+    """GET_CODE_HISTORY params for a HISTORY gap (pure)."""
+    try:
+        _raw_target = gap.get("target")
+        target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
+        file_path = str(target.get("file_path", "") or "").strip()
+        if not file_path:
+            return None
+        params: dict[str, Any] = {"file_path": file_path, "limit": 10}
+        symbol = str(target.get("symbol", "") or "").strip()
+        if symbol:
+            params["symbol"] = symbol
+        return params
+    except Exception:
+        return None
+
+
+def _behavior_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
+    """SEARCH_LOGS (or QUERY_STATE fallback) params for a BEHAVIOR gap (pure).
+
+    Leg selection is explicit: when the gap target names state rather
+    than logs, the QUERY_STATE leg fires; otherwise SEARCH_LOGS. The
+    returned directive's next_action follows the leg (both actions are in
+    the BEHAVIOR allowlist); the cascade validates the pair.
+    """
+    try:
+        _raw_target = gap.get("target")
+        target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
+        scope = str(target.get("scope", "") or gap.get("scope", "") or "").strip()
+        symbol = str(target.get("symbol", "") or "").strip()
+        query = str(gap.get("query", "") or "").strip()
+        keywords = [w for w in (query or symbol).split() if w][:10]
+        names_state = any(
+            token in scope.lower() for token in ("state", "environment", "environ", "config")
+        )
+        if keywords and not names_state:
+            return {"keywords": keywords, "limit": 10}
+        if names_state or scope:
+            return {"template_id": "default", "limit": 10, "_leg": "QUERY_STATE"}
+        if keywords:
+            return {"keywords": keywords, "limit": 10}
+        return None
+    except Exception:
+        return None
+
+
+def _absence_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
+    """SEARCH_CODE params for an ABSENCE gap (pure). Empty result is proof."""
+    try:
+        _raw_target = gap.get("target")
+        target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
+        query = (
+            str(gap.get("query", "") or "").strip() or str(target.get("symbol", "") or "").strip()
+        )
+        if not query:
+            return None
+        scope = str(target.get("scope", "") or gap.get("scope", "") or "").strip()
+        params: dict[str, Any] = {"query": query, "revision": "HEAD", "limit": 20}
+        if scope:
+            params["path_prefix"] = scope
+        return params
+    except Exception:
+        return None
+
+
+def _causal_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
+    """GET_CODE params for a CAUSAL gap's link window (pure)."""
+    try:
+        _raw_target = gap.get("target")
+        target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
+        file_path = str(target.get("file_path", "") or "").strip()
+        if not file_path:
+            return None
+        params: dict[str, Any] = {"file_path": file_path}
+        try:
+            start = int(target.get("line_start") or 0)
+            end = int(target.get("line_end") or 0)
+        except (TypeError, ValueError):
+            start, end = 0, 0
+        if start >= 1:
+            params["start_line"] = start
+        if end >= 1:
+            params["end_line"] = end
+        params["revision"] = "HEAD"
+        return params
+    except Exception:
+        return None
+
+
+# Direct builder references (never string names — stringly dispatch
+# fails silent under the caps).
+KIND_FETCH: dict[str, dict[str, Any]] = {
+    "DEFINITION": {"action": "GET_CODE", "builder": _definition_fetch_params},
+    "HISTORY": {"action": "GET_CODE_HISTORY", "builder": _history_fetch_params},
+    "BEHAVIOR": {"action": "SEARCH_LOGS", "builder": _behavior_fetch_params},
+    "ABSENCE": {"action": "SEARCH_CODE", "builder": _absence_fetch_params},
+    "CAUSAL": {"action": "GET_CODE", "builder": _causal_fetch_params},
+}
+
+
+def _smallest_fetch_action_for(kind: str, params: dict[str, Any]) -> str:
+    """Directive action for a kind, honoring the BEHAVIOR leg (pure)."""
+    try:
+        spec = KIND_FETCH.get(str(kind or ""))
+        if not spec:
+            return ""
+        if (
+            str(kind or "") == "BEHAVIOR"
+            and str((params or {}).pop("_leg", "") or "") == "QUERY_STATE"
+        ):
+            return "QUERY_STATE"
+        return str(spec.get("action") or "")
+    except Exception:
+        return ""
+
+
+def _smallest_fetch_target(
+    action_history: list[dict[str, Any]] | None,
+    forced_count: int,
+    gaps: list[dict[str, Any]] | None,
+    *,
+    kind: str,
+    tenant_id: str = "",
+    investigation_id: str = "",
+) -> dict[str, Any] | None:
+    """One smallest-fetch override for a single claim kind, or None (pure).
+
+    Fires when the D2 gap feed names an open gap of this kind. ``gaps``
+    is the latest claim_gap_feed history entry's list, passed in by the
+    cascade — never read from reason_data. Bounded (max 2 per run per
+    kind). Content-free by design: gap identity + history coverage
+    decide. Never raises.
+    """
+    try:
+        if int(forced_count or 0) >= _FORCED_SMALLEST_FETCH_DEFAULT_CAP:
+            return None
+        spec = KIND_FETCH.get(str(kind or ""))
+        if not spec:
+            return None
+        feed = [g for g in (gaps or []) if isinstance(g, dict)]
+        gap = None
+        try:
+            for entry in feed:
+                try:
+                    if str(entry.get("kind") or "") != str(kind):
+                        continue
+                    if not str(entry.get("gap_id") or ""):
+                        continue
+                    # Covered gaps fall through to the next open gap of
+                    # the same kind — a stale feed never suppresses its
+                    # siblings.
+                    if _smallest_fetch_already_covered(
+                        action_history, str(entry.get("gap_id") or "")
+                    ):
+                        continue
+                    gap = entry
+                    break
+                except Exception:
+                    # Skip the malformed sibling, never abort the kind:
+                    # one bad entry must not suppress its open siblings.
+                    continue
+        except Exception:
+            return None
+        if gap is None:
+            return None
+        try:
+            builder = (spec or {}).get("builder")
+            params = builder(gap) if callable(builder) else None
+        except Exception:
+            return None
+        if not params:
+            return None
+        try:
+            action = _smallest_fetch_action_for(str(kind), dict(params))
+            params = {k: v for k, v in dict(params).items() if not str(k).startswith("_")}
+        except Exception:
+            return None
+        if not action:
+            return None
+        return {
+            "next_action": action,
+            "action_parameters": dict(params),
+            "gap_id": str(gap.get("gap_id") or ""),
+            "claim_ref": str(gap.get("claim_ref") or ""),
+            "fetch_kind": str(kind),
+        }
+    except Exception:
+        return None
+
+
+def _smallest_fetch_dispatchable(kind: str, action: str, params: dict[str, Any]) -> bool:
+    """Whether a (kind, action, params) triple may dispatch (pure).
+
+    Separate validation from ledger-requery eligibility: the closed
+    kind→action allowlist plus non-empty params. No ledger keys are
+    fabricated here. Never raises.
+    """
+    try:
+        allowed = SMALLEST_FETCH_ACTIONS_BY_KIND.get(str(kind or ""), frozenset())
+        return str(action or "") in allowed and isinstance(params, dict) and bool(params)
+    except Exception:
+        return False
+
+
+def _carry_claim_gap_feed(
+    verify_data: dict[str, Any] | None, iteration: int
+) -> dict[str, Any] | None:
+    """Claim-gap feed marker to append to action_history, or None (pure).
+
+    Pure carry: validates verify result data["claim_gaps"] is a list. A
+    non-empty list must contain dicts with a non-empty gap_id and a known
+    KIND_FETCH kind. An empty list returns a valid tombstone entry, which
+    supersedes older feeds. Only malformed or missing input returns None,
+    so a malformed feed never breaks the loop. Feed entries are deduped
+    by gap_id (first wins); drops are counted, not silent.
+    Workflow-safe (no wall-clock, no randomness). Never raises.
+    """
+    try:
+        data = verify_data if isinstance(verify_data, dict) else {}
+        raw = data.get("claim_gaps")
+        if not isinstance(raw, list):
+            return None
+        gaps: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        dropped_unknown_kind = 0
+        dropped_missing_gap_id = 0
+        dropped_duplicate = 0
+        for entry in raw:
+            try:
+                if not isinstance(entry, dict):
+                    dropped_missing_gap_id += 1
+                    continue
+                gid = str(entry.get("gap_id") or "")
+                if not gid:
+                    dropped_missing_gap_id += 1
+                    continue
+                if str(entry.get("kind") or "") not in KIND_FETCH:
+                    dropped_unknown_kind += 1
+                    continue
+                if gid in seen:
+                    dropped_duplicate += 1
+                    continue
+                seen.add(gid)
+                gaps.append(dict(entry))
+            except Exception:
+                dropped_missing_gap_id += 1
+                continue
+        if raw and not gaps:
+            # Non-empty input but nothing valid: malformed, not a tombstone.
+            return None
+        return {
+            "kind": "claim_gap_feed",
+            "iteration": int(iteration),
+            "turn_issued": int(iteration),
+            "gaps": gaps,
+            "dropped": {
+                "unknown_kind": dropped_unknown_kind,
+                "missing_gap_id": dropped_missing_gap_id,
+                "duplicate_gap_id": dropped_duplicate,
+            },
+        }
+    except Exception:
+        return None
+
+
+def _smallest_fetch_already_covered(
+    action_history: list[dict[str, Any]] | None,
+    gap_id: str,
+) -> bool:
+    """True when gap_id already fired a smallest-fetch turn (pure).
+
+    Scans action_history newest-first for a forced_smallest_fetch_gap_id
+    stamp equal to gap_id. Same gap never refires; two same-kind targets
+    (different gap_ids) never suppress each other. Never raises.
+    """
+    try:
+        want = str(gap_id or "")
+        if not want:
+            return False
+        for evt in reversed(action_history or []):
+            try:
+                if not isinstance(evt, dict):
+                    continue
+                if str(evt.get("forced_smallest_fetch_gap_id") or "") == want:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def _norm_statement(text: Any) -> str:
+    """Normalized statement for claim↔evaluation joins (pure)."""
+    try:
+        return str(text or "").strip().casefold()
+    except Exception:
+        return ""
+
+
+def _forced_conclude_break(reason_data: dict[str, Any] | None) -> bool:
+    """Whether the loop must skip execute/retrieve/verify this turn (pure).
+
+    True only when the D6 opinion-only fast path fired. The workflow
+    breaks to CONCLUDING, which persists the honest abstention.
+    Never raises.
+    """
+    try:
+        return bool((reason_data or {}).get("forced_not_checkable", False))
+    except Exception:
+        return False
+
+
+def _should_force_conclude_not_checkable(
+    reason_data: dict[str, Any] | None,
+) -> bool:
+    """True when honest abstention is the only possible outcome (pure).
+
+    Every evaluated statement has ≥1 matching claim dict and every
+    claim dict is NOT_CHECKABLE. Empty sets, unmatched statements, and
+    any checkable claim return False. Never raises.
+    """
+    try:
+        data = reason_data if isinstance(reason_data, dict) else {}
+        raw_hyps = data.get("hypotheses_evaluated") or []
+        if not isinstance(raw_hyps, list) or not raw_hyps:
+            return False
+        stmts: list[str] = []
+        for h in raw_hyps:
+            try:
+                if isinstance(h, dict):
+                    s = _norm_statement(h.get("statement") or h.get("text"))
+                else:
+                    s = _norm_statement(h)
+                if s:
+                    stmts.append(s)
+            except Exception:
+                continue
+        if not stmts:
+            return False
+        raw_claims = data.get("claims") or []
+        if not isinstance(raw_claims, list) or not raw_claims:
+            return False
+        by_stmt: dict[str, list[str]] = {}
+        for c in raw_claims:
+            try:
+                if not isinstance(c, dict):
+                    continue
+                s = _norm_statement(c.get("statement"))
+                if not s:
+                    continue
+                by_stmt.setdefault(s, []).append(str(c.get("claim_kind") or "").upper())
+            except Exception:
+                continue
+        if not by_stmt:
+            return False
+        for s in stmts:
+            kinds = by_stmt.get(s)
+            if not kinds:
+                return False
+            for k in kinds:
+                if k != "NOT_CHECKABLE":
+                    return False
+        return True
+    except Exception:
+        return False

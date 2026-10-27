@@ -90,6 +90,30 @@ class OpenTelemetryObservabilityAdapter(ObservabilityPort):
         self._claim_counter = self._meter.create_counter(
             "reasoning.claims", unit="1", description="Decision claims by source"
         )
+        # Phase 1 (claim binding): closed-vocabulary counters. Labels are
+        # coerced to the frozen sets below — never file paths, SHAs,
+        # subjects, or statements.
+        self._claim_binding_counter = self._meter.create_counter(
+            "claim.binding.decisions",
+            unit="1",
+            description="Per-claim binding dispositions by kind",
+        )
+        self._history_subject_counter = self._meter.create_counter(
+            "history.subject.checks",
+            unit="1",
+            description="HISTORY subject comparisons by outcome",
+        )
+        self._binding_version_counter = self._meter.create_counter(
+            "claim.binding.version",
+            unit="1",
+            description="Claim binding version resolutions by source",
+        )
+        # Phase 3 (claim binding): closed-vocabulary repair counter.
+        self._claim_repair_counter = self._meter.create_counter(
+            "claim.binding.repairs",
+            unit="1",
+            description="Misattribution repairs by kind, basis, and outcome",
+        )
 
     def record_tool_execution(
         self,
@@ -219,9 +243,7 @@ class OpenTelemetryObservabilityAdapter(ObservabilityPort):
             1, {"has_untested_rival": "true" if has_untested_rival else "false"}
         )
 
-    def record_revision_check(
-        self, context: SpanContext, operation: str, match: bool
-    ) -> None:
+    def record_revision_check(self, context: SpanContext, operation: str, match: bool) -> None:
         if not self._enabled:
             return
         self._revision_check_counter.add(
@@ -238,6 +260,99 @@ class OpenTelemetryObservabilityAdapter(ObservabilityPort):
         if source not in ("model", "auto"):
             return
         self._claim_counter.add(1, {"source": source})
+
+    _CLAIM_KINDS = frozenset(
+        {
+            "DEFINITION",
+            "CALL_EDGE",
+            "BEHAVIOR",
+            "ABSENCE",
+            "HISTORY",
+            "CAUSAL",
+            "UNTYPED",
+            "unspecified",
+        }
+    )
+    _BINDING_DISPOSITIONS = frozenset(
+        {"claim_local", "bank_fallback", "evaporated", "unmapped", "no_citations"}
+    )
+    _BINDING_VERSIONS = frozenset({"cbv1", "cbv2", "cbv3"})
+    _REPAIR_BASES = frozenset({"snippet_containment", "overlap_and_containment"})
+    _REPAIR_OUTCOMES = frozenset({"applied", "shadow"})
+    _SUBJECT_OUTCOMES = frozenset(
+        {
+            "matched_exact",
+            "matched_token_set",
+            "mismatched_subject",
+            "missing_subject",
+            "missing_row",
+        }
+    )
+    _NEWEST_RULES = frozenset({"satisfied", "violated", "not_applicable"})
+    _VERSION_SOURCES = frozenset({"pinned", "unmarked"})
+
+    @staticmethod
+    def _closed(value: Any, allowed: frozenset[str], fallback: str) -> str:
+        text = str(value or "").strip()
+        return text if text in allowed else fallback
+
+    def record_claim_binding(
+        self, context: SpanContext, claim_kind: str, disposition: str, binding_version: str
+    ) -> None:
+        if not self._enabled:
+            return
+        self._claim_binding_counter.add(
+            1,
+            {
+                "claim_kind": self._closed(claim_kind, self._CLAIM_KINDS, "unspecified"),
+                "disposition": self._closed(
+                    disposition, self._BINDING_DISPOSITIONS, "no_citations"
+                ),
+                "binding_version": self._closed(binding_version, self._BINDING_VERSIONS, "cbv1"),
+            },
+        )
+
+    def record_history_subject(self, context: SpanContext, outcome: str, newest_rule: str) -> None:
+        if not self._enabled:
+            return
+        self._history_subject_counter.add(
+            1,
+            {
+                "outcome": self._closed(outcome, self._SUBJECT_OUTCOMES, "mismatched_subject"),
+                "newest_rule": self._closed(newest_rule, self._NEWEST_RULES, "not_applicable"),
+            },
+        )
+
+    def record_binding_version(self, context: SpanContext, version: str, source: str) -> None:
+        if not self._enabled:
+            return
+        self._binding_version_counter.add(
+            1,
+            {
+                "version": self._closed(version, self._BINDING_VERSIONS, "cbv1"),
+                "source": self._closed(source, self._VERSION_SOURCES, "unmarked"),
+            },
+        )
+
+    def record_claim_repair(
+        self,
+        context: SpanContext,
+        claim_kind: str,
+        basis: str,
+        outcome: str,
+        binding_version: str,
+    ) -> None:
+        if not self._enabled:
+            return
+        self._claim_repair_counter.add(
+            1,
+            {
+                "claim_kind": self._closed(claim_kind, self._CLAIM_KINDS, "unspecified"),
+                "basis": self._closed(basis, self._REPAIR_BASES, "snippet_containment"),
+                "outcome": self._closed(outcome, self._REPAIR_OUTCOMES, "shadow"),
+                "binding_version": self._closed(binding_version, self._BINDING_VERSIONS, "cbv1"),
+            },
+        )
 
 
 __all__ = ["ObservabilityPort", "OpenTelemetryObservabilityAdapter"]

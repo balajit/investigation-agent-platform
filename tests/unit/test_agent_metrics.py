@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from agent_metrics import is_auto_claim_shape, parse_reason_trace
+from agent_metrics import format_repair_rate, is_auto_claim_shape, parse_reason_trace
 
 
 def test_parse_full_trace():
@@ -40,3 +40,22 @@ def test_parse_non_reason_row():
 def test_auto_claim_proxy():
     assert is_auto_claim_shape([]) is True
     assert is_auto_claim_shape([{"claim_kind": "CAUSAL"}]) is False
+
+
+# Finding F: repair_rate denominator is checkable claims, not applied+shadow.
+
+
+def test_repair_rate_over_checkable_claims():
+    line = format_repair_rate(3, 1, 10)
+    assert "repair_rate=0.30" in line
+    assert "(3/10 checkable)" in line
+
+
+def test_repair_rate_zero_checkable_no_division_failure():
+    line = format_repair_rate(2, 1, 0)
+    assert "n/a" in line
+    assert "no checkable claims" in line
+
+
+def test_repair_rate_no_records():
+    assert "no repair records" in format_repair_rate(0, 0, 0)

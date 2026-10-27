@@ -89,7 +89,8 @@ def reload_definition_dispatch_table() -> tuple[Any, Any]:
 
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
-async def verify_root_cause_activity(    params: VerifyRootCauseInput,
+async def verify_root_cause_activity(
+    params: VerifyRootCauseInput,
 ) -> GenericActivityResult:
     # TO_DO-011: not idempotency-wired — pure compute over persisted state,
     # no durable writes of its own; re-execution is safe by construction.
@@ -219,13 +220,19 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             )
 
         from investigation_agent_platform.application.investigation.verification import (
+            CLAIM_BINDING_CBV1,
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
             VERIFIER_VERSION_CURRENT,
             VERIFIER_VERSION_LEGACY,
             CausalRelationship,
+            ClaimBindingEnforcement,
             UnknownVerifierVersion,
             VerificationEngine,
             VerifierVersionUnavailable,
+            bound_kept_evidence_only,
             rank_hypotheses,
+            resolve_claim_binding_version,
             resolve_verifier_version,
             select_verifiable_candidate,
         )
@@ -258,6 +265,10 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             )
             verifier_version = VERIFIER_VERSION_CURRENT
             _version_source = "no-repository"
+            # Phase 1 (claim binding): no persisted row exists to misread,
+            # so unmarked resolves to current (cbv1 during rollout).
+            claim_binding_version = CLAIM_BINDING_CBV1
+            _binding_source = "no-repository"
         else:
             try:
                 _inv = await investigation_repo.get_by_id(tenant_id, investigation_id)
@@ -281,6 +292,18 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     success=False,
                     error=f"verifier version unavailable: {exc}",
                 )
+            # Phase 1 (claim binding): same recorded-version contract on
+            # the same metadata row. Unknown/unreadable pins fail closed,
+            # exactly like the verifier pin above.
+            try:
+                claim_binding_version, _binding_source = resolve_claim_binding_version(
+                    getattr(_inv, "metadata", None)
+                )
+            except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
+                return GenericActivityResult(
+                    success=False,
+                    error=f"claim binding version unavailable: {exc}",
+                )
         contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
         contradictions: list[Any] = []
         if contradiction_repo is not None:
@@ -303,14 +326,42 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             ranked, evidence_by_id, ("REJECTED", "CONTRADICTED", "VERIFIED")
         )
         if candidate is None:
+            # Finding M: no-candidate/no-hypotheses is an explicit empty
+            # feed (claim_gaps=[]), never a missing key. The carrier turns
+            # [] into a tombstone that supersedes stale feeds; a missing
+            # key means enforcement faulted — distinct states, distinct
+            # signals. Legacy-pinned rows keep their exact keyless shape.
+            _no_candidate_data: dict[str, Any] = {
+                "verified": False,
+                "reason": "no_eligible_hypothesis",
+                "producing_path": "no-candidate",
+            }
+            try:
+                if verifier_version != VERIFIER_VERSION_LEGACY:
+                    _no_candidate_data["claim_gaps"] = []
+            except Exception:
+                pass
             return GenericActivityResult(
                 success=True,
-                data={
-                    "verified": False,
-                    "reason": "no_eligible_hypothesis",
-                    "producing_path": "no-candidate",
-                },
+                data=_no_candidate_data,
             )
+        # Finding L: opinion-only candidates skip every activity-layer
+        # validator (fast paths + repairs). The shared predicate (N)
+        # screens on assessments alone — no evidence, no model, no
+        # retrieval. The general evaluate path below keeps its own
+        # projection as defense in depth; enforcement, gap feed, marker,
+        # and telemetry run unchanged so the INCONCLUSIVE surfaces in
+        # the same evidence-only channel.
+        try:
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                all_typed_claims_not_checkable as _all_nc_early,
+            )
+        except Exception:
+            _all_nc_early = None
+        try:
+            _nc_early = bool(_all_nc_early(candidate)) if _all_nc_early is not None else False
+        except Exception:
+            _nc_early = False
 
         def _resolve(ids: list[Any]) -> list[Any]:
             out = []
@@ -324,7 +375,10 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     out.append(item)
             return out
 
-        engine = VerificationEngine(verifier_version=verifier_version)
+        engine = VerificationEngine(
+            verifier_version=verifier_version,
+            claim_binding_version=claim_binding_version,
+        )
         policy = _select_verification_policy(data.get("triage_route", ""))
         # D3 Phase 0 shadow state is observational and runs beside the one
         # active dev verifier behavior.
@@ -339,21 +393,118 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
         if candidate is not None:
             bound = _resolve(getattr(candidate, "supporting_evidence_ids", []) or [])
             refuting = _resolve(getattr(candidate, "refuting_evidence_ids", []) or [])
+            # Phase 1 (claim binding): timeline-backed linkage for the
+            # authoritative partition. Fail-open to None (unmapped
+            # degradation — unknown evaporation still applies); a read
+            # fault here never blocks verification.
+            _binding_recorded: list[Any] | None = None
+            _binding_enforcement = None
+            # Phase 3 (claim binding): fast-path repair records collected
+            # by the history/location wraps below. Initialized up front so
+            # the enforcement choke never reads an unbound name.
+            _verify_repairs: list[Any] = []
+            if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+                try:
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        merge_recorded_attempts as _merge_attempts,
+                    )
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        recorded_attempt_summaries as _attempt_summaries,
+                    )
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        recorded_retrieval_attempts as _timeline_attempts,
+                    )
+
+                    _b_recent = data.get("recent_actions", []) or []
+                    _b_summaries = _attempt_summaries(_b_recent)
+                    _b_repo = getattr(ctx, "timeline_repo", None)
+                    _b_events = None
+                    if _b_repo is not None:
+                        try:
+                            _b_events = await _b_repo.find_by_investigation_id(
+                                tenant_id, investigation_id
+                            )
+                        except Exception:
+                            _b_events = None
+                    if _b_events is None:
+                        _binding_recorded = _b_summaries
+                    else:
+                        _binding_recorded = _merge_attempts(
+                            _timeline_attempts(_b_events or []),
+                            _b_summaries or [],
+                        )
+                except Exception:
+                    _binding_recorded = None
             # Tranche B: range-read rows for files the claim names join the
             # bound set even when the model cited only the search-match
             # sibling (statement-grounded inclusion — same file, proven
             # provenance; concession/contradiction gates still apply).
+            # Under cbv2 the inclusion is gated: only claim-local-linked
+            # or explicitly cited rows join; it can never substitute for
+            # zero cited-kept survival.
             try:
                 _bound_ids = {getattr(e, "evidence_id", None) for e in bound}
-                for _extra in VerificationEngine.statement_range_reads(
-                    str(getattr(candidate, "statement", "") or ""),
-                    list(evidence_by_id.values()),
-                ):
-                    if getattr(_extra, "evidence_id", None) not in _bound_ids:
-                        _bound_ids.add(getattr(_extra, "evidence_id", None))
+                if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+                    _gated_cited: set[str] = set()
+                    try:
+                        for _raw in getattr(candidate, "supporting_evidence_ids", []) or []:
+                            _gated_cited.add(str(_raw))
+                        for _asm in getattr(candidate, "assessments", []) or []:
+                            _gated_cited.add(str(getattr(_asm, "evidence_id", "") or ""))
+                        for _step in getattr(candidate, "causal_steps", []) or []:
+                            for _raw in getattr(_step, "evidence_ids", []) or []:
+                                _gated_cited.add(str(_raw))
+                    except Exception:
+                        pass
+                    _gated_linked: set[str] = set()
+                    try:
+                        for _banked, _att in _binding_recorded or []:
+                            for _raw in _banked or []:
+                                _gated_linked.add(str(_raw))
+                    except Exception:
+                        pass
+                    _gated_allow = _gated_cited | _gated_linked
+                    for _extra in VerificationEngine.statement_range_reads(
+                        str(getattr(candidate, "statement", "") or ""),
+                        list(evidence_by_id.values()),
+                    ):
+                        _xid = getattr(_extra, "evidence_id", None)
+                        if _xid in _bound_ids:
+                            continue
+                        if str(_xid) not in _gated_allow:
+                            continue
+                        _bound_ids.add(_xid)
                         bound.append(_extra)
+                else:
+                    for _extra in VerificationEngine.statement_range_reads(
+                        str(getattr(candidate, "statement", "") or ""),
+                        list(evidence_by_id.values()),
+                    ):
+                        if getattr(_extra, "evidence_id", None) not in _bound_ids:
+                            _bound_ids.add(getattr(_extra, "evidence_id", None))
+                            bound.append(_extra)
             except Exception:
                 pass
+            # Phase 1 (claim binding): filter the working set to kept
+            # citations before any kind gate runs. Uncited rows pass
+            # through; cited-but-unbanked rows evaporate (recorded, never
+            # silent). Under cbv1 this block is skipped byte-identically.
+            if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+                try:
+                    _binding_enforcement = engine.claim_binding_enforcement(
+                        candidate,
+                        list(evidence_by_id.values()),
+                        _binding_recorded,
+                    )
+                    if _binding_enforcement is not None:
+                        _kept = set(_binding_enforcement.kept_ids or [])
+                        _cited = set(_binding_enforcement.cited_ids or [])
+                        bound, _evap, _ckept = bound_kept_evidence_only(bound, _kept, _cited)
+                except Exception:
+                    # Fail closed: without a partition the filtered set is
+                    # untrusted; a fault enforcement forces INCONCLUSIVE at
+                    # the choke point below instead of verifying on it.
+                    _binding_enforcement = ClaimBindingEnforcement(fault=True)
             # D3 Phase 0 shadow tap T1 (read-only; never feeds back).
             # Observes the already-loaded candidate/bound rows through the
             # pure shadow evaluator. Fail-closed for the shadow (any fault
@@ -418,12 +569,48 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 except Exception:
                     pass
 
-            code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
-            code_value_claim = VerificationEngine.claims_field_value(
-                str(getattr(candidate, "statement", "") or "")
-            ) or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
+            # Finding L: skipped on the opinion-only early path — an
+            # unfalsifiable claim is never code-value validated.
+            if _nc_early:
+                code_value_result = None
+            else:
+                code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
+            code_value_claim = (
+                VerificationEngine.claims_field_value(
+                    str(getattr(candidate, "statement", "") or "")
+                )
+                or str(VerificationEngine._fact_category_of(candidate) or "") == "SOURCE_VALUE_FACT"
+            )
             code_value_answered = code_value_result is not None and not refuting
-            history_result = engine.validate_history_claim(candidate, bound, contradictions)
+            # Phase 3 (claim binding): fast-path repair wrap (D6 site 2).
+            # revalidate_with_repair runs the validate call verbatim —
+            # identical under cbv1 — and performs one repair pass under
+            # cbv2/cbv3. Repairs collect here for enforcement extension
+            # and diagnostics attachment below.
+            _verify_siblings = [
+                h
+                for h in (hypotheses or [])
+                if getattr(h, "id", None) != getattr(candidate, "id", None)
+            ]
+            # Finding L: skipped on the opinion-only early path (no
+            # history proof is attempted for an unfalsifiable claim).
+            if _nc_early:
+                history_result = None
+            else:
+                try:
+                    history_result, _history_repairs = engine.revalidate_with_repair(
+                        lambda h, w: engine.validate_history_claim(h, w, contradictions),
+                        candidate,
+                        bound,
+                        list(evidence_by_id.values()),
+                        contradictions,
+                        _verify_siblings,
+                        enforcement=_binding_enforcement,
+                        expect_kinds=(ClaimKind.HISTORY,),
+                    )
+                    _verify_repairs.extend(list(_history_repairs or []))
+                except Exception:
+                    history_result = engine.validate_history_claim(candidate, bound, contradictions)
             history_answered = history_result is not None and not refuting
             # Init up front: every fast path below assigns only on its taken
             # branch, and the general-build guard is skipped when
@@ -442,9 +629,30 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
             # G1: location-answer fast path — validated code citations answer
             # location questions without causal machinery. Skipped under
             # legacy verifier mode (pre-P0-3 semantics preserved).
-            location_result = engine.validate_location_claim(
-                candidate, bound, contradictions, _definition_observe
-            )
+            # Finding L: skipped on the opinion-only early path.
+            location_result = None
+            _location_repairs = []
+            if _nc_early:
+                pass
+            else:
+                try:
+                    location_result, _location_repairs = engine.revalidate_with_repair(
+                        lambda h, w: engine.validate_location_claim(
+                            h, w, contradictions, _definition_observe
+                        ),
+                        candidate,
+                        bound,
+                        list(evidence_by_id.values()),
+                        contradictions,
+                        _verify_siblings,
+                        enforcement=_binding_enforcement,
+                        expect_kinds=(ClaimKind.DEFINITION, ClaimKind.CALL_EDGE),
+                    )
+                    _verify_repairs.extend(list(_location_repairs or []))
+                except Exception:
+                    location_result = engine.validate_location_claim(
+                        candidate, bound, contradictions, _definition_observe
+                    )
             location_answered = (
                 location_result is not None
                 and not refuting
@@ -452,8 +660,7 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and not history_answered
                 and not (
                     verifier_version == VERIFIER_VERSION_CURRENT
-                    and VerificationEngine.effective_claim_kind(candidate)
-                    == ClaimKind.CALL_EDGE
+                    and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
                 )
             )
             if location_answered:
@@ -462,10 +669,12 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 causal_chain = []
             # T1-1: doc-answer fast path (mirrors location). Skipped under
             # legacy verifier mode like the location path.
+            # Finding L: skipped on the opinion-only early path.
             doc_answered = False
             doc_result = None
             if (
-                not location_answered
+                not _nc_early
+                and not location_answered
                 and not code_value_answered
                 and not history_answered
                 and not code_value_claim
@@ -514,10 +723,12 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     )
             # #65: state-answer fast path (mirrors doc). Banked DATABASE_STATE
             # rows answer value questions without causal machinery.
+            # Finding L: skipped on the opinion-only early path.
             state_answered = False
             state_result = None
             if (
-                not location_answered
+                not _nc_early
+                and not location_answered
                 and not code_value_answered
                 and not history_answered
                 and not doc_answered
@@ -603,9 +814,9 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
             ):
                 caller_edge_gate = engine.evaluate_caller_edge(candidate, bound)
-                caller_edge_validated = bool(
-                    caller_edge_gate is not None and caller_edge_gate[0]
-                ) and not refuting
+                caller_edge_validated = (
+                    bool(caller_edge_gate is not None and caller_edge_gate[0]) and not refuting
+                )
             blockers: list[str] = []
             if not bound:
                 blockers.append("no bound supporting evidence")
@@ -626,7 +837,11 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 and not code_value_claim
             ):
                 blockers.append("no validated causal chain")
-            if blockers:
+            # Finding L: blockers describe checkable-claim failure modes;
+            # an opinion-only candidate bypasses them to the general path,
+            # whose evaluate-level projection returns the NC-specific
+            # INCONCLUSIVE (same verdict as without the early skip).
+            if blockers and not _nc_early:
                 from investigation_agent_platform.application.investigation.verification import (
                     InvestigationConfidence,
                     VerificationResult,
@@ -673,7 +888,7 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 result = history_result
                 producing_path = "history"
                 causal_chain = []
-            elif (
+            elif _nc_early or (
                 not code_value_claim
                 and not location_answered
                 and not history_answered
@@ -706,6 +921,23 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 _evaluate_kwargs: dict[str, Any] = {}
                 if _verify_recorded_attempts:
                     _evaluate_kwargs["recorded_attempts"] = _verify_recorded_attempts
+                # Phase 1 (claim binding): the timeline-backed linkage
+                # derived up front carries the attempt join the general
+                # branch needs; marker-only history stays as-is.
+                if (
+                    claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+                    and _binding_recorded
+                    and "recorded_attempts" not in _evaluate_kwargs
+                ):
+                    _evaluate_kwargs["recorded_attempts"] = _binding_recorded
+                # Phase 3 (claim binding): the full bank feeds the repair
+                # donor pool (the working set may exclude uncited donors).
+                # cbv2/cbv3 runs only — legacy keeps the exact call shape.
+                if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+                    try:
+                        _evaluate_kwargs["evidence_bank"] = list(evidence_by_id.values())
+                    except Exception:
+                        pass
                 result = engine.evaluate_hypothesis(
                     candidate,
                     bound,
@@ -718,7 +950,102 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     observer=_definition_observe,
                     **_evaluate_kwargs,
                 )
+            # Phase 1 (claim binding): the taken verdict — fast-path or
+            # general — passes through authoritative enforcement. Fast
+            # paths bypass the engine's internal enforcement, so this is
+            # the single choke point; it is idempotent on general-branch
+            # results. Under cbv1 _binding_enforcement is None: no-op.
+            # Phase 3 (claim binding, D6 site 2): applied fast-path
+            # rebinds extend the enforcement before the choke so donor
+            # corroborating survives the kept filter.
+            if (
+                claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+                and _binding_enforcement is not None
+                and result is not None
+            ):
+                try:
+                    _applied_donors = [
+                        str(getattr(r, "donor_id", "") or "")
+                        for r in _verify_repairs
+                        if str(getattr(r, "outcome", "") or "") == "applied"
+                        and str(getattr(r, "donor_id", "") or "")
+                    ]
+                    if _applied_donors:
+                        _binding_enforcement = VerificationEngine.enforcement_with_repairs(
+                            _binding_enforcement, _applied_donors
+                        )
+                except Exception:
+                    pass
+                try:
+                    result = engine.enforce_claim_binding(candidate, result, _binding_enforcement)
+                except Exception:
+                    # Fail closed (NEW-1): an enforcement fault must never
+                    # leave the pre-enforcement (possibly VERIFIED) verdict
+                    # standing. The callee guards everything it touches, so
+                    # this is unreachable in practice; it exists so a future
+                    # regression cannot silently reopen the fast path.
+                    try:
+                        result = engine._fault_inconclusive(candidate)
+                    except Exception:
+                        pass
+                # Attach fast-path repairs (shadow or applied) to the
+                # taken result's diagnostics; engine-branch repairs are
+                # already attached (attach dedupes by value).
+                try:
+                    result = VerificationEngine.attach_repairs(result, list(_verify_repairs or []))
+                except Exception:
+                    pass
+            # Phase 4 (claim binding): smallest-fetch gap feed. Built from
+            # the candidate plus the post-repair enforcement's cited_groups
+            # — the only scope where both coexist. Faulted enforcement or
+            # a builder error yields no feed (fail closed); an error
+            # envelope is never mistaken for an empty feed.
+            _claim_gaps: list[Any] | None = None
+            _not_checkable_groups: list[str] = []
+            try:
+                if _binding_enforcement is not None and not bool(
+                    getattr(_binding_enforcement, "fault", False)
+                ):
+                    from investigation_agent_platform.application.investigation.verification import (
+                        build_claim_gaps as _build_claim_gaps,
+                    )
+
+                    _feed = _build_claim_gaps(
+                        candidate, set(_binding_enforcement.cited_groups or [])
+                    )
+                    if isinstance(_feed, dict) and not _feed.get("error"):
+                        _raw_gaps = _feed.get("gaps")
+                        _claim_gaps = (
+                            [g for g in _raw_gaps if isinstance(g, dict)]
+                            if isinstance(_raw_gaps, list)
+                            else []
+                        )
+                        _raw_nc = _feed.get("not_checkable_groups")
+                        _not_checkable_groups = (
+                            sorted({str(g) for g in _raw_nc if str(g)})
+                            if isinstance(_raw_nc, list)
+                            else []
+                        )
+                    else:
+                        story_log(
+                            logger,
+                            logging.WARNING,
+                            "claim gap feed build failed",
+                            comp=COMP_ACTVTY,
+                            func="verify_root_cause_activity",
+                            stage="verify",
+                            step="build_claim_gaps",
+                            outcome=OUTCOME_SKIPPED,
+                            tenant_id=tenant_id,
+                            investigation_id=inv_id_str,
+                            event="claim gap feed build failed",
+                        )
+            except Exception:
+                _claim_gaps = None
+                _not_checkable_groups = []
             # Phase 4.2: verification decision + location-exemption counters.
+            # Phase 1 (claim binding): per-claim dispositions, version
+            # stamp, and HISTORY subject outcome ride the same call.
             _emit_verify_telemetry(
                 ctx,
                 tenant_id,
@@ -730,6 +1057,10 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     for h in (hypotheses or [])
                     if getattr(h, "id", None) != getattr(candidate, "id", None)
                 ],
+                binding_version=claim_binding_version,
+                binding_source=_binding_source,
+                recorded=_binding_recorded,
+                evidence=list(evidence_by_id.values()),
             )
             verified = result.status.value == "VERIFIED"
             # Debug story: per-candidate gate verdict. Shows which proof
@@ -741,12 +1072,21 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 event="story.verify_gate",
                 hypothesis_id=str(getattr(candidate, "id", "")),
                 statement=str(getattr(candidate, "statement", ""))[:500],
-                claim_kind=str(getattr(getattr(candidate, "claim_kind", None), "value", getattr(candidate, "claim_kind", "?")) or "?"),
+                claim_kind=str(
+                    getattr(
+                        getattr(candidate, "claim_kind", None),
+                        "value",
+                        getattr(candidate, "claim_kind", "?"),
+                    )
+                    or "?"
+                ),
                 status=str(getattr(result.status, "value", result.status)),
                 producing_path=str(producing_path) if "producing_path" in dir() else "?",
                 explanation=str(getattr(result, "explanation", ""))[:500],
                 bound_count=len(bound or []),
-                caller_edge_validated=bool(caller_edge_validated) if "caller_edge_validated" in dir() else False,
+                caller_edge_validated=bool(caller_edge_validated)
+                if "caller_edge_validated" in dir()
+                else False,
             )
             # Persist the verdict back onto the candidate (scores, bindings,
             # lifecycle) so the next ranking sorts on maintained fields.
@@ -780,15 +1120,15 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                 return GenericActivityResult(
                     success=False,
                     error="verify verdict materialization failed",
-                data={
-                    "verified": False,
-                    "status": result.status.value,
-                    "hypothesis_id": str(result.hypothesis_id),
-                    "reason": "outcome_materialization_failed",
-                    "persisted": False,
-                    "verifier_version": str(verifier_version),
-                    "verifier_version_source": _version_source,
-                },
+                    data={
+                        "verified": False,
+                        "status": result.status.value,
+                        "hypothesis_id": str(result.hypothesis_id),
+                        "reason": "outcome_materialization_failed",
+                        "persisted": False,
+                        "verifier_version": str(verifier_version),
+                        "verifier_version_source": _version_source,
+                    },
                 )
             if updated != candidate and hypothesis_repo is not None:
                 try:
@@ -815,18 +1155,17 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     )
                     return GenericActivityResult(
                         success=False,
-                        error="verify verdict persistence conflict "
-                        f"({type(exc).__name__})",
-                    data={
-                        "verified": False,
-                        "status": result.status.value,
-                        "confidence": result.confidence.overall_confidence,
-                        "hypothesis_id": str(result.hypothesis_id),
-                        "reason": "persistence_conflict",
-                        "persisted": False,
-                        "verifier_version": str(verifier_version),
-                        "verifier_version_source": _version_source,
-                    },
+                        error=f"verify verdict persistence conflict ({type(exc).__name__})",
+                        data={
+                            "verified": False,
+                            "status": result.status.value,
+                            "confidence": result.confidence.overall_confidence,
+                            "hypothesis_id": str(result.hypothesis_id),
+                            "reason": "persistence_conflict",
+                            "persisted": False,
+                            "verifier_version": str(verifier_version),
+                            "verifier_version_source": _version_source,
+                        },
                     )
         story_log(
             logger,
@@ -881,10 +1220,8 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     _timeline_events: list | None = None
                     if _timeline_repo is not None:
                         try:
-                            _timeline_events = (
-                                await _timeline_repo.find_by_investigation_id(
-                                    tenant_id, investigation_id
-                                )
+                            _timeline_events = await _timeline_repo.find_by_investigation_id(
+                                tenant_id, investigation_id
                             )
                         except Exception:
                             _timeline_events = None
@@ -954,9 +1291,80 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
                     hypothesis_id=getattr(result, "hypothesis_id", ""),
                     verifier_version=str(verifier_version),
                 )
-                _eval_event_type = getattr(
-                    TimelineEventType, "VERIFY_EVALUATION", None
-                )
+                # Phase 1 (claim binding): additive marker keys for the
+                # battery series (bounded scalars only; marker stays a
+                # small JSON object). Fail-open: faults skip the keys,
+                # never the marker write.
+                if isinstance(_eval_attrs, dict):
+                    try:
+                        _eval_attrs["verification_status"] = str(
+                            getattr(
+                                getattr(result, "status", ""),
+                                "value",
+                                getattr(result, "status", ""),
+                            )
+                            or ""
+                        )
+                        _eval_attrs["verification_tier"] = str(getattr(result, "tier", "") or "")
+                        _eval_attrs["claim_binding_version"] = str(claim_binding_version)
+                    except Exception:
+                        pass
+                    # Phase 4 (claim binding): NOT_CHECKABLE denominator
+                    # input (D5/D7). Exact count always; identities capped
+                    # at 10 with a truncation flag mirroring the repaired
+                    # precedent. Fail-open: faults skip the keys, never
+                    # the marker write.
+                    try:
+                        _nc_groups = list(_not_checkable_groups or [])
+                        _eval_attrs["not_checkable_count"] = len(_nc_groups)
+                        _eval_attrs["not_checkable_groups"] = [str(g)[:96] for g in _nc_groups[:10]]
+                        _eval_attrs["not_checkable_truncated"] = bool(len(_nc_groups) > 10)
+                    except Exception:
+                        pass
+                    try:
+                        from investigation_agent_platform.application.investigation.verification import (
+                            VerificationEngine as _MarkerEngine,
+                        )
+
+                        _m_kind = _MarkerEngine.effective_claim_kind(candidate)
+                        _m_kind_value = (
+                            str(getattr(_m_kind, "value", _m_kind) or "")
+                            if _m_kind is not None
+                            else ""
+                        )
+                        if _m_kind_value == "HISTORY":
+                            _m_target = getattr(candidate, "claim_target", None)
+                            _m_claimed = (
+                                str(getattr(_m_target, "commit_subject", "") or "")
+                                if _m_target is not None
+                                else ""
+                            )
+                            _m_best = "mismatched_subject"
+                            for _m_corro in (
+                                getattr(result, "corroborating_evidence_ids", None) or []
+                            ):
+                                try:
+                                    _m_row = evidence_by_id.get(_m_corro)
+                                except Exception:
+                                    continue
+                                if _m_row is None:
+                                    try:
+                                        _m_row = evidence_by_id.get(str(_m_corro))
+                                    except Exception:
+                                        continue
+                                if _m_row is None:
+                                    continue
+                                _m_summary = str(getattr(_m_row, "summary", "") or "")
+                                _m_o = _MarkerEngine.subject_match_outcome(_m_claimed, _m_summary)
+                                if _m_o == "matched_exact":
+                                    _m_best = _m_o
+                                    break
+                                if _m_o == "matched_token_set":
+                                    _m_best = _m_o
+                            _eval_attrs["history_subject_outcome"] = _m_best
+                    except Exception:
+                        pass
+                _eval_event_type = getattr(TimelineEventType, "VERIFY_EVALUATION", None)
                 _eval_repo = getattr(ctx, "timeline_repo", None)
                 if _eval_attrs is None:
                     story_log(
@@ -1061,6 +1469,57 @@ async def verify_root_cause_activity(    params: VerifyRootCauseInput,
         # reads as an explicit None.
         if verifier_version != VERIFIER_VERSION_LEGACY:
             _verify_result_data["ledger_requery"] = _ledger_requery
+        # Phase 4 (claim binding): the gap feed key exists on every
+        # current-version run that produced one; absent (not None) when
+        # the feed errored or enforcement faulted, so the carrier can
+        # distinguish "no gaps" ([]) from "no feed".
+        if verifier_version != VERIFIER_VERSION_LEGACY and _claim_gaps is not None:
+            _verify_result_data["claim_gaps"] = list(_claim_gaps)
+        # Phase 1 (claim binding): bounded per-turn counts ride the result
+        # data so the workflow accumulates them into loop_telemetry.
+        # cbv2/cbv3 runs only — legacy rows keep their exact result shape.
+        # Phase 3 adds applied/shadow repair counts from the taken
+        # result's diagnostics.
+        if claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            try:
+                _b_cited_n = len(
+                    list(_binding_enforcement.cited_ids or [])
+                    if _binding_enforcement is not None
+                    else []
+                )
+                _b_kept_n = int(
+                    _binding_enforcement.cited_kept_count if _binding_enforcement is not None else 0
+                )
+                _b_evap_n = len(
+                    list(_binding_enforcement.evaporated_ids or [])
+                    if _binding_enforcement is not None
+                    else []
+                )
+                _verify_result_data["claim_binding_kept"] = _b_kept_n
+                _verify_result_data["claim_binding_evaporated"] = _b_evap_n
+                _verify_result_data["claim_binding_unmapped"] = (
+                    1
+                    if (
+                        _binding_enforcement is not None
+                        and _b_cited_n
+                        and bool(_binding_enforcement.unmapped)
+                    )
+                    else 0
+                )
+                _verify_result_data["claim_binding_version"] = str(claim_binding_version)
+                try:
+                    _r_diag = getattr(result, "diagnostics", None)
+                    _r_reps = list(getattr(_r_diag, "repaired", None) or [])
+                    _verify_result_data["claim_binding_repaired"] = sum(
+                        1 for _r in _r_reps if str(getattr(_r, "outcome", "") or "") == "applied"
+                    )
+                    _verify_result_data["claim_binding_repair_shadow"] = sum(
+                        1 for _r in _r_reps if str(getattr(_r, "outcome", "") or "") != "applied"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
         return GenericActivityResult(
             success=True,
             data=attach_shadow_observations(

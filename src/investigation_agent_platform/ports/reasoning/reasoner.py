@@ -21,6 +21,10 @@ class CallerEdgeClaim(BaseModel):
 
     target: ClaimTarget
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+    # Phase 2 (claim binding): per-edge retrieval hint (None = omitted;
+    # derived fallback). Never proof, never identity.
+    search_query: str | None = Field(default=None, max_length=1024)
+    search_scope: str | None = Field(default=None, max_length=512)
 
 
 class DecisionClaim(BaseModel):
@@ -37,6 +41,11 @@ class DecisionClaim(BaseModel):
     claim_kind: ClaimKind = ClaimKind.CAUSAL
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
     target: ClaimTarget | None = None
+    # Phase 2 (claim binding): retrieval hint the model emitted for this
+    # claim. Never proof, never identity — locality still requires
+    # banked-ID overlap. None = legacy/model-omitted (derived fallback).
+    search_query: str | None = Field(default=None, max_length=1024)
+    search_scope: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = None
     commit_id: str | None = Field(default=None, max_length=64)
     value_semantics: str | None = Field(default=None, max_length=64)
@@ -83,9 +92,15 @@ class InvestigationDecision(BaseModel):
 
     @model_validator(mode="after")
     def validate_disposition(self) -> "InvestigationDecision":
-        if self.defer_gathering is not None and self.disposition != ReasoningDisposition.DEFER_GATHERING:
+        if (
+            self.defer_gathering is not None
+            and self.disposition != ReasoningDisposition.DEFER_GATHERING
+        ):
             raise ValueError("defer_gathering requires disposition=DEFER_GATHERING")
-        if self.disposition == ReasoningDisposition.DEFER_GATHERING and self.defer_gathering is None:
+        if (
+            self.disposition == ReasoningDisposition.DEFER_GATHERING
+            and self.defer_gathering is None
+        ):
             raise ValueError("DEFER_GATHERING requires defer_gathering")
         return self
 
