@@ -1946,19 +1946,66 @@ async def _gate_conclusion_or_fail(
 
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
+def _is_actionable_terminal_reason(text: str) -> bool:
+    """Closed-set mirror of next_check_for_abstention's text rows.
+
+    D4 (claim-proof gaps): the router's fallback
+    (f"Resolve '{reason}', then re-verify.") is returned for ANY
+    unrecognized reason, so comparing the routed output against the
+    fallback cannot reliably tell "recognized" from "passthrough" —
+    and a targeted "Resolve the ..." row would be discarded by that
+    comparison. Filter INPUTS instead: only reasons carrying a
+    recognized router signal reach the router at all. This deliberately
+    duplicates the router's text predicates (minus the kind=="refuted"
+    row, which cannot fire here — kind is always "unverified"); if the
+    router gains a text row, this set gains it with a test. Pure.
+    """
+    import re as _re
+
+    t = (text or "").lower()
+    if "all hypotheses rejected or contradicted" in t:
+        return True
+    if _re.match(r"^\d+ refuting evidence item\(s\) bound", t):
+        return True
+    if t == "no bound supporting evidence":
+        return True
+    if "cited evidence_id" in t and "unknown" in t:
+        return True
+    if "caller enumeration names a caller" in t:
+        return True
+    if "no cited row shows a call" in t:
+        return True
+    if "runtime" in t and "behavior" in t:
+        return True
+    if "java fact" in t:
+        return True
+    if "empty-search" in t or "absence" in t:
+        return True
+    return t == "no validated causal chain" or "no causal chain established" in t
+
+
 def _route_terminal_check(reasons: list[str], generic: str) -> str:
     """Select the terminal next_check from persisted assessment reasons.
 
     D4 (claim-proof gaps): routes through the existing abstention reason
-    router. Only a recognized targeted directive replaces the generic
-    fallback — ordinary assessment prose is ignored. Pure; never raises.
+    router. Only reasons carrying a recognized router signal are passed
+    through; ordinary assessment prose is ignored before the router ever
+    sees it. The passthrough comparison remains as a second net, pinned
+    by test to the router's actual fallback format. Pure; never raises.
     """
     try:
+        actionable = [r for r in (reasons or []) if _is_actionable_terminal_reason(r)]
+        if not actionable:
+            return generic
         from investigation_agent_platform.application.investigation.verification import (
             VerificationEngine,
         )
 
-        routed = VerificationEngine.next_check_for_abstention("unverified", reasons)
+        routed = VerificationEngine.next_check_for_abstention("unverified", actionable)
+        passthrough = f"Resolve '{actionable[0][:300]}', then re-verify."
+        if routed and routed != passthrough:
+            return routed
+        return generic
     except Exception:
         return generic
     passthrough = f"Resolve '{reasons[0][:300]}', then re-verify." if reasons else None

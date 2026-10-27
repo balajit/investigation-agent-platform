@@ -140,6 +140,67 @@ def test_touched_file_still_returns_positive_rows_only(tmp_path: Path) -> None:
     assert rows[0].attributes.get("match_count", 1) != 0
 
 
+def test_touch_before_cap_still_found(tmp_path: Path) -> None:
+    """The 50 cap counts touching commits banked, not commits visited.
+
+    A file touched only in the oldest commit of a 60-commit history must
+    still be found — the walk runs to exhaustion when touches < cap.
+    """
+    import pygit2
+
+    root = tmp_path / "acme" / "svc"
+    root.mkdir(parents=True)
+    repo = pygit2.init_repository(str(root))
+    author = pygit2.Signature("t", "t@example.com")
+
+    def _commit(files: dict[str, str], message: str) -> None:
+        for rel, content in files.items():
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            repo.index.add(rel)
+        repo.index.write()
+        parents = [] if repo.head_is_unborn else [repo.head.target]
+        repo.create_commit("HEAD", author, author, message, repo.index.write_tree(), parents)
+
+    _commit({IMPL: IMPL_V1}, "init with target")
+    for i in range(59):
+        _commit({f"churn/file{i}.txt": f"v{i}\n"}, f"churn {i}")
+    rows = _history(_adapter(tmp_path), tmp_path, IMPL)
+    assert len(rows) == 1
+    assert rows[0].evidence_type.value == "COMMIT_HISTORY"
+    assert rows[0].attributes.get("match_count", 1) != 0
+    # The proof row must never appear alongside positive history.
+    assert all(r.attributes.get("match_count", 1) != 0 for r in rows)
+
+
+def test_never_touched_in_large_history_banks_proof(tmp_path: Path) -> None:
+    """60 commits, none touching the queried path: the exhausted walk
+    banks exactly one proof row carrying the searched tip."""
+    import pygit2
+
+    root = tmp_path / "acme" / "svc"
+    root.mkdir(parents=True)
+    repo = pygit2.init_repository(str(root))
+    author = pygit2.Signature("t", "t@example.com")
+    for i in range(60):
+        target = root / f"churn/file{i}.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"v{i}\n", encoding="utf-8")
+        repo.index.add(f"churn/file{i}.txt")
+    repo.index.write()
+    repo.create_commit(
+        "HEAD", author, author, "bulk", repo.index.write_tree(), []
+    )
+    rows = _history(_adapter(tmp_path), tmp_path, "service/never/existed.txt")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.evidence_type.value == "COMMIT_HISTORY"
+    assert row.attributes["match_count"] == 0
+    tip = pygit2.Repository(str(root)).revparse_single("HEAD")
+    assert row.provenance.source_location.revision == str(tip.id)
+
+
 class TestBankedPositive:
     def _row(self, **attrs):
         return SimpleNamespace(attributes=dict(attrs))

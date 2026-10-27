@@ -95,3 +95,35 @@ class TestRouteTerminalCheck:
         )
         assert routed != GENERIC
         assert "CALL_EDGE" in routed
+
+    def test_targeted_resolve_reason_routes(self) -> None:
+        # Router-literal shape ("item(s)"): the targeted "Resolve the ..."
+        # row fires and survives the passthrough net.
+        routed = _route_terminal_check(
+            ["3 refuting evidence item(s) bound to rival"], GENERIC
+        )
+        assert routed != GENERIC
+        assert routed.startswith("Resolve the 3 refuting")
+
+    def test_passthrough_shaped_prose_ignored(self) -> None:
+        # An unrecognized reason that happens to look like the fallback
+        # must not slip through: the closed set drops it pre-router.
+        assert (
+            _route_terminal_check(["Resolve 'x', then re-verify."], GENERIC)
+            == GENERIC
+        )
+
+    def test_router_fallback_format_pinned(self) -> None:
+        # Coupling pin: _route_terminal_check's passthrough template must
+        # match the router's actual fallback. If the router changes its
+        # fallback format, this test names the second place to update.
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        assert (
+            VerificationEngine.next_check_for_abstention(
+                "unverified", ["zzz unrecognized prose"]
+            )
+            == "Resolve 'zzz unrecognized prose', then re-verify."
+        )
