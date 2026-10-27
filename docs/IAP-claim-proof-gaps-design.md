@@ -4,7 +4,7 @@
 
 Claim binding Phases 1–4 are merged into `iap-full-1025` (merge `98840fb`). Four `PLANNED` ledger items from the October battery era remain genuinely open, all touching the same verifier/binding surface in `src/investigation_agent_platform/application/investigation/verification.py`:
 
-- The HISTORY verifier proves positive statements ("commit X touched file Y") but a negative finding ("no such commit") falls through every validator and yields no verdict. The ABSENCE kind already has a five-state outcome (`absence_outcome`: `NO_SEARCH` / `DISCOVERY_ONLY` / `EMPTY_SEARCH_PROVED` / `PRESENCE_CONFLICT` / `SCOPE_MISMATCH`); HISTORY has no equivalent.
+- The HISTORY verifier proves positive statements ("commit X touched file Y") but a negative finding ("no such commit") falls through every validator and yields no verdict. The ABSENCE kind already has a five-state outcome (`absence_outcome`: `NO_SEARCH` / `DISCOVERY_ONLY` / `EMPTY_SEARCH_PROVED` / `PRESENCE_CONFLICT` / `SCOPE_MISMATCH`); HISTORY has no equivalent. The current empty-history path banks discovery-only `SOURCE_CODE` rows (`_absence_proof_row` in `execution.py`, with an explicit comment explaining why a `COMMIT_HISTORY`-typed absence row was avoided: it carried no file/revision and could never satisfy proof). No producer emits a proof-capable history empty row today, so D1 includes that narrow producer change — the row it adds carries file+revision, the exact property the old comment found missing.
 - `_extract_call_edge` recognizes two phrasings ("callers of X", "X called by Y"). Live L2 asks "What calls the order service handler" — unrecognized, so no CALL_EDGE target is formulated from the statement.
 - `call_site_proof` already excludes `new X(` construction for bare-class callees (`exclude_construction=bare`, with `_instance_call_rows` as the declaration+invocation join fallback), and every CALL_EDGE check path funnels through it — except the caller-enumeration scan, which calls `_call_shown` without the flag, so a construction line counts as "shown" for enumeration.
 - `next_check_for_abstention` already maps specific gate reasons to targeted directives, and `_MISSING_OBLIGATION_DIRECTIVES` covers per-kind fallbacks. What is missing is the loop-terminal case: when the workflow ends `verification_failed_or_limit_reached` with thin reasons, the directive degrades to the generic bind-and-re-verify string instead of a diagnosed cause.
@@ -32,7 +32,7 @@ No `docs/dev/architecture.md` exists in the project. The operative architecture 
 
 **Non-Goals:**
 
-- No new retrieval contracts. Detecting capped/errored history search (a retrieval-schema change) is explicitly deferred; D1 v1 proves only the inspected-empty case.
+- No new retrieval contracts beyond one row shape. D1 adds a single producer: a `COMMIT_HISTORY`-typed, non-discovery zero-match row carrying file+revision on the GET_CODE_HISTORY empty path (alongside, not replacing, the existing discovery-only row). Detecting capped/errored history search is explicitly deferred; D1 v1 proves only the inspected-empty case.
 - No prompt-version changes. D2/D3 are parser/proof tightenings behind the existing version pins, not new pins.
 - No control-loop execution changes in this design beyond directive selection (D4). Retry *policy* (what to re-run) is follow-on work.
 - No new persisted models, no migrations, no user-facing interfaces.
@@ -41,27 +41,30 @@ No `docs/dev/architecture.md` exists in the project. The operative architecture 
 
 ### D1: HISTORY absence proof with inspected-empty VERIFIED and fall-through preservation
 
-**Decision:** Add `history_absence_outcome(evidence_items, target)` mirroring `absence_outcome`, consuming `COMMIT_HISTORY` rows. Three states: `INSPECTED_EMPTY` (≥1 non-discovery row with `match_count == 0` on the target file, commit-scoped when `target.commit_id` is set) → `validate_history_claim` returns `VERIFIED` with a `HISTORY_ABSENCE_PROVED:` explanation; `SEARCH_INCOMPLETE` (rows exist for the file but none qualifies as an inspected-empty search) → `None`, exactly today's fall-through; `NO_SEARCH` (no history rows at all) → `None`, exactly today's fall-through. A valid empty search is: zero matches, non-discovery, same file (and commit prefix-match when the target names a commit). Positive-match logic above it is untouched and runs first. New verdict path is active under `cbv2`/`cbv3`; `cbv1` keeps today's fall-through byte-identical (version-pinned behavior, never env-switched).
+**Decision:** Add `history_absence_outcome(evidence_items, target)` mirroring `absence_outcome`, consuming `COMMIT_HISTORY` rows, **plus the one producer that makes its acceptance case reachable**: a `COMMIT_HISTORY`-typed, non-discovery zero-match row banked on the GET_CODE_HISTORY empty path. Three states: `INSPECTED_EMPTY` (≥1 qualifying row on the target file, commit-scoped when `target.commit_id` is set) → `validate_history_claim` returns `VERIFIED` with a `HISTORY_ABSENCE_PROVED:` explanation; `SEARCH_INCOMPLETE` (rows exist for the file but none qualifies — including the mixed case where a non-discovery positive row exists for the file, which blocks absence exactly like `PRESENCE_CONFLICT`) → `None`, today's fall-through; `NO_SEARCH` (no history rows at all) → `None`, today's fall-through. A valid empty search is: zero matches, non-discovery, same file (and commit prefix-match when the target names a commit). Positive-match logic above it is untouched and runs first. New verdict path is active under `cbv2`/`cbv3`; `cbv1` keeps today's fall-through byte-identical (version-pinned behavior, never env-switched).
+
+The proved claim is bounded by the searched scope — never broader. When the target names a commit, the empty search must be commit-scoped (revision prefix-match); when neither statement nor target names one, the verdict proves only "no history for file F in the searched scope" and the explanation states exactly that. No overclaim.
 
 ```python
 # src/investigation_agent_platform/application/investigation/verification.py
 @staticmethod
 def history_absence_outcome(
     evidence_items: list[Any], target: ClaimTarget | None
-) -> tuple[str, str]:
+) -> tuple[str, str, list[Any]]:
     """Negative HISTORY finding: inspected-empty vs incomplete vs no search.
 
-    Returns (outcome, reason). INSPECTED_EMPTY means a scoped history
-    search ran and matched nothing: >=1 non-discovery COMMIT_HISTORY row
-    with match_count == 0 on the target file (commit prefix-matched when
-    the target names one). Anything else is not proof: SEARCH_INCOMPLETE
-    when history rows exist but none qualifies, NO_SEARCH when no history
-    was retrieved at all. Both non-proof states carry the reason for the
-    caller to fall through, never to conclude from silence.
+    Returns (outcome, reason, qualifying_rows). INSPECTED_EMPTY means a
+    scoped history search ran and matched nothing: >=1 non-discovery
+    COMMIT_HISTORY row with match_count == 0 on the target file (commit
+    prefix-matched when the target names one). A non-discovery positive
+    row for the same file blocks absence (SEARCH_INCOMPLETE): an empty
+    search never overrides existing positive history evidence. NO_SEARCH
+    covers no history retrieved at all. Both non-proof states carry the
+    reason for the caller to fall through, never to conclude from silence.
     """
     try:
         if target is None or not getattr(target, "file_path", ""):
-            return ("NO_SEARCH", "history absence needs a file target")
+            return ("NO_SEARCH", "history absence needs a file target", [])
         commit_id = str(getattr(target, "commit_id", "") or "").lower()
         file_hits: list[Any] = []
         for item in evidence_items or []:
@@ -81,7 +84,20 @@ def history_absence_outcome(
                 continue
             file_hits.append(item)
         if not file_hits:
-            return ("NO_SEARCH", "no COMMIT_HISTORY rows retrieved; do not conclude absence")
+            return ("NO_SEARCH", "no COMMIT_HISTORY rows retrieved; do not conclude absence", [])
+        for item in file_hits:
+            try:
+                attrs = getattr(item, "attributes", None) or {}
+                count = attrs.get("match_count") if isinstance(attrs, dict) else None
+            except Exception:
+                count = None
+            if isinstance(count, int) and not isinstance(count, bool) and count != 0:
+                return (
+                    "SEARCH_INCOMPLETE",
+                    "positive history evidence exists for the file; absence blocked",
+                    [],
+                )
+        qualifying: list[Any] = []
         for item in file_hits:
             try:
                 attrs = getattr(item, "attributes", None) or {}
@@ -103,16 +119,19 @@ def history_absence_outcome(
                     not revision.startswith(commit_id) and not commit_id.startswith(revision)
                 ):
                     continue
-            return ("INSPECTED_EMPTY", "")
+            qualifying.append(item)
+        if qualifying:
+            return ("INSPECTED_EMPTY", "", qualifying)
         return (
             "SEARCH_INCOMPLETE",
             "history rows exist for the file but no inspected-empty search covers the claimed scope",
+            [],
         )
     except Exception:
-        return ("NO_SEARCH", "history absence evaluation failed closed")
+        return ("NO_SEARCH", "history absence evaluation failed closed", [])
 ```
 
-Wiring in `validate_history_claim`, on the no-positive-match path (where `if not matching or not path_commits: return None` sits today):
+Wiring in `validate_history_claim`, on the no-positive-match path (where `if not matching or not path_commits: return None` sits today — i.e., *after* the concession-language and unresolved-contradiction refusals already above it, which therefore apply unchanged):
 
 ```python
 # src/investigation_agent_platform/application/investigation/verification.py
@@ -120,12 +139,16 @@ Wiring in `validate_history_claim`, on the no-positive-match path (where `if not
 # on the no-positive-match path)
 if not matching or not path_commits:
     if self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
-        outcome, _ = VerificationEngine.history_absence_outcome(evidence_items, target)
+        outcome, _, qualifying = VerificationEngine.history_absence_outcome(
+            evidence_items, target
+        )
         if outcome == "INSPECTED_EMPTY":
             return VerificationResult(
                 hypothesis_id=hypothesis.id,
                 status=VerificationStatus.VERIFIED,
-                corroborating_evidence_ids=[],
+                corroborating_evidence_ids=[
+                    item.evidence_id for item in qualifying
+                ],
                 explanation=(
                     "HISTORY_ABSENCE_PROVED: scoped history search of "
                     f"{target.file_path} matched no commit; the negative "
@@ -136,26 +159,83 @@ if not matching or not path_commits:
                 limitations=[
                     VerificationLimitation(
                         code=LimitationCode.HISTORY_ABSENCE_PROVED,
-                        detail="Negative proven by scoped empty search, not by a cited row.",
+                        detail="Negative proven by scoped empty search over the cited rows.",
                     )
                 ],
             )
     return None
 ```
 
-`corroborating_evidence_ids` is empty by construction: an absence is proven by the search, not by a row, exactly as `absence_proof` proves without a positive citation. `HISTORY_ABSENCE_PROVED` is appended to `LimitationCode` (append-only enum: never rename or remove, only append). The explanation prefix lets battery forensics and `next_check` routing match it deterministically. `confidence` reuses the surrounding function's existing construction verbatim.
+Verdict trace, end to end: the qualifying rows are banked evidence with IDs, cited by the hypothesis's `supporting_evidence_ids` like any proof row — so claim-local binding enforcement sees a cited HISTORY group (no empty-corroboration special case anywhere downstream), confidence/corroboration flow through the ordinary `VerificationResult` fields, and ConclusionGate treats the result as any VERIFIED. Reachability condition: in production the hypothesis must cite the absence-row IDs; synthetic tests construct that linkage directly. The e2e test (Testing Philosophy) asserts the final disposition through evaluate+conclude, not just the validator return.
 
-**Alternative considered:** A new `ClaimKind` (e.g., `HISTORY_ABSENCE`) with its own partition and telemetry vocabulary. Rejected — doubles the kind surface for one verdict path, and the ABSENCE precedent proves a negative statement verifies under its existing kind.
+Producer contract (the narrow retrieval change), in `execution.py` on the GET_CODE_HISTORY empty path, alongside — not replacing — the existing discovery-only `SOURCE_CODE` row:
 
-**Rationale:** The positive path already assembles `path_commits`; reusing that assembly for the negative case keeps one retrieval contract and one file-scope definition. Version-gating follows the Phase 1 D4 pin convention: in-flight `cbv1` rows keep the semantics they started with.
+```python
+# New proof-capable row: COMMIT_HISTORY-typed, NON-discovery, file+revision.
+# Scope carries the revision (unlike _code_absence_scope's history branch,
+# which is revision-free by design for the discovery row).
+_proof_scope = f"{repo}@{rev}:history={path}"[:512]
+await evidence_repo.save(
+    tenant_id,
+    _with_fetch_reason(
+        Evidence(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            evidence_type=_EvidenceType.COMMIT_HISTORY,
+            provider="code-intelligence",
+            source=f"history://{path}",
+            title=f"No history in scope: {_proof_scope[:160]}",
+            summary=f"Scoped history search over {_proof_scope} returned zero matches.",
+            content_snippet=f"No history in scope: {_proof_scope}",
+            attributes={"search_scope": _proof_scope, "match_count": 0},
+            observed_at=observed_at,
+            retrieved_at=observed_at,
+            provenance=EvidenceProvenance(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                provider_type="search",
+                requested_provider_id="code-intelligence",
+                actual_provider_id="code-intelligence",
+                source_system="code-intelligence",
+                retrieval_timestamp=observed_at,
+                query_fingerprint=QueryFingerprint(
+                    provider_type="search",
+                    operation="get_code_history",
+                    normalized_query_hash=_hashlib.sha256(
+                        _proof_scope.encode()
+                    ).hexdigest(),
+                ),
+                source_location=SourceLocation(
+                    system="search",
+                    identifier=f"history:{path[:256]}",
+                    file_path=path,
+                    revision=rev,
+                ),
+            ),
+            freshness=EvidenceFreshness(observed_at=observed_at, retrieved_at=observed_at),
+            fingerprint=_hashlib.sha256(
+                f"history-absence:{tenant_id}:{investigation_id}:{_proof_scope}".encode()
+            ).hexdigest()[:64],
+        ),
+        _fetch_reason,
+    ),
+    investigation_id,
+)
+```
 
-**Trade-offs:** Capped/errored history search is undetectable in the current row schema, so `SEARCH_INCOMPLETE` falls through instead of producing a `NOT_CHECKABLE`-with-blocker verdict. Closing that needs a retrieval-contract change (deferred non-goal).
+The `history-absence:` fingerprint prefix keeps the proof row distinct from the discovery row's `absence:` fingerprint (no dedupe collision). The existing `history_proof`/`validate_history_claim` positive-match skips (`match_count == 0` → skip) ignore this row exactly as they ignore any zero-match row, so the positive path is unaffected.
+
+**Alternative considered:** A new `ClaimKind` (e.g., `HISTORY_ABSENCE`) with its own partition and telemetry vocabulary. Rejected — doubles the kind surface for one verdict path, and the ABSENCE precedent proves a negative statement verifies under its existing kind. Also considered: reusing the existing discovery-only row as the proof row. Rejected — the verifier's absence gate deliberately excludes `discovery_only` rows, and the `execution.py` comment records why a file/revision-less history row can never satisfy proof; promoting discovery rows to proof would weaken every absence gate at once. Also considered: revising D1 to keep history absence non-verifying until the contract exists. Rejected — the contract change above is one row shape in one empty-path branch, small enough to ship with the verdict path so the acceptance case has a producer from day one.
+
+**Rationale:** Producer and consumer are designed together so the acceptance case is reachable in production, not just in synthetic tests; the integration test exercises the true GET_CODE_HISTORY empty path rather than hand-built rows. The positive path already assembles `path_commits`; reusing that assembly for the negative case keeps one retrieval contract and one file-scope definition. Version-gating follows the Phase 1 D4 pin convention: in-flight `cbv1` rows keep the semantics they started with.
+
+**Trade-offs:** Capped/errored history search is undetectable in the current row schema, so `SEARCH_INCOMPLETE` falls through instead of producing a `NOT_CHECKABLE`-with-blocker verdict. Closing that needs a retrieval-contract change (deferred non-goal). Production reachability depends on the hypothesis citing the absence-row IDs — the design guarantees the verdict *can* be reached and proved, not that any given model will cite correctly.
 
 ---
 
 ### D2: Call-edge extraction wording matrix behind a synthetic harness
 
-**Decision:** Extend `_extract_call_edge` with the missing interrogative and nominal forms, ordered most-specific first so `cbv1` legacy behavior is byte-identical for inputs the current patterns already match. The pattern table is a module-level constant so the harness and the implementation share one source. New forms: "what calls X" / "what invokes X", "who calls X" / "who invokes X", "where is X called/invoked", "X is invoked by Y", "call sites of X" / "invocations of X". New patterns are active under `cbv2`/`cbv3`; `cbv1` uses the two legacy rows only.
+**Decision:** Extend `_extract_call_edge` with the missing interrogative and nominal forms **and** extend untyped kind inference with the matching conservative phrases — the motivating live case ("What calls the order service handler?") arrives untyped, so extraction alone would never fire. Both seams are version-gated (`cbv2`/`cbv3` strict, `cbv1` legacy), and the compatibility claim is pinned I/O equivalence on explicit case lists, not regex identity.
 
 ```python
 # src/investigation_agent_platform/application/investigation/verification.py
@@ -170,7 +250,8 @@ _CALL_EDGE_PATTERNS_ALL: tuple[tuple[str, str], ...] = (
     (r"where\s+is\s+{ident}\s+(?:called|invoked)", "callee"),
     (r"{ident}\s+(?:is\s+|are\s+)?(?:called|invoked)\s+by\s+{ident}", "edge"),
 )
-# cbv1 legacy: byte-identical to the pre-change implementation.
+# cbv1 legacy: preserves prior outputs for the pinned legacy cases
+# (I/O equivalence on the pinned list, not regex identity).
 _CALL_EDGE_PATTERNS_LEGACY: tuple[tuple[str, str], ...] = (
     (r"callers?\s+of\s+{ident}", "callee"),
     (r"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", "edge"),
@@ -199,7 +280,48 @@ def _extract_call_edge(
     return (None, None)
 ```
 
-Callers pass `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `strict_subject` convention at the `validate_history_claim` call site (`self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)` → `legacy=False`). The legacy rows reproduce current behavior exactly (`callers of X`, `X called by Y`); everything else is additive. `called by`/`invoked by` share one edge row.
+Callers pass `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `strict_subject` convention at the `validate_history_claim` call site (`self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)` → `legacy=False`). Compatibility claim: the legacy table preserves the prior outputs for the pinned legacy cases (see Testing Philosophy) — "byte-identical regexes" is not claimed, since the shared edge row admits `invoked by` where the old one did not. `called by`/`invoked by` share one edge row.
+
+The inference seam is in scope, not just extraction. Untyped kind inference (`effective_claim_kind` via `CALL_EDGE_PATTERNS`) runs before any gate: an untyped "What calls X?" never enters the CALL_EDGE branch even with perfect extraction. D2 therefore extends inference too, with its own version gate — the existing three-substring tuple is untouched, and a new-phrasing matcher applies only on the strict path:
+
+```python
+# src/investigation_agent_platform/application/investigation/verification.py
+CALL_EDGE_PATTERNS = ("callers of", "caller of", "called by")  # unchanged legacy
+
+# Conservative exact-phrase inference for the new D2 forms. Substring
+# style mirrors CALL_EDGE_PATTERNS; entries are full phrases (never bare
+# "where is") so they cannot misfire on unrelated prose.
+CALL_EDGE_INFERENCE_PHRASES = (
+    "what calls",
+    "what invokes",
+    "who calls",
+    "who invokes",
+    "call sites of",
+    "invocations of",
+    "invoked by",
+)
+
+
+@staticmethod
+def infers_call_edge(statement: str) -> bool:
+    """True when untyped prose unambiguously asks a call-edge question."""
+    lowered = f" {statement.lower()} "
+    return any(phrase in lowered for phrase in VerificationEngine.CALL_EDGE_INFERENCE_PHRASES)
+```
+
+Hook in `check_claim_kind`, where the version is in scope (no signature changes anywhere — `effective_claim_kind` and its existing callers are untouched):
+
+```python
+kind = VerificationEngine.effective_claim_kind(hypothesis)
+if (
+    kind is None
+    and self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+    and VerificationEngine.infers_call_edge(statement)
+):
+    kind = ClaimKind.CALL_EDGE
+```
+
+So D2 covers typed claims (extraction within the gate) *and* untyped inference (gate entry), both pinned per-version: `cbv1` preserves the current enumeration result on both seams.
 
 **Alternative considered:** Routing extraction through the model (a typed `claim_target` for every CALL_EDGE statement). Rejected — the untyped-prose fallback exists precisely for statements the model did not type; model-routing would move the failure, not remove it.
 
@@ -211,7 +333,7 @@ Callers pass `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `st
 
 ### D3: Construction excluded at every `_call_shown` call site
 
-**Decision:** The enumeration scan passes `exclude_construction` for bare-class symbols, matching `call_site_proof` semantics: a `new X(` line never names a caller for enumeration purposes. All three `call_site_proof` entry points already carry the bare-aware flag, so the enumeration scan is the only behavior change. A test enumerates every `_call_shown` call site and pins its flag, so future call sites cannot silently regress. The flag is threaded under `cbv2`/`cbv3`; `cbv1` keeps the unflagged call byte-identical.
+**Decision:** The enumeration scan passes `exclude_construction` for bare-class symbols, matching `call_site_proof` semantics: a `new X(` line never names a caller for enumeration purposes. All three `call_site_proof` entry points already carry the bare-aware flag, so the enumeration scan is the only behavior change. A test enumerates every `_call_shown` call site and pins its flag, so future call sites cannot silently regress. The flag is threaded under `cbv2`/`cbv3`; `cbv1` preserves the current enumeration result (described as preserved behavior, not as "unflagged in general" — the audit test pins the explicit argument *and* the per-pin outcome).
 
 ```python
 # src/investigation_agent_platform/application/investigation/verification.py
@@ -238,34 +360,42 @@ The `_instance_call_rows` declaration+invocation join stays as-is: it is the san
 
 ---
 
-### D4: Loop-terminal cause diagnosis from the bucket vocabulary (built last)
+### D4: Reuse the abstention reason router on the terminal FAILED path (built last)
 
-**Decision:** When the workflow terminates `verification_failed_or_limit_reached` and `next_check_for_abstention` would fall back past the specific-reason rows to the generic string, the conclude path first classifies the run into the frozen attribution-bucket vocabulary (`never_retrieved`, `retrieved_but_unbound`, `bound_but_wrong_type`, `withheld_by_refuting`, `provider_or_analyzer_failed`, `genuinely_insufficient`, `wrong_revision_or_scope` — the `ATTRIBUTION_BUCKETS` declared in `scripts/proof_kernel_baseline.py`) and selects the matching `_MISSING_OBLIGATION_DIRECTIVES` entry (or its `next_check` reason-row equivalent) instead of the generic fallback. Classification inputs are already stamped: `loop_telemetry` counters (retrieval happened? bindings landed?) plus the gate-fail reason strings. No new telemetry fields, no retry-policy change — directive selection only.
+**Decision:** The terminal `verification_failed_or_limit_reached` branch in `conclude_investigation_activity` (`lifecycle.py`, epistemic sub-branch) hardcodes its directive inline and never calls `next_check_for_abstention`; neither gate-fail reason strings nor bucket signals are available at the selection point (loop telemetry is stamped later). D4 v1 therefore does **not** infer the bucket taxonomy from aggregate counters — coarse run-level totals cannot safely distinguish "retrieved but unbound" from "bound but wrong type". Instead, the conclude path loads the investigation's hypotheses through the existing activity-context repositories (the same source the verify path reads), collects their diagnostic reason strings, and calls `next_check_for_abstention` with them — reusing the reason-row routing the abstention path already proves. Fail-closed on every axis: any load error, empty reasons, or router `None` keeps the current hardcoded string byte-identical. No new telemetry fields, no retry-policy change — directive selection only.
 
 ```python
-# src/investigation_agent_platform/application/investigation/verification.py
-# (sketch: bucket selection from already-stamped signals; full
-# implementation after D1–D3 outcomes are known)
-_BUCKET_DIRECTIVES: dict[str, str] = {
-    "never_retrieved": _MISSING_OBLIGATION_DIRECTIVES["DEFINITION"],
-    "retrieved_but_unbound": "Bind the retrieved rows to the claim target, then re-verify.",
-    "bound_but_wrong_type": "Rebind to the row type the claim kind requires, then re-verify.",
-    "withheld_by_refuting": "Resolve the refuting evidence, then re-verify.",
-    "provider_or_analyzer_failed": "Retry the failed provider or analyzer step, then re-verify.",
-    "genuinely_insufficient": _DEFAULT_MISSING_OBLIGATION_DIRECTIVE,
-    "wrong_revision_or_scope": "Re-scope retrieval to the claimed revision and scope, then re-verify.",
-}
+# src/investigation_agent_platform/application/worker/activities/lifecycle.py
+# (inside the epistemic sub-branch, replacing the fixed _epistemic_check
+# assignment for the verification_failed_or_limit_reached reason only;
+# budget_exceeded and defer_repair_budget_exhausted keep their strings)
+_epistemic_check = (
+    "Bind supporting evidence and a cited causal "
+    "chain to a candidate hypothesis, then re-verify."
+)
+try:
+    _hyp_reasons: list[str] = _collect_hypothesis_gate_reasons(
+        ctx, tenant_id, investigation_id
+    )
+    _routed = VerificationEngine.next_check_for_abstention(
+        "unverified", _hyp_reasons
+    )
+    _epistemic_check = _routed or _epistemic_check
+except Exception:
+    pass
 ```
 
-**Alternative considered:** A learned/model-chosen next check. Rejected — directives must stay deterministic and auditable; the reason-string routing in `next_check_for_abstention` already proves the deterministic approach carries the load.
+`_collect_hypothesis_gate_reasons` is a new small helper next to the conclude activity: same-process repository read, returns the persisted per-hypothesis diagnostic reason strings (the same strings the abstention path routes on), `[]` on any failure. Full bucket-taxonomy classification waits on a diagnostic payload produced at the failing gate itself — explicitly deferred follow-on work, not smuggled in through counters.
 
-**Rationale:** The taxonomy exists in two places (battery forensics, attribution buckets) but the loop-terminal path cannot speak it. D4 is a join, not a new invention.
+**Alternative considered:** Inferring buckets from stamped `loop_telemetry` counters plus a bucket→directive map. Rejected — verified against the tree: the counters are stamped after the conclusion is saved, and aggregates cannot distinguish the buckets that matter. Also considered: a learned/model-chosen next check. Rejected — directives must stay deterministic and auditable.
 
-**Trade-offs:** Bucket classification from counters is heuristic at the margins (e.g., partial retrieval). Misclassification degrades to a slightly-off directive, never to a wrong verdict — selection only affects prose.
+**Rationale:** The reason router already exists and is tested; the terminal path's defect is that it cannot reach it, not that routing logic is missing. Threading the reasons is a wiring change at the actual workflow-to-conclude handoff, which is what the finding requires.
+
+**Trade-offs:** When hypotheses carry no diagnostic reasons (older rows, load failure), the directive stays generic — today's behavior is the floor, never worse. The bucket vocabulary remains forensics-only until the gate-side diagnostic payload exists.
 
 ## Data Storage
 
-No new persisted models, no schema changes, no new telemetry fields. D1 reads existing `COMMIT_HISTORY` rows (`attributes.match_count`, file path, provenance revision) and appends one `LimitationCode` enum member (`HISTORY_ABSENCE_PROVED`; the enum is append-only by contract). D2 is pure string matching plus two module-level pattern tables. D3 changes a call-site flag. D4 reads already-stamped `loop_telemetry` and reason strings plus one module-level map. The claim-binding ledger, partitions, and pins are untouched.
+No new persisted models, no schema changes, no new telemetry fields. D1 adds one producer (a `COMMIT_HISTORY`-typed, non-discovery zero-match row carrying file+revision, banked on the GET_CODE_HISTORY empty path) and appends one `LimitationCode` enum member (`HISTORY_ABSENCE_PROVED`; the enum is append-only by contract). D2 is pure string matching plus module-level pattern tables and one inference predicate. D3 changes a call-site flag. D4 adds one small same-process read helper in the conclude activity. The claim-binding ledger, partitions, and pins are untouched.
 
 ## Data Structures
 
@@ -273,20 +403,21 @@ Input and output shapes, all internal to `verification.py`:
 
 ```python
 # Outcome vocabulary for history_absence_outcome (D1).
-# "INSPECTED_EMPTY" -> caller emits VERIFIED negative verdict.
+# "INSPECTED_EMPTY" -> caller emits VERIFIED negative verdict, citing rows.
 # "SEARCH_INCOMPLETE" | "NO_SEARCH" -> caller falls through (returns None).
-HistoryAbsenceOutcome = str  # Literal["INSPECTED_EMPTY", "SEARCH_INCOMPLETE", "NO_SEARCH"]
+# Third tuple element: the qualifying rows (empty unless INSPECTED_EMPTY).
+HistoryAbsenceOutcome = tuple[str, str, list]  # (outcome, reason, rows)
 
 # Pattern tables for _extract_call_edge (D2).
 # Each row: (regex with {ident} slot, "callee" | "edge").
 _CALL_EDGE_PATTERNS_ALL: tuple[tuple[str, str], ...]
 _CALL_EDGE_PATTERNS_LEGACY: tuple[tuple[str, str], ...]
 
-# Bucket -> directive map for loop-terminal selection (D4).
-_BUCKET_DIRECTIVES: dict[str, str]
+# Conservative exact-phrase inference for the new D2 forms (D2).
+CALL_EDGE_INFERENCE_PHRASES: tuple[str, ...]
 ```
 
-`VerificationResult` construction for the D1 negative verdict reuses the positive path's fields verbatim (`hypothesis_id`, `status=VERIFIED`, the surrounding `confidence`, `location_validated=True`) with empty `corroborating_evidence_ids`, the `HISTORY_ABSENCE_PROVED:` explanation prefix, and a single `VerificationLimitation(code=HISTORY_ABSENCE_PROVED)`.
+`VerificationResult` construction for the D1 negative verdict reuses the positive path's fields verbatim (`hypothesis_id`, `status=VERIFIED`, the surrounding `confidence`, `location_validated=True`) with `corroborating_evidence_ids` set to the cited absence-row IDs, the `HISTORY_ABSENCE_PROVED:` explanation prefix, and a single `VerificationLimitation(code=HISTORY_ABSENCE_PROVED)`.
 
 ## Interfaces
 
@@ -296,10 +427,11 @@ No user-facing interfaces change: no REST, CLI, MCP, or TUI surface is added or 
 
 Wiring order and call sites (the Decisions carry the full code; this section pins where it lands):
 
-1. `_CALL_EDGE_PATTERNS_ALL` / `_CALL_EDGE_PATTERNS_LEGACY` constants + rewritten `_extract_call_edge` with `legacy` kwarg (D2). The `call_site_proof` call site passes `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `strict_subject` convention.
+0. Producer row in `execution.py` GET_CODE_HISTORY empty path (D1). Inert until consumers exist: positive-match skips ignore zero-match rows.
+1. `_CALL_EDGE_PATTERNS_ALL` / `_CALL_EDGE_PATTERNS_LEGACY` constants, rewritten `_extract_call_edge` with `legacy` kwarg, `CALL_EDGE_INFERENCE_PHRASES` + `infers_call_edge`, and the `check_claim_kind` hook (D2). The `call_site_proof` call site passes `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `strict_subject` convention.
 2. `history_absence_outcome` static + the `validate_history_claim` no-match branch (D1). The positive-match block above it is byte-untouched and runs first. `LimitationCode.HISTORY_ABSENCE_PROVED` appended to the enum.
 3. Enumeration-scan flag (D3). The three `call_site_proof` entry points (aggregate assessments, aggregate edges, single target) are untouched.
-4. `_BUCKET_DIRECTIVES` + conclude-path selection (D4), after D1–D3 are merged and live-proved.
+4. `_collect_hypothesis_gate_reasons` + conclude-path selection reusing `next_check_for_abstention` (D4), after D1–D3 are merged and live-proved.
 
 Version pins: no new pin, no pin bump. D1/D2/D3 new behavior is active under `cbv2`/`cbv3`; `cbv1` rows keep byte-identical semantics per the Phase 1 D4 convention. If live parity shows any PASS→FAIL flip attributable to D2/D3, the change is reverted and re-designed — parity gates below are hard.
 
@@ -307,28 +439,29 @@ Version pins: no new pin, no pin bump. D1/D2/D3 new behavior is active under `cb
 
 Implementation order is a dependency chain, each step independently committable and revertible:
 
-1. Synthetic extraction harness (`tests/unit/test_call_edge_extraction.py`): statement→(callee, caller) matrix covering every `_CALL_EDGE_PATTERNS_ALL` row plus adversarial non-matches ("callers of" inside unrelated prose, quoted identifiers, `::`/`#` separators). Red-first: new rows fail before the implementation lands. This harness is a hard precondition for step 2.
-2. D2 implementation behind the harness, with a `cbv1`-legacy byte-identical test (legacy rows reproduce old outputs exactly).
-3. D1 (`history_absence_outcome` + wiring + unit tests: inspected-empty VERIFIED, incomplete fall-through, no-rows fall-through, positive-path byte-identical, `cbv1` fall-through preserved).
-4. D3 (enumeration flag + call-site flag audit test).
-5. Full suite + sandbox battery parity (all live PASS rows stay PASS; injected-claim driver green) → commit D1–D3 as one unit.
-6. D4 implementation, last, against the merged D1–D3 tree.
+1. Producer row (`execution.py` GET_CODE_HISTORY empty path) with unit tests on the banked shape (COMMIT_HISTORY-typed, non-discovery, `match_count == 0`, file+revision set, fingerprint distinct from the discovery row) plus an integration test driving the real empty-result path. No consumer reads it yet — it is inert by construction (positive-match skips ignore zero-match rows).
+2. Synthetic extraction+inference harness (`tests/unit/test_call_edge_extraction.py`): statement→(callee, caller) matrix covering every `_CALL_EDGE_PATTERNS_ALL` row and every `CALL_EDGE_INFERENCE_PHRASES` entry, plus adversarial non-matches ("callers of" inside unrelated prose, quoted identifiers, `::`/`#` separators, "where is" without a call verb). Red-first: new rows fail before the implementation lands. This harness is a hard precondition for step 3 — it also records the typed-vs-inferred scope decision (both seams covered, per-version).
+3. D2 implementation behind the harness, with pinned legacy I/O-equivalence tests (legacy table reproduces old outputs for the pinned case list on both seams; "preserves prior outputs for pinned cases" is the claim, not regex identity).
+4. D1 (`history_absence_outcome` + wiring + unit tests: inspected-empty VERIFIED citing the absence rows, mixed positive/empty → incomplete fall-through, incomplete fall-through, no-rows fall-through, positive-path byte-identical, `cbv1` fall-through preserved) + e2e disposition test through evaluate+conclude.
+5. D3 (enumeration flag + call-site flag audit test pinning per-pin outcomes).
+6. Full suite + sandbox battery parity (all live PASS rows stay PASS; injected-claim driver green) → commit producer+D1–D3 as one unit.
+7. D4 implementation, last, against the merged tree (conclude-path wiring + router-reuse tests).
 
 No data migration: frozen baselines regenerate deterministically (provenance-only `git_rev`), and no fixture content changes meaning under this design.
 
 ## Testing Philosophy
 
-### Extraction matrix
+### Extraction and inference matrix
 
-The harness pins every pattern row independently: each phrasing form maps to its expected (callee, caller), and adversarial inputs (identifiers embedded in unrelated prose, missing callee, empty statement) map to `(None, None)`. New phrasings are added as failing rows first. The two legacy forms are pinned to their current outputs under both pattern tables so widening cannot silently shift them.
+The harness pins every pattern row independently: each phrasing form maps to its expected (callee, caller), each inference phrase maps to `True` (and near-miss prose maps to `False`), and adversarial inputs (identifiers embedded in unrelated prose, missing callee, empty statement, "where is" without a call verb) map to `(None, None)` / `False`. New phrasings are added as failing rows first. The legacy tables are pinned to prior outputs for an explicit pinned case list on both seams — the compatibility claim is I/O equivalence on those cases, not regex identity. The harness covers typed claims (extraction) and untyped inference (gate entry) because the scope decision is that D2 serves both.
 
 ### History absence
 
-Unit tests construct `COMMIT_HISTORY` rows directly: a zero-match non-discovery row on the target file yields `INSPECTED_EMPTY`; discovery-only rows yield `SEARCH_INCOMPLETE`; no rows yield `NO_SEARCH`; a positive match still takes the existing VERIFIED path with the existing explanation byte-identical. A dedicated test asserts the incomplete and no-search states return `None` from `validate_history_claim` (fall-through preservation, not just outcome strings), and a `cbv1` test asserts the negative path still returns `None` under the legacy pin.
+Unit tests construct `COMMIT_HISTORY` rows directly: a zero-match non-discovery row on the target file yields `INSPECTED_EMPTY` with the row returned for citation; discovery-only rows yield `SEARCH_INCOMPLETE`; no rows yield `NO_SEARCH`; a non-discovery positive row for the same file alongside a zero-match row yields `SEARCH_INCOMPLETE` (presence blocks absence); a positive match still takes the existing VERIFIED path with the existing explanation byte-identical. A dedicated test asserts the incomplete and no-search states return `None` from `validate_history_claim` (fall-through preservation, not just outcome strings), and a `cbv1` test asserts the negative path still returns `None` under the legacy pin. An integration test drives the real GET_CODE_HISTORY empty path and asserts the banked proof row's shape (type, non-discovery, file+revision, fingerprint distinctness). An end-to-end test runs a synthetic history-empty investigation through evaluate+conclude and asserts the final disposition: VERIFIED negative with `HISTORY_ABSENCE_PROVED`, cited absence-row IDs, normal ConclusionGate passage.
 
 ### Construction exclusion
 
-A test enumerates `_call_shown` call sites (excluding the definition) and asserts each passes `exclude_construction` explicitly — no default reliance. Behavior tests pin: a `new OrderServiceHandler(` line alone does not satisfy the enumeration scan for bare `OrderServiceHandler` under `cbv2`/`cbv3` but still satisfies it under `cbv1`; declaration + `handler.submit(` same-file join still verifies via `_instance_call_rows`.
+A test enumerates `_call_shown` call sites (excluding the definition) and asserts each passes `exclude_construction` explicitly — no default reliance — and asserts the per-pin outcome trio: a `new OrderServiceHandler(` line alone does not satisfy the enumeration scan for bare `OrderServiceHandler` under `cbv2`/`cbv3`, still satisfies it under `cbv1` (preserved current result), and a real invocation line satisfies it under all pins; declaration + `handler.submit(` same-file join still verifies via `_instance_call_rows`.
 
 ### Battery parity
 
@@ -336,7 +469,7 @@ After D1–D3, the sandbox battery must reproduce every current live PASS (L1/L3
 
 ### Control-loop routing
 
-D4 tests feed canned (bucket-signals, reasons) pairs and assert the selected directive; a test asserts the generic fallback survives only when classification itself fails closed. No live model in these tests.
+D4 tests feed canned hypothesis-reason lists into the conclude-path selection and assert the routed directive matches what `next_check_for_abstention` returns for the same reasons; tests assert the current hardcoded strings survive byte-identical when reasons are empty and when the hypothesis load raises. No bucket-counter tests exist by design — counters are not a selection input. No live model in these tests.
 
 ## Documentation Plan
 
@@ -356,9 +489,9 @@ On implementation close, the four `PLANNED` entries flip to `IMPLEMENTED` with f
 
 ### Positive history verdicts shift meaning
 
-**Risk:** A negative statement that previously fell through to another validator (and occasionally VERIFIED elsewhere) now VERIFIES as a history absence. If the zero-match row was itself a retrieval artifact (wrong file scoped, capped search presented as complete), we mint a false VERIFIED.
+**Risk:** A negative statement that previously fell through to another validator (and occasionally VERIFIED elsewhere) now VERIFIES as a history absence. If the zero-match row was itself a retrieval artifact (wrong file scoped, capped search presented as complete), we mint a false VERIFIED; and a commit-less target could prove a narrower claim than the statement makes.
 
-**Mitigation:** `INSPECTED_EMPTY` requires non-discovery rows with explicit `match_count == 0` on the exact target file — discovery-only and unscored rows never qualify. Battery parity pins every current PASS; new `HISTORY_ABSENCE_PROVED` lines appear only on negative-history probes. The capped-search hole is documented (D1 trade-off) rather than papered over.
+**Mitigation:** Three independent guards. (1) Producer: the proof row carries file+revision and is banked only on a well-formed empty GET_CODE_HISTORY result — discovery-only and unscored rows never qualify. (2) Precedence: any non-discovery positive row for the same file blocks absence (`SEARCH_INCOMPLETE`), so an empty search never overrides existing positive history evidence. (3) Scope binding: a commit-naming target requires a commit-scoped search; a commit-less target yields a verdict whose explanation states exactly the searched file scope. Battery parity pins every current PASS; new `HISTORY_ABSENCE_PROVED` lines appear only on negative-history probes. The capped-search hole is documented (D1 trade-off) rather than papered over.
 
 ### Extraction widening misparses prose
 
@@ -372,8 +505,8 @@ On implementation close, the four `PLANNED` entries flip to `IMPLEMENTED` with f
 
 **Mitigation:** That previous PASS was the exact false-proof the ledger item records (live L2#2 answered on field-construction lines). The `_instance_call_rows` join remains the legitimate path for instance-mediated invocation. Parity watches for flips; a legitimate-caller flip is a re-design trigger, not a test-update trigger. `cbv1` rows are unaffected by construction.
 
-### Bucket classification misfires
+### Terminal reasons unavailable
 
-**Risk:** Counter-based classification picks the wrong bucket and the operator gets a slightly-off directive.
+**Risk:** The conclude path cannot load hypothesis diagnostics (older rows, repository error), so the directive stays generic.
 
-**Mitigation:** Selection affects prose only, never verdicts. Fail-closed to the existing generic string preserves today's behavior as the floor.
+**Mitigation:** That is today's behavior, preserved as the floor — fail-closed keeps the current hardcoded strings byte-identical. Selection affects prose only, never verdicts. Full bucket-taxonomy classification is deferred until a diagnostic payload exists at the failing gate; it is not inferred from counters in the meantime.
