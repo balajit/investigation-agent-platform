@@ -332,3 +332,29 @@ existing rule.
   parity (`reports/d3-stagec-2026-10-26-r4.md`, CI `[0.478, 1.000]`).
 - L2 is recorded converged and stable with no residual gap. The r4
   INSUFFICIENT-carry is L3/L5-driven; no L2 verdict change beyond that.
+
+## 12. As-built note — claim-binding Phase 1 (2026-10-26; merged 2026-10-27)
+
+- Caller completeness now consumes kept IDs only: the verify/conclude
+  working set is filtered to kept citations (`bound_kept_evidence_only`)
+  before every `validate_*` fast path and the shared `evaluate_caller_edge`
+  seam; zero cited-kept survival forces `INCONCLUSIVE` with named
+  evaporated IDs and a smallest-fetch `MissingObligation`, even when
+  uncited context rows are present. Aggregate enumeration verifies only
+  when every named caller has its own claim-local kept edge;
+  bank-fallback-only callers yield the caller-window obligation and the
+  claim stays `INCONCLUSIVE` (observed linkage only; unobserved linkage
+  keeps the bank path with an `UNMAPPED_CITATION` limitation).
+- Negative controls pinned: wrong-revision sibling rows never satisfy
+  completeness; construction-only and comment-line rows evaporate with
+  the caller-window next action; the enforce tail is load-bearing
+  (disabled tail loses the evaporated/demotion records).
+- Live signal (engineering only, no convergence claim): scratch-tenant L2
+  PASS on the final tree, zero tracebacks
+  (`reports/live_battery_20261026T205128.md`).
+- Review hardening: per-claim partition (no cross-claim borrowing; kind-scoped
+  CALL_EDGE/HISTORY refusal; no-repository degradation), fault-closed
+  enforcement at every choke point (fault → `INCONCLUSIVE`, never legacy
+  bank-path), creation-pin stamping in all creation paths, HISTORY subject
+  outcome telemetry, and a no-caller `repair_citation` contract for Phase 3.
+  65 focused tests; full unit 3710 passed + 2 known pre-existing pins.
