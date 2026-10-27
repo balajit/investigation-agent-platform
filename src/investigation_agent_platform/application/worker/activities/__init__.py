@@ -110,6 +110,7 @@ from .common import (
 )
 from .execution import (
     _absence_proof_row,
+    _banked_positive,
     _caller_chain_targets,
     _code_absence_scope,
     _frame_file_matches,

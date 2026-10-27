@@ -220,3 +220,17 @@ Freeze consequences:
   unmeasured (single scratch PASS via the model-typed route).
 - No D3 close, authority, rollout, merge, or push. A future cycle needs
   fresh amendment/freeze/run-set/budget authorization in that order.
+
+## 8. As-built note — claim-binding Phase 1 (2026-10-26; merged 2026-10-27)
+
+- Binding observations now carry the claim-binding version (`cbv1`/`cbv2`)
+  alongside behavior/protocol/amendment identities: `record_binding_version`
+  per turn, per-claim dispositions via `record_claim_binding`, and HISTORY
+  subject outcomes via `record_history_subject` (all closed-vocabulary,
+  fire-and-forget). Receipt envelopes reject mismatches per the pin; no
+  change to the frozen D3 protocol itself.
+- HISTORY content-grounding (L3 residual) moved to the structured
+  `commit_subject` field with deterministic canonical comparison
+  (exact-after-canonical or token-set Jaccard >= 0.70) under pin `cbv2`;
+  `cbv1`/unmarked rows keep the byte-identical legacy predicate.
+  Newest-commit rule preserved on both paths.

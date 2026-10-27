@@ -862,7 +862,12 @@ async def _gate_conclusion_or_fail(
             return
         _proven_callers, _unresolved_callers, _caller_coverage = (
             VerificationEngine.caller_edge_diagnostics(candidate)
-            if VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+            if VerificationEngine.resolve_claim_kind(
+                candidate,
+                strict=claim_binding_version
+                in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+            )
+            == ClaimKind.CALL_EDGE
             else ([], [], None)
         )
         # Phase 1 (claim binding): an abstention record must never present
@@ -1216,7 +1221,11 @@ async def _gate_conclusion_or_fail(
     causal_chain = [c for c in causal_chain if c.evidence_ids]
     if not causal_chain and (
         verifier_version == VERIFIER_VERSION_CURRENT
-        and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+        and VerificationEngine.resolve_claim_kind(
+            candidate,
+            strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+        )
+        == ClaimKind.CALL_EDGE
     ):
         causal_chain = _caller_edge_causal_chain(candidate, evidence_by_id)
     # Finding L: opinion-only candidates skip every conclude validator.
@@ -1326,13 +1335,21 @@ async def _gate_conclusion_or_fail(
         and not history_answered
         and not (
             verifier_version == VERIFIER_VERSION_CURRENT
-            and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+            and VerificationEngine.resolve_claim_kind(
+                candidate,
+                strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+            )
+            == ClaimKind.CALL_EDGE
         )
     )
     caller_edge_validated = False
     if (
         verifier_version == VERIFIER_VERSION_CURRENT
-        and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+        and VerificationEngine.resolve_claim_kind(
+            candidate,
+            strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+        )
+        == ClaimKind.CALL_EDGE
     ):
         caller_edge_gate = _verify_engine.evaluate_caller_edge(candidate, bound)
         caller_edge_validated = (
@@ -1657,7 +1674,11 @@ async def _gate_conclusion_or_fail(
     hyp = candidate
     _proven_callers, _unresolved_callers, _caller_coverage = (
         VerificationEngine.caller_edge_diagnostics(hyp)
-        if VerificationEngine.effective_claim_kind(hyp) == ClaimKind.CALL_EDGE
+        if VerificationEngine.resolve_claim_kind(
+            hyp,
+            strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+        )
+        == ClaimKind.CALL_EDGE
         else ([], [], None)
     )
     supporting_ids = [e.evidence_id for e in bound]
@@ -1925,6 +1946,108 @@ async def _gate_conclusion_or_fail(
 
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
+def _is_actionable_terminal_reason(text: str) -> bool:
+    """Closed-set mirror of next_check_for_abstention's text rows.
+
+    D4 (claim-proof gaps): the router's fallback
+    (f"Resolve '{reason}', then re-verify.") is returned for ANY
+    unrecognized reason, so comparing the routed output against the
+    fallback cannot reliably tell "recognized" from "passthrough" —
+    and a targeted "Resolve the ..." row would be discarded by that
+    comparison. Filter INPUTS instead: only reasons carrying a
+    recognized router signal reach the router at all. This deliberately
+    duplicates the router's text predicates (minus the kind=="refuted"
+    row, which cannot fire here — kind is always "unverified"); if the
+    router gains a text row, this set gains it with a test. Pure.
+    """
+    import re as _re
+
+    t = (text or "").lower()
+    if "all hypotheses rejected or contradicted" in t:
+        return True
+    if _re.match(r"^\d+ refuting evidence item\(s\) bound", t):
+        return True
+    if t == "no bound supporting evidence":
+        return True
+    if "cited evidence_id" in t and "unknown" in t:
+        return True
+    if "caller enumeration names a caller" in t:
+        return True
+    if "no cited row shows a call" in t:
+        return True
+    if "runtime" in t and "behavior" in t:
+        return True
+    if "java fact" in t:
+        return True
+    if "empty-search" in t or "absence" in t:
+        return True
+    return t == "no validated causal chain" or "no causal chain established" in t
+
+
+def _route_terminal_check(reasons: list[str], generic: str) -> str:
+    """Select the terminal next_check from persisted assessment reasons.
+
+    D4 (claim-proof gaps): routes through the existing abstention reason
+    router. Only reasons carrying a recognized router signal are passed
+    through; ordinary assessment prose is ignored before the router ever
+    sees it. The passthrough comparison remains as a second net, pinned
+    by test to the router's actual fallback format. Pure; never raises.
+    """
+    try:
+        actionable = [r for r in (reasons or []) if _is_actionable_terminal_reason(r)]
+        if not actionable:
+            return generic
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        routed = VerificationEngine.next_check_for_abstention("unverified", actionable)
+        passthrough = f"Resolve '{actionable[0][:300]}', then re-verify."
+        if routed and routed != passthrough:
+            return routed
+        return generic
+    except Exception:
+        return generic
+    passthrough = f"Resolve '{reasons[0][:300]}', then re-verify." if reasons else None
+    if routed and routed != passthrough:
+        return routed
+    return generic
+
+
+async def _collect_hypothesis_gate_reasons(
+    ctx: Any, tenant_id: str, investigation_id: Any
+) -> list[str]:
+    """Gate-fail reason strings persisted on hypothesis assessments.
+
+    D4 (claim-proof gaps): reads Hypothesis.assessments[*].reason via the
+    established activity-context repository pattern. Verification markers
+    are not consulted: next_action does not survive marker serialization.
+    Returns [] on any failure — the caller fail-closes to the generic
+    terminal directive.
+    """
+    try:
+        hypothesis_repo = getattr(ctx, "hypothesis_repo", None)
+        if hypothesis_repo is None:
+            return []
+        hypotheses = await hypothesis_repo.find_by_investigation_id(
+            tenant_id, investigation_id
+        )
+    except Exception:
+        return []
+    reasons: list[str] = []
+    try:
+        for hyp in hypotheses or []:
+            for asm in getattr(hyp, "assessments", None) or []:
+                text = str(getattr(asm, "reason", "") or "").strip()
+                if text:
+                    reasons.append(text)
+    except Exception:
+        return []
+    return reasons
+
+
+@activity.defn
+@traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def conclude_investigation_activity(
     params: ConcludeInvestigationInput,
 ) -> GenericActivityResult:
@@ -2026,6 +2149,24 @@ async def conclude_investigation_activity(
                                             "chain to a candidate hypothesis, then re-verify."
                                         )
                                     )
+                                    if _epistemic_reason == "verification_failed_or_limit_reached":
+                                        # D4 (claim-proof gaps): route through the
+                                        # existing abstention reason router using
+                                        # persisted assessment reasons. Only a
+                                        # recognized targeted directive replaces
+                                        # the generic fallback; ordinary prose
+                                        # is ignored. Fail-closed throughout.
+                                        try:
+                                            _hyp_reasons = (
+                                                await _collect_hypothesis_gate_reasons(
+                                                    ctx, tenant_id, investigation_id
+                                                )
+                                            )
+                                            _epistemic_check = _route_terminal_check(
+                                                _hyp_reasons, _epistemic_check
+                                            )
+                                        except Exception:
+                                            pass
                                     await finding_repo.save_conclusion(
                                         tenant_id,
                                         InvestigationConclusion(

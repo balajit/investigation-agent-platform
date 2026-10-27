@@ -185,6 +185,26 @@ def _with_fetch_reason(item: Any, fetch_reason: str) -> Any:
         return item
 
 
+def _banked_positive(items: list) -> bool:
+    """True when banking produced citable positive evidence.
+
+    D1 (claim-proof gaps): the Git history provider returns a zero-match
+    proof row on empty walks. That row must not suppress the
+    discovery-only absence row — only positive evidence does. A row
+    counts as positive unless it is an explicit zero-match marker.
+    """
+    for item in items or []:
+        try:
+            attrs = getattr(item, "attributes", None) or {}
+            count = attrs.get("match_count") if isinstance(attrs, dict) else None
+        except Exception:
+            count = None
+        if isinstance(count, int) and not isinstance(count, bool) and count == 0:
+            continue
+        return True
+    return False
+
+
 def _absence_proof_row(
     *,
     tenant_id: Any,
@@ -584,6 +604,25 @@ async def fallback_call_graph_to_search(
     return record_outcome(banked)
 
 
+def _stored_claim_query(raw_claim: object) -> tuple[str | None, str | None]:
+    """Extract the stored retrieval hint from a FORMULATE claim mapping.
+
+    Pure function; never raises. Returns (search_query, search_scope),
+    each bounded or None. Operates on the already-sanitized claim mapping.
+    """
+    try:
+        mapping = raw_claim if isinstance(raw_claim, dict) else {}
+        query = mapping.get("search_query")
+        scope = mapping.get("search_scope")
+    except Exception:
+        return (None, None)
+    query_text = (
+        str(query).strip()[:1024] if isinstance(query, str) and str(query).strip() else None
+    )
+    scope_text = str(scope).strip()[:512] if isinstance(scope, str) and str(scope).strip() else None
+    return (query_text, scope_text)
+
+
 def _scope_path_prefix(scope: object) -> str | None:
     """Path-prefix form of a stored scope, or None (pure).
 
@@ -688,6 +727,11 @@ async def execute_action_activity(
                         **raw_claim,
                         "target": edge.get("target"),
                         "evidence_ids": edge.get("evidence_ids", []),
+                        # Phase 2 (claim binding): per-edge retrieval hint
+                        # wins; edge-omitted (or None) falls back to the
+                        # top-level claim pair.
+                        "search_query": edge.get("search_query") or raw_claim.get("search_query"),
+                        "search_scope": edge.get("search_scope") or raw_claim.get("search_scope"),
                     }
                     for edge in raw_edges
                     if isinstance(raw_edges, list)
@@ -2428,11 +2472,14 @@ async def execute_action_activity(
                     )
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            if not banked and evidence_repo is not None:
+            if not _banked_positive(banked) and evidence_repo is not None:
                 # Phase 2 item 3: a well-formed query with zero matches banks
-                # a scoped no-match proof for future absence claims. Saved
-                # directly (never counted in the outcome), so replan-on-
-                # empties still fires and the row stays citable via repo
+                # a scoped no-match proof for future absence claims. D1
+                # (claim-proof gaps): the history provider now returns a
+                # zero-match proof row on empty walks — that row must not
+                # suppress this discovery row, only positive evidence does.
+                # Saved directly (never counted in the outcome), so replan-
+                # on-empties still fires and the row stays citable via repo
                 # scan. Fingerprint dedupes repeats idempotently.
                 try:
                     from investigation_agent_platform.domain.evidence.models import (
@@ -3744,7 +3791,32 @@ async def execute_action_activity(
                             if edge_target is not None and edge_target.fact_category is not None
                             else None
                         )
-                        for evidence_id in claim_binding_ids.get(claim_key, []):
+                        # Phase 2 (claim binding): stored retrieval hint rides
+                        # every assessment of this claim variant.
+                        stored_query, stored_scope = _stored_claim_query(typed)
+                        bound_ids = claim_binding_ids.get(claim_key, [])
+                        if not bound_ids:
+                            # No usable cited evidence (all malformed or
+                            # unbanked) — persist the claim anyway so its
+                            # query survives to the ledger and the directive.
+                            # Mirrors CALL_EDGE_UNRESOLVED for all kinds.
+                            assessments.append(
+                                HypothesisEvidenceAssessment(
+                                    hypothesis_id=hypothesis_id,
+                                    evidence_id=None,
+                                    assessment=AssessmentType.SUPPORTS,
+                                    strength=AssessmentStrength.MODERATE,
+                                    reason="claim unresolved: no usable evidence",
+                                    claim_kind=kind,
+                                    claim_target=edge_target,
+                                    commit_id=claim_key[3] or None,
+                                    search_query=stored_query,
+                                    search_scope=stored_scope,
+                                    reason_code="CLAIM_UNRESOLVED",
+                                    schema_version="v2",
+                                )
+                            )
+                        for evidence_id in bound_ids:
                             assessment = HypothesisEvidenceAssessment(
                                 hypothesis_id=hypothesis_id,
                                 evidence_id=evidence_id,
@@ -3754,6 +3826,8 @@ async def execute_action_activity(
                                 claim_kind=kind,
                                 claim_target=edge_target,
                                 commit_id=claim_key[3] or None,
+                                search_query=stored_query,
+                                search_scope=stored_scope,
                                 fact_category=fact_category,
                                 value_semantics=(
                                     str(
@@ -3788,6 +3862,9 @@ async def execute_action_activity(
                                         ),
                                     )
                                 ]
+                            # Phase 2 (claim binding): caller obligations carry
+                            # the stored pair of their source variant.
+                            edge_query, edge_scope = _stored_claim_query(typed)
                             if not matching_ids:
                                 assessments.append(
                                     HypothesisEvidenceAssessment(
@@ -3798,6 +3875,8 @@ async def execute_action_activity(
                                         reason="caller edge obligation unresolved",
                                         claim_kind=ClaimKind.CALL_EDGE,
                                         claim_target=edge_target,
+                                        search_query=edge_query,
+                                        search_scope=edge_scope,
                                         reason_code="CALL_EDGE_UNRESOLVED",
                                         schema_version="v2",
                                     )
@@ -3813,6 +3892,8 @@ async def execute_action_activity(
                                         reason="cited by CALL_EDGE obligation",
                                         claim_kind=ClaimKind.CALL_EDGE,
                                         claim_target=edge_target,
+                                        search_query=edge_query,
+                                        search_scope=edge_scope,
                                         reason_code="CALL_EDGE_BOUND",
                                         schema_version="v2",
                                     )
