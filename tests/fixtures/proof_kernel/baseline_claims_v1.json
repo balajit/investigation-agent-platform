@@ -9,7 +9,7 @@
     {
       "case_id": "L13",
       "expected_terminal": "ABSTAIN",
-      "live": true,
+      "live": false,
       "note": "abstention shape: no provable claim expected"
     },
     {

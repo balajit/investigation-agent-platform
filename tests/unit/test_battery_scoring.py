@@ -109,7 +109,12 @@ class TestFixtureIntegrity:
             "L13",
         }
         live = {c["id"] for c in cases if c.get("live", True)}
-        assert live == {"L1", "L2", "L3", "L4", "L5", "L8", "L13"}
+        assert live == {"L1", "L2", "L3", "L4", "L5", "L8"}
+        # Owner decision J (2026-10-27): L13 demoted to offline grading —
+        # the model never declares NOT_CHECKABLE live; the injected-claim
+        # test is the live proof. The offline suite still grades it.
+        offline = {c["id"] for c in cases if not c.get("live", True)}
+        assert "L13" in offline
         for case in cases:
             assert case["expect"]["status"] in ("ANSWERED", "ABSTAIN")
 
