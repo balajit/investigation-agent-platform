@@ -660,7 +660,12 @@ async def verify_root_cause_activity(
                 and not history_answered
                 and not (
                     verifier_version == VERIFIER_VERSION_CURRENT
-                    and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+                    and VerificationEngine.resolve_claim_kind(
+                        candidate,
+                        strict=engine.claim_binding_version
+                        in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+                    )
+                    == ClaimKind.CALL_EDGE
                 )
             )
             if location_answered:
@@ -811,7 +816,12 @@ async def verify_root_cause_activity(
             caller_edge_validated = False
             if (
                 verifier_version == VERIFIER_VERSION_CURRENT
-                and VerificationEngine.effective_claim_kind(candidate) == ClaimKind.CALL_EDGE
+                and VerificationEngine.resolve_claim_kind(
+                    candidate,
+                    strict=engine.claim_binding_version
+                    in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+                )
+                == ClaimKind.CALL_EDGE
             ):
                 caller_edge_gate = engine.evaluate_caller_edge(candidate, bound)
                 caller_edge_validated = (

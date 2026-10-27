@@ -185,6 +185,26 @@ def _with_fetch_reason(item: Any, fetch_reason: str) -> Any:
         return item
 
 
+def _banked_positive(items: list) -> bool:
+    """True when banking produced citable positive evidence.
+
+    D1 (claim-proof gaps): the Git history provider returns a zero-match
+    proof row on empty walks. That row must not suppress the
+    discovery-only absence row — only positive evidence does. A row
+    counts as positive unless it is an explicit zero-match marker.
+    """
+    for item in items or []:
+        try:
+            attrs = getattr(item, "attributes", None) or {}
+            count = attrs.get("match_count") if isinstance(attrs, dict) else None
+        except Exception:
+            count = None
+        if isinstance(count, int) and not isinstance(count, bool) and count == 0:
+            continue
+        return True
+    return False
+
+
 def _absence_proof_row(
     *,
     tenant_id: Any,
@@ -2428,11 +2448,14 @@ async def execute_action_activity(
                     )
             if evidence_repo is not None and banked:
                 await evidence_repo.save_batch(tenant_id, banked, investigation_id)
-            if not banked and evidence_repo is not None:
+            if not _banked_positive(banked) and evidence_repo is not None:
                 # Phase 2 item 3: a well-formed query with zero matches banks
-                # a scoped no-match proof for future absence claims. Saved
-                # directly (never counted in the outcome), so replan-on-
-                # empties still fires and the row stays citable via repo
+                # a scoped no-match proof for future absence claims. D1
+                # (claim-proof gaps): the history provider now returns a
+                # zero-match proof row on empty walks — that row must not
+                # suppress this discovery row, only positive evidence does.
+                # Saved directly (never counted in the outcome), so replan-
+                # on-empties still fires and the row stays citable via repo
                 # scan. Fingerprint dedupes repeats idempotently.
                 try:
                     from investigation_agent_platform.domain.evidence.models import (

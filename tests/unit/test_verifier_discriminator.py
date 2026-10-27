@@ -135,7 +135,10 @@ def _historical_caller_edge(
             )
         )
     return VerificationEngine.call_site_proof(
-        rows, target, str(getattr(hypothesis, "statement", "") or "")
+        rows,
+        target,
+        str(getattr(hypothesis, "statement", "") or ""),
+        legacy_extraction=False,
     )
 
 

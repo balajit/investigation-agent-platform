@@ -275,13 +275,22 @@ Layering notes, each load-bearing:
 _CALL_EDGE_PATTERNS_ALL: tuple[tuple[str, str], ...] = (
     # (regex, shape): shape "callee" returns (callee, None);
     # shape "edge" returns (callee, caller). Ordered most-specific first.
-    (r"callers?\s+of\s+{ident}", "callee"),
-    (r"calls?\s+sites?\s+of\s+{ident}", "callee"),
-    (r"invocations?\s+of\s+{ident}", "callee"),
-    (r"what\s+(?:calls?|invokes?)\s+{ident}", "callee"),
-    (r"who\s+(?:calls?|invokes?)\s+{ident}", "callee"),
-    (r"where\s+is\s+{ident}\s+(?:called|invoked)", "callee"),
-    (r"{ident}\s+(?:is\s+|are\s+)?(?:called|invoked)\s+by\s+{ident}", "edge"),
+    # Strict table only: an optional "the" may precede either side
+    # ("what calls the OrderService", "invoked by the schedule").
+    # Only "the" — "a"/"an" stay ambiguous with single-letter names
+    # ("called by A and B") and keep legacy behavior.
+    # Legacy table below is untouched.
+    (r"callers?\s+of\s+(?:the\s+)?{ident}", "callee"),
+    (r"calls?\s+sites?\s+of\s+(?:the\s+)?{ident}", "callee"),
+    (r"invocations?\s+of\s+(?:the\s+)?{ident}", "callee"),
+    (r"what\s+(?:calls?|invokes?)\s+(?:the\s+)?{ident}", "callee"),
+    (r"who\s+(?:calls?|invokes?)\s+(?:the\s+)?{ident}", "callee"),
+    (r"where\s+is\s+(?:the\s+)?{ident}\s+(?:called|invoked)", "callee"),
+    (
+        r"{ident}\s+(?:is\s+|are\s+)?(?:called|invoked)\s+by\s+"
+        r"(?:the\s+)?{ident}",
+        "edge",
+    ),
 )
 # cbv1 legacy: preserves prior outputs for the pinned legacy cases
 # (I/O equivalence on the pinned list, not regex identity).
@@ -314,6 +323,8 @@ def _extract_call_edge(
 ```
 
 Callers pass `legacy=(version == CLAIM_BINDING_CBV1)` following the existing `strict_subject` convention at the `validate_history_claim` call site (`self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)` → `legacy=False`). Compatibility claim: the legacy table preserves the prior outputs for the pinned legacy cases (see Testing Philosophy) — "byte-identical regexes" is not claimed, since the shared edge row admits `invoked by` where the old one did not. `called by`/`invoked by` share one edge row.
+
+The strict branch additionally applies a symbol-plausibility guard (`_looks_like_symbol`): quoted, CamelCase, qualified, or snake_case tokens pass; bare lowercase prose ("the", "order" in "what calls the order service handler") fails closed to `(None, None)` so multi-word prose routes to the typed path instead of minting a wrong callee. The guard is strict-only — the legacy branch runs the old code verbatim, so legacy I/O equivalence holds by construction.
 
 The version reaches extraction through `call_site_proof`, which gains a required keyword (no default — compiler-enforced explicitness, so no future call site silently inherits a pin):
 
@@ -360,7 +371,7 @@ def infers_call_edge(statement: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in VerificationEngine.CALL_EDGE_INFERENCE_PATTERNS)
 ```
 
-Hook — one seam, defined once next to `effective_claim_kind`, consumed everywhere a CALL_EDGE gate is evaluated:
+Hook — one seam, defined once next to `effective_claim_kind`, consumed everywhere a CALL_EDGE gate is evaluated. `check_claim_kind` resolves via the seam with `strict` from `self.claim_binding_version` (and threads `legacy_extraction=not strict` through its four `call_site_proof` call sites); `evaluate_caller_edge` resolves with the same strictness before delegating, so the single caller-edge seam stays the entry for both typed and newly-inferred claims:
 
 ```python
 # src/investigation_agent_platform/application/investigation/verification.py
@@ -386,9 +397,10 @@ def resolve_claim_kind(hypothesis: Any, *, strict: bool) -> ClaimKind | None:
 
 Consumer audit (required implementation step, checklist closed before merge). Switch to `resolve_claim_kind(h, strict=<row pin>)` at every site whose branch changes verification entry, verdict routing, or fast-path bypass for CALL_EDGE:
 
-- `verification.py:check_claim_kind` (kind gate; `self` in scope), `evaluate_caller_edge` (the single caller-edge seam — without this the hook is dead), location-exclusion in `activities/verification.py` (untyped CALL_EDGE must keep bypassing the location fast path consistently).
-- `lifecycle.py` abstention CALL_EDGE diagnostics and CALL_EDGE-gated fast paths; `common.py` kind routing — each classified by the rule below.
-- Explicitly out of scope (documented, not overlooked): `validate_location_claim`'s BEHAVIOR/ABSENCE/HISTORY/CAUSAL tuple (no CALL_EDGE member — unaffected), `_MarkerEngine.effective_claim_kind` (separate marker engine; markers don't verify).
+- `verification.py:check_claim_kind` (kind gate; `self` in scope), `evaluate_caller_edge` (the single caller-edge seam — without this the hook is dead), location-exclusion in `activities/verification.py` (untyped CALL_EDGE must keep bypassing the location fast path consistently, using `engine.claim_binding_version`).
+- `lifecycle.py` abstention CALL_EDGE diagnostics and CALL_EDGE-gated fast paths (local `claim_binding_version` in scope), plus the conclude causal-chain and publish diagnostics sites.
+- `verification.py:_failed_proof_for_repair` (repair trigger mirrors the wrapped validator's kind gate; `self` in scope).
+- Explicitly out of scope (documented, not overlooked): `validate_location_claim`'s BEHAVIOR/ABSENCE/HISTORY/CAUSAL tuple (no CALL_EDGE member — unaffected), `_MarkerEngine.effective_claim_kind` (separate marker engine; markers don't verify), `common.py` telemetry/HISTORY sites (labeling and HISTORY-only — no CALL_EDGE member), telemetry/tap labels, the BEHAVIOR rival-test check, and limitation/next-action derivation sites (next-action text selection, not verification entry — kept legacy with this ledger note as the fail-closed default).
 
 Rule for the remainder (e.g., `verification.py` telemetry/diagnostic sites, `common.py` routing): a site that changes what gets verified or which path answers switches; a pure-labeling site keeps legacy inference. Unclassified at audit time defaults to legacy + a ledger note (fail-closed). The invariant the audit protects: under a fixed pin, every CALL_EDGE-gating branch in the verify/conclude/locate path resolves identically — pinned by a cross-seam test (statement × pin matrix asserting `resolve_claim_kind`, plus per-site conversion tests).
 

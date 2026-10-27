@@ -417,6 +417,10 @@ class LimitationCode(str, Enum):
     # skipped, never grounded. Additive member, same frozen-enum
     # discipline as REPAIRED_CITATION.
     NOT_CHECKABLE_SKIPPED = "NOT_CHECKABLE_SKIPPED"
+    # Claim-proof gaps (D1): a negative recent-change claim verified by a
+    # scoped empty history search. Additive member, same frozen-enum
+    # discipline as REPAIRED_CITATION.
+    HISTORY_ABSENCE_PROVED = "HISTORY_ABSENCE_PROVED"
 
 
 class VerificationLimitation(BaseModel):
@@ -3101,18 +3105,117 @@ class VerificationEngine:
         except Exception:
             return []
 
+    _CALL_EDGE_PATTERNS_ALL: tuple[tuple[str, str], ...] = (
+        # (regex, shape): shape "callee" returns (callee, None);
+        # shape "edge" returns (callee, caller). Ordered most-specific first.
+        # Strict table only: an optional "the" may precede either side
+        # ("what calls the OrderService", "invoked by the schedule").
+        # Only "the" — "a"/"an" stay ambiguous with single-letter names
+        # ("called by A and B") and keep legacy behavior.
+        # Legacy table below is untouched.
+        (r"callers?\s+of\s+(?:the\s+)?{ident}", "callee"),
+        (r"calls?\s+sites?\s+of\s+(?:the\s+)?{ident}", "callee"),
+        (r"invocations?\s+of\s+(?:the\s+)?{ident}", "callee"),
+        (r"what\s+(?:calls?|invokes?)\s+(?:the\s+)?{ident}", "callee"),
+        (r"who\s+(?:calls?|invokes?)\s+(?:the\s+)?{ident}", "callee"),
+        (r"where\s+is\s+(?:the\s+)?{ident}\s+(?:called|invoked)", "callee"),
+        (
+            (
+                r"{ident}\s+(?:is\s+|are\s+)?(?:called|invoked)\s+by\s+"
+                r"(?:the\s+)?{ident}"
+            ),
+            "edge",
+        ),
+    )
+    # cbv1 legacy: preserved outputs for the pinned legacy cases
+    # (I/O equivalence on the pinned list, not regex identity).
+    _CALL_EDGE_PATTERNS_LEGACY: tuple[tuple[str, str], ...] = (
+        (r"callers?\s+of\s+{ident}", "callee"),
+        (r"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", "edge"),
+    )
+
+    # Conservative regex inference for every new D2 extraction form (D2).
+    CALL_EDGE_INFERENCE_PATTERNS: tuple[str, ...] = (
+        r"what\s+(?:calls?|invokes?)\s+[A-Za-z_][\w.:#]*",
+        r"who\s+(?:calls?|invokes?)\s+[A-Za-z_][\w.:#]*",
+        r"where\s+is\s+[A-Za-z_][\w.:#]*\s+(?:called|invoked)",
+        r"calls?\s+sites?\s+of\s+[A-Za-z_][\w.:#]*",
+        r"invocations?\s+of\s+[A-Za-z_][\w.:#]*",
+        r"[A-Za-z_][\w.:#]*\s+(?:is\s+|are\s+)?invoked\s+by\s+[A-Za-z_][\w.:#]*",
+    )
+
     @staticmethod
-    def _extract_call_edge(statement: str) -> tuple[str | None, str | None]:
+    def infers_call_edge(statement: str) -> bool:
+        """True when untyped prose unambiguously asks a call-edge question."""
+        lowered = f" {statement.lower()} "
+        return any(
+            re.search(pattern, lowered)
+            for pattern in VerificationEngine.CALL_EDGE_INFERENCE_PATTERNS
+        )
+
+    @staticmethod
+    def _looks_like_symbol(token: str, raw_match: str) -> bool:
+        """Guard against extracting prose words as callees.
+
+        D2 strict path only (legacy is untouched). Multi-word prose
+        ("what calls the order service handler") must yield (None, None)
+        — the typed path owns those — rather than a wrong callee like
+        "the". Quoted, qualified, CamelCase, or snake_case tokens pass.
+        """
+        if not token:
+            return False
+        if any(f"{q}{token}{q}" in raw_match for q in ("`", "'", '"')):
+            return True
+        return any(c.isupper() or c in ".:#_" for c in token)
+
+    @staticmethod
+    def _extract_call_edge(
+        statement: str, *, legacy: bool = False
+    ) -> tuple[str | None, str | None]:
         """(callee, caller) from untyped prose; (None, None) when unclear."""
         text = statement or ""
         ident = r"[`'\"]?([A-Za-z_][\w.:#]*)[`'\"]?"
-        m = re.search(rf"callers?\s+of\s+{ident}", text, re.IGNORECASE)
-        if m:
+        if legacy:
+            rows = VerificationEngine._CALL_EDGE_PATTERNS_LEGACY
+            for raw, shape in rows:
+                m = re.search(raw.format(ident=ident), text, re.IGNORECASE)
+                if not m:
+                    continue
+                if shape == "edge":
+                    return (m.group(1), m.group(2))
+                return (m.group(1), None)
+            return (None, None)
+        for raw, shape in VerificationEngine._CALL_EDGE_PATTERNS_ALL:
+            m = re.search(raw.format(ident=ident), text, re.IGNORECASE)
+            if not m:
+                continue
+            if shape == "edge":
+                if not VerificationEngine._looks_like_symbol(m.group(1), m.group(0)):
+                    continue
+                return (m.group(1), m.group(2))
+            if not VerificationEngine._looks_like_symbol(m.group(1), m.group(0)):
+                continue
             return (m.group(1), None)
-        m = re.search(rf"{ident}\s+(?:is\s+|are\s+)?called\s+by\s+{ident}", text, re.IGNORECASE)
-        if m:
-            return (m.group(1), m.group(2))
         return (None, None)
+
+    @staticmethod
+    def resolve_claim_kind(hypothesis: Any, *, strict: bool) -> ClaimKind | None:
+        """Version-aware kind resolution.
+
+        strict=False reproduces effective_claim_kind exactly (legacy
+        inference only). strict=True additionally applies infers_call_edge.
+        effective_claim_kind itself stays byte-identical forever (legacy
+        inference only); the seam wraps it.
+        """
+        kind = VerificationEngine.effective_claim_kind(hypothesis)
+        if kind is not None:
+            return kind
+        if not strict:
+            return None
+        statement = str(getattr(hypothesis, "statement", "") or "")
+        if VerificationEngine.infers_call_edge(statement):
+            return ClaimKind.CALL_EDGE
+        return None
 
     @staticmethod
     def definition_window_proof(
@@ -3158,13 +3261,19 @@ class VerificationEngine:
 
     @staticmethod
     def call_site_proof(
-        evidence_items: list[Any], target: ClaimTarget | None, statement: str
+        evidence_items: list[Any],
+        target: ClaimTarget | None,
+        statement: str,
+        *,
+        legacy_extraction: bool,
     ) -> tuple[bool, str]:
         """A cited code row that shows the call expression itself."""
         callee = target.symbol if target is not None else None
         caller = target.counterpart if target is not None else None
         if not callee:
-            callee, extracted_caller = VerificationEngine._extract_call_edge(statement)
+            callee, extracted_caller = VerificationEngine._extract_call_edge(
+                statement, legacy=legacy_extraction
+            )
             caller = caller or extracted_caller
         if not callee:
             return (False, "call edge names no identifiable callee (set target.symbol)")
@@ -3357,7 +3466,12 @@ class VerificationEngine:
         self, hypothesis: Any, evidence_items: list[Any]
     ) -> tuple[bool, str] | None:
         """Claim-kind gate. None means no kind-specific rule applies."""
-        kind = VerificationEngine.effective_claim_kind(hypothesis)
+        strict = self.claim_binding_version in (
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
+        )
+        kind = VerificationEngine.resolve_claim_kind(hypothesis, strict=strict)
+        legacy_extraction = not strict
         if kind is None or kind == ClaimKind.CAUSAL:
             return None
         # Phase 4 (defense in depth): NOT_CHECKABLE never verifies. The
@@ -3425,7 +3539,10 @@ class VerificationEngine:
                         # specific caller edge at the same binding, revision,
                         # repository, and target range.
                         edge_ok, edge_reason = VerificationEngine.call_site_proof(
-                            _rows, edge_target, statement
+                            _rows,
+                            edge_target,
+                            statement,
+                            legacy_extraction=legacy_extraction,
                         )
                         if not edge_ok:
                             return (
@@ -3450,9 +3567,18 @@ class VerificationEngine:
                         continue
                     if VerificationEngine._item_window(item) is None:
                         continue
+                    # D3 (claim-proof gaps): construction lines never name a
+                    # caller for enumeration — the single site where "shown"
+                    # meant something weaker than call_site_proof. Under cbv1
+                    # the current enumeration result is preserved.
+                    bare_symbol = not any(
+                        sep in (str(getattr(target, "symbol", "") or ""))
+                        for sep in ("::", ".", "#")
+                    )
                     if not VerificationEngine._call_shown(
                         str(getattr(target, "symbol", "") or ""),
                         str(getattr(item, "content_snippet", "") or ""),
+                        exclude_construction=(bare_symbol and strict),
                     ):
                         continue
                     file_stem = (
@@ -3481,7 +3607,12 @@ class VerificationEngine:
                 return (True, "")
             aggregate_edges = VerificationEngine._aggregate_call_edges(hypothesis)
             if target is None:
-                return VerificationEngine.call_site_proof(evidence_items, target, statement)
+                return VerificationEngine.call_site_proof(
+                    evidence_items,
+                    target,
+                    statement,
+                    legacy_extraction=legacy_extraction,
+                )
             anchor_ids = {
                 str(value)
                 for value in (getattr(hypothesis, "supporting_evidence_ids", None) or [])
@@ -3503,7 +3634,9 @@ class VerificationEngine:
                             False,
                             "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
                         )
-                    edge_ok, edge_reason = VerificationEngine.call_site_proof(rows, edge, statement)
+                    edge_ok, edge_reason = VerificationEngine.call_site_proof(
+                        rows, edge, statement, legacy_extraction=legacy_extraction
+                    )
                     if not edge_ok:
                         return (False, edge_reason)
                 return (True, "")
@@ -3521,7 +3654,9 @@ class VerificationEngine:
                     False,
                     "CALL_EDGE_INCOMPLETE_ENUMERATION: no exact bound range read for edge",
                 )
-            return VerificationEngine.call_site_proof(rows, target, statement)
+            return VerificationEngine.call_site_proof(
+                rows, target, statement, legacy_extraction=legacy_extraction
+            )
         if kind == ClaimKind.BEHAVIOR:
             return VerificationEngine.behavior_proof(evidence_items)
         if kind == ClaimKind.ABSENCE:
@@ -3541,7 +3676,17 @@ class VerificationEngine:
         existing ``None`` contract for non-caller claims while ensuring both
         lifecycle paths consume the same exact-binding and enumeration result.
         """
-        if VerificationEngine.effective_claim_kind(hypothesis) != ClaimKind.CALL_EDGE:
+        if (
+            VerificationEngine.resolve_claim_kind(
+                hypothesis,
+                strict=self.claim_binding_version
+                in (
+                    CLAIM_BINDING_CBV2,
+                    CLAIM_BINDING_CBV3,
+                ),
+            )
+            != ClaimKind.CALL_EDGE
+        ):
             return None
         return self.check_claim_kind(hypothesis, evidence_items)
 
@@ -3721,6 +3866,116 @@ class VerificationEngine:
             f"no cited COMMIT_HISTORY row matches {target.file_path} at commit {target.commit_id}",
         )
 
+    @staticmethod
+    def history_absence_outcome(
+        evidence_items: list[Any], target: ClaimTarget | None
+    ) -> tuple[str, str, list[Any]]:
+        """Negative HISTORY finding: inspected-empty vs incomplete vs no search.
+
+        Returns (outcome, reason, qualifying_rows). INSPECTED_EMPTY means a
+        scoped history search ran and matched nothing: >=1 non-discovery
+        COMMIT_HISTORY row with match_count == 0 on the target file and a
+        non-empty searched-tip revision. A non-discovery positive row for
+        the same file blocks absence (SEARCH_INCOMPLETE): an empty search
+        never overrides existing positive history evidence. NO_SEARCH
+        covers no history retrieved at all. Both non-proof states carry the
+        reason for the caller to fall through, never to conclude from silence.
+        """
+        try:
+            if target is None or not getattr(target, "file_path", ""):
+                return ("NO_SEARCH", "history absence needs a file target", [])
+            if getattr(target, "commit_id", ""):
+                return (
+                    "SEARCH_INCOMPLETE",
+                    "commit-scoped absence needs range proof (deferred); file-level only",
+                    [],
+                )
+            file_hits: list[Any] = []
+            saw_file_rows = False
+            for item in evidence_items or []:
+                if VerificationEngine._item_type(item) != "COMMIT_HISTORY":
+                    continue
+                if not VerificationEngine._paths_match(
+                    str(target.file_path or ""), VerificationEngine._item_file(item)
+                ):
+                    continue
+                saw_file_rows = True
+                try:
+                    attrs = getattr(item, "attributes", None) or {}
+                    if not isinstance(attrs, dict):
+                        attrs = {}
+                    if attrs.get("discovery_only") is True:
+                        continue
+                except Exception:
+                    continue
+                file_hits.append(item)
+            if not file_hits:
+                if saw_file_rows:
+                    return (
+                        "SEARCH_INCOMPLETE",
+                        (
+                            "only discovery history rows exist for the file; "
+                            "no inspected-empty search covers the claimed scope"
+                        ),
+                        [],
+                    )
+                return (
+                    "NO_SEARCH",
+                    "no COMMIT_HISTORY rows retrieved; do not conclude absence",
+                    [],
+                )
+            for item in file_hits:
+                try:
+                    attrs = getattr(item, "attributes", None) or {}
+                    count = attrs.get("match_count") if isinstance(attrs, dict) else None
+                except Exception:
+                    count = None
+                if isinstance(count, int) and not isinstance(count, bool) and count != 0:
+                    return (
+                        "SEARCH_INCOMPLETE",
+                        "positive history evidence exists for the file; absence blocked",
+                        [],
+                    )
+            qualifying: list[Any] = []
+            for item in file_hits:
+                try:
+                    attrs = getattr(item, "attributes", None) or {}
+                    count = attrs.get("match_count") if isinstance(attrs, dict) else None
+                except Exception:
+                    count = None
+                if not (
+                    isinstance(count, int) and not isinstance(count, bool) and count == 0
+                ):
+                    continue
+                try:
+                    row_revision = str(
+                        getattr(
+                            getattr(
+                                getattr(item, "provenance", None), "source_location", None
+                            ),
+                            "revision",
+                            "",
+                        )
+                        or ""
+                    )
+                except Exception:
+                    row_revision = ""
+                if not row_revision:
+                    continue
+                qualifying.append(item)
+            if qualifying:
+                return ("INSPECTED_EMPTY", "", qualifying)
+            return (
+                "SEARCH_INCOMPLETE",
+                (
+                    "history rows exist for the file but no inspected-empty search "
+                    "covers the claimed scope"
+                ),
+                [],
+            )
+        except Exception:
+            return ("NO_SEARCH", "history absence evaluation failed closed", [])
+
     def validate_history_claim(
         self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
     ) -> VerificationResult | None:
@@ -3740,6 +3995,65 @@ class VerificationEngine:
         ):
             return None
         target = getattr(hypothesis, "claim_target", None)
+        confidence = InvestigationConfidence(
+            coverage_score=1.0,
+            reliability_score=1.0,
+            causal_score=0.5,
+            contradiction_penalty=0.0,
+        )
+        # D1 (claim-proof gaps): file-level history absence is evaluated
+        # BEFORE the positive history_proof prerequisite, which rejects
+        # commit-less targets — placing absence after it would make the
+        # new verdict unreachable. Commit-naming targets skip absence and
+        # continue to the positive path, where they may still verify a
+        # positive commit claim. cbv1 keeps today's fall-through.
+        if (
+            self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+            and not getattr(target, "commit_id", "")
+        ):
+            outcome, _, qualifying = VerificationEngine.history_absence_outcome(
+                evidence_items, target
+            )
+            if outcome == "INSPECTED_EMPTY":
+                try:
+                    _tip = str(
+                        getattr(
+                            getattr(
+                                getattr(qualifying[0], "provenance", None),
+                                "source_location",
+                                None,
+                            ),
+                            "revision",
+                            "",
+                        )
+                        or ""
+                    )
+                except Exception:
+                    _tip = ""
+                return VerificationResult(
+                    hypothesis_id=hypothesis.id,
+                    status=VerificationStatus.VERIFIED,
+                    corroborating_evidence_ids=[
+                        item.evidence_id for item in qualifying
+                    ],
+                    explanation=(
+                        "HISTORY_ABSENCE_PROVED: scoped history search of "
+                        f"{target.file_path} from tip {_tip[:8]} matched no commit; "
+                        "the negative recent-change claim is verified by the "
+                        "empty search over the stated window only."
+                    ),
+                    confidence=confidence,
+                    location_validated=True,
+                    limitations=[
+                        VerificationLimitation(
+                            code=LimitationCode.HISTORY_ABSENCE_PROVED,
+                            detail=(
+                                "Negative proven by scoped empty search "
+                                "over the cited rows."
+                            ),
+                        )
+                    ],
+                )
         proof_ok, _ = VerificationEngine.history_proof(
             evidence_items, target, self.claim_binding_version
         )
@@ -3810,12 +4124,6 @@ class VerificationEngine:
         )
         if newest not in matching:
             return None
-        confidence = InvestigationConfidence(
-            coverage_score=1.0,
-            reliability_score=1.0,
-            causal_score=0.5,
-            contradiction_penalty=0.0,
-        )
         return VerificationResult(
             hypothesis_id=hypothesis.id,
             status=VerificationStatus.VERIFIED,
@@ -5811,7 +6119,14 @@ class VerificationEngine:
         raises.
         """
         try:
-            kind = VerificationEngine.effective_claim_kind(hypothesis)
+            kind = VerificationEngine.resolve_claim_kind(
+                hypothesis,
+                strict=self.claim_binding_version
+                in (
+                    CLAIM_BINDING_CBV2,
+                    CLAIM_BINDING_CBV3,
+                ),
+            )
         except Exception:
             return False
         try:

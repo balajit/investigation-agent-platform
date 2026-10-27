@@ -145,8 +145,9 @@ def _asm(
     )
 
 
-def run_path(statement: str, hyp: Hypothesis, banked: list[Evidence]) -> dict[str, Any]:
+def run_path(statement: str, hyp: Hypothesis, banked: list[Evidence], engine=None) -> dict[str, Any]:
     """Mirror the activities' bound-augment-verify-gate-next_check sequence."""
+    eng = engine or ENGINE
     evidence_by_id = {e.evidence_id: e for e in banked}
     bound = [
         evidence_by_id[k]
@@ -158,11 +159,11 @@ def run_path(statement: str, hyp: Hypothesis, banked: list[Evidence]) -> dict[st
         if extra.evidence_id not in bound_ids:
             bound_ids.add(extra.evidence_id)
             bound.append(extra)
-    kind_gate = ENGINE.check_claim_kind(hyp, bound)
-    verification = ENGINE.evaluate_hypothesis(hyp, bound, [], [], POLICY)
+    kind_gate = eng.check_claim_kind(hyp, bound)
+    verification = eng.evaluate_hypothesis(hyp, bound, [], [], POLICY)
     # Mirrors conclude_investigation_activity: a validated code-value answer
     # carries the verdict and exempts the gate's causal-chain requirement.
-    code_value_result = ENGINE.validate_code_value_claim(hyp, bound, [])
+    code_value_result = eng.validate_code_value_claim(hyp, bound, [])
     code_value_answered = code_value_result is not None
     if code_value_answered:
         verification = code_value_result
@@ -335,7 +336,10 @@ def test_l2_sibling_repair_and_proxy_gap_end_to_end():
     assert helper_call.evidence_id in bound_ids
     assert (
         VerificationEngine.call_site_proof(
-            [helper_search, helper_decl, helper_call], helper_target, statement
+            [helper_search, helper_decl, helper_call],
+            helper_target,
+            statement,
+            legacy_extraction=False,
         )[0]
         is True
     )
@@ -678,3 +682,117 @@ def test_l5_answered_via_method_return_end_to_end():
     # no CONCLUSION_UNMAPPED demotion fires — the 042953 L5 PARTIAL shape.
     assert out["unmapped"] == []
     assert out["decision"].approved is True
+
+
+def test_history_absence_verifies_negative_end_to_end():
+    """D1: file-level negative history finding verifies through the
+    activity's history-validator slot (validate_history_claim), not the
+    kind-gate positive proof (history_proof rejects commit-less targets).
+
+    Mirrors execute/verify: bound cited row -> history validator (cbv2
+    engine) -> ConclusionGate -> conclusion mapping -> next_check.
+    """
+    engine_cbv2 = VerificationEngine(claim_binding_version="cbv2")
+    target = ClaimTarget(file_path=PROXY)
+    row = _ev(
+        snippet="No history in scope",
+        file_path=PROXY,
+        revision=REV,
+        operation="get_code_history",
+        etype=__import__(
+            "investigation_agent_platform.domain.evidence.models", fromlist=["EvidenceType"]
+        ).EvidenceType.COMMIT_HISTORY,
+        attrs={"search_scope": f"repo@{REV}:history={PROXY}", "match_count": 0},
+    )
+    hyp_id, iid = uuid4(), uuid4()
+    hyp = _hyp(
+        "No recent change to OrderServiceRestProxy.",
+        [_asm(hyp_id, row.evidence_id, ClaimKind.HISTORY, target)],
+        [row.evidence_id],
+        iid,
+    )
+    hyp = hyp.model_copy(update={"id": hyp_id})
+    history_result = engine_cbv2.validate_history_claim(hyp, [row], [])
+    assert history_result is not None
+    assert history_result.status == VerificationStatus.VERIFIED
+    assert history_result.explanation.startswith("HISTORY_ABSENCE_PROVED:")
+    assert history_result.corroborating_evidence_ids == [row.evidence_id]
+
+    async def _gate():
+        return await GATE.evaluate(
+            "n-batt",
+            hyp.investigation_id,
+            history_result,
+            [],
+            [],
+            [row],
+            POLICY,
+            # Mirrors conclude_investigation_activity: a validated history
+            # answer stands in for the causal chain like any validated path.
+            history_validated=True,
+        )
+
+    import asyncio as _asyncio
+
+    decision = _asyncio.run(_gate())
+    assert decision.approved is True
+
+
+def test_construction_only_row_enumerates_only_under_cbv1():
+    """D3: live-L2#2 shape — a construction-only row from a named file.
+
+    Under cbv1 the construction line counts as shown, so the named
+    caller fails enumeration. Under cbv2 the construction line is
+    excluded, the edge proves via the declaration+invocation join, and
+    enumeration passes. Same rows, same statement; only the pin differs.
+    """
+    proxy_read = _ev(
+        snippet=(
+            "1| package com.sample.orders.proxy;\n"
+            "2| public class OrderServiceRestProxy {\n"
+            "3|     private OrderServiceHandler handler;\n"
+            "10|     public String submit(String orderId) {\n"
+            "11|         return handler.submit(orderId);\n"
+            "12|     }"
+        ),
+        file_path=PROXY,
+        line_start=1,
+        line_end=12,
+    )
+    holder_row = _ev(
+        snippet="7| holder = new OrderServiceHandler();",
+        file_path="service/src/main/java/com/sample/orders/proxy/FieldHolder.java",
+        line_start=7,
+        line_end=7,
+    )
+    hyp_id, iid = uuid4(), uuid4()
+    target = ClaimTarget(
+        symbol="OrderServiceHandler",
+        counterpart="OrderServiceRestProxy.submit",
+        file_path=PROXY,
+        line_start=10,
+        line_end=12,
+        scope="OrderServiceRestProxy.submit",
+        declaring_type="OrderServiceRestProxy",
+        commit_id=REV,
+    )
+    statement = "OrderServiceRestProxy calls OrderServiceHandler; FieldHolder constructs it."
+    hyp = _hyp(
+        statement,
+        [_asm(hyp_id, proxy_read.evidence_id, ClaimKind.CALL_EDGE, target)],
+        [proxy_read.evidence_id, holder_row.evidence_id],
+        iid,
+    )
+    hyp = hyp.model_copy(update={"id": hyp_id})
+    rows = [proxy_read, holder_row]
+
+    out_cbv1 = run_path(statement, hyp, rows)
+    assert out_cbv1["kind_gate"][0] is False
+    assert "caller enumeration names a caller" in out_cbv1["kind_gate"][1]
+
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine as _VE,
+    )
+
+    out_cbv2 = run_path(statement, hyp, rows, engine=_VE(claim_binding_version="cbv2"))
+    assert out_cbv2["kind_gate"] == (True, "")

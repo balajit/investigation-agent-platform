@@ -840,6 +840,67 @@ class PyGit2Adapter:
                     )
                 )
                 count += 1
+            if not evidences:
+                # D1 (claim-proof gaps): the ancestry walk completed with
+                # zero touching commits. Return a single proof-capable
+                # zero-match row instead of []. Only this site can do so:
+                # repository, resolved path, and searched tip are all in
+                # scope here; the request carries no revision and the port
+                # returns a bare list. Non-discovery (proof, not steering);
+                # the `history=` scope marker keeps ABSENCE scopes from
+                # covering it. Unresolvable cases never reach here:
+                # bare-basename ambiguity and unborn HEAD raise above.
+                tip_hex = str(tip.id)
+                proof_scope = f"{repository}@{tip_hex}:history={path}"[:512]
+                now = datetime.now(UTC)
+                prov = EvidenceProvenance(
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    provider_type="GIT",
+                    requested_provider_id=self._provider_id,
+                    actual_provider_id=self._provider_id,
+                    source_system="Git",
+                    retrieval_timestamp=now,
+                    query_fingerprint=QueryFingerprint(
+                        provider_type="GIT",
+                        operation="GET_CODE_HISTORY",
+                        normalized_query_hash=hashlib.sha256(
+                            proof_scope.encode()
+                        ).hexdigest(),
+                    ),
+                    source_location=SourceLocation(
+                        system="Git",
+                        identifier=f"history-empty:{repository}/{path}",
+                        file_path=path,
+                        revision=tip_hex,
+                    ),
+                )
+                evidences.append(
+                    Evidence(
+                        tenant_id=tenant_id,
+                        investigation_id=investigation_id,
+                        evidence_type=EvidenceType.COMMIT_HISTORY,
+                        provider=self._provider_id,
+                        source=f"git://{repository}/history/{path}",
+                        title=f"No history for {path} at {tip_hex[:8]}",
+                        summary=(
+                            f"History walk from {tip_hex[:8]} found no commit "
+                            f"touching {path}."
+                        ),
+                        content_snippet=(
+                            f"No commit reachable from {tip_hex} touches {path}."
+                        ),
+                        attributes={"search_scope": proof_scope, "match_count": 0},
+                        observed_at=now,
+                        retrieved_at=now,
+                        provenance=prov,
+                        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+                        classification=ClassificationLevel.INTERNAL,
+                        fingerprint=hashlib.sha256(
+                            f"{tenant_id}:{repository}:{path}:{tip_hex}:empty".encode()
+                        ).hexdigest(),
+                    )
+                )
             return evidences
         except CodePathNotFoundError:
             # A miss is a miss, not an execution failure: propagate unwrapped
