@@ -432,3 +432,10 @@ Add a forward pointer (no edits to the Phase 1 record itself): the dead `repair_
 **Risk:** One banked range read can donor for several claims, concentrating many verdicts on a single row whose later invalidation would cascade.
 
 **Mitigation:** Sharing is provenance, not proof: each group's use records its own `RepairedBinding` with that group's gate reason, and invalidation of the donor row invalidates every dependent verdict through the existing evidence-identity join (same as shared cited rows today). Reuse across groups is allowed precisely because each use is independently gated — a donor grounding two claims is two separately authorized repairs, not one authorization spent twice. No new coupling is introduced beyond what shared cited rows already carry.
+
+## Implementation deltas — owner review A–N (2026-10-27, commit 17e9127)
+
+- **D → D1/D6:** repair fires on validator-None only and is further gated by `expect_kinds`; obstructed scopes (retrieval blocked, not merely empty) are excluded from repair — no recovery where nothing was attempted.
+- **E → D4/D5:** `shadow_repair_review` is a reviewed disposition gate: no `cbv3` row exists until a human dispositions the shadow divergence. The divergence report is the authorization artifact.
+- **G → donor sharing:** `donor_snippet` is carried through marker, loader, and report, so every repaired verdict shows the grounding text it rode on.
+- **H → D5:** loop telemetry accepts `cbv3` pin values, keeping the closed vocabulary complete across all three pins.

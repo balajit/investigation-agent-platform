@@ -465,3 +465,9 @@ Add an as-built note: binding observations now carry the claim-binding version a
 **Risk:** `claim_binding_version` must be stamped, propagated, and resolved in every verify/conclude entry path; a missed path silently runs the wrong semantics.
 
 **Mitigation:** Single resolver, single stamp site, fail-closed on unknown, and a test that enumerates the entry paths. The pin rides the existing `verifier_version` plumbing rather than inventing a parallel channel.
+
+## Implementation deltas — owner review A–N (2026-10-27, commits 17e9127 + J set)
+
+- **A → D2:** `commit_subject` gained a sanitizer (strip/normalize before match) and the prompt moved to `v3-claim-grounded-018`, which instructs the structured subject form. Substring fragility is addressed at both ends: producer (prompt) and consumer (sanitizer).
+- **B → D1:** scope-attempt linkage is a single shared predicate, `linked_scope_attempted()`, called from both the verify and conclude paths — never a forked copy.
+- **C → binding scope:** `_scope_path_prefix()` now resolves at the SEARCH_CODE site, so scope prefixes attach where the retrieval action actually runs.

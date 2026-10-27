@@ -384,3 +384,7 @@ Add a forward pointer (no edits to the Phase 1 record itself): Phase 2 supersede
 **Risk:** Model-controlled query text flows into persisted ledgers and battery joins; a hostile or buggy model could stuff the query with exfiltrated content or break joins with adversarial strings.
 
 **Mitigation:** Queries are truncated, stripped, and never executed as code — they parameterize existing typed retrieval actions through the `RETRYABLE_ACTIONS` gate. They never enter telemetry labels, never enter fingerprints, and overlong content is cut before validation. The validator test pins truncation and type coercion.
+
+## Implementation deltas — owner review A–N (2026-10-27, commit 17e9127)
+
+- **N → D4:** the ledger exposes `all_typed_claims_not_checkable()` with a closed `NOT_CHECKABLE_KIND_VALUE` vocabulary, so an all-NC investigation is decided by one ledger-level predicate rather than per-claim re-derivation.

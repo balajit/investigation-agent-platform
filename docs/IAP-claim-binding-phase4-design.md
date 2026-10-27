@@ -960,3 +960,11 @@ Unchanged — historical phase docs are frozen records. Cross-references flow on
 **Risk:** The new live probe asserts the model declares `NOT_CHECKABLE` for a taste/prediction prompt; model drift could flip it to flaky.
 
 **Mitigation:** L13 follows the L8 precedent (live since Tranche B) with the same ABSTAIN-first assertion; the `not_checkable` dimension is additive, so a flip degrades to PARTIAL rather than masking other results. If flaky, demote L13 to offline grading like L9/L10–L12.
+
+## Implementation deltas — owner review A–N (2026-10-27, commits 17e9127 + J set + 8386740)
+
+- **J → L13 mitigation, exercised as written:** model drift made L13 flaky, so L13 is demoted to offline grading (`live:false` + `offline_reason` in `tests/fixtures/battery_cases/L13.json`), the default live plan is L13-free, and the injected-claim live proof driver is adopted at `scripts/live_inject_not_checkable.py` (OVERALL PASS 6/6 on the sandbox).
+- **F → D7:** `format_repair_rate()` denominators count checkable typed groups only; non-checkable groups never dilute the rate.
+- **L → D5:** the NC early-skip is one shared predicate called from both verify and conclude paths.
+- **M → D2:** the `claim_gaps` feed is total — an explicit `claim_gaps: []` is emitted when no candidate exists, so absence of gaps is data, not a missing feed.
+- **Baseline provenance (merge-prep fix):** the proof-kernel `git_rev` pin compared `HEAD` for equality, which made every freeze commit self-invalidating. `git_rev` is now recorded provenance excluded from `--check`/test equality; content reproducibility is carried by `battery_case_digests`.
