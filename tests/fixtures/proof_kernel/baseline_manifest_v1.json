@@ -34,7 +34,7 @@
     "L8.json",
     "L9.json"
   ],
-  "git_rev": "a3e7fddb859f21aa6753bd3ac04eb82343a3fe72",
+  "git_rev": "bc8ef38c0f344f723e80b61e606ffb2d2c9fc689",
   "live_trace_status": "pending: per-claim retrieved/bound IDs attach here after a live run",
   "note": "TEST-ONLY frozen baseline. No production code reads these files.",
   "version": "baseline/v1"

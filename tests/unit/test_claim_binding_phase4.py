@@ -497,6 +497,28 @@ class TestFastPathPredicate:
         assert _forced_conclude_break({}) is False
         assert _forced_conclude_break(None) is False
 
+    def test_d6_concluded_requests_completed(self):
+        """Structural pin: the D6 break must set _d6_concluded and the
+        concluding block must map it to a COMPLETED request, so the gate
+        — not the epistemic FAILED path — persists the abstention with
+        NOT_CHECKABLE_SKIPPED. The injected live test (opt 2) is the
+        behavioral pin; this trips on silent removal."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src"
+            / "investigation_agent_platform"
+            / "application"
+            / "worker"
+            / "workflows"
+            / "run_investigation.py"
+        ).read_text()
+        assert "_d6_concluded = True" in src
+        assert "elif _d6_concluded:" in src
+        tail = src.split("elif _d6_concluded:")[1][:400]
+        assert 'final_status = "COMPLETED"' in tail
+
     def test_d6_fast_path_cascade_guards(self):
         """F1 pin: every cascade override after the D6 fast path must be
         guarded by _d6_fired, so a later rule cannot clobber the forced

@@ -462,6 +462,12 @@ class RunInvestigationWorkflow:
         iteration = 0
         verified = False
         last_error: str | None = None
+        # Phase 4 (claim binding): D6 fast-path exit flag. Set when the
+        # opinion-only break fires; concluding then requests COMPLETED
+        # so the gate routes through _persist_abstention with
+        # NOT_CHECKABLE_SKIPPED (D5/D7) instead of the epistemic FAILED
+        # path. Plain bool, replay-safe.
+        _d6_concluded = False
         # Prior reason decisions (plain JSON scalars). Rebuilt deterministically
         # from activity results on replay; fed back into ReasonInput so the
         # model sees repetition and escalates capability instead of looping
@@ -1252,6 +1258,7 @@ class RunInvestigationWorkflow:
             # which requests COMPLETED and routes through the gate into
             # _persist_abstention with NOT_CHECKABLE_SKIPPED (D5/D7).
             if _forced_conclude_break(_reason_data):
+                _d6_concluded = True
                 break
             _dispatched_action = str(_reason_data.get("next_action", "QUERY_STATE"))
             try:
@@ -1672,6 +1679,13 @@ class RunInvestigationWorkflow:
         await _transition("CONCLUDING", "Workflow entering concluding phase")
         if self._is_cancelled:
             final_status = "CANCELLED"
+        elif _d6_concluded:
+            # Phase 4 (claim binding): the opinion-only fast path broke out
+            # before verify, so verified is False by construction — but the
+            # run concluded honestly, not failed. Request COMPLETED so the
+            # gate abstains with NOT_CHECKABLE_SKIPPED (D5/D7) rather than
+            # taking the epistemic FAILED path.
+            final_status = "COMPLETED"
         elif verified:
             final_status = "COMPLETED"
         elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted"}:
