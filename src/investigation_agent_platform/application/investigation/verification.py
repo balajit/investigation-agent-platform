@@ -1058,6 +1058,21 @@ def repair_citation(
         return False
 
 
+def _same_pinned_revision(first: Any, second: Any) -> bool:
+    """True only when both sides name the same established revision.
+
+    Missing revision never matches: unknown is not equal to unknown,
+    and never equal to a pinned revision. Guards same-revision joins
+    against revision-less rows, which carry no evidence of sameness.
+    """
+    try:
+        left = str(first or "").strip()
+        right = str(second or "").strip()
+    except Exception:
+        return False
+    return bool(left and right and left == right)
+
+
 def _paths_match_for_repair(candidate_row: Any, donor_row: Any) -> bool:
     """Same file path (normalized suffix match) and revision on both rows.
 
@@ -1086,7 +1101,7 @@ def _paths_match_for_repair(candidate_row: Any, donor_row: Any) -> bool:
             )
             or ""
         )
-        return bool(candidate_rev) and candidate_rev == donor_rev
+        return _same_pinned_revision(candidate_rev, donor_rev)
     except Exception:
         return False
 
@@ -2440,12 +2455,19 @@ class VerificationEngine:
             for item in evidence_items or []:
                 if expected_ids and str(getattr(item, "evidence_id", "")) not in expected_ids:
                     continue
-                loc = getattr(
-                    getattr(getattr(item, "provenance", None), "source_location", None),
-                    "revision",
-                    None,
+                loc_rev = str(
+                    getattr(
+                        getattr(getattr(item, "provenance", None), "source_location", None),
+                        "revision",
+                        None,
+                    )
+                    or ""
                 )
-                if str(loc or "") != (resolution.revision or ""):
+                res_rev = str(getattr(resolution, "revision", "") or "")
+                # Missing revision never matches (see _same_pinned_revision):
+                # unknown is not equal to unknown, and never equal to a
+                # pinned revision.
+                if not _same_pinned_revision(loc_rev, res_rev):
                     continue
                 if not VerificationEngine._paths_match(
                     str(resolution.declaration_location.file_path or ""),

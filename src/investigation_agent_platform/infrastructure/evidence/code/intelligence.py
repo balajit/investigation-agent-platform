@@ -524,9 +524,13 @@ class TreeSitterCodeIntelligenceProvider:
                 score = 2
             else:
                 score = 3
-            commit_hash = self._repo_head_sha(f) or hashlib.sha256(
-                f"{tenant_id}:{rel}:{query}".encode()
-            ).hexdigest()[:16]
+            # Live-checkout scan: the recorded revision is the real HEAD oid,
+            # or None when the checkout has no resolvable HEAD. Never a
+            # query-derived hash: a synthetic value shaped like a revision
+            # would let same-revision checks match rows that share a query
+            # but not a revision. Row identity rides the fingerprint, which
+            # is unique per row and can never false-match.
+            commit_hash = self._repo_head_sha(f)
             now_item = datetime.now(UTC)
             prov = EvidenceProvenance(
                 tenant_id=tenant_id,
@@ -583,8 +587,9 @@ class TreeSitterCodeIntelligenceProvider:
         """Best-effort real revision for search provenance (P1-2).
 
         Walks up to the containing git checkout and reads HEAD. Returns None
-        when unavailable — callers fall back to the query-derived hash rather
-        than failing the search.
+        when unavailable — callers record no revision rather than a
+        synthetic one. Row identity rides the fingerprint, which is unique
+        per row and can never false-match across revisions.
         """
         try:
             import pygit2

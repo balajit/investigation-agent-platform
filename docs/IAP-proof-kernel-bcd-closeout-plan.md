@@ -15,7 +15,7 @@ graph TD
     W0A[W0.1 C3-race check] --> W1
     W0B[W0.2 D3-merge state] --> W1
     W1B4[B4 traceability sign-off<br/>OWNER DECISION] --> B1
-    W1B3d[B3 mapping-authority design] --> B3i[B3 implementation]
+    W1B3d[B3 mapping-authority design<br/>(done, PROVISIONAL — deferred)] --> B3i[B3 implementation<br/>(deferred to reopen trigger)]
     W1C2[C2 pure-test gap-fill] --> C2i[C2 live-path integration]
     W1D3[D3 G6 baseline sample<br/>LIVE] --> TERM[Terminal launch gate]
     B1[B1 G4 residuals + re-disposition<br/>OWNER DECISION] --> B2
@@ -57,11 +57,11 @@ The matrix is promoted to `docs/IAP-proof-kernel-traceability-v1.0.md` but count
 - Depends on: nothing (can start now; rebase tallies at signing time).
 - Acceptance: owner signature recorded in the disposition package; ledger flips to IMPLEMENTED.
 
-### B3-design — Real-world mapping authority [DESIGN]
+### B3-design — Real-world mapping authority [DESIGN — DEFERRED 2026-10-28]
 
-Component-2 BEHAVIOR discharge works only on synthetic vectors (`provenance_ref` + `mapping_digest` admitted as test-only attestation). Design the CI/registry-backed attestation that replaces the fictional trust assumptions: who mints mapping authority, how the kernel verifies it, what happens when attestation is absent (fail-closed shape), and the migration from synthetic to real authority.
-- Depends on: nothing.
-- Acceptance: design doc with contract + threat model + migration path; no code yet (implementation is Wave 2/3, owner GO).
+Component-2 BEHAVIOR discharge works only on synthetic vectors (`provenance_ref` + `mapping_digest` admitted as test-only attestation). The design exists (`docs/IAP-proof-kernel-mapping-authority-design-v1.0.md`) but is marked **provisional** per owner decision: no named consumer or trust boundary requires independently verifiable build mapping, and IAP's revision-aware evidence linking with honest abstention already covers the investigation need without signatures. Reopen triggers (either suffices): a named consumer (e.g., customer audit exports must be tamper-evident) or a specific threat model naming a distrusted mapping provider. Until then, `BUILD_SOURCE_MAPPING` stays unsupported for real-world use (synthetic vectors only) — the honest recorded gate state.
+- Depends on: a reopen trigger (above), then owner GO for B3 implementation.
+- Acceptance: design doc with contract + threat model + migration path (done, provisional); no code unless reopened.
 
 ### C2-tests — Composition/invalidation/replay gap-fill [CODE + TEST]
 
@@ -101,10 +101,10 @@ The G5 atomicity proposal (v1.0) exists; G5 PASS is declared and committed. What
 - Depends on: B2 (authoritative kernel must exist to commit); owner decisions on implementation GO, migration, and writer routing.
 - Acceptance: end-to-end atomic publication proven by live interleave tests under least-privilege roles; no mixed-snapshot publication possible.
 
-### B3-impl + G7 ops [DESIGN (done in Wave 1) + CODE + CONFIG + OWNER-DECISION]
+### B3-impl + G7 ops [DEFERRED with B3-design — see above]
 
-Implement the Wave-1 mapping-authority design; stand up the CI/registry attestation; G7 operations-side acceptance.
-- Depends on: B3-design, owner GO.
+Implement the mapping-authority design; stand up the CI/registry attestation; G7 operations-side acceptance.
+- Depends on: B3 reopen trigger, then owner GO.
 
 ## Wave 3 — Native track (needs B+C live)
 

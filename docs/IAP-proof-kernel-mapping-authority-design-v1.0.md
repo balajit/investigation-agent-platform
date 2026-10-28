@@ -1,4 +1,6 @@
-# Design: Real-World Build-Source Mapping Authority (B3)
+# Design: Real-World Build-Source Mapping Authority (B3) — PROVISIONAL, DEFERRED
+
+> **Status (2026-10-28, owner decision): DEFERRED.** This design is preserved as a reference for *how* independent build-mapping attestation would work *if* it is ever required. It is **not approved for implementation**: no named consumer or trust boundary currently requires independently verifiable build mapping — IAP investigates its own tenants' code with provider-stamped revisions and honest abstention, and nothing produced is consumed or published anywhere the platform cannot already vouch for. Reopen only on a specific trigger: a named consumer (e.g., customer audit exports must be tamper-evident) or a specific threat (e.g., a mapping provider that must be distrusted). A programmatic "real-world mapping authority" is explicitly out of scope until then. The synthetic test-only authority stands unchanged.
 
 ## Context
 
