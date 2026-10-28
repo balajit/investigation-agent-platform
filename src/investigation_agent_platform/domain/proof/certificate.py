@@ -564,6 +564,34 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
     )
     if outcome != CheckerOutcome.VALID:
         return _fail(outcome, reason)
+    # B1 diverse validator (Option 1): the certificate is VALID only if the
+    # independent second path agrees. Any disagreement, or any second-path
+    # failure, denies closed — a bug in one path can never by itself
+    # produce a false accept. Local import keeps the module boundary
+    # explicit (second_path shares no modules with this file).
+    try:
+        from investigation_agent_platform.domain.proof.second_path import (
+            check_rule_second_path,
+        )
+
+        second_outcome, second_reason = check_rule_second_path(
+            rule.rule_id,
+            cert,
+            proposition,
+            request.manifest,
+            available,
+            request.mapping_authority,
+        )
+    except Exception as exc:
+        return _fail(
+            CheckerOutcome.CHECKER_FAILURE,
+            f"second-path failure fails closed: {exc}",
+        )
+    if second_outcome != CheckerOutcome.VALID:
+        return _fail(
+            CheckerOutcome.CHECKER_FAILURE,
+            f"second-path disagreement ({second_outcome.value}): {second_reason}",
+        )
     admitted_forms: dict[str, set[str | None]] = {
         "definition/v1": {"EXISTENCE", None},
         "call_edge/v1": {"EXISTENCE", None},

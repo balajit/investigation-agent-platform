@@ -1,6 +1,6 @@
 """Validator fingerprint control tests (fingerprints/v1).
 
-The manifest pins exact source bytes for the six semantic-boundary
+The manifest pins exact source bytes for the seven semantic-boundary
 modules. These tests prove the control detects unreviewed drift without
 blessing changes: a modified copy fails, the repository copy passes,
 and structural manifest defects fail closed.
@@ -30,7 +30,7 @@ def test_fingerprint_manifest_covers_reviewed_modules() -> None:
     manifest = _load_manifest()
     assert manifest["schema_version"] == "validator-fingerprints/v1"
     assert set(manifest["files"]) == set(FINGERPRINTED_FILES)
-    assert len(manifest["files"]) == 6
+    assert len(manifest["files"]) == 7
 
 
 def test_fingerprint_check_passes_on_repository_copy() -> None:
