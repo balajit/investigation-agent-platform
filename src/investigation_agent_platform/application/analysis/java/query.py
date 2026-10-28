@@ -22,6 +22,8 @@ from investigation_agent_platform.application.analysis.java.model import (
     DataflowEvent,
     BarrierFact,
     ValueStateRecord,
+    GenericTypeUse,
+    TypeParameterDecl,
     FieldDef,
     GuardBranch,
     JavaModel,
@@ -338,6 +340,69 @@ def all_barriers(models: JavaModel | Iterable[JavaModel]) -> Iterator[BarrierFac
     """Yield source-level possible flow barriers."""
     for model in _as_list(models):
         yield from model.barriers
+
+
+def all_type_parameters(models: JavaModel | Iterable[JavaModel]) -> Iterator[TypeParameterDecl]:
+    """Yield source-level formal type-parameter declarations."""
+    for model in _as_list(models):
+        yield from model.type_parameters
+
+
+def type_parameters_for(
+    models: JavaModel | Iterable[JavaModel], owner_identity: str
+) -> Iterator[TypeParameterDecl]:
+    """Yield type parameters for an exact owner identity."""
+    for parameter in all_type_parameters(models):
+        if parameter.owner_identity == owner_identity:
+            yield parameter
+
+
+def all_generic_type_uses(models: JavaModel | Iterable[JavaModel]) -> Iterator[GenericTypeUse]:
+    """Yield source-level generic and diamond occurrences."""
+    for model in _as_list(models):
+        yield from model.generic_type_uses
+
+
+def generic_type_uses_for(
+    models: JavaModel | Iterable[JavaModel], owner_identity: str, context: str | None = None
+) -> Iterator[GenericTypeUse]:
+    """Yield generic uses for an exact owner, optionally narrowed by context."""
+    for use in all_generic_type_uses(models):
+        if use.owner_identity == owner_identity and (context is None or use.context == context):
+            yield use
+
+
+def type_uses_named(
+    models: JavaModel | Iterable[JavaModel], name: str, context: str | None = None
+) -> Iterator[GenericTypeUse]:
+    """Yield generic uses containing an exact syntax-name segment."""
+    for use in all_generic_type_uses(models):
+        if context is not None and use.context != context:
+            continue
+        if any(segment.name == name for segment in use.syntax.segments) or use.syntax.name == name:
+            yield use
+
+
+def type_uses_wildcard(
+    models: JavaModel | Iterable[JavaModel], kind: str | None = None, bound_name: str | None = None
+) -> Iterator[GenericTypeUse]:
+    """Yield generic uses containing the requested wildcard form/bound name."""
+    for use in all_generic_type_uses(models):
+        arguments = use.syntax.arguments
+        if any(
+            argument.kind == kind
+            and (bound_name is None or argument.type is not None and argument.type.name == bound_name)
+            for argument in arguments
+            if kind is not None
+        ) or (kind is None and any(argument.kind.startswith("wildcard_") for argument in arguments)):
+            yield use
+
+
+def type_uses_diamond(models: JavaModel | Iterable[JavaModel]) -> Iterator[GenericTypeUse]:
+    """Yield explicit diamond-inference occurrences."""
+    for use in all_generic_type_uses(models):
+        if use.syntax_kind == "diamond":
+            yield use
 
 
 def value_is_constant(state: ValueStateRecord, kind: str | None = None, value: str | None = None) -> bool:

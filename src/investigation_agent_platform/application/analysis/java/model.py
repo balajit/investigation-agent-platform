@@ -234,6 +234,85 @@ class BarrierFact(BaseModel):
     span: Span
 
 
+class TypeArgument(BaseModel):
+    """One source-level Java generic argument."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["explicit_type", "wildcard_unbounded", "wildcard_extends", "wildcard_super"]
+    type: "TypeSyntax | None" = None
+    bound_kind: Literal["extends", "super"] | None = None
+    text: str = Field(max_length=1024)
+    span: Span
+
+
+class TypeSegment(BaseModel):
+    """One qualified/member segment of a source type."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=512)
+    arguments: list[TypeArgument] = Field(default_factory=list)
+    text: str = Field(max_length=1024)
+    span: Span
+
+
+class TypeSyntax(BaseModel):
+    """Recursive, syntax-preserving Java type representation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal[
+        "named",
+        "parameterized",
+        "wildcard",
+        "array",
+        "annotated",
+        "primitive",
+        "void",
+        "inferred",
+        "unknown",
+    ]
+    text: str = Field(max_length=4096)
+    name: str | None = Field(default=None, max_length=1024)
+    segments: list[TypeSegment] = Field(default_factory=list)
+    arguments: list[TypeArgument] = Field(default_factory=list)
+    element: "TypeSyntax | None" = None
+    dimensions: int = Field(default=0, ge=0)
+    annotations: list[str] = Field(default_factory=list)
+    resolution: Literal["UNRESOLVED"] = "UNRESOLVED"
+    span: Span
+
+
+class TypeParameterDecl(BaseModel):
+    """A formal class, interface, method, or constructor type parameter."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: str = Field(min_length=1, max_length=2048)
+    name: str = Field(min_length=1, max_length=512)
+    owner_identity: str = Field(min_length=1, max_length=2048)
+    owner_kind: Literal["class", "interface", "enum", "record", "method", "constructor"]
+    bounds: list[TypeSyntax] = Field(default_factory=list)
+    annotations: list[str] = Field(default_factory=list)
+    span: Span
+
+
+class GenericTypeUse(BaseModel):
+    """One source-level parameterized type or diamond occurrence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: str = Field(min_length=1, max_length=2048)
+    owner_identity: str = Field(min_length=1, max_length=2048)
+    context: str = Field(min_length=1, max_length=64)
+    syntax_kind: Literal["parameterized", "diamond", "array_parameterized"]
+    syntax: TypeSyntax
+    inferred_arguments: bool = False
+    resolution: Literal["UNRESOLVED"] = "UNRESOLVED"
+    span: Span
+
+
 class ReturnSite(BaseModel):
     """One return statement inside a guard branch."""
 
@@ -333,6 +412,8 @@ class JavaModel(BaseModel):
     dataflow_events: list[DataflowEvent] = Field(default_factory=list)
     value_states: list[ValueStateRecord] = Field(default_factory=list)
     barriers: list[BarrierFact] = Field(default_factory=list)
+    type_parameters: list[TypeParameterDecl] = Field(default_factory=list)
+    generic_type_uses: list[GenericTypeUse] = Field(default_factory=list)
     type_declarations: list[TypeDeclaration] = Field(default_factory=list)
     analysis_snapshots: list[JavaAnalysisSnapshot] = Field(default_factory=list)
     analysis_limitation_codes: list[str] = Field(default_factory=list)
@@ -354,6 +435,166 @@ def _span(node: Any, file_path: str) -> Span:
         line_start=int(node.start_point[0]) + 1,
         line_end=int(node.end_point[0]) + 1,
     )
+
+
+def _type_annotations(node: Any, source: bytes) -> list[str]:
+    return [
+        _p.node_text(child, source).strip()
+        for child in node.children
+        if child.type in {"marker_annotation", "annotation"}
+    ]
+
+
+def _type_syntax(node: Any, source: bytes, file_path: str) -> TypeSyntax:
+    text = " ".join(_p.node_text(node, source).split())
+    span = _span(node, file_path)
+    if node.type == "wildcard":
+        named = [child for child in node.children if child.is_named]
+        bound = next((child for child in named if child.type != "marker_annotation"), None)
+        operator = next((child.type for child in node.children if child.type in {"extends", "super"}), None)
+        return TypeSyntax(
+            kind="wildcard",
+            text=text,
+            arguments=[],
+            annotations=_type_annotations(node, source),
+            span=span,
+            name=None,
+            element=_type_syntax(bound, source, file_path) if bound is not None else None,
+            dimensions=0,
+            resolution="UNRESOLVED",
+        )
+    if node.type == "array_type":
+        element = node.child_by_field_name("element")
+        dimensions = node.child_by_field_name("dimensions")
+        return TypeSyntax(
+            kind="array",
+            text=text,
+            name=None,
+            element=_type_syntax(element, source, file_path) if element is not None else None,
+            dimensions=_p.node_text(dimensions, source).count("[") if dimensions is not None else 0,
+            span=span,
+        )
+    if node.type == "generic_type":
+        base = next((child for child in node.children if child.type != "type_arguments"), None)
+        args_node = node.child_by_field_name("type_arguments") or next(
+            (child for child in node.children if child.type == "type_arguments"), None
+        )
+        args = _type_arguments(args_node, source, file_path) if args_node is not None else []
+        segment = TypeSegment(
+            name=_p.node_text(base, source).strip() if base is not None else text,
+            arguments=args,
+            text=_p.node_text(base, source).strip() if base is not None else text,
+            span=_span(base, file_path) if base is not None else span,
+        )
+        return TypeSyntax(kind="parameterized", text=text, name=segment.name, segments=[segment], arguments=args, span=span)
+    if node.type in {"integral_type", "floating_point_type", "boolean_type", "void_type"}:
+        return TypeSyntax(kind="primitive" if node.type != "void_type" else "void", text=text, name=text, span=span)
+    if node.type == "annotated_type":
+        inner = next((child for child in node.children if child.is_named and child.type not in {"marker_annotation", "annotation"}), None)
+        return TypeSyntax(
+            kind="annotated", text=text, name=None,
+            annotations=_type_annotations(node, source),
+            element=_type_syntax(inner, source, file_path) if inner is not None else None,
+            span=span,
+        )
+    return TypeSyntax(kind="named", text=text, name=text, span=span)
+
+
+def _type_arguments(node: Any, source: bytes, file_path: str) -> list[TypeArgument]:
+    if node is None:
+        return []
+    arguments: list[TypeArgument] = []
+    for child in node.children:
+        if not child.is_named:
+            continue
+        if child.type == "wildcard":
+            bound_kind = next((item.type for item in child.children if item.type in {"extends", "super"}), None)
+            arguments.append(
+                TypeArgument(
+                    kind=(f"wildcard_{bound_kind}" if bound_kind else "wildcard_unbounded"),
+                    type=next((_type_syntax(item, source, file_path) for item in child.children if item.is_named and item.type != "marker_annotation"), None),
+                    bound_kind=bound_kind,
+                    text=_p.node_text(child, source).strip(),
+                    span=_span(child, file_path),
+                )
+            )
+        else:
+            arguments.append(
+                TypeArgument(
+                    kind="explicit_type",
+                    type=_type_syntax(child, source, file_path),
+                    text=_p.node_text(child, source).strip(),
+                    span=_span(child, file_path),
+                )
+            )
+    return arguments
+
+
+def _build_generic_records(
+    root: Any, source: bytes, file_path: str, methods: list[MethodDef]
+) -> tuple[list[TypeParameterDecl], list[GenericTypeUse]]:
+    parameters: list[TypeParameterDecl] = []
+    uses: list[GenericTypeUse] = []
+    method_by_span = {(method.span.line_start, method.span.line_end): method for method in methods}
+
+    def owner_for(node: Any) -> tuple[str, str]:
+        current = node.parent
+        while current is not None:
+            if current.type in {"method_declaration", "constructor_declaration", "compact_constructor_declaration"}:
+                name_node = current.child_by_field_name("name")
+                name = _p.node_text(name_node, source).strip() if name_node is not None else "constructor"
+                return name, "method" if current.type == "method_declaration" else "constructor"
+            if current.type in {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}:
+                name_node = current.child_by_field_name("name")
+                return (_p.node_text(name_node, source).strip() if name_node is not None else "unknown"), current.type.replace("_declaration", "")
+            current = current.parent
+        return "window", "class"
+
+    for node in _p.walk(root):
+        if node.type == "type_parameters":
+            owner_name, owner_kind = owner_for(node)
+            for index, parameter in enumerate(child for child in node.children if child.type == "type_parameter"):
+                name_node = next((child for child in parameter.children if child.type == "type_identifier"), None)
+                if name_node is None:
+                    continue
+                bounds_node = parameter.child_by_field_name("type_bound") or next((child for child in parameter.children if child.type == "type_bound"), None)
+                bounds = [_type_syntax(child, source, file_path) for child in bounds_node.children if child.is_named] if bounds_node is not None else []
+                parameters.append(TypeParameterDecl(
+                    identity=f"{owner_name}#{_p.node_text(name_node, source)}@{index}",
+                    name=_p.node_text(name_node, source).strip(),
+                    owner_identity=owner_name,
+                    owner_kind=owner_kind if owner_kind in {"class", "interface", "enum", "record", "method", "constructor"} else "class",
+                    bounds=bounds,
+                    annotations=_type_annotations(parameter, source),
+                    span=_span(parameter, file_path),
+                ))
+        if node.type == "generic_type":
+            owner_name, _ = owner_for(node)
+            syntax = _type_syntax(node, source, file_path)
+            uses.append(GenericTypeUse(
+                identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
+                owner_identity=owner_name,
+                context="other",
+                syntax_kind="parameterized",
+                syntax=syntax,
+                span=_span(node, file_path),
+            ))
+        if node.type == "object_creation_expression":
+            type_node = node.child_by_field_name("type")
+            if type_node is not None and type_node.type == "generic_type":
+                args = type_node.child_by_field_name("type_arguments") or next((child for child in type_node.children if child.type == "type_arguments"), None)
+                if args is not None and not any(child.is_named for child in args.children):
+                    owner_name, _ = owner_for(node)
+                    uses.append(GenericTypeUse(
+                        identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
+                        owner_identity=owner_name,
+                        context="instance_creation",
+                        syntax_kind="diamond",
+                        syntax=_type_syntax(type_node, source, file_path),
+                        inferred_arguments=True,
+                        span=_span(node, file_path),
+                    ))
+    return parameters, uses
 
 
 def _normalize_guard(text: str | None) -> str:
@@ -1206,6 +1447,7 @@ def build_java_model(
     value_states, barriers = _build_value_and_barrier_records(
         methods, locals_, params, dataflow_bindings, dataflow_events, guard_returns, file_path
     )
+    type_parameters, generic_type_uses = _build_generic_records(root, source, file_path, methods)
 
     model = JavaModel(
         parser_version=_p.parser_version(),
@@ -1227,6 +1469,8 @@ def build_java_model(
         dataflow_events=dataflow_events,
         value_states=value_states,
         barriers=barriers,
+        type_parameters=type_parameters,
+        generic_type_uses=generic_type_uses,
     )
     # The advanced feature pass consumes this same parsed tree.  The import is
     # local to keep the model/query layer independent from fact assembly.

@@ -132,7 +132,12 @@ was found in the supplied bounded records.
 - **Matcher substrate:** declaration, package/import, and field matcher paths
   use the grammar-pinned `tree-sitter-query-v1` substrate. Context-sensitive
   scope and semantic-transfer walks remain explicit where capture-only matching
-  cannot preserve their identity and abstention rules.
+   cannot preserve their identity and abstention rules.
+- **Generic syntax:** type-parameter declarations and generic type uses are
+  source records with `UNRESOLVED` semantics. Wildcards preserve `?`,
+  `? extends`, and `? super`; diamond preserves inference syntax. No record
+  claims rawness, bounds validity, substitution, capture conversion, erasure,
+  or compiler attribution.
 - **Annotated (carried, not queryable):** source `text` snippets on args and
   the `key`/overload identity (display/diagnostic use, never proof).
 - **Out-of-model (not established by this window model):** repository-wide or
