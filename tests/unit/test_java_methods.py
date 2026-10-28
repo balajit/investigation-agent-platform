@@ -294,3 +294,35 @@ def test_missing_call_site_abstains():
     result = resolve_java_call_target(evidence, "process")
     assert result.status == CodeFactStatus.UNRESOLVED
     assert "incomplete_candidate_set" in result.limitation_codes
+
+
+def test_float_suffix_selects_float_overload():
+    evidence = _source_evidence(
+        "class Widget {\n"
+        "  String fmt(float x) { return \"f\"; }\n"
+        "  String fmt(double x) { return \"d\"; }\n"
+        "  void run() {\n"
+        "    fmt(1.0f);\n"
+        "  }\n"
+        "}"
+    )
+    result = resolve_java_call_target(evidence, "fmt")
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.call_target == "Widget.fmt(float)"
+    _no_run_wording(result)
+
+
+def test_plain_float_literal_selects_double_overload():
+    evidence = _source_evidence(
+        "class Widget {\n"
+        "  String fmt(float x) { return \"f\"; }\n"
+        "  String fmt(double x) { return \"d\"; }\n"
+        "  void run() {\n"
+        "    fmt(1.0);\n"
+        "  }\n"
+        "}"
+    )
+    result = resolve_java_call_target(evidence, "fmt")
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.call_target == "Widget.fmt(double)"
+    _no_run_wording(result)

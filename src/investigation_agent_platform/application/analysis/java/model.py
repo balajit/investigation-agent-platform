@@ -245,12 +245,19 @@ def _arg_sketch(
         evaluated, _ = _expr.evaluate(node, source, level)
         if evaluated is not None:
             kind, payload = evaluated
+            static = _EVALUATED_STATIC_TYPE.get(kind, static_type)
+            if node.type == "decimal_floating_point_literal" and text.rstrip().endswith(("f", "F")):
+                # The evaluator labels every decimal float double, but the
+                # suffix is authoritative for the static type (JLS 3.10.2).
+                # Without this, 1.0f resolves as double and loses float
+                # overloads in call-target resolution.
+                static = "float"
             return ArgSketch(
                 index=index,
                 kind=f"value:{kind}",
                 shape=shape,
                 operator=operator,
-                static_type=_EVALUATED_STATIC_TYPE.get(kind, static_type),
+                static_type=static,
                 text=text[:1024],
                 literal=LiteralValue(kind=kind, value=str(payload), span=_span(node, file_path)),
             )

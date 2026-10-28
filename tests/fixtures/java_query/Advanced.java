@@ -24,10 +24,20 @@ public class Advanced {
     public void check(int a, int b, int c) {
     }
 
+    public String fmt(float x) {
+        return "f";
+    }
+
+    public String fmt(double x) {
+        return "d";
+    }
+
     public void run(boolean flag, String s) {
         sum(1, 2, 3);
         take(flag && true, -5, s == null ? "d" : "e");
         check(0x10, 010, 0b101);
+        fmt(1.0f);
+        fmt(1.0);
         execute();
         List<String> items = List.of("a");
         items.forEach(System.out::println);

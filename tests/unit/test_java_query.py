@@ -90,7 +90,15 @@ def _advanced() -> _model.JavaModel:
 def test_q2_definitions_in_package():
     model = _advanced()
     app_methods = list(_q.definitions_in_package(_q.all_methods(model), "com.example.app"))
-    assert {m.name for m in app_methods} == {"toString", "sum", "take", "execute", "check", "run"}
+    assert {m.name for m in app_methods} == {
+        "toString",
+        "sum",
+        "take",
+        "execute",
+        "check",
+        "fmt",
+        "run",
+    }
     assert list(_q.definitions_in_package(_q.all_methods(model), "com.example.db")) == []
 
 
@@ -189,6 +197,18 @@ def test_non_decimal_integer_literals():
     assert [
         _q.arg_evaluates_to(check_call, i, "int", v) for i, v in enumerate(["16", "8", "5"])
     ] == [True, True, True]
+
+
+def test_float_suffix_keeps_static_type():
+    model = _advanced()
+    fmt_calls = [call for call in _q.named(_q.all_calls(model), "fmt")]
+    assert len(fmt_calls) == 2
+    suffixed = next(call for call in fmt_calls if call.args[0].text == "1.0f")
+    plain = next(call for call in fmt_calls if call.args[0].text == "1.0")
+    assert _q.arg_static_type(suffixed, 0) == "float"
+    assert _q.arg_static_type(plain, 0) == "double"
+    assert _q.arg_is_literal(suffixed, 0) is True
+    assert _q.arg_is_constant(suffixed, 0) is True
 
 
 def test_field_initializer_evaluated_kind():
