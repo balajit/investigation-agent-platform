@@ -85,3 +85,25 @@ a COMMIT through the real path.
 - `test_certificate_checker.py` + `test_publication_decision.py`: 39 passed.
 - `test_proof_kernel_g4_component4_integration.py`: 23 passed (20 + 3 new).
 - Fingerprints: unaffected (no `src/` change in this batch).
+
+## Re-disposition (owner decision 2026-10-28, Wave-2 session)
+
+**B1: PARTIAL with new direction. G4: stays PARTIAL.**
+
+- Scoped PASS on the completed B1 items: K13 decision-path pins (A1/A2),
+  R-C3-01 re-point with executable detectors, doc-level closures
+  (C2-R3, C2-R4 pins, C1-R1 carry, A/C rationale carry-forward via
+  sign-off), C2 amendment Option A (producer parity + revision join,
+  bundled), diverse validator Option 1 (second path + conjunction +
+  21-test differential suite).
+- NOT closed by B1: K13 promotion half (no obligation objects; obligation
+  design v1.1 in owner review, implementation needs separate GO), legacy
+  writer closure (K13-B3, rides B2/C1 rollout decisions), real-world
+  mapping authority (C2-R1, B3-deferred), D3-family retesting (pending,
+  owner-triggered).
+- A B1 PASS would overstate closure against the closeout plan's K13
+  requirement; PARTIAL records the completed work without claiming the
+  promotion half.
+- Direction: owner reviews obligation design v1.1 (R2); B2/C1 proceed to
+  design-only work only on separate authorization (R3/R4 gates defined,
+  work not started).
