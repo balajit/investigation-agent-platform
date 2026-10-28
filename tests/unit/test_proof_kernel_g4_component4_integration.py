@@ -1174,3 +1174,72 @@ def test_c4_report_table_complete() -> None:
         assert actual_cell == expected_cell, (
             f"{key}: actual {actual_cell!r} != expected {expected_cell!r}"
         )
+
+
+def _k11_mismatch_cert(cert: dict[str, Any]) -> dict[str, Any]:
+    """Copy a certified bundle's cert with a non-matching scope revision (R-C3-01 detector)."""
+    bad = dict(cert)
+    bad["scope"] = {**dict(cert.get("scope") or {}), "revision": "rev-9"}
+    return bad
+
+
+def test_k11_direct_definition_revision_mismatch() -> None:
+    bundle = _definition_bundle()
+    semantic = _SEMANTICS["definition/v1"]
+    ok_outcome, _ = semantic(
+        bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"]
+    )
+    assert ok_outcome == CheckerOutcome.VALID
+    outcome, reason = semantic(
+        _k11_mismatch_cert(bundle["cert"]),
+        bundle["proposition"],
+        bundle["manifest"],
+        bundle["artifacts"],
+    )
+    assert outcome == CheckerOutcome.SCOPE_MISMATCH
+    assert "K11" in reason
+
+
+def test_k11_direct_call_edge_revision_mismatch() -> None:
+    bundle = _certified_bundle(
+        "call_edge/v1", [_call_edge_record()], _call_edge_proposition(), {}
+    )
+    semantic = _SEMANTICS["call_edge/v1"]
+    ok_outcome, _ = semantic(
+        bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"]
+    )
+    assert ok_outcome == CheckerOutcome.VALID
+    outcome, reason = semantic(
+        _k11_mismatch_cert(bundle["cert"]),
+        bundle["proposition"],
+        bundle["manifest"],
+        bundle["artifacts"],
+    )
+    assert outcome == CheckerOutcome.SCOPE_MISMATCH
+    assert "K11" in reason
+
+
+def test_k11_direct_behavior_revision_mismatch() -> None:
+    authority = {"approved_provenance_refs": [TEST_ONLY_AUTHORITY]}
+    bundle = _certified_bundle(
+        "behavior/v1",
+        _behavior_records(),
+        _behavior_proposition(),
+        {"retrieval_config": {"scope": REPO}},
+        None,
+        authority,
+    )
+    semantic = _SEMANTICS["behavior/v1"]
+    ok_outcome, _ = semantic(
+        bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"], authority
+    )
+    assert ok_outcome == CheckerOutcome.VALID
+    outcome, reason = semantic(
+        _k11_mismatch_cert(bundle["cert"]),
+        bundle["proposition"],
+        bundle["manifest"],
+        bundle["artifacts"],
+        authority,
+    )
+    assert outcome == CheckerOutcome.SCOPE_MISMATCH
+    assert "K11" in reason

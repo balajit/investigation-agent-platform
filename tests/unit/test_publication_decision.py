@@ -40,8 +40,13 @@ def test_no_pinned_context_denies_first() -> None:
 
 def test_non_valid_checker_denies_k13() -> None:
     for outcome in (
-        CheckerOutcome.INVALID_INFERENCE,
         CheckerOutcome.MISSING_PREMISE,
+        CheckerOutcome.INADMISSIBLE_PREMISE,
+        CheckerOutcome.INVALID_INFERENCE,
+        CheckerOutcome.SCOPE_MISMATCH,
+        CheckerOutcome.UNSUPPORTED_CONSTRUCT,
+        CheckerOutcome.STALE_CERTIFICATE,
+        CheckerOutcome.CONFLICTING_EVIDENCE,
         CheckerOutcome.PREMISE_UNAVAILABLE,
         CheckerOutcome.CHECKER_FAILURE,
     ):

@@ -673,3 +673,40 @@ def test_cert_v1_rejected_without_reread() -> None:
     cert["schema_version"] = "cert/v1"
     req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
     assert check_certificate(req)[0] == CheckerOutcome.CHECKER_FAILURE
+
+
+def test_causal_abstention_denies_end_to_end_k13() -> None:
+    """CAUSAL can never reach VALID: no rule, no cert, checker denies, publication denies."""
+    from investigation_agent_platform.domain.proof.publication import (
+        DenyReason,
+        PublicationDecision,
+        PublicationRequest,
+        decide_publication,
+    )
+    from investigation_agent_platform.domain.proof.rules import (
+        UnknownRule,
+        get_rule,
+        rule_for_kind,
+    )
+
+    assert rule_for_kind("CAUSAL") is None
+    with pytest.raises(UnknownRule):
+        get_rule("causal/v1")
+    inputs, premise, artifact = _definition_setup()
+    cert = certify(inputs, [premise], {"row-1": artifact})
+    cert["rule_id"] = "causal/v1"
+    req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
+    outcome, _ = check_certificate(req)
+    assert outcome == CheckerOutcome.UNSUPPORTED_CONSTRUCT
+    decision, reason = decide_publication(
+        PublicationRequest(
+            checker_outcome=outcome,
+            certificate_context_id="ctx-1",
+            expected_context_id="ctx-1",
+            derivation_id="der-1",
+            reconciliation_adjudicated=True,
+            policy_eligible=True,
+        )
+    )
+    assert decision == PublicationDecision.DENY
+    assert reason.startswith(DenyReason.NOT_CHECKER_ACCEPTED.value)
