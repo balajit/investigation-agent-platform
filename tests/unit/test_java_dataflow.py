@@ -184,3 +184,154 @@ def test_missing_symbol_is_unresolved():
     result = resolve_java_data_flow(evidence, "absent")
     assert result.status == CodeFactStatus.UNRESOLVED
     assert "local_not_found" in result.limitation_codes
+
+
+def test_model_dataflow_discovery_matches_legacy_reference_cases():
+    cases = [
+        (
+            "class Runner { int run() { int x = 1; x = 2; return x; } }",
+            "x",
+            {},
+        ),
+        (
+            "class Runner { int run(int flag) { int x = 1; if (flag > 0) { return x; } x = 2; return x; } }",
+            "x",
+            {},
+        ),
+        (
+            "class Runner { int run() { int y = x + 1; int x = 1; return y; } }",
+            "x",
+            {},
+        ),
+        (
+            "class Runner { void sink(int v) {} void run() { int x = 1; sink(x); } }",
+            "x",
+            {},
+        ),
+        (
+            "class Runner { void run() { int x = 1; synchronized (this) { x = 2; } } }",
+            "x",
+            {},
+        ),
+        (
+            "import java.util.List; class Runner { void run(List<String> items) { int x = items.stream().map(String::length).reduce(0, Integer::sum); } }",
+            "x",
+            {},
+        ),
+        (
+            "class Runner { void run() { int x = 1; } void walk() { int y = x + 1; } }",
+            "x",
+            {},
+        ),
+        ("class Runner { void run() { int x = 1; } }", "absent", {}),
+    ]
+    for source, symbol, kwargs in cases:
+        evidence = _source_evidence(source)
+        legacy = __import__(
+            "investigation_agent_platform.application.analysis.java.dataflow",
+            fromlist=["_resolve_java_data_flow_legacy"],
+        )._resolve_java_data_flow_legacy(evidence, symbol, **kwargs)
+        model = resolve_java_data_flow(evidence, symbol, **kwargs)
+        assert (
+            model.status,
+            tuple(sorted(model.limitation_codes)),
+            model.structured_fact,
+        ) == (
+            legacy.status,
+            tuple(sorted(legacy.limitation_codes)),
+            legacy.structured_fact,
+        )
+
+
+def test_model_dataflow_records_are_queryable():
+    from investigation_agent_platform.application.analysis.java import model, query
+
+    source = "class Runner { int run() { int x = 1; x += 2; return x; } }"
+    evidence = _source_evidence(source)
+    lines, _ = __import__(
+        "investigation_agent_platform.application.analysis.java._provenance",
+        fromlist=["java_source_lines"],
+    ).java_source_lines(evidence)
+    code = model.build_java_model(
+        "\n".join(line.text for line in lines).encode(),
+        file_path="src/Runner.java",
+        repository="repo",
+        revision="abc123",
+    )
+    assert list(query.all_dataflow_bindings(code))
+    assert any(event.kind == "compound_assignment" for event in query.all_dataflow_events(code))
+
+
+def test_effective_value_and_barrier_records_are_conservative():
+    from investigation_agent_platform.application.analysis.java import model, query
+
+    source = """class Runner {
+        int run() {
+            int x = 1;
+            if (x > 0) { x = 2; }
+            sink(x);
+            return x;
+        }
+        void sink(int value) {}
+    }"""
+    evidence = _source_evidence(source)
+    lines, _ = __import__(
+        "investigation_agent_platform.application.analysis.java._provenance",
+        fromlist=["java_source_lines"],
+    ).java_source_lines(evidence)
+    code = model.build_java_model(
+        "\n".join(line.text for line in lines).encode(),
+        file_path="src/Runner.java",
+        repository="repo",
+        revision="abc123",
+    )
+    states = list(query.all_value_states(code))
+    barriers = list(query.all_barriers(code))
+    assert any(query.value_is_constant(state) for state in states)
+    assert any(barrier.kind == "GUARD" for barrier in barriers)
+    assert any(barrier.kind == "REASSIGNMENT_KILL" for barrier in barriers)
+    assert any(barrier.kind == "ALIAS_ESCAPE" for barrier in barriers)
+    assert query.flow_is_blocked(states[0], barriers) in {
+        "BLOCKED",
+        "UNKNOWN",
+        "NOT_BLOCKED_IN_WINDOW",
+    }
+
+
+def test_effective_constant_call_filter_requires_bare_name_and_explicit_validator_vocabulary():
+    from investigation_agent_platform.application.analysis.java import model, query
+
+    source = """class Runner {
+        void run() {
+            String queryText = "select";
+            sink(queryText);
+            validateNowhere(queryText);
+        }
+        void sink(String value) {}
+        void validateNowhere(String value) {}
+    }"""
+    evidence = _source_evidence(source)
+    lines, _ = __import__(
+        "investigation_agent_platform.application.analysis.java._provenance",
+        fromlist=["java_source_lines"],
+    ).java_source_lines(evidence)
+    code = model.build_java_model(
+        "\n".join(line.text for line in lines).encode(),
+        file_path="src/Runner.java",
+        repository="repo",
+        revision="abc123",
+    )
+    calls = list(query.all_calls(code))
+    states = list(query.all_value_states(code))
+    assert [call.target_name for call in query.calls_with_effective_constant_arg(calls, states, 0)] == [
+        "sink",
+        "validateNowhere",
+    ]
+    assert [
+        call.target_name
+        for call in query.calls_with_validation_barrier(calls, ["validate"])
+    ] == []
+    assert [
+        call.target_name
+        for call in query.calls_with_validation_barrier(calls, ["validateNowhere"])
+    ] == ["validateNowhere"]

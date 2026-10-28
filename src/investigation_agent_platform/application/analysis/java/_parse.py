@@ -8,6 +8,7 @@ from typing import Any
 _FIELD_TYPES = frozenset({"field_declaration"})
 _CLASS_TYPES = frozenset({"class_declaration"})
 _PARSER_VERSION = "tree-sitter-java"
+_QUERY_VERSION = "tree-sitter-query-v1"
 
 
 def parse_java(source: bytes) -> Any:
@@ -20,6 +21,25 @@ def parse_java(source: bytes) -> Any:
 def parser_version() -> str:
     """Parser identity recorded on resolutions for grammar-drift auditing."""
     return _PARSER_VERSION
+
+
+def query_version() -> str:
+    """Identity for the shared Tree-sitter query substrate."""
+    return _QUERY_VERSION
+
+
+def query_captures(root: Any, source: bytes, pattern: str) -> dict[str, list[Any]]:
+    """Run a grammar-pinned Java query and return captures by name.
+
+    Query syntax is kept at call sites so each matcher remains reviewable; the
+    parser and cursor construction is centralized for API-version stability.
+    """
+    from tree_sitter import Query, QueryCursor
+    from tree_sitter_language_pack import get_language
+
+    language = get_language("java")
+    query = Query(language, pattern)
+    return dict(QueryCursor(query).captures(root))
 
 
 def node_text(node: Any, source: bytes) -> str:
@@ -37,11 +57,14 @@ def walk(node: Any) -> Any:
 
 def package_name(root: Any, source: bytes) -> str:
     """Return the window's package (dotted) or empty when absent/unparseable."""
-    for node in walk(root):
-        if node.type == "package_declaration":
-            for child in node.children:
-                if child.type in {"scoped_identifier", "identifier"}:
-                    return node_text(child, source).strip()
+    captures = query_captures(
+        root,
+        source,
+        "(package_declaration (scoped_identifier) @package) (package_declaration (identifier) @package)",
+    )
+    packages = captures.get("package", [])
+    if packages:
+        return node_text(packages[0], source).strip()
     return ""
 
 
@@ -82,17 +105,23 @@ def find_field_declarations(
 ) -> list[tuple[Any, Any, Any]]:
     """Collect (declaration, declarator, qualified_class_name) for a field name."""
     found: list[tuple[Any, Any, Any]] = []
-    for node in walk(root):
-        if node.type != "field_declaration":
+    captures = query_captures(
+        root,
+        source,
+        "(field_declaration declarator: (variable_declarator name: (identifier) @field)) @declaration",
+    )
+    declarations = captures.get("declaration", [])
+    names = captures.get("field", [])
+    for node, name_node in zip(declarations, names):
+        if node_text(name_node, source) != field_name:
             continue
         parent = node.parent
         class_node = parent.parent if parent is not None else None
         if class_node is None or class_node.type not in _CLASS_TYPES:
             continue
-        for child in node.children:
-            if child.type != "variable_declarator":
-                continue
-            name_node = child.child_by_field_name("name")
-            if name_node is not None and node_text(name_node, source) == field_name:
-                found.append((node, child, qualified_class_name(class_node, source, package)))
+        declarator = next(
+            (child for child in node.children if child.type == "variable_declarator"), None
+        )
+        if declarator is not None:
+            found.append((node, declarator, qualified_class_name(class_node, source, package)))
     return found

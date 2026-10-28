@@ -42,6 +42,12 @@ def test_model_carries_typed_analysis_snapshots():
     assert model.parser_version == "tree-sitter-java"
 
 
+def test_model_carries_dataflow_bindings_and_events():
+    model = _advanced()
+    assert any(binding.symbol == "items" for binding in model.dataflow_bindings)
+    assert any(event.kind == "method_argument" for event in model.dataflow_events)
+
+
 def test_question_2_calls_to_named_target():
     calls = list(_q.named(_q.all_calls(_corpus()), "execute"))
     assert len(calls) == 3

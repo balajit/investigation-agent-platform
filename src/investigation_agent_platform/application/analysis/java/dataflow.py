@@ -140,7 +140,7 @@ def _rebound_in_other_method(
     return False
 
 
-def resolve_java_data_flow(
+def _resolve_java_data_flow_legacy(
     evidence: Any,
     symbol_name: str,
     *,
@@ -478,4 +478,198 @@ def resolve_java_data_flow(
         source_evidence_ids=evidence_ids,
         declaration_location=declaration_location,
         parser_version=_p.parser_version(),
+    )
+
+
+def resolve_java_data_flow(
+    evidence: Any,
+    symbol_name: str,
+    *,
+    method_scope: str | None = None,
+    language_version: object = None,
+) -> CodeFactResolutionV2:
+    """Resolve bounded data flow from the shared Java window model."""
+    lines, reason = java_source_lines(evidence)
+    provenance = getattr(evidence, "provenance", None)
+    location = getattr(provenance, "source_location", None)
+    source_path = str(getattr(location, "file_path", "") or "")
+    revision = str(getattr(location, "revision", "") or "")
+    identifier = str(getattr(location, "identifier", "") or "")
+    repository = repository_of(identifier, source_path)
+    evidence_id = getattr(evidence, "evidence_id", None)
+    evidence_ids = (evidence_id,) if evidence_id is not None else ()
+    level = _lit.normalize_source_level(language_version)
+    level_text = str(level) if level is not None else None
+    subject = symbol_name or "unknown"
+
+    if reason:
+        return _unresolved(repository, revision, subject, reason, evidence_ids, level_text)
+    assert location is not None
+    if not symbol_name or not symbol_name.strip():
+        return _unresolved(repository, revision, subject, "missing_symbol_name", evidence_ids, level_text)
+    if not source_path.lower().endswith(".java"):
+        return _unresolved(repository, revision, subject, "not_a_java_source_file", evidence_ids, level_text)
+    if not repository:
+        return _unresolved(
+            repository, revision, subject, "repository_identity_unavailable", evidence_ids, level_text
+        )
+
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    window_text = "\n".join(line.text for line in lines)
+    try:
+        code_model = _model.build_java_model(
+            window_text.encode("utf-8"),
+            file_path=source_path,
+            repository=repository,
+            revision=revision,
+            language_version=language_version,
+        )
+    except Exception as exc:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            f"java_parser_unavailable:{type(exc).__name__}",
+            evidence_ids,
+            level_text,
+        )
+    if code_model.has_syntax_error:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "java_syntax_error_or_incomplete_source_window",
+            evidence_ids,
+            level_text,
+        )
+
+    bindings = [binding for binding in code_model.dataflow_bindings if binding.symbol == symbol_name]
+    if method_scope:
+        bindings = [
+            binding
+            for binding in bindings
+            if _p.matches_declaring_type(binding.method_name, method_scope)
+        ]
+    if len(bindings) != 1:
+        code = "local_not_found" if not bindings else "ambiguous_local_declaration"
+        return _unresolved(repository, revision, subject, code, evidence_ids, level_text)
+    binding = bindings[0]
+    method = next(
+        (item for item in code_model.methods if item.name == binding.method_name), None
+    )
+    if method is None:
+        return _unresolved(repository, revision, subject, "local_not_found", evidence_ids, level_text)
+    method_identity = binding.method_identity
+    method_events = [
+        event
+        for event in code_model.dataflow_events
+        if event.method_identity == method_identity and event.symbol == symbol_name
+    ]
+    method_text = window_text[binding.span.line_start - 1 :] if window_text else ""
+    if any(marker in method_text for marker in _CONCURRENCY_MARKERS):
+        return _unresolved(
+            repository, revision, subject, "concurrent_visibility", evidence_ids, level_text, partial=True
+        )
+    if any(marker in method_text for marker in _STREAM_MARKERS):
+        return _unresolved(
+            repository, revision, subject, "stream_laziness", evidence_ids, level_text, partial=True
+        )
+
+    first_line = lines[0].number
+    definitions: list[dict[str, Any]] = []
+    uses: list[dict[str, Any]] = []
+    early_returns: list[dict[str, int]] = []
+    if binding.kind == "local" and binding.has_initializer:
+        definitions.append(
+            {"kind": "initializer", "line_start": first_line + binding.span.line_start - 1,
+             "col_start": 0, "line_end": first_line + binding.span.line_end - 1, "col_end": 0}
+        )
+    elif binding.kind == "parameter":
+        definitions.append(
+            {"kind": "parameter_binding", "line_start": first_line + binding.span.line_start - 1,
+             "col_start": 0, "line_end": first_line + binding.span.line_end - 1, "col_end": 0}
+        )
+    for event in method_events:
+        span = {
+            "line_start": first_line + event.span.line_start - 1,
+            "col_start": 0,
+            "line_end": first_line + event.span.line_end - 1,
+            "col_end": 0,
+        }
+        if event.kind in {"assignment", "compound_assignment", "update"}:
+            definitions.append({"kind": event.kind, **span})
+        if event.kind in {"value_use", "return_use", "read_modify_write"}:
+            uses.append({"kind": event.kind, **span})
+        if event.kind == "early_return":
+            early_returns.append(span)
+    definitions.sort(key=lambda item: (item["line_start"], item["col_start"]))
+    uses.sort(key=lambda item: (item["line_start"], item["col_start"]))
+    if any(event.kind == "method_argument" for event in method_events):
+        return _unresolved(
+            repository, revision, subject, "interprocedural_aliasing", evidence_ids, level_text, partial=True
+        )
+    other_bindings = [
+        item
+        for item in code_model.dataflow_bindings
+        if item.symbol == symbol_name and item.method_identity != method_identity
+    ]
+    if other_bindings and any(
+        event.symbol == symbol_name and event.method_identity != method_identity
+        for event in code_model.dataflow_events
+    ):
+        return _unresolved(
+            repository, revision, subject, "out_of_window_reference", evidence_ids, level_text, partial=True
+        )
+    definite = bool(definitions)
+    if definitions:
+        first_def = (definitions[0]["line_start"], definitions[0]["col_start"])
+        definite = all(
+            (use["line_start"], use["col_start"]) >= first_def
+            and any(
+                (item["line_start"], item["col_start"])
+                <= (use["line_start"], use["col_start"])
+                for item in definitions
+            )
+            for use in uses
+        )
+    qualified_subject = f"{code_model.package + '.' if code_model.package else ''}{method.qualified_name}.{symbol_name}"
+    refs = [
+        f"{repository}@{revision}:{source_path}:def({item['line_start']}:{item['col_start']}-"
+        f"{item['col_end']})->use({use['line_start']}:{use['col_start']}-{use['col_end']})"
+        for use in uses
+        for item in definitions
+        if (item["line_start"], item["col_start"]) <= (use["line_start"], use["col_start"])
+    ]
+    fact = {
+        "kind": "local_data_flow",
+        "symbol": symbol_name,
+        "method": method.name,
+        "definitions": definitions,
+        "uses": uses,
+        "early_returns": sorted(early_returns, key=lambda item: item["line_start"]),
+        "definite_assignment": "established" if definite else "unestablished",
+    }
+    return CodeFactResolutionV2(
+        status=CodeFactStatus.RESOLVED if definite else CodeFactStatus.PARTIAL,
+        repository=repository,
+        revision=revision,
+        fact_category=JavaFactCategory.DATA_FLOW_FACT,
+        semantic_stage=SemanticStage.DECLARATION,
+        declaring_type=method.name,
+        subject_identity=qualified_subject,
+        value_semantics=CodeValueSemantics.EXPLICIT_INITIALIZER,
+        language_version=level_text,
+        analysis_method="tree-sitter-range-v1",
+        structured_fact=fact,
+        data_flow_refs=tuple(refs),
+        source_evidence_ids=evidence_ids,
+        declaration_location=location.model_copy(
+            update={
+                "line_start": first_line + binding.span.line_start - 1,
+                "line_end": first_line + binding.span.line_end - 1,
+            }
+        ),
+        limitation_codes=() if definite else ("use_before_definition",),
+        parser_version=code_model.parser_version,
     )

@@ -68,6 +68,48 @@ record in these windows," never "no such call exists." Predicates are total
 over records; anything unrepresentable is a `limitation:*` kind or an absent
 record, never a silent false.
 
+## Outcome and Coverage Semantics
+
+The query layer exposes records; resolver outcomes describe how much the
+bounded analysis establishes. These states are not runtime claims.
+
+| State | Normative meaning | Permitted inference |
+| --- | --- | --- |
+| `RESOLVED` | A matching in-window record satisfies the predicate's exact conditions and the required bounded evidence is present. | The stated declaration or shape is established for this window. |
+| `PARTIAL` | A relevant record exists, but coverage or a required relationship is incomplete or explicitly limited. | The record and limitation may be surfaced; it must not be promoted to a complete positive claim. |
+| `UNRESOLVED` | No authoritative matching record or safe decision is available in the analyzed scope. | None about global source absence or runtime behavior. |
+| Missing record | The supplied model/windows contain no matching record. | Only that the record was not observed in the supplied scope. |
+| Syntax-error window | Records may be present, but parser coverage is incomplete. | Never infer absence from the incomplete window. |
+| `limitation:*` | A closed evaluator or analysis boundary prevented a stronger result. | Preserve the limitation; it is not a negative predicate result. |
+
+Boolean predicates remain local record predicates. `false` means the supplied
+record does not satisfy that predicate, or the requested index is absent; it
+does not mean the source globally lacks the construct. A `PARTIAL` or
+syntax-error model must not be treated as a complete negative result.
+
+Candidate sets use the same rule: an empty `candidate_targets` result means no
+same-named definition record exists in the supplied models, while multiple
+records are surfaced without overload resolution. `in_library` may withhold a
+call when attribution is ambiguous; it must not guess from a same-name match.
+
+## Use-Def and Barrier Semantics
+
+Effective-value states are intraprocedural and revision-pinned: `CONSTANT`
+means one supported source-level value reaches the record, `UNKNOWN` means no
+safe value is established, `KILLED` means a write invalidates a prior value,
+`AMBIGUOUS` means differing definitions reach the point, `ALIASED` means a
+call/return/field/array/lambda boundary prevents local certainty, and
+`OUT_OF_WINDOW` means the binding is outside the supplied model. A propagated
+constant is distinct from a syntactic literal; existing `arg_is_constant` and
+`arg_is_literal` semantics do not change.
+
+Barrier records are source-level possibilities only: `GUARD`,
+`VALIDATION_CALL`, `REASSIGNMENT_KILL`, `ALIAS_ESCAPE`, and `UNKNOWN_BARRIER`.
+They never establish execution, validation effectiveness, or runtime safety.
+`flow_is_blocked` returns `BLOCKED`, `UNKNOWN`, or
+`NOT_BLOCKED_IN_WINDOW`; the last value means only that no recognized blocker
+was found in the supplied bounded records.
+
 ## Buckets (A7 closure)
 
 - **In-model (queryable):** compilation unit package/imports; classes (5
@@ -76,13 +118,27 @@ record, never a silent false.
   flags, nearest class); call sites (target, receiver, arity, per-arg
   sketch with shape/operator/static-type, lambda/method-ref flags,
   enclosing scope); decoded literals (kind, value, location);
-  fields/locals (name, type, enclosing scope, static/instance,
-  declared-type presence, raw initializer, evaluated kind/value/limitation);
-  parameters (name, type, enclosing method, varargs flag); guard branches
-  (class-qualified method identity, normalized guard text, per-return
-  shape/value/raw text); all flags and per-arg shapes above.
+   fields/locals (name, type, enclosing scope, static/instance,
+   declared-type presence, raw initializer, evaluated kind/value/limitation);
+   parameters (name, type, enclosing method, varargs flag); guard branches
+   (class-qualified method identity, normalized guard text, per-return
+   shape/value/raw text); dataflow bindings/events; conservative value states;
+   source-level guard, alias, and reassignment barrier facts; all flags and
+   per-arg shapes above. Dataflow events carry `lvalue`, `rvalue`, or
+   `read_modify_write` roles; unknown roles remain explicit.
+- **Framework data:** boundary recognition is loaded from the versioned
+  `iap/java-framework-boundaries/v1` catalog. Catalog entries are exact textual
+  markers and are not runtime authority.
+- **Matcher substrate:** declaration, package/import, and field matcher paths
+  use the grammar-pinned `tree-sitter-query-v1` substrate. Context-sensitive
+  scope and semantic-transfer walks remain explicit where capture-only matching
+  cannot preserve their identity and abstention rules.
 - **Annotated (carried, not queryable):** source `text` snippets on args and
   the `key`/overload identity (display/diagnostic use, never proof).
+- **Out-of-model (not established by this window model):** repository-wide or
+  cross-window call edges; runtime behavior, scheduling, and visibility;
+  framework/version authority; constructor or initialization ordering across
+  declarations; whole-program aliasing and interprocedural use-def facts.
 - **Deferred (named, each with its promoting question — the question whose
   "yes" moves the item into the model):** cross-window call graph ("all
   callers of X in this repo"); constructor-chain/init-order relations
@@ -97,6 +153,8 @@ record, never a silent false.
    typed analysis snapshots for version gates, records, sealed permits,
    generics, lambda capture/escape, method references, switch arms, and
    patterns. Snapshot features are declarative only; limitation codes remain
-   explicit and no snapshot establishes execution. Concurrency/async marker
-   abstention remains resolver-level because it is a window-level safety rule,
-   not a declaration feature.
+    explicit and no snapshot establishes execution. Concurrency/async marker
+    abstention remains resolver-level because it is a window-level safety rule,
+   not a declaration feature. Deferred promotion questions are tracked in
+    `docs/IAP-java-query-items-1-3-plan-v1.0.md` and must be added here before
+   a deferred capability becomes a public model record or predicate.

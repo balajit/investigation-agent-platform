@@ -18,6 +18,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.application.analysis.java.model import (
     CallSite,
+    DataflowBinding,
+    DataflowEvent,
+    BarrierFact,
+    ValueStateRecord,
     FieldDef,
     GuardBranch,
     JavaModel,
@@ -299,6 +303,123 @@ def all_params(models: JavaModel | Iterable[JavaModel]) -> Iterator[ParamDef]:
     """Yield every formal/spread parameter in the models."""
     for model in _as_list(models):
         yield from model.params
+
+
+def all_dataflow_bindings(
+    models: JavaModel | Iterable[JavaModel],
+) -> Iterator[DataflowBinding]:
+    """Yield bounded local/parameter binding records."""
+    for model in _as_list(models):
+        yield from model.dataflow_bindings
+
+
+def all_dataflow_events(models: JavaModel | Iterable[JavaModel]) -> Iterator[DataflowEvent]:
+    """Yield bounded dataflow events."""
+    for model in _as_list(models):
+        yield from model.dataflow_events
+
+
+def events_with_value_role(
+    events: Iterable[DataflowEvent], role: str
+) -> Iterator[DataflowEvent]:
+    """Yield events with the exact lvalue/rvalue role."""
+    for event in events:
+        if event.value_role == role:
+            yield event
+
+
+def all_value_states(models: JavaModel | Iterable[JavaModel]) -> Iterator[ValueStateRecord]:
+    """Yield conservative effective-value records."""
+    for model in _as_list(models):
+        yield from model.value_states
+
+
+def all_barriers(models: JavaModel | Iterable[JavaModel]) -> Iterator[BarrierFact]:
+    """Yield source-level possible flow barriers."""
+    for model in _as_list(models):
+        yield from model.barriers
+
+
+def value_is_constant(state: ValueStateRecord, kind: str | None = None, value: str | None = None) -> bool:
+    """True only for a bounded constant with optional exact kind/value filters."""
+    return (
+        state.state == "CONSTANT"
+        and (kind is None or state.kind == kind)
+        and (value is None or state.value == value)
+    )
+
+
+def value_is_propagated_constant(state: ValueStateRecord) -> bool:
+    """True for a constant originating from a computed or propagated value."""
+    return value_is_constant(state) and state.source in {"computed", "propagated"}
+
+
+def calls_with_effective_constant_arg(
+    calls: Iterable[CallSite],
+    states: Iterable[ValueStateRecord],
+    index: int,
+    kind: str | None = None,
+    value: str | None = None,
+) -> Iterator[CallSite]:
+    """Yield calls whose named argument has a matching bounded value state."""
+    state_by_binding = {
+        state.binding: state for state in states if value_is_constant(state, kind, value)
+    }
+    for call in calls:
+        if not 0 <= index < len(call.args):
+            continue
+        argument = call.args[index]
+        if argument.kind == "name" and argument.text in state_by_binding:
+            yield call
+
+
+def guards_for_method(
+    models: JavaModel | Iterable[JavaModel], method_identity: str
+) -> Iterator[BarrierFact]:
+    """Yield guard barriers for one class-qualified method identity."""
+    for barrier in all_barriers(models):
+        if barrier.method_identity == method_identity and barrier.kind == "GUARD":
+            yield barrier
+
+
+def barriers_for_method(
+    models: JavaModel | Iterable[JavaModel], method_identity: str
+) -> Iterator[BarrierFact]:
+    """Yield all possible barriers for one class-qualified method identity."""
+    for barrier in all_barriers(models):
+        if barrier.method_identity == method_identity:
+            yield barrier
+
+
+def reassignment_kills(
+    events: Iterable[DataflowEvent], binding: str
+) -> Iterator[DataflowEvent]:
+    """Yield assignment/update events that kill a binding's prior value."""
+    for event in events:
+        if event.symbol == binding and event.kind in {"assignment", "compound_assignment", "update"}:
+            yield event
+
+
+def flow_is_blocked(
+    state: ValueStateRecord, barriers: Iterable[BarrierFact]
+) -> str:
+    """Return BLOCKED, NOT_BLOCKED_IN_WINDOW, or UNKNOWN conservatively."""
+    relevant = [barrier for barrier in barriers if barrier.subject in {None, state.binding}]
+    if any(barrier.kind in {"ALIAS_ESCAPE", "UNKNOWN_BARRIER"} for barrier in relevant):
+        return "UNKNOWN"
+    if any(barrier.kind in {"REASSIGNMENT_KILL", "VALIDATION_CALL", "GUARD"} for barrier in relevant):
+        return "BLOCKED"
+    return "NOT_BLOCKED_IN_WINDOW"
+
+
+def calls_with_validation_barrier(
+    calls: Iterable[CallSite], vocabulary: Iterable[str]
+) -> Iterator[CallSite]:
+    """Yield calls whose exact target name is in an explicit vocabulary."""
+    names = frozenset(name for name in vocabulary if name)
+    for call in calls:
+        if call.target_name in names:
+            yield call
 
 
 def locals_named(locals_: Iterable[LocalDef], name: str) -> Iterator[LocalDef]:

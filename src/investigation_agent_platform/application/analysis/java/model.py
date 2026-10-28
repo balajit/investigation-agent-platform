@@ -80,6 +80,7 @@ class ArgSketch(BaseModel):
     static_type: str = Field(min_length=1, max_length=512)
     text: str = Field(max_length=1024)
     literal: LiteralValue | None = None
+    value_role: Literal["lvalue", "rvalue", "read_modify_write", "unknown"] = "rvalue"
 
 
 class CallSite(BaseModel):
@@ -169,6 +170,67 @@ class ParamDef(BaseModel):
     enclosing_method: str | None = Field(default=None, max_length=1024)
     method_name: str = Field(default="", max_length=512)
     is_varargs: bool = False
+    span: Span
+
+
+class DataflowBinding(BaseModel):
+    """A local or parameter binding in one class-qualified method scope."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    method_identity: str = Field(min_length=1, max_length=2048)
+    method_name: str = Field(min_length=1, max_length=512)
+    symbol: str = Field(min_length=1, max_length=512)
+    kind: Literal["local", "parameter"]
+    has_initializer: bool = False
+    span: Span
+
+
+class DataflowEvent(BaseModel):
+    """One definition, use, return, or alias-risk event in a method."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    method_identity: str = Field(min_length=1, max_length=2048)
+    symbol: str = Field(min_length=1, max_length=512)
+    kind: Literal[
+        "value_use",
+        "return_use",
+        "assignment",
+        "compound_assignment",
+        "update",
+        "read_modify_write",
+        "method_argument",
+        "early_return",
+    ]
+    value_role: Literal["lvalue", "rvalue", "read_modify_write", "unknown"] = "unknown"
+    span: Span
+
+
+class ValueStateRecord(BaseModel):
+    """Conservative effective value state for one bounded use or binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    method_identity: str = Field(min_length=1, max_length=2048)
+    binding: str = Field(min_length=1, max_length=512)
+    state: Literal["CONSTANT", "UNKNOWN", "KILLED", "AMBIGUOUS", "ALIASED", "OUT_OF_WINDOW"]
+    kind: str | None = Field(default=None, max_length=64)
+    value: str | None = Field(default=None, max_length=4096)
+    source: Literal["literal", "computed", "propagated", "reassignment", "boundary", "unknown"] = "unknown"
+    span: Span
+
+
+class BarrierFact(BaseModel):
+    """A possible source-level flow barrier, never an execution claim."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    method_identity: str = Field(min_length=1, max_length=2048)
+    kind: Literal["GUARD", "VALIDATION_CALL", "REASSIGNMENT_KILL", "ALIAS_ESCAPE", "UNKNOWN_BARRIER"]
+    subject: str | None = Field(default=None, max_length=512)
+    target_name: str | None = Field(default=None, max_length=512)
+    limitation: str | None = Field(default=None, max_length=128)
     span: Span
 
 
@@ -267,6 +329,10 @@ class JavaModel(BaseModel):
     locals: list[LocalDef] = Field(default_factory=list)
     params: list[ParamDef] = Field(default_factory=list)
     guard_returns: list[GuardBranch] = Field(default_factory=list)
+    dataflow_bindings: list[DataflowBinding] = Field(default_factory=list)
+    dataflow_events: list[DataflowEvent] = Field(default_factory=list)
+    value_states: list[ValueStateRecord] = Field(default_factory=list)
+    barriers: list[BarrierFact] = Field(default_factory=list)
     type_declarations: list[TypeDeclaration] = Field(default_factory=list)
     analysis_snapshots: list[JavaAnalysisSnapshot] = Field(default_factory=list)
     analysis_limitation_codes: list[str] = Field(default_factory=list)
@@ -379,6 +445,242 @@ def _branch_returns(consequence: Any, source: bytes, file_path: str) -> list[Ret
     return sites
 
 
+def _same_node(left: Any, right: Any) -> bool:
+    return (
+        left.type == right.type
+        and left.start_byte == right.start_byte
+        and left.end_byte == right.end_byte
+    )
+
+
+def _build_dataflow_records(
+    root: Any, source: bytes, file_path: str, methods: list[MethodDef]
+) -> tuple[list[DataflowBinding], list[DataflowEvent]]:
+    """Record bounded binding/events needed by the dataflow resolver."""
+    bindings: list[DataflowBinding] = []
+    events: list[DataflowEvent] = []
+    captures = _p.query_captures(
+        root,
+        source,
+        """
+        (method_declaration) @method
+        (constructor_declaration) @method
+        (compact_constructor_declaration) @method
+        """,
+    )
+    method_nodes = sorted(
+        captures.get("method", []), key=lambda node: (node.start_byte, node.end_byte)
+    )
+    for method_node, method in zip(method_nodes, methods):
+        if method.qualified_name == "":
+            continue
+        identity = f"{method.qualified_name}#{method.key}"
+        params_node = method_node.child_by_field_name("parameters")
+        if params_node is not None:
+            for param in params_node.children:
+                if param.type not in {"formal_parameter", "spread_parameter"}:
+                    continue
+                name_node = param.child_by_field_name("name")
+                if name_node is None and param.type == "spread_parameter":
+                    name_node = next(
+                        (child for child in param.children if child.type == "identifier"), None
+                    )
+                if name_node is not None:
+                    bindings.append(
+                        DataflowBinding(
+                            method_identity=identity,
+                            method_name=method.name,
+                            symbol=_p.node_text(name_node, source).strip(),
+                            kind="parameter",
+                            has_initializer=False,
+                            span=_span(param, file_path),
+                        )
+                    )
+        for node in _p.walk(method_node):
+            if node.type == "method_declaration" and not _same_node(node, method_node):
+                continue
+            if node.type == "variable_declarator":
+                name_node = node.child_by_field_name("name")
+                if name_node is not None:
+                    bindings.append(
+                        DataflowBinding(
+                            method_identity=identity,
+                            method_name=method.name,
+                            symbol=_p.node_text(name_node, source).strip(),
+                            kind="local",
+                            has_initializer=node.child_by_field_name("value") is not None,
+                            span=_span(node, file_path),
+                        )
+                    )
+            if node.type == "return_statement":
+                events.append(
+                    DataflowEvent(
+                        method_identity=identity,
+                        symbol=method.name,
+                        kind="early_return",
+                        value_role="rvalue",
+                        span=_span(node, file_path),
+                    )
+                )
+            if node.type == "assignment_expression":
+                left = node.child_by_field_name("left")
+                if left is not None and left.type == "identifier":
+                    operator = next((child.type for child in node.children if not child.is_named), "=")
+                    kind = "assignment" if operator == "=" else "compound_assignment"
+                    symbol = _p.node_text(left, source).strip()
+                    events.append(
+                        DataflowEvent(
+                            method_identity=identity,
+                        symbol=symbol,
+                        kind=kind,
+                        value_role="lvalue" if kind == "assignment" else "read_modify_write",
+                            span=_span(left, file_path),
+                        )
+                    )
+                    if kind == "compound_assignment":
+                        events.append(
+                            DataflowEvent(
+                                method_identity=identity,
+                                symbol=symbol,
+                                kind="read_modify_write",
+                                value_role="read_modify_write",
+                                span=_span(left, file_path),
+                            )
+                        )
+            if node.type == "update_expression":
+                for child in node.children:
+                    if child.type == "identifier":
+                        span = _span(child, file_path)
+                        symbol = _p.node_text(child, source).strip()
+                        events.extend(
+                            [
+                                DataflowEvent(
+                                    method_identity=identity,
+                                    symbol=symbol,
+                                    kind="update",
+                                    value_role="read_modify_write",
+                                    span=span,
+                                ),
+                                DataflowEvent(
+                                    method_identity=identity,
+                                    symbol=symbol,
+                                    kind="read_modify_write",
+                                    value_role="read_modify_write",
+                                    span=span,
+                                ),
+                            ]
+                        )
+            if node.type == "method_invocation":
+                args = node.child_by_field_name("arguments")
+                if args is not None:
+                    for child in args.children:
+                        if child.is_named:
+                            for descendant in _p.walk(child):
+                                if descendant.type == "identifier":
+                                    events.append(
+                                        DataflowEvent(
+                                            method_identity=identity,
+                                            symbol=_p.node_text(descendant, source).strip(),
+                                            kind="method_argument",
+                                            value_role="rvalue",
+                                            span=_span(descendant, file_path),
+                                        )
+                                    )
+            if node.type == "identifier":
+                parent = node.parent
+                if parent is not None and parent.type in {
+                    "variable_declarator",
+                    "formal_parameter",
+                    "method_invocation",
+                }:
+                    continue
+                events.append(
+                    DataflowEvent(
+                        method_identity=identity,
+                        symbol=_p.node_text(node, source).strip(),
+                        kind="value_use",
+                        value_role="rvalue",
+                        span=_span(node, file_path),
+                    )
+                )
+    return bindings, events
+
+
+def _build_value_and_barrier_records(
+    methods: list[MethodDef],
+    locals_: list[LocalDef],
+    params: list[ParamDef],
+    bindings: list[DataflowBinding],
+    events: list[DataflowEvent],
+    guards: list[GuardBranch],
+    file_path: str,
+) -> tuple[list[ValueStateRecord], list[BarrierFact]]:
+    states: list[ValueStateRecord] = []
+    barriers: list[BarrierFact] = []
+    method_by_name = {method.name: method for method in methods}
+    for binding in bindings:
+        method = method_by_name.get(binding.method_name)
+        if method is None:
+            continue
+        local = next(
+            (item for item in locals_ if item.name == binding.symbol and item.method_name == binding.method_name),
+            None,
+        )
+        if local is not None and local.evaluated_kind is not None:
+            states.append(
+                ValueStateRecord(
+                    method_identity=binding.method_identity,
+                    binding=binding.symbol,
+                    state="CONSTANT",
+                    kind=local.evaluated_kind,
+                    value=None if local.evaluated_value is None else str(local.evaluated_value),
+                    source="computed" if local.initializer_kind != f"value:{local.evaluated_kind}" else "literal",
+                    span=binding.span,
+                )
+            )
+        elif binding.kind == "parameter":
+            states.append(
+                ValueStateRecord(
+                    method_identity=binding.method_identity,
+                    binding=binding.symbol,
+                    state="UNKNOWN",
+                    source="unknown",
+                    span=binding.span,
+                )
+            )
+    for event in events:
+        if event.kind in {"assignment", "compound_assignment", "update"}:
+            barriers.append(
+                BarrierFact(
+                    method_identity=event.method_identity,
+                    kind="REASSIGNMENT_KILL",
+                    subject=event.symbol,
+                    limitation="reassignment_kills_prior_value",
+                    span=event.span,
+                )
+            )
+        elif event.kind == "method_argument":
+            barriers.append(
+                BarrierFact(
+                    method_identity=event.method_identity,
+                    kind="ALIAS_ESCAPE",
+                    subject=event.symbol,
+                    limitation="interprocedural_aliasing",
+                    span=event.span,
+                )
+            )
+    for guard in guards:
+        barriers.append(
+            BarrierFact(
+                method_identity=guard.method_identity,
+                kind="GUARD",
+                subject=guard.guard_text,
+                span=guard.span,
+            )
+        )
+    return states, barriers
+
+
 def literal_return_value(shape: str, text: str) -> str | None:
     """Unquote a simple literal return expression; None when not a literal.
 
@@ -457,6 +759,7 @@ def _arg_sketch(
     shape = node.type
     operator = _operator_of(node)
     static_type = infer_static_type(node, source)
+    value_role = "rvalue"
     if node.type in _LITERAL_NODE_TYPES:
         evaluated, _ = _expr.evaluate(node, source, level)
         if evaluated is not None:
@@ -476,6 +779,7 @@ def _arg_sketch(
                 static_type=static,
                 text=text[:1024],
                 literal=LiteralValue(kind=kind, value=str(payload), span=_span(node, file_path)),
+                value_role=value_role,
             )
         return ArgSketch(
             index=index,
@@ -484,6 +788,7 @@ def _arg_sketch(
             operator=operator,
             static_type=static_type,
             text=text[:1024],
+            value_role=value_role,
         )
     if node.type == "identifier":
         return ArgSketch(
@@ -493,6 +798,7 @@ def _arg_sketch(
             operator=operator,
             static_type=static_type,
             text=text[:1024],
+            value_role=value_role,
         )
     evaluated, limitation = _expr.evaluate(node, source, level)
     if evaluated is not None:
@@ -503,6 +809,7 @@ def _arg_sketch(
             operator=operator,
             static_type=static_type,
             text=text[:1024],
+            value_role=value_role,
         )
     if limitation is not None and limitation != "unsupported_initializer_expression":
         return ArgSketch(
@@ -512,6 +819,7 @@ def _arg_sketch(
             operator=operator,
             static_type=static_type,
             text=text[:1024],
+            value_role=value_role,
         )
     return ArgSketch(
         index=index,
@@ -520,6 +828,7 @@ def _arg_sketch(
         operator=operator,
         static_type=static_type,
         text=text[:1024],
+        value_role=value_role,
     )
 
 
@@ -542,9 +851,8 @@ def build_java_model(
     level = _lit.normalize_source_level(language_version)
     package = _p.package_name(root, source)
     imports: list[str] = []
-    for node in _p.walk(root):
-        if node.type == "import_declaration":
-            imports.append(_p.node_text(node, source).strip())
+    import_captures = _p.query_captures(root, source, "(import_declaration) @import")
+    imports.extend(_p.node_text(node, source).strip() for node in import_captures.get("import", []))
 
     classes: list[str] = []
     methods: list[MethodDef] = []
@@ -892,6 +1200,13 @@ def build_java_model(
     for top in root.children:
         visit(top)
 
+    dataflow_bindings, dataflow_events = _build_dataflow_records(
+        root, source, file_path, methods
+    )
+    value_states, barriers = _build_value_and_barrier_records(
+        methods, locals_, params, dataflow_bindings, dataflow_events, guard_returns, file_path
+    )
+
     model = JavaModel(
         parser_version=_p.parser_version(),
         has_syntax_error=_tree_has_error(root),
@@ -908,6 +1223,10 @@ def build_java_model(
         locals=locals_,
         params=params,
         guard_returns=guard_returns,
+        dataflow_bindings=dataflow_bindings,
+        dataflow_events=dataflow_events,
+        value_states=value_states,
+        barriers=barriers,
     )
     # The advanced feature pass consumes this same parsed tree.  The import is
     # local to keep the model/query layer independent from fact assembly.
