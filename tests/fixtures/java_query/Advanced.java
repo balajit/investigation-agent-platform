@@ -18,6 +18,13 @@ public class Advanced {
         return s;
     }
 
+    public String normalize(String orderType) {
+        if (orderType == null) {
+            return "STANDARD";
+        }
+        return orderType;
+    }
+
     public void execute() {
     }
 

@@ -18,9 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.application.analysis.java.model import (
     CallSite,
+    FieldDef,
+    GuardBranch,
     JavaModel,
     LiteralValue,
+    LocalDef,
     MethodDef,
+    ParamDef,
 )
 
 
@@ -277,6 +281,53 @@ def calls_in_lambda(calls: Iterable[CallSite]) -> Iterator[CallSite]:
     for call in calls:
         if call.in_lambda:
             yield call
+
+
+def all_fields(models: JavaModel | Iterable[JavaModel]) -> Iterator[FieldDef]:
+    """Yield every field declaration in the models."""
+    for model in _as_list(models):
+        yield from model.fields
+
+
+def all_locals(models: JavaModel | Iterable[JavaModel]) -> Iterator[LocalDef]:
+    """Yield every local variable declaration in the models."""
+    for model in _as_list(models):
+        yield from model.locals
+
+
+def all_params(models: JavaModel | Iterable[JavaModel]) -> Iterator[ParamDef]:
+    """Yield every formal/spread parameter in the models."""
+    for model in _as_list(models):
+        yield from model.params
+
+
+def locals_named(locals_: Iterable[LocalDef], name: str) -> Iterator[LocalDef]:
+    """Keep locals with exactly `name`."""
+    for local in locals_:
+        if local.name == name:
+            yield local
+
+
+def params_named(params: Iterable[ParamDef], name: str) -> Iterator[ParamDef]:
+    """Keep parameters with exactly `name`."""
+    for param in params:
+        if param.name == name:
+            yield param
+
+
+def guard_branches(models: JavaModel | Iterable[JavaModel]) -> Iterator[GuardBranch]:
+    """Yield every recorded guard branch in the models."""
+    for model in _as_list(models):
+        yield from model.guard_returns
+
+
+def guard_branches_for_method(
+    models: JavaModel | Iterable[JavaModel], method_key: str
+) -> Iterator[GuardBranch]:
+    """Yield guard branches belonging to the method with `method_key`."""
+    for branch in guard_branches(models):
+        if branch.method_key == method_key:
+            yield branch
 
 
 class TargetCandidate(BaseModel):

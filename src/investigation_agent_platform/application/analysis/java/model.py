@@ -8,6 +8,7 @@ window: every record carries file path, line range, and revision.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -117,30 +118,86 @@ class MethodDef(BaseModel):
     is_varargs: bool = False
     is_override: bool = False
     is_default: bool = False
+    nearest_class: str | None = Field(default=None, max_length=1024)
+    declared_in: str = Field(default="class_declaration", max_length=64)
     span: Span
 
 
 class FieldDef(BaseModel):
-    """A field declaration with optional evaluated initializer kind."""
+    """A field declaration with evaluated initializer detail."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=512)
     field_type: str = Field(min_length=1, max_length=512)
     enclosing_class: str | None = Field(default=None, max_length=1024)
+    declared_in: str = Field(default="class_declaration", max_length=64)
+    is_static: bool = False
+    has_declared_type: bool = True
     initializer_kind: str | None = Field(default=None, max_length=64)
+    raw_initializer: str | None = Field(default=None, max_length=1024)
+    evaluated_kind: str | None = Field(default=None, max_length=64)
+    evaluated_value: str | float | bool | None = None
+    evaluation_limitation: str | None = Field(default=None, max_length=128)
     span: Span
 
 
 class LocalDef(BaseModel):
-    """A local variable declaration."""
+    """A local variable declaration with evaluated initializer detail."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=512)
     var_type: str = Field(min_length=1, max_length=512)
     enclosing_method: str | None = Field(default=None, max_length=1024)
+    method_name: str = Field(default="", max_length=512)
     initializer_kind: str | None = Field(default=None, max_length=64)
+    raw_initializer: str | None = Field(default=None, max_length=1024)
+    evaluated_kind: str | None = Field(default=None, max_length=64)
+    evaluated_value: str | float | bool | None = None
+    evaluation_limitation: str | None = Field(default=None, max_length=128)
+    span: Span
+
+
+class ParamDef(BaseModel):
+    """A formal or spread parameter declaration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=512)
+    var_type: str = Field(min_length=1, max_length=512)
+    enclosing_method: str | None = Field(default=None, max_length=1024)
+    method_name: str = Field(default="", max_length=512)
+    is_varargs: bool = False
+    span: Span
+
+
+class ReturnSite(BaseModel):
+    """One return statement inside a guard branch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value_shape: str = Field(default="", max_length=128)
+    value_text: str = Field(default="", max_length=1024)
+    raw_text: str = Field(min_length=1, max_length=4096)
+    span: Span
+
+
+class GuardBranch(BaseModel):
+    """One if-statement with its direct-consequence literal returns.
+
+    Mirrors the resolver's branch walk: descends into blocks but not into
+    nested if subtrees; the else branch is never entered. Nested
+    if-statements are recorded as their own guard branches.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enclosing_method: str | None = Field(default=None, max_length=1024)
+    method_name: str = Field(default="", max_length=512)
+    method_key: str = Field(default="", max_length=1024)
+    guard_text: str = Field(default="", max_length=4096)
+    returns: list[ReturnSite] = Field(default_factory=list)
     span: Span
 
 
@@ -163,6 +220,8 @@ class JavaModel(BaseModel):
     literals: list[LiteralValue] = Field(default_factory=list)
     fields: list[FieldDef] = Field(default_factory=list)
     locals: list[LocalDef] = Field(default_factory=list)
+    params: list[ParamDef] = Field(default_factory=list)
+    guard_returns: list[GuardBranch] = Field(default_factory=list)
 
 
 def _tree_has_error(root: Any) -> bool:
@@ -183,13 +242,122 @@ def _span(node: Any, file_path: str) -> Span:
     )
 
 
-def _initializer_kind(node: Any, source: bytes, level: int | None) -> str | None:
+def _normalize_guard(text: str | None) -> str:
+    """Collapse whitespace for guard-condition comparison."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _initializer_detail(
+    node: Any, source: bytes, level: int | None
+) -> tuple[str | None, str | None, str | float | bool | None, str | None]:
+    """Evaluate an initializer once: raw text, kind, payload, limitation.
+
+    Returns (raw, kind, value, limitation) where exactly one of value /
+    limitation is meaningful; kind is None only when there is no value node.
+    """
+    raw = _p.node_text(node, source).strip()
     evaluated, limitation = _expr.evaluate(node, source, level)
     if evaluated is not None:
-        return f"value:{evaluated[0]}"
+        kind, payload = evaluated
+        return raw, f"value:{kind}", payload, None
     if limitation is not None:
-        return f"limitation:{limitation}"
-    return "complex"
+        return raw, f"limitation:{limitation}", None, limitation
+    return raw, "complex", None, None
+
+
+def coerce_evaluated(kind: str | None, value: str | float | bool | None) -> tuple[str, Any] | None:
+    """Rebuild the typed evaluated tuple from stored model fields.
+
+    Inverse of the detail extractor for resolver consumption: restores the
+    (kind, payload) tuples `format_for_field_type` expects. `kind` is the
+    short evaluated kind stored on field/local records (e.g. "int",
+    "string"); limitation/complex records carry kind None here.
+    """
+    if kind is None:
+        return None
+    if kind in {"int", "long"}:
+        return (kind, int(str(value)))
+    if kind in {"float", "double"}:
+        return (kind, float(str(value)))
+    if kind == "char":
+        return (kind, int(str(value)))
+    if kind == "string":
+        return (kind, str(value))
+    if kind == "boolean":
+        return (kind, str(value) == "True")
+    if kind == "null":
+        return (kind, None)
+    return None
+
+
+def _branch_returns(consequence: Any, source: bytes, file_path: str) -> list[ReturnSite]:
+    """Collect return statements of one guard branch.
+
+    Faithful port of the resolver branch walk: a bare return consequence
+    yields itself; otherwise descend into blocks but never into nested
+    if-statement subtrees and never into the else branch.
+    """
+    found: list[Any] = []
+    if consequence.type == "return_statement":
+        found.append(consequence)
+    else:
+        stack = [consequence]
+        while stack:
+            current = stack.pop()
+            for child in current.children:
+                if child.type == "if_statement":
+                    continue
+                if child.type == "return_statement":
+                    found.append(child)
+                elif child.is_named:
+                    stack.append(child)
+    sites: list[ReturnSite] = []
+    for ret in found:
+        value_node: Any | None = None
+        for child in ret.children:
+            if child.is_named:
+                value_node = child
+                break
+        sites.append(
+            ReturnSite(
+                value_shape=value_node.type if value_node is not None else "",
+                value_text=_p.node_text(value_node, source).strip()
+                if value_node is not None
+                else "",
+                raw_text=_p.node_text(ret, source).strip()[:4096] or "return",
+                span=_span(ret, file_path),
+            )
+        )
+    return sites
+
+
+def literal_return_value(shape: str, text: str) -> str | None:
+    """Unquote a simple literal return expression; None when not a literal.
+
+    Text-form twin of the resolver-side literal check, operating on recorded
+    shape + text instead of tree nodes.
+    """
+    if not shape:
+        return None
+    if shape == "string_literal":
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            return text[1:-1]
+        return None
+    if shape in {"true", "false", "null"}:
+        return text
+    if shape in {
+        "decimal_integer_literal",
+        "hex_integer_literal",
+        "octal_integer_literal",
+        "binary_integer_literal",
+        "decimal_floating_point_literal",
+        "hex_floating_point_literal",
+        "character_literal",
+    }:
+        return text
+    if shape == "unary_expression" and re.fullmatch(r"[-+][^-+].*", text or ""):
+        return text
+    return None
 
 
 def infer_static_type(node: Any, source: bytes) -> str:
@@ -336,9 +504,14 @@ def build_java_model(
     literals: list[LiteralValue] = []
     fields: list[FieldDef] = []
     locals_: list[LocalDef] = []
+    params: list[ParamDef] = []
+    guard_returns: list[GuardBranch] = []
 
     class_stack: list[str] = []
     method_stack: list[str] = []
+    bare_stack: list[str] = []
+    container_types: list[str] = []
+    class_only: list[str] = []
     lambda_depth = 0
 
     def enclosing_class() -> str | None:
@@ -346,6 +519,15 @@ def build_java_model(
 
     def enclosing_method() -> str | None:
         return method_stack[-1] if method_stack else None
+
+    def enclosing_bare() -> str:
+        return bare_stack[-1] if bare_stack else ""
+
+    def enclosing_container_type() -> str:
+        return container_types[-1] if container_types else ""
+
+    def nearest_class() -> str | None:
+        return class_only[-1] if class_only else None
 
     def visit(node: Any) -> None:
         nonlocal lambda_depth
@@ -355,6 +537,7 @@ def build_java_model(
             "interface_declaration",
             "enum_declaration",
             "record_declaration",
+            "annotation_type_declaration",
         }:
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -370,9 +553,15 @@ def build_java_model(
             if qualified:
                 classes.append(qualified)
                 class_stack.append(qualified)
+                container_types.append(node_type)
+                if node_type == "class_declaration":
+                    class_only.append(name)
                 for child in node.children:
                     visit(child)
                 class_stack.pop()
+                container_types.pop()
+                if node_type == "class_declaration":
+                    class_only.pop()
             return
         if node_type == "lambda_expression":
             lambda_depth += 1
@@ -380,10 +569,19 @@ def build_java_model(
                 visit(child)
             lambda_depth -= 1
             return
-        if node_type in {"method_declaration", "constructor_declaration"}:
-            is_ctor = node_type == "constructor_declaration"
+        if node_type in {
+            "method_declaration",
+            "constructor_declaration",
+            "compact_constructor_declaration",
+        }:
+            is_ctor = node_type in {"constructor_declaration", "compact_constructor_declaration"}
             name_node = node.child_by_field_name("name")
-            name = _p.node_text(name_node, source).strip() if name_node is not None else ""
+            if name_node is not None:
+                name = _p.node_text(name_node, source).strip()
+            elif is_ctor and enclosing_class() is not None:
+                name = enclosing_class().rsplit(".", 1)[-1]  # type: ignore[union-attr]
+            else:
+                name = ""
             params_node = node.child_by_field_name("parameters")
             param_types: list[str] = []
             is_varargs = False
@@ -436,13 +634,36 @@ def build_java_model(
                     is_varargs=is_varargs,
                     is_override=is_override,
                     is_default="default" in mod_text.split(),
+                    nearest_class=nearest_class(),
+                    declared_in=enclosing_container_type() or "class_declaration",
                     span=_span(node, file_path),
                 )
             )
             if qualified:
                 method_stack.append(qualified)
+                bare_stack.append(name)
+                for sub in _p.walk(node):
+                    if sub.type != "if_statement":
+                        continue
+                    consequence = sub.child_by_field_name("consequence")
+                    if consequence is None:
+                        continue
+                    cond = sub.child_by_field_name("condition")
+                    guard_returns.append(
+                        GuardBranch(
+                            enclosing_method=qualified,
+                            method_name=name,
+                            method_key=key,
+                            guard_text=_normalize_guard(
+                                _p.node_text(cond, source) if cond is not None else ""
+                            ),
+                            returns=_branch_returns(consequence, source, file_path),
+                            span=_span(sub, file_path),
+                        )
+                    )
                 for child in node.children:
                     visit(child)
+                bare_stack.pop()
                 method_stack.pop()
             return
         if node_type == "method_invocation":
@@ -508,6 +729,8 @@ def build_java_model(
                 visit(child)
             return
         if node_type == "field_declaration":
+            modifiers = next((c for c in node.children if c.type == "modifiers"), None)
+            mod_text = _p.node_text(modifiers, source) if modifiers is not None else ""
             for child in node.children:
                 if child.type != "variable_declarator":
                     continue
@@ -516,6 +739,11 @@ def build_java_model(
                     continue
                 type_node = node.child_by_field_name("type")
                 value_node = child.child_by_field_name("value")
+                raw, kind, payload, limitation = (
+                    _initializer_detail(value_node, source, level)
+                    if value_node is not None
+                    else (None, None, None, None)
+                )
                 fields.append(
                     FieldDef(
                         name=_p.node_text(name_node, source).strip(),
@@ -525,12 +753,19 @@ def build_java_model(
                             else "unknown"
                         ),
                         enclosing_class=enclosing_class(),
-                        initializer_kind=(
-                            _initializer_kind(value_node, source, level)
-                            if value_node is not None
-                            else None
+                        declared_in=enclosing_container_type() or "class_declaration",
+                        is_static="static" in mod_text.split(),
+                        has_declared_type=type_node is not None,
+                        initializer_kind=kind,
+                        raw_initializer=raw,
+                        evaluated_kind=kind.split(":", 1)[1]
+                        if kind and kind.startswith("value:")
+                        else None,
+                        evaluated_value=(
+                            str(payload) if payload is not None and kind != "value:null" else None
                         ),
-                        span=_span(child, file_path),
+                        evaluation_limitation=limitation,
+                        span=_span(node, file_path),
                     )
                 )
             for child in node.children:
@@ -545,6 +780,11 @@ def build_java_model(
                     continue
                 type_node = node.child_by_field_name("type")
                 value_node = child.child_by_field_name("value")
+                raw, kind, payload, limitation = (
+                    _initializer_detail(value_node, source, level)
+                    if value_node is not None
+                    else (None, None, None, None)
+                )
                 locals_.append(
                     LocalDef(
                         name=_p.node_text(name_node, source).strip(),
@@ -554,14 +794,46 @@ def build_java_model(
                             else "unknown"
                         ),
                         enclosing_method=enclosing_method(),
-                        initializer_kind=(
-                            _initializer_kind(value_node, source, level)
-                            if value_node is not None
-                            else None
+                        method_name=enclosing_bare(),
+                        initializer_kind=kind,
+                        raw_initializer=raw,
+                        evaluated_kind=kind.split(":", 1)[1]
+                        if kind and kind.startswith("value:")
+                        else None,
+                        evaluated_value=(
+                            str(payload) if payload is not None and kind != "value:null" else None
                         ),
-                        span=_span(child, file_path),
+                        evaluation_limitation=limitation,
+                        span=_span(node, file_path),
                     )
                 )
+            for child in node.children:
+                visit(child)
+            return
+        if node_type in {"formal_parameter", "spread_parameter"}:
+            name_node = node.child_by_field_name("name")
+            if name_node is None and node_type == "spread_parameter":
+                for declarator_child in node.children:
+                    if declarator_child.type == "variable_declarator":
+                        name_node = declarator_child.child_by_field_name("name")
+                        break
+            if name_node is None:
+                return
+            type_node = node.child_by_field_name("type")
+            params.append(
+                ParamDef(
+                    name=_p.node_text(name_node, source).strip(),
+                    var_type=(
+                        _p.node_text(type_node, source).strip()
+                        if type_node is not None
+                        else "unknown"
+                    ),
+                    enclosing_method=enclosing_method(),
+                    method_name=enclosing_bare(),
+                    is_varargs=node_type == "spread_parameter",
+                    span=_span(node, file_path),
+                )
+            )
             for child in node.children:
                 visit(child)
             return
@@ -585,4 +857,6 @@ def build_java_model(
         literals=literals,
         fields=fields,
         locals=locals_,
+        params=params,
+        guard_returns=guard_returns,
     )

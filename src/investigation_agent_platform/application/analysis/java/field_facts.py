@@ -7,12 +7,10 @@ Phase 2 home of the field baseline (moved from
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
 
 from investigation_agent_platform.application.analysis.java import _parse as _p
 from investigation_agent_platform.application.analysis.java import expressions as _expr
-from investigation_agent_platform.application.analysis.java import literals as _lit
 from investigation_agent_platform.application.analysis.java._provenance import (
     java_source_lines,
     repository_of,
@@ -22,8 +20,6 @@ from investigation_agent_platform.domain.code.models import (
     CodeFactStatus,
     CodeValueSemantics,
 )
-
-_STATIC_RE = re.compile(r"\bstatic\b")
 
 
 def _language_default(
@@ -75,7 +71,6 @@ def resolve_java_field_fact(
     repository = repository_of(identifier, source_path)
     evidence_id = getattr(evidence, "evidence_id", None)
     evidence_ids = (evidence_id,) if evidence_id is not None else ()
-    level = _lit.normalize_source_level(language_version)
 
     def unresolved(code: str) -> CodeFactResolution:
         fallback_location = location
@@ -107,49 +102,57 @@ def resolve_java_field_fact(
     if not repository:
         return unresolved("repository_identity_unavailable")
 
-    source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    window_text = "\n".join(line.text for line in lines)
     try:
-        tree = _p.parse_java(source_bytes)
+        code_model = _model.build_java_model(
+            window_text.encode("utf-8"),
+            file_path=source_path,
+            repository=repository,
+            revision=revision,
+            language_version=language_version,
+        )
     except Exception as exc:
         return unresolved(f"java_parser_unavailable:{type(exc).__name__}")
-    if tree.root_node.has_error:
+    if code_model.has_syntax_error:
         return unresolved("java_syntax_error_or_incomplete_source_window")
 
-    package = _p.package_name(tree.root_node, source_bytes)
-    declarations = _p.find_field_declarations(tree.root_node, source_bytes, field_name, package)
+    declarations = [
+        field
+        for field in code_model.fields
+        if field.name == field_name and field.declared_in == "class_declaration"
+    ]
     if declaring_type:
         declarations = [
-            item for item in declarations if _p.matches_declaring_type(item[2], declaring_type)
+            item
+            for item in declarations
+            if _p.matches_declaring_type(item.enclosing_class or "", declaring_type)
         ]
     if len(declarations) != 1:
         return unresolved("field_not_found" if not declarations else "ambiguous_field_declaration")
 
-    declaration, declarator, qualified = declarations[0]
-    type_node = declaration.child_by_field_name("type")
-    if type_node is None:
+    declaration = declarations[0]
+    if not declaration.has_declared_type:
         return unresolved("field_type_unavailable")
-    field_type = _p.node_text(type_node, source_bytes).strip()
-    modifiers = next((child for child in declaration.children if child.type == "modifiers"), None)
-    modifier_text = _p.node_text(modifiers, source_bytes) if modifiers is not None else ""
-    field_category: Literal["INSTANCE_FIELD", "STATIC_FIELD"] = (
-        "STATIC_FIELD" if _STATIC_RE.search(modifier_text) else "INSTANCE_FIELD"
+    field_type = declaration.field_type
+    field_category: Literal["STATIC_FIELD", "INSTANCE_FIELD"] = (
+        "STATIC_FIELD" if declaration.is_static else "INSTANCE_FIELD"
     )
-    value_node = declarator.child_by_field_name("value")
-    raw_initializer = (
-        _p.node_text(value_node, source_bytes).strip() if value_node is not None else None
-    )
+    raw_initializer = declaration.raw_initializer
     if raw_initializer is None:
         value, semantics = _language_default(field_type)
         if value is None or semantics is None:
             return unresolved("unsupported_default_type")
     else:
-        evaluated, limitation = _expr.evaluate(value_node, source_bytes, level)
+        evaluated = _model.coerce_evaluated(declaration.evaluated_kind, declaration.evaluated_value)
+        limitation = declaration.evaluation_limitation
         if limitation is not None or evaluated is None:
             return CodeFactResolution(
                 status=CodeFactStatus.PARTIAL,
                 repository=repository,
                 revision=revision,
-                declaring_type=qualified,
+                declaring_type=declaration.enclosing_class or "unknown",
                 field_name=field_name,
                 field_type=field_type,
                 field_category=field_category,
@@ -165,7 +168,7 @@ def resolve_java_field_fact(
                 status=CodeFactStatus.PARTIAL,
                 repository=repository,
                 revision=revision,
-                declaring_type=qualified,
+                declaring_type=declaration.enclosing_class or "unknown",
                 field_name=field_name,
                 field_type=field_type,
                 field_category=field_category,
@@ -180,15 +183,15 @@ def resolve_java_field_fact(
     first_line = lines[0].number
     declaration_location = location.model_copy(
         update={
-            "line_start": first_line + declaration.start_point[0],
-            "line_end": first_line + declaration.end_point[0],
+            "line_start": first_line + declaration.span.line_start - 1,
+            "line_end": first_line + declaration.span.line_end - 1,
         }
     )
     return CodeFactResolution(
         status=CodeFactStatus.RESOLVED,
         repository=repository,
         revision=revision,
-        declaring_type=qualified,
+        declaring_type=declaration.enclosing_class or "unknown",
         field_name=field_name,
         field_type=field_type,
         field_category=field_category,

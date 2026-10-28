@@ -94,6 +94,7 @@ def test_q2_definitions_in_package():
         "toString",
         "sum",
         "take",
+        "normalize",
         "execute",
         "check",
         "fmt",
@@ -259,3 +260,35 @@ def test_field_initializer_evaluated_kind():
     model = _advanced()
     base = next(f for f in model.fields if f.name == "base")
     assert base.initializer_kind == "value:int"
+
+
+def test_locals_and_params_records():
+    model = _advanced()
+    take_params = list(_q.params_named(_q.all_params(model), "n"))
+    assert len(take_params) == 1
+    assert take_params[0].var_type == "int"
+    assert take_params[0].method_name == "take"
+    varargs = [p for p in _q.all_params(model) if p.is_varargs]
+    assert [p.name for p in varargs] == ["values"]
+    store_locals = list(_q.locals_named(_q.all_locals(_corpus()[1]), "store"))
+    assert len(store_locals) == 1
+    assert store_locals[0].method_name == "find"
+
+
+def test_guard_branches_recorded():
+    from investigation_agent_platform.application.analysis.java import model as _m
+
+    model = _advanced()
+    normalize = next(m for m in _q.all_methods(model) if m.name == "normalize")
+    branches = list(_q.guard_branches_for_method(model, normalize.key))
+    assert len(branches) == 1
+    # The condition node includes its parentheses (matching resolver semantics).
+    assert branches[0].guard_text == "(orderType == null)"
+    assert len(branches[0].returns) == 1
+    assert branches[0].returns[0].value_shape == "string_literal"
+    assert (
+        _m.literal_return_value(
+            branches[0].returns[0].value_shape, branches[0].returns[0].value_text
+        )
+        == "STANDARD"
+    )
