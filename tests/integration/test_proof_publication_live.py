@@ -22,6 +22,7 @@ enforcement for the least-privilege role.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -824,3 +825,72 @@ async def test_T16_unsupported_projection_status_denied(live: Any) -> None:
     assert denied.reason == "UNSUPPORTED_PROJECTION_STATUS", denied.reason
     assert await _counts(live, inv_id) == (0, 0, 0, 0)
     assert await _hypothesis_version_status(live, hyp.id) == (1, "SUPPORTED")
+
+
+@pytest.mark.asyncio
+async def test_R4e_unbound_binding_digest_denied_writes_nothing(live: Any) -> None:
+    # R4e guarded interleave (i): the route evaluates clean (certify passes
+    # on the untouched premise/artifact), but the trusted binding names a
+    # digest no premise carries. The guarded entry denies at the binding
+    # net (policy-repository-unbound) with zero writes.
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis(live, inv_id)
+    await _evidence(live, inv_id, "fp-r4e-unbound", "k-r4e-unbound")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    route = _definition_route("OrderService", "class OrderService:\n    pass\n")
+    good = str(route.repository_bindings[0]["content_digest"])
+    assert good.startswith("sha256:") and len(good) == 71
+    tampered = good[:-1] + ("0" if good[-1] != "0" else "1")
+    assert tampered != good
+    rebound = dataclasses.replace(
+        route,
+        repository_bindings=(
+            {
+                "evidence_id": "row-1",
+                "content_digest": tampered,
+                "repository_id": "synthetic/service",
+            },
+        ),
+    )
+    denied = await svc.commit(TENANT, inv_id, exp, [rebound], policy=_policy())
+    assert denied.committed is False
+    assert denied.reason == "POLICY_DENIED:POLICY_DENIED:policy-repository-unbound", denied.reason
+    assert await _counts(live, inv_id) == (0, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_R4e_out_of_policy_repository_denied_writes_nothing(live: Any) -> None:
+    # R4e guarded interleave (ii): a fully self-consistent route (premise,
+    # manifest, artifact, binding digests all join) whose repository the
+    # operator policy does not authorize. Denies at the policy-scope net
+    # with zero writes.
+    inv_id = await _investigation(live)
+    hyp = await _hypothesis(live, inv_id)
+    await _evidence(live, inv_id, "fp-r4e-scope", "k-r4e-scope")
+    exp = await _expectation(live, hyp)
+    svc = ProofPublicationService(live.factory)
+    route = _definition_route("OrderService", "class OrderService:\n    pass\n")
+    artifact = dict(route.artifacts["row-1"])
+    artifact["repository"] = "external/untrusted"
+    fresh_digest = _artifact_hash(artifact)
+    assert fresh_digest != route.premises[0]["content_hash"]
+    rerouted = dataclasses.replace(
+        route,
+        premises=[{**route.premises[0], "content_hash": fresh_digest}],
+        manifest=build_manifest(
+            ["row-1"], {"row-1": fresh_digest}, premise_types={"row-1": "RANGE_READ_FACT"}
+        ),
+        artifacts={"row-1": artifact},
+        repository_bindings=(
+            {
+                "evidence_id": "row-1",
+                "content_digest": fresh_digest,
+                "repository_id": "external/untrusted",
+            },
+        ),
+    )
+    denied = await svc.commit(TENANT, inv_id, exp, [rerouted], policy=_policy())
+    assert denied.committed is False
+    assert denied.reason == "POLICY_DENIED:POLICY_DENIED:policy-scope:external/untrusted", denied.reason
+    assert await _counts(live, inv_id) == (0, 0, 0, 0)
