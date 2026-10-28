@@ -265,6 +265,44 @@ def test_assemble_trusted_context_round_trip() -> None:
         assemble_trusted_context_bytes(**{**payload, "repository_bindings": dupes})
 
 
+def test_assemble_trusted_context_boundary_rejects_malformed() -> None:
+    from investigation_agent_platform.domain.proof.obligations import (
+        SnapshotError,
+        assemble_trusted_context_bytes,
+    )
+
+    good_binding = {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"}
+    base = {
+        "rule_bundle_version": "rules/v2",
+        "model_encoding": {},
+        "reconciliation_state": "unreconciled",
+        "known_normalization_ops": [],
+        "derivation_deps": {},
+        "repository_bindings": [dict(good_binding)],
+        "expected_context_id": "ctx-1",
+        "reconciliation_adjudicated": True,
+        "policy_eligible": True,
+        "policy_reason": "",
+    }
+    for bad in (
+        {"evidence_id": "", "content_digest": good_binding["content_digest"], "repository_id": "repo-a"},
+        {"evidence_id": "r1", "content_digest": "", "repository_id": "repo-a"},
+        {"evidence_id": "r1", "content_digest": good_binding["content_digest"], "repository_id": ""},
+        {"evidence_id": "r1", "content_digest": "sha256:" + "zz" * 32, "repository_id": "repo-a"},
+        {"evidence_id": "r1", "content_digest": "md5:abc", "repository_id": "repo-a"},
+    ):
+        with pytest.raises(SnapshotError):
+            assemble_trusted_context_bytes(**{**base, "repository_bindings": [bad]})
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**base, "repository_bindings": ["not-a-mapping"]})  # type: ignore[list-item]
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**base, "model_encoding": ["not", "a", "mapping"]})  # type: ignore[dict-item]
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**base, "known_normalization_ops": "op"})  # type: ignore[dict-item]
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**base, "derivation_deps": ["not", "a", "mapping"]})  # type: ignore[dict-item]
+
+
 # ---------------------------------------------------------------------------
 # R4c: writer routing single-first
 # ---------------------------------------------------------------------------
