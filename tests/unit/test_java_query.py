@@ -211,6 +211,48 @@ def test_float_suffix_keeps_static_type():
     assert _q.arg_is_constant(suffixed, 0) is True
 
 
+def test_candidate_targets_lists_all_same_named_defs():
+    models = [_advanced(), *_corpus()]
+    search_execute = next(
+        call for call in _q.named(_q.all_calls(models), "execute") if call.arity == 1
+    )
+    candidates = _q.candidate_targets(search_execute, models)
+    assert [c.qualified_name for c in candidates if c.status == "MATCH"] == [
+        "com.example.db.Store.execute"
+    ]
+    mismatched = [c for c in candidates if c.status == "ARITY_MISMATCH"]
+    assert len(mismatched) == 1
+    assert mismatched[0].qualified_name == "com.example.app.Advanced.execute"
+
+
+def test_candidate_targets_varargs_compatible():
+    model = _advanced()
+    sum_call = next(call for call in _q.named(_q.all_calls(model), "sum") if not call.in_lambda)
+    candidates = _q.candidate_targets(sum_call, model)
+    assert len(candidates) == 1
+    assert candidates[0].status == "MATCH"
+    assert candidates[0].reason == "varargs-compatible"
+
+
+def test_candidate_targets_withheld_when_absent():
+    models = [_advanced(), *_corpus()]
+    foreach_call = next(call for call in _q.named(_q.all_calls(models), "forEach"))
+    assert _q.candidate_targets(foreach_call, models) == []
+    eval_call = next(call for call in _q.named(_q.all_calls(models), "eval"))
+    assert _q.candidate_targets(eval_call, models) == []
+
+
+def test_candidate_targets_surface_overload_ambiguity():
+    model = _advanced()
+    fmt_call = next(call for call in _q.named(_q.all_calls(model), "fmt"))
+    candidates = _q.candidate_targets(fmt_call, model)
+    assert [c.qualified_name for c in candidates] == [
+        "com.example.app.Advanced.fmt",
+        "com.example.app.Advanced.fmt",
+    ]
+    assert all(c.status == "MATCH" and c.reason == "exact-arity" for c in candidates)
+
+
 def test_field_initializer_evaluated_kind():
     model = _advanced()
     base = next(f for f in model.fields if f.name == "base")

@@ -12,6 +12,9 @@ attribution. No execution, no I/O, no authority.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.application.analysis.java.model import (
     CallSite,
@@ -274,3 +277,68 @@ def calls_in_lambda(calls: Iterable[CallSite]) -> Iterator[CallSite]:
     for call in calls:
         if call.in_lambda:
             yield call
+
+
+class TargetCandidate(BaseModel):
+    """One same-named definition considered for a call site.
+
+    Uncertainty as data: every same-named definition is listed with a status,
+    never silently dropped. MATCH means arity-compatible; ARITY_MISMATCH
+    records the counts. This is candidacy, not resolution — overload phases
+    and specificity remain the authoritative resolver's job.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    qualified_name: str = Field(min_length=1, max_length=1024)
+    arity: int = Field(ge=0)
+    status: Literal["MATCH", "ARITY_MISMATCH"] = "MATCH"
+    reason: str = Field(min_length=1, max_length=256)
+    is_varargs: bool = False
+
+
+def candidate_targets(
+    call: CallSite, models: JavaModel | Iterable[JavaModel]
+) -> list[TargetCandidate]:
+    """List every same-named definition for `call`, with match status.
+
+    Exact-arity definitions match with reason `exact-arity`. Varargs
+    definitions match when the call supplies at least the fixed parameters
+    (reason `varargs-compatible`). All other same-named definitions are
+    listed as ARITY_MISMATCH with both counts. No definition in the corpus
+    yields an empty list: withheld, never guessed.
+    """
+    found: list[TargetCandidate] = []
+    for definition in definitions_named(models, call.target_name):
+        if definition.arity == call.arity:
+            found.append(
+                TargetCandidate(
+                    qualified_name=definition.qualified_name,
+                    arity=definition.arity,
+                    status="MATCH",
+                    reason="exact-arity",
+                    is_varargs=definition.is_varargs,
+                )
+            )
+        elif definition.is_varargs and call.arity >= definition.arity - 1:
+            found.append(
+                TargetCandidate(
+                    qualified_name=definition.qualified_name,
+                    arity=definition.arity,
+                    status="MATCH",
+                    reason="varargs-compatible",
+                    is_varargs=True,
+                )
+            )
+        else:
+            found.append(
+                TargetCandidate(
+                    qualified_name=definition.qualified_name,
+                    arity=definition.arity,
+                    status="ARITY_MISMATCH",
+                    reason=f"arity-mismatch: call {call.arity}, def {definition.arity}",
+                    is_varargs=definition.is_varargs,
+                )
+            )
+    found.sort(key=lambda candidate: (candidate.status != "MATCH", candidate.qualified_name))
+    return found
