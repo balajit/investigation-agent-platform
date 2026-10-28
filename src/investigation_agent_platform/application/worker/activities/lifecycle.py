@@ -2105,13 +2105,31 @@ async def conclude_investigation_activity(
                         # authority. Denied conclusions become FAILED with the
                         # blockers recorded, never silent COMPLETED.
                         _conclude_shadow_notes = []
-                        target = await _gate_conclusion_or_fail(
-                            tenant_id,
-                            investigation_id,
-                            ctx,
-                            shadow_notes=_conclude_shadow_notes,
-                            triage_route=str(data.get("triage_route", "") or ""),
-                        )
+                        # B2 kernel wiring (R3b/R3c): shadow evaluates + logs
+                        # (never blocks); enforcing denies here, pre-persistence,
+                        # on any evaluated kernel DENY. Off mode is a no-op.
+                        try:
+                            from investigation_agent_platform.application.proof.kernel_conclude_wiring import (
+                                kernel_gate_for_conclusion,
+                            )
+
+                            _kernel_allowed, _kernel_blockers = await kernel_gate_for_conclusion(
+                                tenant_id, investigation_id, ctx
+                            )
+                        except Exception:
+                            _kernel_allowed = False
+                            _kernel_blockers = ["kernel-gate-import-failed"]
+                        if not _kernel_allowed:
+                            target = InvestigationStatus.FAILED
+                            reason = "kernel_promotion_denied: " + "; ".join(_kernel_blockers[:5])
+                        else:
+                            target = await _gate_conclusion_or_fail(
+                                tenant_id,
+                                investigation_id,
+                                ctx,
+                                shadow_notes=_conclude_shadow_notes,
+                                triage_route=str(data.get("triage_route", "") or ""),
+                            )
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"
                     if target == InvestigationStatus.FAILED:
