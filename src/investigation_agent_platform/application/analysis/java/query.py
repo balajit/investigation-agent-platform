@@ -136,8 +136,108 @@ def takes_string_literal(call: CallSite) -> bool:
     return any(arg.literal is not None and arg.literal.kind == "string" for arg in call.args)
 
 
+def definitions_in_package(
+    methods: Iterable[MethodDef], package_prefix: str
+) -> Iterator[MethodDef]:
+    """Keep definitions whose qualified name lives under `package_prefix`."""
+    for method in methods:
+        if method.qualified_name == package_prefix or method.qualified_name.startswith(
+            package_prefix + "."
+        ):
+            yield method
+
+
+def calls_to_in_library(
+    calls: Iterable[CallSite],
+    models: JavaModel | Iterable[JavaModel],
+    library_prefix: str,
+    name: str,
+) -> Iterator[CallSite]:
+    """Composed form of the question 6 shape: named calls bound to a library."""
+    return in_library(named(calls, name), models, library_prefix)
+
+
+def methods_with_arity(methods: Iterable[MethodDef], arity: int) -> Iterator[MethodDef]:
+    """Keep definitions with exactly `arity` parameters."""
+    for method in methods:
+        if method.arity == arity:
+            yield method
+
+
+def arg_shape(call: CallSite, index: int) -> str | None:
+    """Return the tree-sitter shape of argument `index`, or None when absent."""
+    if 0 <= index < len(call.args):
+        return call.args[index].shape
+    return None
+
+
+def arg_operator(call: CallSite, index: int) -> str | None:
+    """Return the operator of argument `index`, or None when not applicable."""
+    if 0 <= index < len(call.args):
+        return call.args[index].operator
+    return None
+
+
+def arg_static_type(call: CallSite, index: int) -> str | None:
+    """Return the inferred static type of argument `index`, or None when absent."""
+    if 0 <= index < len(call.args):
+        return call.args[index].static_type
+    return None
+
+
+def arg_is_name(call: CallSite, index: int) -> bool:
+    """True when argument `index` is a bare identifier reference."""
+    return arg_kind(call, index) == "name"
+
+
+def arg_is_complex(call: CallSite, index: int) -> bool:
+    """True when argument `index` is a non-literal, non-name expression."""
+    kind = arg_kind(call, index)
+    return kind is not None and not kind.startswith("value:") and kind != "name"
+
+
+def arg_has_limitation(call: CallSite, index: int) -> bool:
+    """True when argument `index` carries a closed evaluation-limitation code."""
+    kind = arg_kind(call, index)
+    return kind is not None and kind.startswith("limitation:")
+
+
 def calls_with_computed_arg(calls: Iterable[CallSite], index: int) -> Iterator[CallSite]:
     """Keep calls whose argument `index` is present but not statically evaluable."""
     for call in calls:
         if arg_not_literal(call, index):
+            yield call
+
+
+def is_string_arg(call: CallSite, index: int) -> bool:
+    """True when argument `index` is a decoded string literal."""
+    return arg_kind(call, index) == "value:string"
+
+
+def is_int_arg(call: CallSite, index: int) -> bool:
+    """True when argument `index` is a decoded int literal."""
+    return arg_kind(call, index) == "value:int"
+
+
+def is_boolean_arg(call: CallSite, index: int) -> bool:
+    """True when argument `index` is a decoded boolean literal."""
+    return arg_kind(call, index) == "value:boolean"
+
+
+def is_null_arg(call: CallSite, index: int) -> bool:
+    """True when argument `index` is the null literal."""
+    return arg_kind(call, index) == "value:null"
+
+
+def calls_with_receiver(calls: Iterable[CallSite], receiver: str) -> Iterator[CallSite]:
+    """Keep calls invoked on the exact receiver expression text."""
+    for call in calls:
+        if call.receiver == receiver:
+            yield call
+
+
+def calls_in_lambda(calls: Iterable[CallSite]) -> Iterator[CallSite]:
+    """Keep calls enclosed in a lambda body."""
+    for call in calls:
+        if call.in_lambda:
             yield call

@@ -63,6 +63,9 @@ class ArgSketch(BaseModel):
 
     index: int = Field(ge=0)
     kind: str = Field(min_length=1, max_length=64)
+    shape: str = Field(min_length=1, max_length=128)
+    operator: str | None = Field(default=None, max_length=32)
+    static_type: str = Field(min_length=1, max_length=512)
     text: str = Field(max_length=1024)
     literal: LiteralValue | None = None
 
@@ -76,6 +79,9 @@ class CallSite(BaseModel):
     arity: int = Field(ge=0)
     args: list[ArgSketch] = Field(default_factory=list)
     is_constructor: bool = False
+    receiver: str = Field(default="", max_length=1024)
+    has_method_reference: bool = False
+    in_lambda: bool = False
     enclosing_method: str | None = Field(default=None, max_length=1024)
     enclosing_class: str | None = Field(default=None, max_length=1024)
     span: Span
@@ -93,6 +99,10 @@ class MethodDef(BaseModel):
     return_type: str | None = Field(default=None, max_length=512)
     enclosing_class: str | None = Field(default=None, max_length=1024)
     key: str = Field(min_length=1, max_length=1024)
+    is_constructor: bool = False
+    is_varargs: bool = False
+    is_override: bool = False
+    is_default: bool = False
     span: Span
 
 
@@ -127,6 +137,7 @@ class JavaModel(BaseModel):
 
     schema_version: Literal["iap/java-model/v1"] = SCHEMA_VERSION
     parser_version: str = Field(min_length=1, max_length=128)
+    has_syntax_error: bool = False
     repository: str = Field(min_length=1, max_length=512)
     revision: str = Field(min_length=1, max_length=256)
     file_path: str = Field(min_length=1, max_length=1024)
@@ -138,6 +149,16 @@ class JavaModel(BaseModel):
     literals: list[LiteralValue] = Field(default_factory=list)
     fields: list[FieldDef] = Field(default_factory=list)
     locals: list[LocalDef] = Field(default_factory=list)
+
+
+def _tree_has_error(root: Any) -> bool:
+    """Mirror the shared syntax-error check for Java windows."""
+    if getattr(root, "has_error", False):
+        return True
+    for node in _p.walk(root):
+        if node.type == "ERROR" or getattr(node, "is_missing", False):
+            return True
+    return False
 
 
 def _span(node: Any, file_path: str) -> Span:
@@ -157,10 +178,55 @@ def _initializer_kind(node: Any, source: bytes, level: int | None) -> str | None
     return "complex"
 
 
+def infer_static_type(node: Any, source: bytes) -> str:
+    """Name the static type of an argument expression, or "unknown".
+
+    Mirrors the resolver-side convention: literals and object creations name
+    their type; names, accesses, invocations, and compound expressions stay
+    unknown until a stronger analysis exists.
+    """
+    kind = node.type
+    text = _p.node_text(node, source).strip()
+    if kind == "decimal_integer_literal":
+        return "long" if text.endswith(("l", "L")) else "int"
+    if kind == "decimal_floating_point_literal":
+        return "float" if text.endswith(("f", "F")) else "double"
+    if kind == "string_literal":
+        return "String"
+    if kind == "character_literal":
+        return "char"
+    if kind in {"true", "false"}:
+        return "boolean"
+    if kind == "null_literal":
+        return "null"
+    if kind == "object_creation_expression":
+        type_node = node.child_by_field_name("type")
+        return _p.node_text(type_node, source).strip() if type_node is not None else "unknown"
+    return "unknown"
+
+
+def _operator_of(node: Any) -> str | None:
+    if node.type == "binary_expression":
+        return next((c.type for c in node.children if not c.is_named), None)
+    if node.type == "unary_expression":
+        return next(
+            (c.type for c in node.children if c.type in {"+", "-", "!", "~"}),
+            None,
+        )
+    if node.type == "ternary_expression":
+        return "ternary"
+    if node.type == "cast_expression":
+        return "cast"
+    return None
+
+
 def _arg_sketch(
     index: int, node: Any, source: bytes, level: int | None, file_path: str
 ) -> ArgSketch:
     text = _p.node_text(node, source).strip()
+    shape = node.type
+    operator = _operator_of(node)
+    static_type = infer_static_type(node, source)
     if node.type in _LITERAL_NODE_TYPES:
         evaluated, _ = _expr.evaluate(node, source, level)
         if evaluated is not None:
@@ -168,18 +234,56 @@ def _arg_sketch(
             return ArgSketch(
                 index=index,
                 kind=f"value:{kind}",
+                shape=shape,
+                operator=operator,
+                static_type=static_type,
                 text=text[:1024],
                 literal=LiteralValue(kind=kind, value=str(payload), span=_span(node, file_path)),
             )
-        return ArgSketch(index=index, kind="literal:undecodable", text=text[:1024])
+        return ArgSketch(
+            index=index,
+            kind="literal:undecodable",
+            shape=shape,
+            operator=operator,
+            static_type=static_type,
+            text=text[:1024],
+        )
     if node.type == "identifier":
-        return ArgSketch(index=index, kind="name", text=text[:1024])
+        return ArgSketch(
+            index=index,
+            kind="name",
+            shape=shape,
+            operator=operator,
+            static_type=static_type,
+            text=text[:1024],
+        )
     evaluated, limitation = _expr.evaluate(node, source, level)
     if evaluated is not None:
-        return ArgSketch(index=index, kind=f"value:{evaluated[0]}", text=text[:1024])
+        return ArgSketch(
+            index=index,
+            kind=f"value:{evaluated[0]}",
+            shape=shape,
+            operator=operator,
+            static_type=static_type,
+            text=text[:1024],
+        )
     if limitation is not None and limitation != "unsupported_initializer_expression":
-        return ArgSketch(index=index, kind=f"limitation:{limitation}", text=text[:1024])
-    return ArgSketch(index=index, kind="complex", text=text[:1024])
+        return ArgSketch(
+            index=index,
+            kind=f"limitation:{limitation}",
+            shape=shape,
+            operator=operator,
+            static_type=static_type,
+            text=text[:1024],
+        )
+    return ArgSketch(
+        index=index,
+        kind="complex",
+        shape=shape,
+        operator=operator,
+        static_type=static_type,
+        text=text[:1024],
+    )
 
 
 def build_java_model(
@@ -196,7 +300,8 @@ def build_java_model(
     resolvers. Windows with syntax errors still produce a model; erroneous
     regions simply contribute no records.
     """
-    root = _p.parse_java(source).root_node
+    tree = _p.parse_java(source)
+    root = tree.root_node
     level = _lit.normalize_source_level(language_version)
     package = _p.package_name(root, source)
     imports: list[str] = []
@@ -213,6 +318,7 @@ def build_java_model(
 
     class_stack: list[str] = []
     method_stack: list[str] = []
+    lambda_depth = 0
 
     def enclosing_class() -> str | None:
         return class_stack[-1] if class_stack else None
@@ -221,12 +327,25 @@ def build_java_model(
         return method_stack[-1] if method_stack else None
 
     def visit(node: Any) -> None:
+        nonlocal lambda_depth
         node_type = node.type
-        if node_type == "class_declaration":
+        if node_type in {
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+        }:
             name_node = node.child_by_field_name("name")
             if name_node is None:
                 return
-            qualified = _p.qualified_class_name(node, source, package)
+            name = _p.node_text(name_node, source).strip()
+            parent = enclosing_class()
+            if parent:
+                qualified = f"{parent}.{name}"
+            elif package:
+                qualified = f"{package}.{name}"
+            else:
+                qualified = name
             if qualified:
                 classes.append(qualified)
                 class_stack.append(qualified)
@@ -234,19 +353,52 @@ def build_java_model(
                     visit(child)
                 class_stack.pop()
             return
+        if node_type == "lambda_expression":
+            lambda_depth += 1
+            for child in node.children:
+                visit(child)
+            lambda_depth -= 1
+            return
         if node_type in {"method_declaration", "constructor_declaration"}:
+            is_ctor = node_type == "constructor_declaration"
             name_node = node.child_by_field_name("name")
             name = _p.node_text(name_node, source).strip() if name_node is not None else ""
             params_node = node.child_by_field_name("parameters")
             param_types: list[str] = []
+            is_varargs = False
             if params_node is not None:
                 for param in params_node.children:
                     if param.type == "formal_parameter":
                         type_node = param.child_by_field_name("type")
                         if type_node is not None:
                             param_types.append(_p.node_text(type_node, source).strip())
+                    elif param.type == "spread_parameter":
+                        is_varargs = True
+                        inner = next(
+                            (
+                                c
+                                for c in param.children
+                                if "type" in c.type or c.type == "type_identifier"
+                            ),
+                            None,
+                        )
+                        param_types.append(
+                            _p.node_text(inner, source).strip() if inner is not None else "unknown"
+                        )
             type_node = node.child_by_field_name("type")
             return_type = _p.node_text(type_node, source).strip() if type_node is not None else None
+            modifiers = next((c for c in node.children if c.type == "modifiers"), None)
+            mod_text = _p.node_text(modifiers, source) if modifiers is not None else ""
+            is_override = False
+            if modifiers is not None:
+                for mod in modifiers.children:
+                    if mod.type in {"marker_annotation", "annotation"}:
+                        annotation_name = mod.child_by_field_name("name")
+                        if (
+                            annotation_name is not None
+                            and _p.node_text(annotation_name, source).strip() == "Override"
+                        ):
+                            is_override = True
             cls = enclosing_class()
             qualified = f"{cls}.{name}" if cls and name else name
             key = overload_key(name, len(param_types), param_types)
@@ -259,6 +411,10 @@ def build_java_model(
                     return_type=return_type,
                     enclosing_class=cls,
                     key=key,
+                    is_constructor=is_ctor,
+                    is_varargs=is_varargs,
+                    is_override=is_override,
+                    is_default="default" in mod_text.split(),
                     span=_span(node, file_path),
                 )
             )
@@ -276,12 +432,17 @@ def build_java_model(
             if args_node is not None:
                 for index, child in enumerate([c for c in args_node.children if c.is_named]):
                     args.append(_arg_sketch(index, child, source, level, file_path))
+            object_node = node.child_by_field_name("object")
+            receiver = _p.node_text(object_node, source).strip() if object_node is not None else ""
             if target:
                 calls.append(
                     CallSite(
                         target_name=target,
                         arity=len(args),
                         args=args,
+                        receiver=receiver,
+                        has_method_reference="::" in _p.node_text(node, source),
+                        in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
                         enclosing_class=enclosing_class(),
                         span=_span(node, file_path),
@@ -305,6 +466,8 @@ def build_java_model(
                         arity=len(args),
                         args=args,
                         is_constructor=True,
+                        has_method_reference="::" in _p.node_text(node, source),
+                        in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
                         enclosing_class=enclosing_class(),
                         span=_span(node, file_path),
@@ -389,6 +552,7 @@ def build_java_model(
 
     return JavaModel(
         parser_version=_p.parser_version(),
+        has_syntax_error=_tree_has_error(root),
         repository=repository,
         revision=revision,
         file_path=file_path,

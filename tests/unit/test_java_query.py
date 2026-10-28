@@ -75,3 +75,89 @@ def test_constructor_call_is_marked():
     constructors = [call for call in _q.all_calls(_corpus()) if call.is_constructor]
     assert len(constructors) == 1
     assert constructors[0].target_name == "Store"
+
+
+def _advanced() -> _model.JavaModel:
+    path = _FIXTURES / "Advanced.java"
+    return _model.build_java_model(
+        path.read_bytes(),
+        file_path="tests/fixtures/java_query/Advanced.java",
+        repository="synthetic/java-query",
+        revision="synthetic-revision-java-query",
+    )
+
+
+def test_q2_definitions_in_package():
+    model = _advanced()
+    app_methods = list(_q.definitions_in_package(_q.all_methods(model), "com.example.app"))
+    assert {m.name for m in app_methods} == {"toString", "sum", "take", "run"}
+    assert list(_q.definitions_in_package(_q.all_methods(model), "com.example.db")) == []
+
+
+def test_q2_callee_side_library_attribution():
+    models = [_advanced(), *_corpus()]
+    scoped = list(_q.calls_to_in_library(_q.all_calls(models), models, "com.example.db", "execute"))
+    assert len(scoped) == 3
+
+
+def test_q3_operator_and_shape_predicates():
+    model = _advanced()
+    take_call = next(call for call in _q.named(_q.all_calls(model), "take"))
+    assert _q.arg_shape(take_call, 0) == "binary_expression"
+    assert _q.arg_operator(take_call, 0) == "&&"
+    assert _q.arg_shape(take_call, 1) == "unary_expression"
+    assert _q.arg_operator(take_call, 1) == "-"
+    assert _q.arg_shape(take_call, 2) == "ternary_expression"
+    assert _q.arg_operator(take_call, 2) == "ternary"
+
+
+def test_q3_static_types_and_literal_kinds():
+    model = _advanced()
+    sum_call = next(call for call in _q.named(_q.all_calls(model), "sum") if not call.in_lambda)
+    assert [_q.arg_static_type(sum_call, i) for i in range(3)] == ["int", "int", "int"]
+    assert all(_q.is_int_arg(sum_call, i) for i in range(3))
+    of_call = next(call for call in _q.named(_q.all_calls(model), "of"))
+    assert _q.arg_static_type(of_call, 0) == "String"
+    assert _q.is_string_arg(of_call, 0)
+    search = _corpus()[1]
+    fetch_call = next(call for call in _q.named(_q.all_calls(search), "fetch"))
+    assert _q.arg_is_name(fetch_call, 0)
+    assert _q.arg_static_type(fetch_call, 0) == "unknown"
+
+
+def test_q3_computed_and_limitation_arguments():
+    model = _advanced()
+    take_call = next(call for call in _q.named(_q.all_calls(model), "take"))
+    assert _q.arg_is_complex(take_call, 0)
+    assert _q.arg_is_complex(take_call, 2)
+    assert not _q.arg_is_literal(take_call, 0)
+    assert not _q.arg_has_limitation(take_call, 0)
+
+
+def test_method_flags_varargs_override():
+    model = _advanced()
+    by_name = {m.name: m for m in _q.all_methods(model)}
+    assert by_name["sum"].is_varargs is True
+    assert by_name["toString"].is_override is True
+    assert by_name["take"].is_varargs is False
+    assert by_name["take"].is_override is False
+
+
+def test_receiver_lambda_and_method_reference():
+    model = _advanced()
+    of_call = next(call for call in _q.named(_q.all_calls(model), "of"))
+    assert of_call.receiver == "List"
+    foreach_call = next(call for call in _q.named(_q.all_calls(model), "forEach"))
+    assert foreach_call.receiver == "items"
+    assert foreach_call.has_method_reference is True
+    assert _q.arg_shape(foreach_call, 0) == "method_reference"
+    lambda_sums = [call for call in _q.named(_q.all_calls(model), "sum") if call.in_lambda]
+    assert len(lambda_sums) == 1
+    assert _q.arg_evaluates_to(lambda_sums[0], 0, "int", "7")
+    assert len(list(_q.calls_in_lambda(_q.all_calls(model)))) == 1
+
+
+def test_field_initializer_evaluated_kind():
+    model = _advanced()
+    base = next(f for f in model.fields if f.name == "base")
+    assert base.initializer_kind == "value:int"
