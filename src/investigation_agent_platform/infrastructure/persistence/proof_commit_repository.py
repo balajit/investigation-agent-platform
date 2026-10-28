@@ -18,6 +18,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
+from investigation_agent_platform.domain.finding.models import conclusion_rewrite_allowed
 from investigation_agent_platform.infrastructure.persistence.models import (
     ContradictionORM,
     EvidenceORM,
@@ -217,53 +219,80 @@ async def insert_conclusion_record(
     investigation_id: UUID,
     conclusion: dict[str, Any],
 ) -> UUID:
-    """Conclusion projection (upsert; latest commit wins per investigation).
+    """Conclusion projection without last-write-wins.
 
-    Field mapping mirrors FindingRepository.save_conclusion, including the
-    ``uq_conclusion_investigation`` upsert: repeat commits for one
-    investigation refresh the conclusion row instead of duplicating it,
-    while findings append per commit as the projection audit trail.
+    Field mapping mirrors FindingRepository.save_conclusion. Repeat commits
+    for one investigation refresh the row only under
+    ``conclusion_rewrite_allowed`` (same verdict, or forward from a
+    non-verdict); overwriting a terminal verdict with a different status
+    raises ConcurrencyError instead of silently winning, while findings
+    append per commit as the projection audit trail. Read and write share
+    the caller's transaction (FOR UPDATE).
     """
-    stmt = (
-        insert(InvestigationConclusionORM)
-        .values(
-            id=uuid4(),
-            tenant_id=tenant_id,
-            investigation_id=investigation_id,
-            status=str(conclusion.get("status") or ""),
-            root_cause=str(conclusion.get("root_cause") or ""),
-            confidence=float(conclusion.get("confidence") or 0.0),
-            supporting_evidence_ids=[
-                str(e) for e in (conclusion.get("supporting_evidence_ids") or [])
-            ],
-            supporting_hypothesis_ids=[
-                str(h) for h in (conclusion.get("supporting_hypothesis_ids") or [])
-            ],
-            contradicting_evidence_ids=[
-                str(e) for e in (conclusion.get("contradicting_evidence_ids") or [])
-            ],
-            limitations=list(conclusion.get("limitations") or []),
-            recommended_next_steps=list(conclusion.get("recommended_next_steps") or []),
-            proven_callers=list(conclusion.get("proven_callers") or []),
-            unresolved_callers=list(conclusion.get("unresolved_callers") or []),
-            caller_coverage=conclusion.get("caller_coverage"),
-            verifier_version=str(conclusion.get("verifier_version") or "v2"),
+    new_status = str(conclusion.get("status") or "")
+    current = (
+        await session.execute(
+            select(InvestigationConclusionORM.status)
+            .where(
+                InvestigationConclusionORM.tenant_id == tenant_id,
+                InvestigationConclusionORM.investigation_id == investigation_id,
+            )
+            .with_for_update()
         )
-        .on_conflict_do_update(
-            constraint="uq_conclusion_investigation",
-            set_={
-                "status": str(conclusion.get("status") or ""),
-                "root_cause": str(conclusion.get("root_cause") or ""),
-                "confidence": float(conclusion.get("confidence") or 0.0),
-                "proven_callers": list(conclusion.get("proven_callers") or []),
-                "unresolved_callers": list(conclusion.get("unresolved_callers") or []),
-                "caller_coverage": conclusion.get("caller_coverage"),
-            },
+    ).scalar_one_or_none()
+    if not conclusion_rewrite_allowed(current, new_status):
+        raise ConcurrencyError(
+            f"Conclusion verdict {current} already recorded; "
+            f"refusing overwrite with {new_status}"
+        )
+    values = {
+        "tenant_id": tenant_id,
+        "investigation_id": investigation_id,
+        "status": new_status,
+        "root_cause": str(conclusion.get("root_cause") or ""),
+        "confidence": float(conclusion.get("confidence") or 0.0),
+        "supporting_evidence_ids": [
+            str(e) for e in (conclusion.get("supporting_evidence_ids") or [])
+        ],
+        "supporting_hypothesis_ids": [
+            str(h) for h in (conclusion.get("supporting_hypothesis_ids") or [])
+        ],
+        "contradicting_evidence_ids": [
+            str(e) for e in (conclusion.get("contradicting_evidence_ids") or [])
+        ],
+        "limitations": list(conclusion.get("limitations") or []),
+        "recommended_next_steps": list(conclusion.get("recommended_next_steps") or []),
+        "proven_callers": list(conclusion.get("proven_callers") or []),
+        "unresolved_callers": list(conclusion.get("unresolved_callers") or []),
+        "caller_coverage": conclusion.get("caller_coverage"),
+        "verifier_version": str(conclusion.get("verifier_version") or "v2"),
+    }
+    if current is None:
+        result = await session.execute(
+            insert(InvestigationConclusionORM)
+            .values(id=uuid4(), **values)
+            .returning(InvestigationConclusionORM.id)
+        )
+        return result.scalar_one()
+    result = await session.execute(
+        update(InvestigationConclusionORM)
+        .where(
+            InvestigationConclusionORM.tenant_id == tenant_id,
+            InvestigationConclusionORM.investigation_id == investigation_id,
+        )
+        .values(
+            **{
+                k: v
+                for k, v in values.items()
+                if k not in ("tenant_id", "investigation_id")
+            }
         )
         .returning(InvestigationConclusionORM.id)
     )
-    result = await session.execute(stmt)
-    return result.scalar_one()
+    row_id = result.scalar_one_or_none()
+    if row_id is None:
+        raise ConcurrencyError("Conclusion row lost under lock")
+    return row_id
 
 
 __all__ = [

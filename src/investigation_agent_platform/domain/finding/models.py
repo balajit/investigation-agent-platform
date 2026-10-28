@@ -33,6 +33,32 @@ class ConclusionStatus(StrEnum):
     ANSWERED = "ANSWERED"
 
 
+#: Conclusion verdicts. A terminal row states a verdict; overwriting one
+#: with a different status is never an update — it is a lost race and
+#: must fail loudly. Non-terminal rows state the absence of a verdict
+#: and may move forward (or churn among non-verdicts).
+TERMINAL_CONCLUSION_STATUSES = frozenset(
+    {
+        ConclusionStatus.ROOT_CAUSE_ESTABLISHED.value,
+        ConclusionStatus.ROOT_CAUSE_LIKELY.value,
+        ConclusionStatus.ANSWERED.value,
+    }
+)
+
+
+def conclusion_rewrite_allowed(current_status: str | None, new_status: str) -> bool:
+    """LWW removal: may a conclusion row be overwritten?
+
+    No row (None) → yes. Same status → yes (idempotent retry/recommit).
+    Non-terminal current → yes (forward progress, non-verdict churn).
+    Terminal current + different status → no (verdict clobber or race).
+    Pure predicate; both conclusion writers enforce it identically.
+    """
+    if current_status is None or current_status == new_status:
+        return True
+    return current_status not in TERMINAL_CONCLUSION_STATUSES
+
+
 class Finding(BaseModel):
     """Verified finding aggregate backed by causal evidence."""
 

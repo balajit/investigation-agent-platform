@@ -279,6 +279,8 @@ class TestSqlFindingRepoScope:
             session,
         ):
             repo = SqlAlchemyFindingConclusionRepository(db_session_factory=MagicMock())
+            # No existing row: status read returns None, first write inserts.
+            session.execute.return_value.scalar_one_or_none.return_value = None
             await repo.save_conclusion("tenant-a", _conclusion("tenant-a", uuid4()))
             assert session.execute.called
 

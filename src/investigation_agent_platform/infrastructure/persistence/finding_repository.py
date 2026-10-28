@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from investigation_agent_platform.api.errors import sanitize_extra
@@ -16,6 +16,7 @@ from investigation_agent_platform.domain.finding.models import (
     FindingType,
     InvestigationConclusion,
     SeverityLevel,
+    conclusion_rewrite_allowed,
 )
 from investigation_agent_platform.infrastructure.persistence.models import (
     FindingORM,
@@ -215,67 +216,76 @@ class SqlAlchemyFindingConclusionRepository:
         )
 
     async def save_conclusion(self, tenant_id: str, conclusion: InvestigationConclusion) -> None:
+        """Persist the investigation conclusion without last-write-wins.
+
+        First write inserts. A second write must satisfy
+        ``conclusion_rewrite_allowed`` against the locked current row:
+        idempotent retry (same status) and forward progress from a
+        non-verdict are allowed; overwriting a terminal verdict with a
+        different status raises ConcurrencyError instead of silently
+        winning. Read and write share one transaction (FOR UPDATE).
+        """
         if conclusion.tenant_id != tenant_id:
             raise ConcurrencyError("Conclusion tenant mismatch")
         try:
             async with rls_session(self._session_factory, tenant_id) as session:
-                stmt = (
-                    insert(InvestigationConclusionORM)
-                    .values(
-                        tenant_id=tenant_id,
-                        investigation_id=conclusion.investigation_id,
-                        status=conclusion.status.value,
-                        root_cause=conclusion.root_cause,
-                        confidence=conclusion.confidence,
-                        supporting_evidence_ids=[str(e) for e in conclusion.supporting_evidence_ids],
-                        supporting_hypothesis_ids=[
-                            str(h) for h in conclusion.supporting_hypothesis_ids
-                        ],
-                        contradicting_evidence_ids=[
-                            str(e) for e in conclusion.contradicting_evidence_ids
-                        ],
-                        limitations=list(conclusion.limitations),
-                        recommended_next_steps=list(conclusion.recommended_next_steps),
-                        verifier_version=getattr(conclusion, "verifier_version", None) or "v2",
-                        best_reason=getattr(conclusion, "best_reason", "") or None,
-                        against_evidence=list(getattr(conclusion, "against_evidence", []) or []),
-                        provisional=bool(getattr(conclusion, "provisional", False)),
-                        ranked_alternatives=list(getattr(conclusion, "ranked_alternatives", []) or []),
-                        next_check=getattr(conclusion, "next_check", None),
-                        proven_callers=list(getattr(conclusion, "proven_callers", []) or []),
-                        unresolved_callers=list(getattr(conclusion, "unresolved_callers", []) or []),
-                        caller_coverage=getattr(conclusion, "caller_coverage", None),
+                current = (
+                    await session.execute(
+                        select(InvestigationConclusionORM.status)
+                        .where(
+                            InvestigationConclusionORM.tenant_id == tenant_id,
+                            InvestigationConclusionORM.investigation_id
+                            == conclusion.investigation_id,
+                        )
+                        .with_for_update()
                     )
-                    .on_conflict_do_update(
-                        constraint="uq_conclusion_investigation",
-                        set_={
-                            "status": conclusion.status.value,
-                            "root_cause": conclusion.root_cause,
-                            "confidence": conclusion.confidence,
-                            "supporting_evidence_ids": [
-                                str(e) for e in conclusion.supporting_evidence_ids
-                            ],
-                            "supporting_hypothesis_ids": [
-                                str(h) for h in conclusion.supporting_hypothesis_ids
-                            ],
-                            "contradicting_evidence_ids": [
-                                str(e) for e in conclusion.contradicting_evidence_ids
-                            ],
-                            "limitations": list(conclusion.limitations),
-                            "recommended_next_steps": list(conclusion.recommended_next_steps),
-                            "verifier_version": getattr(conclusion, "verifier_version", None) or "v2",
-                            "best_reason": getattr(conclusion, "best_reason", "") or None,
-                            "against_evidence": list(getattr(conclusion, "against_evidence", []) or []),
-                            "provisional": bool(getattr(conclusion, "provisional", False)),
-                            "ranked_alternatives": list(getattr(conclusion, "ranked_alternatives", []) or []),
-                            "next_check": getattr(conclusion, "next_check", None),
-                            "proven_callers": list(getattr(conclusion, "proven_callers", []) or []),
-                            "unresolved_callers": list(getattr(conclusion, "unresolved_callers", []) or []),
-                            "caller_coverage": getattr(conclusion, "caller_coverage", None),
-                        },
+                ).scalar_one_or_none()
+                if not conclusion_rewrite_allowed(current, conclusion.status.value):
+                    raise ConcurrencyError(
+                        f"Conclusion verdict {current} already recorded; "
+                        f"refusing overwrite with {conclusion.status.value}"
                     )
-                )
-                await session.execute(stmt)
+                values = {
+                    "tenant_id": tenant_id,
+                    "investigation_id": conclusion.investigation_id,
+                    "status": conclusion.status.value,
+                    "root_cause": conclusion.root_cause,
+                    "confidence": conclusion.confidence,
+                    "supporting_evidence_ids": [
+                        str(e) for e in conclusion.supporting_evidence_ids
+                    ],
+                    "supporting_hypothesis_ids": [
+                        str(h) for h in conclusion.supporting_hypothesis_ids
+                    ],
+                    "contradicting_evidence_ids": [
+                        str(e) for e in conclusion.contradicting_evidence_ids
+                    ],
+                    "limitations": list(conclusion.limitations),
+                    "recommended_next_steps": list(conclusion.recommended_next_steps),
+                    "verifier_version": getattr(conclusion, "verifier_version", None) or "v2",
+                    "best_reason": getattr(conclusion, "best_reason", "") or None,
+                    "against_evidence": list(getattr(conclusion, "against_evidence", []) or []),
+                    "provisional": bool(getattr(conclusion, "provisional", False)),
+                    "ranked_alternatives": list(getattr(conclusion, "ranked_alternatives", []) or []),
+                    "next_check": getattr(conclusion, "next_check", None),
+                    "proven_callers": list(getattr(conclusion, "proven_callers", []) or []),
+                    "unresolved_callers": list(getattr(conclusion, "unresolved_callers", []) or []),
+                    "caller_coverage": getattr(conclusion, "caller_coverage", None),
+                }
+                if current is None:
+                    await session.execute(insert(InvestigationConclusionORM).values(**values))
+                else:
+                    result = await session.execute(
+                        update(InvestigationConclusionORM)
+                        .where(
+                            InvestigationConclusionORM.tenant_id == tenant_id,
+                            InvestigationConclusionORM.investigation_id
+                            == conclusion.investigation_id,
+                        )
+                        .values(**{k: v for k, v in values.items() if k not in ("tenant_id", "investigation_id")})
+                    )
+                    if result.rowcount != 1:
+                        raise ConcurrencyError("Conclusion row lost under lock")
         except Exception as exc:
             logger.exception(
                 "conclusion save failed",
