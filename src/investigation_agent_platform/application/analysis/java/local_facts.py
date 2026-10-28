@@ -25,9 +25,6 @@ from investigation_agent_platform.domain.code.models import (
     SemanticStage,
 )
 
-_LOCAL_TYPES = frozenset({"local_variable_declaration"})
-_PARAM_TYPES = frozenset({"formal_parameter", "spread_parameter"})
-
 
 def _unresolved(
     repository: str,
@@ -55,17 +52,6 @@ def _unresolved(
         limitation_codes=(code,),
         parser_version=_p.parser_version(),
     )
-
-
-def _enclosing_method(node: Any, source: bytes) -> tuple[str, Any | None]:
-    current = node.parent
-    while current is not None:
-        if current.type in {"method_declaration", "constructor_declaration"}:
-            name = current.child_by_field_name("name")
-            label = _p.node_text(name, source) if name is not None else "anonymous"
-            return (label, current)
-        current = current.parent
-    return ("", None)
 
 
 def resolve_java_local_fact(
@@ -110,9 +96,17 @@ def resolve_java_local_fact(
             level_text,
         )
 
-    source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    window_text = "\n".join(line.text for line in lines)
     try:
-        tree = _p.parse_java(source_bytes)
+        code_model = _model.build_java_model(
+            window_text.encode("utf-8"),
+            file_path=source_path,
+            repository=repository,
+            revision=revision,
+            language_version=language_version,
+        )
     except Exception as exc:
         return _unresolved(
             repository,
@@ -122,7 +116,7 @@ def resolve_java_local_fact(
             evidence_ids,
             level_text,
         )
-    if tree.root_node.has_error:
+    if code_model.has_syntax_error:
         return _unresolved(
             repository,
             revision,
@@ -132,25 +126,20 @@ def resolve_java_local_fact(
             level_text,
         )
 
-    package = _p.package_name(tree.root_node, source_bytes)
-    candidates: list[tuple[Any, Any, str, str]] = []
-    for node in _p.walk(tree.root_node):
-        if node.type in _LOCAL_TYPES:
-            declarators = [c for c in node.children if c.type == "variable_declarator"]
-            kind = "local"
-        elif node.type in _PARAM_TYPES:
-            declarators = [node]
-            kind = "parameter"
-        else:
+    package = code_model.package
+    candidates: list[tuple[Any, str, str]] = []
+    for local in code_model.locals:
+        if local.name != symbol_name:
             continue
-        for declarator in declarators:
-            name_node = declarator.child_by_field_name("name")
-            if name_node is None or _p.node_text(name_node, source_bytes) != symbol_name:
-                continue
-            method_label, _ = _enclosing_method(node, source_bytes)
-            if method_scope and not _p.matches_declaring_type(method_label, method_scope):
-                continue
-            candidates.append((node, declarator, kind, method_label))
+        if method_scope and not _p.matches_declaring_type(local.method_name, method_scope):
+            continue
+        candidates.append((local, "local", local.method_name))
+    for param in code_model.params:
+        if param.is_varargs or param.name != symbol_name:
+            continue
+        if method_scope and not _p.matches_declaring_type(param.method_name, method_scope):
+            continue
+        candidates.append((param, "parameter", param.method_name))
 
     if len(candidates) != 1:
         code = "local_not_found" if not candidates else "ambiguous_local_declaration"
@@ -159,23 +148,26 @@ def resolve_java_local_fact(
         result = _unresolved(repository, revision, subject, code, evidence_ids, level_text)
         return result
 
-    node, declarator, kind, method_label = candidates[0]
-    type_node = node.child_by_field_name("type")
-    declared_type = (
-        _p.node_text(type_node, source_bytes).strip() if type_node is not None else "unknown"
-    )
-    value_node = declarator.child_by_field_name("value")
-    raw_initializer = (
-        _p.node_text(value_node, source_bytes).strip() if value_node is not None else None
-    )
+    record, kind, method_label = candidates[0]
+    declared_type = record.var_type
+    if kind == "parameter":
+        # Parameters carry no initializer in the model (mirrors the resolver,
+        # which reads the declarator itself as the parameter node).
+        raw_initializer = None
+        evaluated = None
+        limitation = None
+    else:
+        raw_initializer = record.raw_initializer
+        evaluated = _model.coerce_evaluated(record.evaluated_kind, record.evaluated_value)
+        limitation = record.evaluation_limitation
     qualified_subject = f"{method_label}.{symbol_name}" if method_label else symbol_name
     if package:
         qualified_subject = f"{package}.{qualified_subject}"
     first_line = lines[0].number
     declaration_location = location.model_copy(
         update={
-            "line_start": first_line + node.start_point[0],
-            "line_end": first_line + node.end_point[0],
+            "line_start": first_line + record.span.line_start - 1,
+            "line_end": first_line + record.span.line_end - 1,
         }
     )
 
@@ -201,7 +193,8 @@ def resolve_java_local_fact(
             parser_version=_p.parser_version(),
         )
 
-    evaluated, limitation = _expr.evaluate(value_node, source_bytes, level)
+    evaluated = _model.coerce_evaluated(record.evaluated_kind, record.evaluated_value)
+    limitation = record.evaluation_limitation
     if limitation is not None or evaluated is None:
         return CodeFactResolutionV2(
             status=CodeFactStatus.PARTIAL,
