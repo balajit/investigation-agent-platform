@@ -1,6 +1,6 @@
-# G4 Re-disposition — DRAFT 2026-10-28 (for owner decision)
+# G4 Re-disposition — DECIDED 2026-10-28 (owner session decision)
 
-Status: DRAFT — proposed disposition is **PARTIAL, carrying exactly two opens**.
+Status: DECIDED — **PARTIAL, carrying exactly two opens**.
 Supersedes nothing until signed; `docs/IAP-proof-kernel-g4-disposition-package-v1.0.md`
 (DECIDED 2026-10-26, PARTIAL with direction) and the 2026-10-28 sign-off package
 remain the record.
@@ -62,10 +62,10 @@ or (b) explicit owner acceptance/deferral.
 - Production enforcing flip: needs worker stack + operator policy + separate GO.
 - Branch push: needs explicit GO.
 
-## §5 Proposed decision (owner to mark)
+## §5 Decision (owner-marked 2026-10-28)
 
 - [ ] (a) G4 PASS, scoped to §2 evidence with §3 residuals carried.
-- [ ] (b) G4 PARTIAL, carrying the two §3 opens (recommended — no new
+- [x] (b) G4 PARTIAL, carrying the two §3 opens (marked — no new
       evidence closes either open; both need decisions/implementation outside
       verification).
 - [ ] (c) Other (record verbatim).
