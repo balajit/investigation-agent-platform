@@ -251,6 +251,8 @@ def test_candidate_targets_surface_overload_ambiguity():
         "com.example.app.Advanced.fmt",
     ]
     assert all(c.status == "MATCH" and c.reason == "exact-arity" for c in candidates)
+    assert [c.key for c in candidates] == ["fmt/1(float)", "fmt/1(double)"]
+    assert [c.param_types for c in candidates] == [["float"], ["double"]]
 
 
 def test_field_initializer_evaluated_kind():

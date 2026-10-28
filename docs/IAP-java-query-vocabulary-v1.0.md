@@ -48,8 +48,12 @@ both kind and value. Computed constants are intentionally excluded: use
   listed with a status, never silently dropped. Statuses: `MATCH` (exact
   arity, reason `exact-arity`; or varargs-compatible, reason
   `varargs-compatible` when `call.arity >= def.arity - 1`), or
-  `ARITY_MISMATCH` (reason records expected vs definition arity). Callers
-  filter; the predicate does not decide.
+  `ARITY_MISMATCH` (reason records expected vs definition arity). Each
+  record carries `param_types` and the stable overload `key`
+  (`name/arity(type,...)`): overloads distinguishable only by parameter
+  types (e.g. `fmt(float)` vs `fmt(double)`) are distinct records, never
+  duplicates. Consumers key on `key`; qualified name alone is not an
+  identity. Callers filter; the predicate does not decide.
 - `has_method_reference`: scoped to the invocation's own target/receiver text
   only. A method reference passed as an argument is tracked on the argument's
   `shape`, never on the enclosing call.
@@ -74,10 +78,14 @@ record, never a silent false.
   kind); all flags and per-arg shape/operator/type above.
 - **Annotated (carried, not queryable):** source `text` snippets on args and
   the `key`/overload identity (display/diagnostic use, never proof).
-- **Deferred (named, with promoting question):** cross-window call graph
-  ("all callers of X in this repo"); constructor-chain/init-order relations
+- **Deferred (named, each with its promoting question — the question whose
+  "yes" moves the item into the model):** cross-window call graph ("all
+  callers of X in this repo"); constructor-chain/init-order relations
   ("what initializes field F before use"); framework boundary facts as
-  queryable entities ("all Spring-mapped endpoints"); generics/type
-  arguments; annotations as entities; try/catch/exception flow; lambdas
-  beyond the enclosure flag; use-def links ("where is local v assigned");
-  comments/Javadoc.
+  queryable entities ("which framework endpoints does this window expose?");
+  generics/type arguments ("which declarations use parameterized type T<U>?");
+  annotations as entities ("which methods carry annotation @A?");
+  try/catch/exception flow ("which exceptions can escape method M?");
+  lambdas beyond the enclosure flag ("which lambdas capture variable V?");
+  use-def links ("where is local V assigned and read?"); comments/Javadoc
+  ("which public methods lack a doc comment?").

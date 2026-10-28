@@ -283,15 +283,19 @@ class TargetCandidate(BaseModel):
     """One same-named definition considered for a call site.
 
     Uncertainty as data: every same-named definition is listed with a status,
-    never silently dropped. MATCH means arity-compatible; ARITY_MISMATCH
-    records the counts. This is candidacy, not resolution — overload phases
-    and specificity remain the authoritative resolver's job.
+    never silently dropped. `param_types` and the stable overload `key`
+    distinguish overloads that share a name and arity (e.g. `fmt(float)` vs
+    `fmt(double)`); consumers must key on `key`, never on qualified name
+    alone. MATCH means arity-compatible; ARITY_MISMATCH records the counts.
+    Resolution phases and specificity remain the authoritative resolver's job.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     qualified_name: str = Field(min_length=1, max_length=1024)
     arity: int = Field(ge=0)
+    param_types: list[str] = Field(default_factory=list)
+    key: str = Field(min_length=1, max_length=1024)
     status: Literal["MATCH", "ARITY_MISMATCH"] = "MATCH"
     reason: str = Field(min_length=1, max_length=256)
     is_varargs: bool = False
@@ -315,6 +319,8 @@ def candidate_targets(
                 TargetCandidate(
                     qualified_name=definition.qualified_name,
                     arity=definition.arity,
+                    param_types=list(definition.param_types),
+                    key=definition.key,
                     status="MATCH",
                     reason="exact-arity",
                     is_varargs=definition.is_varargs,
@@ -325,6 +331,8 @@ def candidate_targets(
                 TargetCandidate(
                     qualified_name=definition.qualified_name,
                     arity=definition.arity,
+                    param_types=list(definition.param_types),
+                    key=definition.key,
                     status="MATCH",
                     reason="varargs-compatible",
                     is_varargs=True,
@@ -335,6 +343,8 @@ def candidate_targets(
                 TargetCandidate(
                     qualified_name=definition.qualified_name,
                     arity=definition.arity,
+                    param_types=list(definition.param_types),
+                    key=definition.key,
                     status="ARITY_MISMATCH",
                     reason=f"arity-mismatch: call {call.arity}, def {definition.arity}",
                     is_varargs=definition.is_varargs,
