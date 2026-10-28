@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from investigation_agent_platform.domain.proof.certificate import (
     CheckerOutcome,
     CheckRequest,
+    _artifact_hash,
     check_certificate,
 )
 from investigation_agent_platform.domain.proof.manifest import EvidenceManifest
@@ -244,11 +245,6 @@ class EvidenceSnapshot:
     policy: DecisionPolicy | None = None
 
 
-def _snapshot_fingerprint(snapshot: EvidenceSnapshot) -> str:
-    """Recompute the snapshot digest from the retained frozen values."""
-    probe = {"evidence": _materialize(snapshot.evidence), "trusted": _materialize(snapshot.trusted)}
-    return "sha256:" + hashlib.sha256(_canonical_bytes(probe)).hexdigest()
-
 
 def _assert_snapshot_integrity(snapshot: EvidenceSnapshot) -> None:
     """Deny closed when the snapshot no longer matches its entry digests.
@@ -300,7 +296,8 @@ def expand_obligations(
         for p in (premises or [])
         if isinstance(p, dict) and str(p.get("evidence_id") or "")
     )
-    _ = claim
+    # claim is part of the contract signature (future predicate text);
+    # expansion keys off rule_id, evidence, and derivation_id.
     return [
         ProofObligation(
             obligation_id=f"obl:{derivation_id}:{rule_id}:{ordinal}",
@@ -360,14 +357,13 @@ def evaluate_obligations(
     """
     bindings = _bindings(certificate)
     entries = _entries(certificate)
-    by_id = {str(e.get("evidence_id") or ""): e for e in entries}
     resolved: list[ProofObligation] = []
     for obligation in obligations:
         if obligation.status != ObligationStatus.OPEN:
             resolved.append(obligation)
             continue
         ok = _evaluate_one(
-            obligation, bindings, entries, by_id, artifacts, manifest, mapping_authority
+            obligation, bindings, entries, artifacts, manifest, mapping_authority
         )
         resolved.append(
             obligation.model_copy(update={"status": ObligationStatus.SATISFIED if ok else ObligationStatus.OPEN})
@@ -382,8 +378,6 @@ def _artifact_available(entry: Mapping[str, Any], artifacts: Mapping[str, Any]) 
 
 def _artifact_digest(record: Mapping[str, Any]) -> str:
     """Return the canonical digest used by the certificate/checker paths."""
-    from investigation_agent_platform.domain.proof.certificate import _artifact_hash
-
     return str(_artifact_hash(dict(record)))
 
 
@@ -391,14 +385,12 @@ def _evaluate_one(
     obligation: ProofObligation,
     bindings: dict[str, Any],
     entries: list[Mapping[str, Any]],
-    by_id: dict[str, Mapping[str, Any]],
     artifacts: Mapping[str, Any],
     manifest: EvidenceManifest,
     mapping_authority: Mapping[str, Any] | None,
 ) -> bool:
     kind = obligation.kind
     ordinal = int(obligation.obligation_id.rsplit(":", 1)[-1]) if ":" in obligation.obligation_id else -1
-    _ = by_id
     if kind == "definition/v1":
         return _evaluate_definition(ordinal, bindings, entries, artifacts)
     if kind == "call_edge/v1":
