@@ -59,7 +59,7 @@ class _Candidate:
     is_varargs: bool
     is_default: bool
     is_override: bool
-    node: Any
+    node: Any  # MethodDef record from the window code model.
 
 
 def _unresolved(
@@ -190,99 +190,6 @@ def _more_specific_than(a: tuple[str, ...], b: tuple[str, ...], a_var: bool, b_v
     return result
 
 
-def _arg_type(node: Any, source: bytes) -> str:
-    kind = node.type
-    text = _p.node_text(node, source).strip()
-    if kind == "decimal_integer_literal":
-        return "long" if text.endswith(("l", "L")) else "int"
-    if kind == "decimal_floating_point_literal":
-        return "float" if text.endswith(("f", "F")) else "double"
-    if kind == "string_literal":
-        return "String"
-    if kind == "character_literal":
-        return "char"
-    if kind in {"true", "false"}:
-        return "boolean"
-    if kind == "null_literal":
-        return "null"
-    if kind == "object_creation_expression":
-        type_node = node.child_by_field_name("type")
-        return _p.node_text(type_node, source).strip() if type_node is not None else "unknown"
-    if kind in {"method_invocation", "identifier", "field_access", "array_access"}:
-        return "unknown"
-    if kind == "binary_expression":
-        return "unknown"
-    if kind == "cast_expression":
-        return "unknown"
-    return "unknown"
-
-
-def _candidates(root: Any, source: bytes, package: str, name: str) -> list[_Candidate]:
-    found: list[_Candidate] = []
-    for node in _p.walk(root):
-        if node.type != "method_declaration":
-            continue
-        name_node = node.child_by_field_name("name")
-        if name_node is None or _p.node_text(name_node, source) != name:
-            continue
-        params_node = node.child_by_field_name("parameters")
-        param_types: list[str] = []
-        is_varargs = False
-        if params_node is not None:
-            for child in params_node.children:
-                if child.type == "formal_parameter":
-                    type_node = child.child_by_field_name("type")
-                    param_types.append(
-                        _p.node_text(type_node, source).strip()
-                        if type_node is not None
-                        else "unknown"
-                    )
-                elif child.type == "spread_parameter":
-                    is_varargs = True
-                    inner = next(
-                        (
-                            c
-                            for c in child.children
-                            if "type" in c.type or c.type == "type_identifier"
-                        ),
-                        None,
-                    )
-                    param_types.append(
-                        _p.node_text(inner, source).strip() if inner is not None else "unknown"
-                    )
-        labels: list[str] = []
-        holder: Any = node.parent
-        while holder is not None:
-            if holder.type in {
-                "class_declaration",
-                "interface_declaration",
-                "enum_declaration",
-                "record_declaration",
-            }:
-                holder_name = holder.child_by_field_name("name")
-                if holder_name is not None:
-                    labels.append(_p.node_text(holder_name, source))
-            holder = holder.parent
-        dotted = ".".join(reversed(labels))
-        qualified = f"{package}.{dotted}" if package and dotted else dotted
-        modifiers = next((c for c in node.children if c.type == "modifiers"), None)
-        mod_text = _p.node_text(modifiers, source) if modifiers is not None else ""
-        found.append(
-            _Candidate(
-                qualified_type=qualified or "unknown",
-                name=name,
-                param_types=tuple(param_types),
-                is_varargs=is_varargs,
-                is_default="default" in mod_text.split(),
-                is_override="@Override" in _p.node_text(node.parent, source)
-                if node.parent is not None
-                else False,
-                node=node,
-            )
-        )
-    return found
-
-
 def resolve_java_call_target(
     evidence: Any,
     method_name: str,
@@ -344,9 +251,16 @@ def resolve_java_call_target(
             repository, revision, subject, "reflection_boundary", evidence_ids, level_text
         )
 
-    source_bytes = window_text.encode("utf-8")
+    from investigation_agent_platform.application.analysis.java import model as _model
+
     try:
-        tree = _p.parse_java(source_bytes)
+        code_model = _model.build_java_model(
+            window_text.encode("utf-8"),
+            file_path=source_path,
+            repository=repository,
+            revision=revision,
+            language_version=language_version,
+        )
     except Exception as exc:
         return _unresolved(
             repository,
@@ -356,7 +270,7 @@ def resolve_java_call_target(
             evidence_ids,
             level_text,
         )
-    if tree.root_node.has_error:
+    if code_model.has_syntax_error:
         return _unresolved(
             repository,
             revision,
@@ -366,8 +280,19 @@ def resolve_java_call_target(
             level_text,
         )
 
-    package = _p.package_name(tree.root_node, source_bytes)
-    candidates = _candidates(tree.root_node, source_bytes, package, method_name)
+    candidates = [
+        _Candidate(
+            qualified_type=method.enclosing_class or "unknown",
+            name=method.name,
+            param_types=tuple(method.param_types),
+            is_varargs=method.is_varargs,
+            is_default=method.is_default,
+            is_override=method.is_override,
+            node=method,
+        )
+        for method in code_model.methods
+        if method.name == method_name and not method.is_constructor
+    ]
     if declaring_type:
         candidates = [
             c for c in candidates if _p.matches_declaring_type(c.qualified_type, declaring_type)
@@ -383,20 +308,11 @@ def resolve_java_call_target(
             )
 
     invocations: list[tuple[Any, list[str], str]] = []
-    for node in _p.walk(tree.root_node):
-        if node.type != "method_invocation":
+    for call in code_model.calls:
+        if call.is_constructor or call.target_name != method_name:
             continue
-        name_node = node.child_by_field_name("name")
-        if name_node is None or _p.node_text(name_node, source_bytes) != method_name:
-            continue
-        args_node = node.child_by_field_name("arguments")
-        args = [c for c in args_node.children if c.is_named] if args_node is not None else []
-        arg_types = [_arg_type(a, source_bytes) for a in args]
-        object_node = node.child_by_field_name("object")
-        receiver = (
-            _p.node_text(object_node, source_bytes).strip() if object_node is not None else ""
-        )
-        invocations.append((node, arg_types, receiver))
+        arg_types = [arg.static_type for arg in call.args]
+        invocations.append((call, arg_types, call.receiver))
 
     if not invocations:
         return _unresolved(
@@ -430,8 +346,8 @@ def resolve_java_call_target(
         )
     _, arg_types, receiver = invocations[0]
 
-    for node, _, _ in invocations:
-        if "::" in _p.node_text(node, source_bytes):
+    for call, _, _ in invocations:
+        if call.has_method_reference:
             return _unresolved(
                 repository,
                 revision,
@@ -441,19 +357,16 @@ def resolve_java_call_target(
                 level_text,
                 partial=True,
             )
-        ancestor: Any = node.parent
-        while ancestor is not None:
-            if ancestor.type == "lambda_expression":
-                return _unresolved(
-                    repository,
-                    revision,
-                    subject,
-                    "dynamic_dispatch",
-                    evidence_ids,
-                    level_text,
-                    partial=True,
-                )
-            ancestor = ancestor.parent
+        if call.in_lambda:
+            return _unresolved(
+                repository,
+                revision,
+                subject,
+                "dynamic_dispatch",
+                evidence_ids,
+                level_text,
+                partial=True,
+            )
 
     if any(c.is_override or c.is_default for c in candidates):
         return _unresolved(
@@ -522,13 +435,13 @@ def resolve_java_call_target(
     first_line = lines[0].number
     declaration_location = location.model_copy(
         update={
-            "line_start": first_line + winner.node.start_point[0],
-            "line_end": first_line + winner.node.end_point[0],
+            "line_start": first_line + winner.node.span.line_start - 1,
+            "line_end": first_line + winner.node.span.line_end - 1,
         }
     )
     target = f"{winner.qualified_type}.{winner.name}({', '.join(winner.param_types)})"
-    call_node = invocations[0][0]
-    call_line = first_line + call_node.start_point[0]
+    call_record = invocations[0][0]
+    call_line = first_line + call_record.span.line_start - 1
     subject_identity = f"{winner.qualified_type}.{winner.name}/{len(arg_types)}"
     _ = receiver
     return CodeFactResolutionV2(
@@ -549,7 +462,7 @@ def resolve_java_call_target(
             "argument_types": list(arg_types),
             "resolution_phase": phase_name,
             "call_site_line": call_line,
-            "declaration_line_start": first_line + winner.node.start_point[0],
+            "declaration_line_start": first_line + winner.node.span.line_start - 1,
             "note": "names the statically declared target only; "
             "does not state that the invocation runs",
         },
