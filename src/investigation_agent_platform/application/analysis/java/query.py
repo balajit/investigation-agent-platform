@@ -78,16 +78,19 @@ def in_library(
     models: JavaModel | Iterable[JavaModel],
     library_prefix: str,
 ) -> Iterator[CallSite]:
-    """Keep calls whose target is defined under `library_prefix`.
+    """Keep calls whose target resolves to a definition under `library_prefix`.
 
-    Callee-side attribution: a call qualifies when a same-corpus definition
-    with the same target name has a qualified name under the prefix. Calls
-    whose target has no definition in the corpus are withheld, never guessed.
-    Single-window callers cannot attribute out-of-window callees.
+    Attribution rule: same target name AND same arity AND the definition's
+    qualified name under the prefix. Name-only matches are withheld: a
+    same-named definition with a different arity never attributes. Residual
+    risk is limited to same-name/same-arity collisions across packages, which
+    the corpus, not the predicate, must rule out.
     """
     model_list = _as_list(models)
     for call in calls:
         for definition in definitions_named(model_list, call.target_name):
+            if definition.arity != call.arity:
+                continue
             if definition.qualified_name == library_prefix or definition.qualified_name.startswith(
                 library_prefix + "."
             ):
@@ -113,7 +116,21 @@ def arg_kind(call: CallSite, index: int) -> str | None:
 
 
 def arg_is_literal(call: CallSite, index: int) -> bool:
-    """True when argument `index` is a decoded literal of any kind."""
+    """True when argument `index` is syntactically a literal.
+
+    Uses the decoded literal record, not the evaluated kind: a computed
+    constant such as `1 + 2` evaluates to an int but is not a literal.
+    """
+    return 0 <= index < len(call.args) and call.args[index].literal is not None
+
+
+def arg_is_constant(call: CallSite, index: int) -> bool:
+    """True when argument `index` statically evaluates to a constant.
+
+    Covers both syntactic literals and computed constants (e.g. `-5`,
+    `1 + 2`). Use this for "known value" questions and `arg_is_literal`
+    for "written as a literal" questions.
+    """
     kind = arg_kind(call, index)
     return kind is not None and kind.startswith("value:")
 
@@ -210,23 +227,39 @@ def calls_with_computed_arg(calls: Iterable[CallSite], index: int) -> Iterator[C
 
 
 def is_string_arg(call: CallSite, index: int) -> bool:
-    """True when argument `index` is a decoded string literal."""
-    return arg_kind(call, index) == "value:string"
+    """True when argument `index` is a string literal (not a computed string)."""
+    return (
+        0 <= index < len(call.args)
+        and call.args[index].literal is not None
+        and call.args[index].literal.kind == "string"
+    )
 
 
 def is_int_arg(call: CallSite, index: int) -> bool:
-    """True when argument `index` is a decoded int literal."""
-    return arg_kind(call, index) == "value:int"
+    """True when argument `index` is an int literal (not a computed int)."""
+    return (
+        0 <= index < len(call.args)
+        and call.args[index].literal is not None
+        and call.args[index].literal.kind == "int"
+    )
 
 
 def is_boolean_arg(call: CallSite, index: int) -> bool:
-    """True when argument `index` is a decoded boolean literal."""
-    return arg_kind(call, index) == "value:boolean"
+    """True when argument `index` is a boolean literal."""
+    return (
+        0 <= index < len(call.args)
+        and call.args[index].literal is not None
+        and call.args[index].literal.kind == "boolean"
+    )
 
 
 def is_null_arg(call: CallSite, index: int) -> bool:
     """True when argument `index` is the null literal."""
-    return arg_kind(call, index) == "value:null"
+    return (
+        0 <= index < len(call.args)
+        and call.args[index].literal is not None
+        and call.args[index].literal.kind == "null"
+    )
 
 
 def calls_with_receiver(calls: Iterable[CallSite], receiver: str) -> Iterator[CallSite]:

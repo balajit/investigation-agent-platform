@@ -35,6 +35,17 @@ _LITERAL_NODE_TYPES = frozenset(
     }
 )
 
+_EVALUATED_STATIC_TYPE = {
+    "int": "int",
+    "long": "long",
+    "float": "float",
+    "double": "double",
+    "char": "char",
+    "string": "String",
+    "boolean": "boolean",
+    "null": "null",
+}
+
 
 class Span(BaseModel):
     """File-scoped location for a model record."""
@@ -80,6 +91,9 @@ class CallSite(BaseModel):
     args: list[ArgSketch] = Field(default_factory=list)
     is_constructor: bool = False
     receiver: str = Field(default="", max_length=1024)
+    # Scoped to the invocation's own target/receiver text only. A method
+    # reference passed as an argument is tracked on the argument's shape, not
+    # here; it must not mark the enclosing call as dynamically dispatched.
     has_method_reference: bool = False
     in_lambda: bool = False
     enclosing_method: str | None = Field(default=None, max_length=1024)
@@ -236,7 +250,7 @@ def _arg_sketch(
                 kind=f"value:{kind}",
                 shape=shape,
                 operator=operator,
-                static_type=static_type,
+                static_type=_EVALUATED_STATIC_TYPE.get(kind, static_type),
                 text=text[:1024],
                 literal=LiteralValue(kind=kind, value=str(payload), span=_span(node, file_path)),
             )
@@ -441,7 +455,7 @@ def build_java_model(
                         arity=len(args),
                         args=args,
                         receiver=receiver,
-                        has_method_reference="::" in _p.node_text(node, source),
+                        has_method_reference="::" in target or "::" in receiver,
                         in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
                         enclosing_class=enclosing_class(),
@@ -466,7 +480,7 @@ def build_java_model(
                         arity=len(args),
                         args=args,
                         is_constructor=True,
-                        has_method_reference="::" in _p.node_text(node, source),
+                        has_method_reference="::" in target,
                         in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
                         enclosing_class=enclosing_class(),

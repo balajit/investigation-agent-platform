@@ -90,7 +90,7 @@ def _advanced() -> _model.JavaModel:
 def test_q2_definitions_in_package():
     model = _advanced()
     app_methods = list(_q.definitions_in_package(_q.all_methods(model), "com.example.app"))
-    assert {m.name for m in app_methods} == {"toString", "sum", "take", "run"}
+    assert {m.name for m in app_methods} == {"toString", "sum", "take", "execute", "check", "run"}
     assert list(_q.definitions_in_package(_q.all_methods(model), "com.example.db")) == []
 
 
@@ -98,6 +98,9 @@ def test_q2_callee_side_library_attribution():
     models = [_advanced(), *_corpus()]
     scoped = list(_q.calls_to_in_library(_q.all_calls(models), models, "com.example.db", "execute"))
     assert len(scoped) == 3
+    local_zero_arg = [call for call in _q.named(_q.all_calls(models), "execute") if call.arity == 0]
+    assert len(local_zero_arg) == 1
+    assert all(call not in scoped for call in local_zero_arg)
 
 
 def test_q3_operator_and_shape_predicates():
@@ -149,12 +152,43 @@ def test_receiver_lambda_and_method_reference():
     assert of_call.receiver == "List"
     foreach_call = next(call for call in _q.named(_q.all_calls(model), "forEach"))
     assert foreach_call.receiver == "items"
-    assert foreach_call.has_method_reference is True
     assert _q.arg_shape(foreach_call, 0) == "method_reference"
+    # A method reference passed as an argument is tracked on the argument's
+    # shape. It must not mark the enclosing invocation as dynamically
+    # dispatched: the dispatch check is scoped to the call target itself.
+    assert foreach_call.has_method_reference is False
     lambda_sums = [call for call in _q.named(_q.all_calls(model), "sum") if call.in_lambda]
     assert len(lambda_sums) == 1
     assert _q.arg_evaluates_to(lambda_sums[0], 0, "int", "7")
     assert len(list(_q.calls_in_lambda(_q.all_calls(model)))) == 1
+
+
+def test_literal_vs_computed_constant():
+    model = _advanced()
+    take_call = next(call for call in _q.named(_q.all_calls(model), "take"))
+    # Unary minus over an int literal evaluates to a constant but is not
+    # written as a literal: the two predicates must disagree here.
+    assert _q.arg_is_constant(take_call, 1) is True
+    assert _q.arg_is_literal(take_call, 1) is False
+    assert _q.is_int_arg(take_call, 1) is False
+    sum_call = next(call for call in _q.named(_q.all_calls(model), "sum") if not call.in_lambda)
+    assert _q.arg_is_constant(sum_call, 0) is True
+    assert _q.arg_is_literal(sum_call, 0) is True
+
+
+def test_non_decimal_integer_literals():
+    model = _advanced()
+    check_call = next(call for call in _q.named(_q.all_calls(model), "check"))
+    assert [_q.arg_shape(check_call, i) for i in range(3)] == [
+        "hex_integer_literal",
+        "octal_integer_literal",
+        "binary_integer_literal",
+    ]
+    assert all(_q.arg_is_literal(check_call, i) for i in range(3))
+    assert [_q.arg_static_type(check_call, i) for i in range(3)] == ["int", "int", "int"]
+    assert [
+        _q.arg_evaluates_to(check_call, i, "int", v) for i, v in enumerate(["16", "8", "5"])
+    ] == [True, True, True]
 
 
 def test_field_initializer_evaluated_kind():
