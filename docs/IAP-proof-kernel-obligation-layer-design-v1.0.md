@@ -1,262 +1,263 @@
-# Obligation-Layer Design Proposal v1.1 (DRAFT — for owner review, no code)
+# Obligation-Layer Design Proposal v1.2 (DRAFT — for owner review, no code)
 
-Amends v1.0 per owner direction 2026-10-28 (five points: required
-checklist, exact promotion states, adjudication contract,
-derivation-bound identity, trusted in-kernel evaluation). Sections
-changed from v1.0 are marked **[v1.1]**. Still design only; implementation
+Amends v1.1 per owner direction 2026-10-28 (three remaining contract gaps:
+trusted allowlist source, bound checker outcome, status genesis). Sections
+changed from v1.1 are marked **[v1.2]**. Still design only; implementation
 needs a separate explicit GO after design acceptance.
 
-## Amendments in v1.1 (owner direction 2026-10-28)
+## Amendments in v1.2 (owner direction 2026-10-28)
 
-1. **Required checklist.** `obligations` input is REQUIRED; omission denies
-   (`OBLIGATIONS_ABSENT`). No unguarded legacy route is preserved — all
-   in-tree callers and tests are updated at implementation. (§Gate, §Test plan)
-2. **Exact promotion states.** Only `SATISFIED`, and `CONFLICTED` paired
-   with a valid `PROCEED` adjudication, promote. `OPEN` denies
-   (`OPEN_OBLIGATION`); `UNSUPPORTED` denies (`UNSUPPORTED_OBLIGATION`,
-   acknowledgment does not promote); `INVALIDATED` denies
-   (`STALE_OBLIGATION`, requires fresh expansion). "Terminal" is
-   redefined: promotion-terminal vs dead-end vs open. (§States, §Gate)
-3. **Adjudication contract.** New frozen `Adjudication` object
-   (`adjudication_id`, `obligation_id`, `derivation_id`, `context_id`,
-   `authority`, `ruling` ∈ {`PROCEED`, `UPHOLD_DENIAL`}, `rationale`);
-   the gate verifies all five bindings plus authority-allowlist
-   membership. `ADJUDICATED` is not a status — `CONFLICTED` stays
-   `CONFLICTED`; promotion reads the pair. (§Adjudication, §Gate)
-4. **Derivation-bound identity.** `obligation_id` =
-   `obl:<derivation-id>:<rule-id>:<ordinal>`; status records are
-   immutable and chain by digest (`supersedes`); the gate reads the
-   chain head per ID and denies on fork (`STALE_OBLIGATION`, re-expand).
-   (§Identity)
-5. **Trusted evaluation.** The gate derives the obligation set and
-   evaluates statuses itself, in-kernel, from the certified inputs —
-   no caller-asserted checklist is ever read. `PublicationRequest`
-   carries the evidence the derivation needs (certificate + manifest +
-   artifacts + authority allowlists), not a verdict. Adjudications are
-   caller-supplied but VERIFIED (all bindings + allowlist), never
-   trusted. (§Evaluation, §Gate)
+1. **Trusted allowlist.** The adjudication authority allowlist moves out
+   of the caller request into a trusted `DecisionPolicy`, constructed by
+   the operator (construction site owned by B2 wiring) and passed
+   separately from the caller evidence. The gate binds evidence to
+   policy (repository scope) and checks adjudications against the
+   policy allowlist. Tenant-to-policy selection stays a B2-wiring
+   responsibility and is named as such. (§Policy, §Adjudication, §Gate)
+2. **Bound checker outcome.** The guarded promotion entry runs
+   `check_certificate` itself from the evidence inputs and promotes on
+   its own internally produced outcome — there is no caller-supplied
+   `checker_outcome` field to mismatch, so the mismatch class is
+   eliminated structurally rather than detected. The scalar
+   `decide_publication` is demoted to an internal linearization
+   sub-step operating on gate-derived values; its existing tests keep
+   pinning it as a unit. (§Gate)
+3. **Status genesis.** Each non-SATISFIED status gets its mechanical
+   producer: UNSUPPORTED from pre-checker expansion of unsupported
+   kinds (CAUSAL ordering fixed: denied without consulting the
+   checker); OPEN from evaluator abstention where the checker contract
+   permits absence (concrete case: revision-unpinned definition/
+   call_edge certificates, checker-VALID today, promotion waits);
+   CONFLICTED from dual-evaluator disagreement (primary +
+   independent second evaluator, same diversity rationale as the
+   verdict conjunction); INVALIDATED from evidence change between
+   internal check and evaluation (re-verify closes the TOCTOU class
+   by construction) and from forked lineage / stale adjudications.
+   Evaluation runs only on checker-VALID inputs; otherwise the checker
+   reason stands and obligations are not evaluated. (§Genesis, §Gate)
+
+v1.1 amendments (required checklist with OBLIGATIONS_ABSENT, exact
+promotion-state table, Adjudication five-binding verification,
+derivation-bound IDs with digest-chained lineage, trusted in-kernel
+derivation with the caller checklist withdrawn) are retained except
+where v1.2 explicitly supersedes them (allowlist location, outcome
+transport, evaluation cardinality).
 
 ## Problem
 
 K13 ("fast-path/confidence bypass of open obligations denied") is PARTIAL.
-The decision-path half is exhaustively pinned (all 9 non-VALID outcomes
-deny; CAUSAL abstention can never reach COMMIT). The promotion half has no
-objects to gate on: there is no obligation model, no per-kind obligation
-expansion, and `decide_publication` takes no obligation input — so
-`VALID + open obligation` cannot even be expressed, let alone denied.
-The A–T F row (wrong witness) is blocked on the same missing object.
+The decision-path half is exhaustively pinned. The promotion half has no
+objects to gate on. The A–T F row (wrong witness) is blocked on the same
+missing object.
 
 ## Contract
 
 ### ProofObligation (new frozen model, `domain/proof/obligations.py`)
 
-- `obligation_id`: `obl:<derivation-id>:<rule-id>:<ordinal>` (see §Identity).
-- `kind`: the rule ID that created it.
-- `statement`: the checkable restatement.
-- `status`: closed vocabulary — `OPEN`, `SATISFIED`, `CONFLICTED`,
-  `UNSUPPORTED`, `INVALIDATED` (frozen on acceptance; append-only after).
-- `evidence`: evidence IDs that satisfy it (empty unless SATISFIED).
-- `derived_from`: derivation ID (equals the ID's derivation segment).
-- `supersedes`: digest of the previous status record for this obligation
-  ID, or null for the genesis record.
-
-No timestamps, no confidence scores, no free text beyond `statement`.
+Unchanged from v1.1: `obligation_id` =
+`obl:<derivation-id>:<rule-id>:<ordinal>`; `kind`; `statement`;
+closed `status` vocabulary (`OPEN`, `SATISFIED`, `CONFLICTED`,
+`UNSUPPORTED`, `INVALIDATED`); `evidence`; `derived_from`;
+`supersedes` (previous record digest or null). Records immutable; no
+timestamps, no confidence scores.
 
 ### Kind table (`expand_obligations`)
 
-Unchanged from v1.0:
+Unchanged from v1.1 (five rule rows; unknown kinds expand to a single
+`UNSUPPORTED` obligation). Signature gains the derivation binding:
+`expand_obligations(rule_id, claim, premises, derivation_id)`.
 
-| Rule | Obligations (each must reach a promotable state before promotion) |
-|---|---|
-| definition/v1 | O1 single RANGE_READ premise bound; O2 symbol shown in cited text; O3 premise revision joins claim scope (when pinned) |
-| call_edge/v1 | O1 all premises NORMALIZED_CALLSITE, unique IDs; O2 caller/callee bound in cited text; O3 premise revisions join claim scope (when pinned) |
-| behavior/v1 | O1 code/runtime/mapping triple present, unique; O2 joins hold (target, repo, revision, build, execution, environment); O3 mapping authority approved |
-| absence/v1 | O1 complete-empty coverage; O2 zero matches; O3 scope/config/exclusion agreement; O4 no relevant exclusion |
-| history/v1 | O1 single commit-history premise; O2 full-SHA pins; O3 repo/revision/commit/file/subject equality; no locators |
+### DecisionPolicy — trusted configuration **[v1.2]**
 
-`expand_obligations(rule_id, claim, premises, derivation_id)`
--> `list[ProofObligation]` is pure (frozen inputs, new objects,
-deterministic). Unknown rule kind (CAUSAL and anything unregistered)
-expands to a single `UNSUPPORTED` obligation — abstention, never
-discharge. Ordinals assign in kind-table order (stable).
+The v1.1 request-carried `adjudication_authorities` field is WITHDRAWN
+(a caller choosing both the adjudication and the allowlist proves
+nothing). Replaced by a separately passed trusted object:
 
-### States **[v1.1]**
+- `DecisionPolicy`: `policy_id` (stable string, e.g.
+  `policy:<tenant>:<name>:<version>`); `repositories` (list of repository
+  roots this policy speaks for); `approved_adjudication_authorities`
+  (list of strings, default empty — deny-by-default preserved).
+- Constructed by the operator (file/config, owned by the B2 wiring
+  work: the wiring selects the tenant's policy and passes it alongside
+  the tenant's evidence). Pure-domain v1 constructs it explicitly in
+  tests — no ambient config, no environment lookup, no singleton.
+- Trust boundary, exact: the caller supplies evidence + adjudications
+  (transport, verified, never trusted); the operator supplies the policy
+  (trusted); the gate binds them (§Gate, step 1). Tenant-to-policy
+  selection is OUTSIDE the kernel (B2 wiring): the kernel binds
+  evidence repositories to the selected policy's `repositories` list,
+  and denies `POLICY_DENIED` (reason `policy-scope:<repo>`) on mismatch.
+  Kernel inputs carry no tenant marker by design (purity); the wiring
+  is where tenant isolation lives, and the design says so instead of
+  pretending otherwise.
 
-The vocabulary is unchanged; the PROMOTION reading is now exact:
+### States and genesis **[v1.2]**
 
-| Latest status | Promotion | Reason on deny |
+The v1.1 promotion table stands; each row now names its mechanical
+producer:
+
+| Latest status | Producer (how evaluation reaches it) | Promotion |
 |---|---|---|
-| `SATISFIED` | permits (with all others promotable) | — |
-| `CONFLICTED` + valid `PROCEED` adjudication | permits (pair read, §Adjudication) | — |
-| `CONFLICTED` without valid adjudication | denies | `CONFLICT_UNRESOLVED` (existing member) |
-| `OPEN` | denies | `OPEN_OBLIGATION` |
-| `UNSUPPORTED` | denies, always | `UNSUPPORTED_OBLIGATION` — acknowledgment, repetition, or seniority never promotes |
-| `INVALIDATED` | denies, always | `STALE_OBLIGATION` — requires a fresh expansion; the dead set never promotes |
+| `SATISFIED` | Both evaluators agree all joins hold on the certified inputs | permits |
+| `CONFLICTED` + valid `PROCEED` adjudication | Primary and independent second evaluator DISAGREE on an obligation's resolution (§Evaluation); pair read per §Adjudication | permits |
+| `CONFLICTED` without valid adjudication | (same producer) | denies `CONFLICT_UNRESOLVED` (`obligation-conflict:` prefix) |
+| `OPEN` | An evaluator ABSTAINS: a required agreement input is absent where the checker contract permits absence. Concrete live case: revision-unpinned definition/call_edge certificates — checker-VALID today (join skipped on both paths when unpinned), promotion waits because O3 (revision join) cannot be established. The checker accepts (its contract); the promotion bar is deliberately stricter. | denies `OPEN_OBLIGATION` |
+| `UNSUPPORTED` | Pre-checker expansion of an unsupported kind (CAUSAL and anything unregistered). Produced BEFORE the checker runs — the abstention path denies explicitly instead of relying on the checker's separate denial. A VALID certificate can never accompany UNSUPPORTED (the checker would deny too); the row exists so abstention is a verdict, not a gap. | denies `UNSUPPORTED_OBLIGATION`, always |
+| `INVALIDATED` | (a) Evidence changed between the internal check and evaluation: the gate recomputes manifest digest + artifact hashes at evaluate time and compares to check-time values; mismatch denies. In the atomic guarded entry the inputs are frozen, so the re-verify always passes — which is exactly the closure proof for the check-then-decide TOCTOU class. (b) Forked lineage (forward-compat, v1.1). | denies `STALE_OBLIGATION` (a, b) |
 
-"Terminal" now means two distinct things, not one:
+Evaluation runs ONLY on checker-VALID inputs: if the internal check
+denies, the checker reason stands and obligations are not evaluated
+(there is nothing to promote). The v1.1 question "can a VALID
+certificate reach non-SATISFIED" is therefore answered per row above:
+yes for OPEN (unpinned revision), yes for CONFLICTED (evaluator
+disagreement on VALID-checker inputs — the differential suite's mutant
+vectors are exactly this shape), no for UNSUPPORTED (pre-checker by
+construction), and INVALIDATED is the freshness guard around the
+decision itself.
 
-- **Promotion-terminal**: `SATISFIED`, and `CONFLICTED` paired with a
-  valid `PROCEED` adjudication. The gate may promote on these and only these.
-- **Dead-end**: `UNSUPPORTED`, `INVALIDATED`. No transition out promotes
-  this set; the remedy is outside the set (authority approval for
-  UNSUPPORTED, fresh expansion for INVALIDATED).
-- **Open**: `OPEN` is the only status with further evaluation to do.
+"Terminal" (v1.1): promotion-terminal = `SATISFIED`, `CONFLICTED` +
+valid `PROCEED`. Dead-end = `UNSUPPORTED`, `INVALIDATED`. Open = `OPEN`.
 
-Status records are immutable. A status change is a NEW record with the
-same `obligation_id`, a new digest, and `supersedes` pointing at the
-previous record's digest. No record is ever edited.
+### Adjudication **[v1.2: allowlist source changed]**
 
-### Adjudication **[v1.1]**
+Shape unchanged from v1.1 (`adjudication_id`, `obligation_id`,
+`derivation_id`, `context_id`, `authority`, `ruling` ∈
+{`PROCEED`, `UPHOLD_DENIAL`}, `rationale`). Verification unchanged
+(five bindings, in order) EXCEPT step 3: membership is checked against
+the TRUSTED POLICY allowlist (`policy.approved_adjudication_authorities`),
+not a request field. The initial allowlist is EMPTY (deny-by-default;
+the first accepted authority needs an explicit owner decision).
+No `ADJUDICATED` status exists; `CONFLICTED` stays `CONFLICTED`.
+An adjudication naming the right obligation but bound to a DIFFERENT
+derivation is stale evidence: ignored for pairing (the obligation
+stays unpaired → `CONFLICT_UNRESOLVED` with the stale binding named).
+Rulings do not transfer across decisions.
 
-`CONFLICTED` obligations do not become "adjudicated" — there is no
-`ADJUDICATED` status. Instead, promotion reads a PAIR: the (still
-`CONFLICTED`) obligation plus a separate frozen `Adjudication` object:
+### Identity and lineage
 
-- `adjudication_id`: `adj:<derivation-id>:<obligation-ordinal>:<n>`.
-- `obligation_id`: must equal a CONFLICTED obligation in the derived set.
-- `derivation_id`, `context_id`: must equal the decision's derivation
-  and expected context (binds the ruling to this decision, not to the
-  obligation in general).
-- `authority`: the ruling party, as an opaque string.
-- `ruling`: closed — `PROCEED` or `UPHOLD_DENIAL`.
-- `rationale`: non-empty string (audit, never evaluated).
+Unchanged from v1.1 (derivation-bound IDs, digest-chained immutable
+records, chain-head reads, fork denies `STALE_OBLIGATION` as a
+forward-compat rule for the persisted layer).
 
-Gate verification order for each CONFLICTED obligation: (1) an
-adjudication names its `obligation_id`, else deny `CONFLICT_UNRESOLVED`;
-(2) `derivation_id` and `context_id` match the decision, else deny
-`CONFLICT_UNRESOLVED` (cross-decision rulings do not transfer);
-(3) `authority` is a member of the approved adjudication authorities
-carried with the request (explicit allowlist, default empty — with an
-empty set no `PROCEED` is accepted, and the gate says so);
-(4) `ruling == PROCEED` promotes the pair, `UPHOLD_DENIAL` denies
-(`CONFLICT_UNRESOLVED`).
+### Evaluation — trusted, dual, in-kernel **[v1.2]**
 
-Adjudication authority values are owner-approved strings (e.g. role
-names); the initial allowlist is EMPTY — the implementation ships
-deny-by-default, and the first accepted authority needs an explicit
-owner decision. This keeps the conflict path closed until the owner
-opens it deliberately.
+- `expand_obligations` + `evaluate_obligations` (primary) run
+  in-kernel from the certified inputs, as v1.1. ADDED: an independent
+  second evaluator `evaluate_obligations_independent`, written to the
+  same diversity discipline as `second_path` (no shared modules with
+  the primary evaluator; restated closed sets; hand-rolled checks).
+  Per-obligation resolution: both agree → that status; either
+  abstains while the other resolves → `OPEN` (abstention is
+  contagious — promotion must not outrun the weaker reader);
+  disagree on resolved statuses → `CONFLICTED` (standing protocol
+  for adjudication, never silent).
+- The v1.0 caller checklist stays withdrawn (v1.1). The v1.1
+  `adjudication_authorities` request field is now withdrawn too
+  (allowlist lives in the policy). Caller inputs to the guarded entry
+  are evidence + adjudications + reconciliation/policy-eligibility
+  scalars (post-gate only, unchanged semantics) — nothing the caller
+  supplies can omit an obligation, assert a status, or approve an
+  authority.
 
-### Identity and lineage **[v1.1]**
+### Gate — guarded promotion entry **[v1.2]**
 
-- `obligation_id = obl:<derivation-id>:<rule-id>:<ordinal>`.
-  Derivation-binding removes the cross-derivation collision class:
-  two decisions never mint the same ID because derivation IDs are
-  unique per (context, rule, premises, inference).
-- Each status record carries `derivation_id`, `context_id`,
-  `supersedes` (previous record digest or null), and its own digest
-  (canonical bytes over the record, same layout discipline as
-  derivations).
-- Lineage of one obligation = records sharing its ID ordered by the
-  `supersedes` chain. The gate reads the CHAIN HEAD per ID.
-- Fork (two records superseding the same parent) denies the whole
-  decision with `STALE_OBLIGATION` — a forked lineage is not readable
-  and the remedy is the same: a fresh expansion. Note: the v1
-  in-kernel evaluator emits genesis records only (`supersedes=null`)
-  and therefore cannot fork; the fork rule is specified now so the
-  future persisted layer (G5) inherits it, and is covered by a vector
-  at implementation.
-- The immutable record chain is the AUDIT trail, not the decision
-  input: the gate re-derives per decision (§Evaluation) and returns
-  the derived obligation report inside the denial/commit reason
-  (counts + IDs; reason strings stay bounded). No stored record is
-  ever trusted for promotion.
+New public function (pure domain, no production contact):
 
-### Evaluation — trusted, in-kernel **[v1.1]**
+```
+decide_guarded_promotion(
+    policy, rule_id, proposition, certificate | None,
+    manifest, artifacts, adjudications,
+    expected_context_id, reconciliation_adjudicated,
+    policy_eligible, policy_reason,
+) -> (PublicationDecision, reason)
+```
 
-The v1.0 caller-supplied checklist is WITHDRAWN — it was the bypass the
-owner identified (a caller could omit obligations or assert SATISFIED
-without evidence, and the gate could not tell).
+Order, exact:
 
-- `expand_obligations(rule_id, claim, premises, derivation_id)` and
-  `evaluate_obligations(obligations, certificate, manifest, artifacts)`
-  are kernel-pure functions. `evaluate_obligations` returns each
-  obligation with a derived status (OPEN/SATISFIED/CONFLICTED/
-  UNSUPPORTED/INVALIDATED) computed from the certified inputs —
-  the same inputs `check_certificate` verified.
-- `decide_publication` derives the set itself on every call: it takes
-  the certificate, manifest, artifacts, and authority allowlists as
-  REQUIRED inputs (see §Gate) and never reads a caller-asserted
-  status. There is no parameter through which a caller can omit an
-  obligation or assert SATISFIED.
-- Caller-supplied `Adjudication` objects ARE accepted as inputs but
-  VERIFIED per §Adjudication (all five bindings + allowlist) —
-  verification, not trust. An adjudication that fails any check is
-  ignored (denial proceeds on the CONFLICTED obligation), and the
-  reason names the failed binding.
-- Cost note: derivation runs the same joins the checker ran (same
-  inputs, same purity). No I/O, no production contact, no new
-  subsystems — the layer stays inside `domain/proof`.
+1. **Bind evidence to policy.** Collect repositories from the
+   proposition scope and every premise artifact; at least one must be
+   present (all five premise models require `repository`), and every
+   member must fall within `policy.repositories`; else deny
+   `POLICY_DENIED` (`policy-scope:<repo>` or `policy-scope:
+   no-repository`). No policy (None) denies `POLICY_DENIED`
+   (`no-policy`). Tenant-to-policy selection is the B2 wiring's job;
+   this step binds evidence to the selected policy.
+2. **Expand.** `expand_obligations(rule_id, ...)`; any `UNSUPPORTED`
+   in the set denies `UNSUPPORTED_OBLIGATION` immediately —
+   the checker is not consulted (CAUSAL ordering fixed; abstention
+   is explicit). `certificate=None` with a registered rule denies
+   `OBLIGATIONS_ABSENT` (nothing to evaluate).
+3. **Check, internally.** Run `check_certificate` from the evidence
+   inputs (constructed `CheckRequest` inside the gate). Non-VALID →
+   deny with the scalar mapping (`NOT_CHECKER_ACCEPTED:<outcome>:
+   <first-reason>`), obligations unevaluated — assert evaluation was
+   not reached. **[v1.2: the supplied outcome class is eliminated —
+   there is no `checker_outcome` request field on this entry, so
+   binding is structural, not asserted.]**
+4. **Re-verify freshness of evidence.** Recompute manifest digest +
+   artifact hashes; mismatch vs step 3 denies `STALE_OBLIGATION`
+   (TOCTOU closure proof — always passes on frozen inputs).
+5. **Dual-evaluate.** Primary + independent evaluators over the
+   checked inputs; per-obligation agreement protocol above.
+6. **Promotion rule (v1.1 exact):** COMMIT iff every obligation is
+   `SATISFIED`, or `CONFLICTED` with a valid `PROCEED` adjudication;
+   else the row's deny reason. Then run the scalar linearization
+   sub-step with gate-derived values (VALID outcome, reconciliation
+   and policy-eligibility scalars as passed — evaluated LAST, cannot
+   override a deny); COMMIT only if the sub-step also commits.
 
-### Gate extension **[v1.1]** (`decide_publication`, contract change)
+The scalar `decide_publication` is DEMOTED to the internal
+linearization sub-step: same function, same tests (they keep pinning
+it as a unit), but it is no longer the promotion contract — the
+guarded entry is. Existing scalar tests do not move; new tests target
+the guarded entry.
 
-- `PublicationRequest` changes shape (reviewed contract change):
-  scalar context/derivation IDs stay, and three evidence inputs are
-  added — `certificate`, `manifest`, `artifacts` — plus `adjudications`
-  (default empty list) and `adjudication_authorities` (default empty
-  list). The evidence inputs are Optional-with-default-None and
-  None denies with `OBLIGATIONS_ABSENT` (the gate stays a total
-  function — it denies on shape instead of raising — but there is no
-  shape that reaches the old unguarded verdict). **[v1.1: the unguarded
-  legacy route is removed, not preserved.]**
-- New `DenyReason` members (frozen enum is append-only; existing
-  members unchanged): `OBLIGATIONS_ABSENT`, `OPEN_OBLIGATION`,
-  `UNSUPPORTED_OBLIGATION`, `STALE_OBLIGATION`. `CONFLICT_UNRESOLVED`
-  is reused for unpaired or invalidly-paired CONFLICTED obligations,
-  with reason strings prefixed `obligation-conflict:` to distinguish
-  them from the reconciliation conflict (which keeps its exact existing
-  reason string, so the current reconciliation test does not move).
-- Checklist order: `NO_PINNED_CONTEXT` -> `NOT_CHECKER_ACCEPTED` ->
-  obligation derivation + evaluation (all deny classes above) ->
-  `CONFLICT_UNRESOLVED` (reconciliation) -> `STALE_CONTEXT` ->
-  `POLICY_DENIED`. The obligation gate runs before conflict and
-  policy reasoning, takes no score input, and confidence can never
-  override it (there is no parameter for it to arrive through).
-- Promotion rule, exact: COMMIT iff checker VALID AND every derived
-  obligation's latest status is `SATISFIED`, or `CONFLICTED` with a
-  valid `PROCEED` adjudication. Anything else denies with the
-  row's reason from the §States table.
+### Test plan (for the implementation GO, not this proposal)
 
-## Test plan (for the implementation GO, not this proposal)
+v1.1 plan retained, plus:
 
-- New `tests/unit/test_obligation_gating_k13.py`: expansion vectors per
-  kind (obligation count/IDs/statements, CAUSAL -> single UNSUPPORTED);
-  transition-closure vectors (legal/illegal record chains, fork denies
-  STALE_OBLIGATION); adjudication vectors (valid PROCEED pair promotes;
-  wrong derivation/context/authority/ruling denies with the binding
-  named; empty allowlist accepts no PROCEED).
-- Update `tests/unit/test_publication_decision.py`: every existing
-  vector gains derived evidence inputs (contract change — the
-  scalar-only shape is gone); new vectors for each deny class
-  (OBLIGATIONS_ABSENT, OPEN, UNSUPPORTED, STALE, unpaired CONFLICTED);
-  confidence-does-not-override vector (VALID + policy-eligible +
-  open obligation still DENYs).
-- Bypass vectors (the v1.0 hole, now closed): caller-shaped inputs
-  that omit an obligation or assert SATISFIED are not representable —
-  a test asserts the request shape has no status-assertion field
-  (structural pin, like the checker import-separation test).
-- Fingerprint addition: `obligations.py` joins the fingerprinted module
-  set (reviewed change, manifest re-record).
-- No live tests: pure domain, no production callers by construction.
+- Policy binding: wrong-repository evidence denies `POLICY_DENIED`
+  (`policy-scope:`); None policy denies; tenant selection is a B2
+  wiring test, not a kernel test (say so in the test).
+- Outcome binding (structural): request-shape test asserting the
+  guarded entry has NO `checker_outcome` field (like the
+  checker import-separation test); internal-check-denies vector
+  (defective evidence denies with the checker's reason, obligations
+  unevaluated — assert evaluation was not reached, e.g. via a
+  reason prefix or a sentinel).
+- Genesis vectors: OPEN via revision-unpinned VALID definition cert
+  (checker VALID, obligation O3 OPEN → `OPEN_OBLIGATION`;
+  then the pinned-revision twin promotes — the pair proves the
+  promotion bar is strictly above the checker bar); CONFLICTED via
+  evaluator-disagreement injection (monkeypatch one evaluator on a
+  fixed input → pair requires adjudication; unpaired denies);
+  UNSUPPORTED via CAUSAL rule_id without consulting the checker
+  (assert the checker was not called — sentinel or call-count);
+  STALE via forked lineage fixtures and via stale-derivation
+  adjudication (reason names the stale binding).
+- Dual-evaluator agreement: full valid corpus (per rule) resolves
+  all-SATISFIED on both evaluators.
+- Fingerprint addition: `obligations.py` (+ second evaluator module
+  if split) joins the fingerprinted set.
 
-## Explicit non-goals
+### Explicit non-goals
 
-- No obligation persistence (no tables, no migration): obligations are
-  derived per decision from the certificate + manifest + artifacts.
-  Durable obligation tracking is G5/publication-service scope.
-- No legacy-path closure (K13-B3): writer/caller audit and LWW/fast-path
-  removal ride the B2/C1 rollout decisions, not this contract.
-- No real-world authority (K13-B4): BEHAVIOR O3 stays unsatisfiable in
-  production until the B3 reopen trigger fires; UNSUPPORTED denies
-  rather than discharging.
-- No second-path duplication of `expand/evaluate_obligations` in v1:
-  expansion/evaluation is a single pure derivation (not a verdict),
-  covered by vectors; verdict diversity stays where it is (checker +
-  second path). Recorded as follow-up if the owner wants it.
+- v1.1 non-goals retained (no persistence; no legacy-writer closure;
+  no real-world authority — BEHAVIOR O3 stays unsatisfiable in
+  production until the B3 trigger; no second-path duplication of
+  expansion in v1 beyond the dual evaluators specified here).
+- Mapping-authority allowlist (`mapping_authority` request input to
+  `check_certificate`, membership in a hardcoded set) has the SAME
+  caller-supplied shape as the v1.1 adjudication allowlist this
+  proposal fixes. Deliberately out of v1.2 scope (it is checker
+  contract, frozen, shared by both verdict paths): tracked as
+  follow-up — either carry it into the DecisionPolicy at the checker
+  contract's next amendment, or justify why mapping provenance
+  differs from adjudication authority. Not silently dropped; named here.
 
-## Decision requested (REVIEW GATE R2)
+## Decision requested (REVIEW GATE R2, second round)
 
-1. Accept the v1.1 contract as stated, amend it, or reject.
-2. On acceptance: separate GO for the implementation (new module +
-   gate contract change + tests + fingerprint addition, pure domain
-   only). No code starts before that GO.
+1. Accept the v1.2 contract as stated, amend it, or reject.
+2. On acceptance: separate GO for the implementation (new module(s)
+   + guarded entry + scalar demotion + tests + fingerprint addition,
+   pure domain only). No code starts before that GO.
