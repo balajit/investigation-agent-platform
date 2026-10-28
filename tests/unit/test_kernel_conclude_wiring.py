@@ -330,6 +330,37 @@ def test_writer_routing_defaults_single_only(monkeypatch: pytest.MonkeyPatch) ->
     assert denied2.reason == "NO_ROUTES"
 
 
+def test_writer_routing_single_needs_exactly_one_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from investigation_agent_platform.application.proof.publication_commit_service import (
+        ProofPublicationService,
+        RouteInput,
+    )
+
+    _Env(monkeypatch)
+    svc = ProofPublicationService(None)
+    run = asyncio.new_event_loop().run_until_complete
+    stub = RouteInput(proposition={}, manifest=None)
+    assert run(svc.commit("t", uuid4(), None, [], mode="single")).reason == "NO_ROUTES"
+    two = run(svc.commit("t", uuid4(), None, [stub, stub], mode="single"))
+    assert two.committed is False
+    assert two.reason == "MODE_SINGLE_NEEDS_ONE_ROUTE"
+
+
+def test_writer_routing_env_parsing_tolerant(monkeypatch: pytest.MonkeyPatch) -> None:
+    from investigation_agent_platform.application.proof.publication_commit_service import (
+        _allowed_modes,
+    )
+
+    _Env(monkeypatch)
+    assert _allowed_modes() == frozenset({"single"})
+    _Env(monkeypatch, IAP_PUBLISH_WRITERS=" Single ,, ALL ")
+    assert _allowed_modes() == frozenset({"single", "all"})
+    _Env(monkeypatch, IAP_PUBLISH_WRITERS="   ")
+    assert _allowed_modes() == frozenset({"single"})
+
+
 # ---------------------------------------------------------------------------
 # R4d: publish seam (gated, unwired)
 # ---------------------------------------------------------------------------
@@ -372,7 +403,12 @@ def test_publish_seam_calls_service_for_commits(monkeypatch: pytest.MonkeyPatch)
         async def commit(self, *args: Any, **kwargs: Any) -> Any:
             from types import SimpleNamespace
 
-            calls.append({"mode": kwargs.get("mode", args[4] if len(args) > 4 else None)})
+            calls.append(
+                {
+                    "mode": kwargs.get("mode", args[4] if len(args) > 4 else None),
+                    "routes": kwargs.get("routes", args[3] if len(args) > 3 else None),
+                }
+            )
             return SimpleNamespace(committed=True, reason="COMMITTED")
 
     report = _committed_report(monkeypatch)
@@ -383,6 +419,11 @@ def test_publish_seam_calls_service_for_commits(monkeypatch: pytest.MonkeyPatch)
     )
     assert out["published"] is True and out["committed"] is True
     assert calls and calls[0]["mode"] == "single"
+    forwarded = calls[0]["routes"]
+    assert forwarded is not None and len(forwarded) == 1
+    assert forwarded[0].repository_bindings == (
+        report["claims"][0]["bundle"]["binding"],
+    )
 
 
 def test_publish_seam_skips_without_commits(monkeypatch: pytest.MonkeyPatch) -> None:
