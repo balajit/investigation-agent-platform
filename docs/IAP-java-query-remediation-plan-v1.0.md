@@ -225,6 +225,22 @@ The implementation remains rejected until all verified defects are fixed, all do
 - The effective-constant call join now uses class-qualified method identity; unsupported value/barrier states were withdrawn from the closed vocabulary rather than emitted nominally.
 - Remaining closure work: run the complete parity harness and record model-build timing for representative windows before changing this plan to a completed status.
 
+## Resolver Wiring Addendum
+
+Java `GET_CODE` now accepts explicit bounded selectors for call targets, locals,
+initialization, data flow, control flow, possible effects, type features, and
+framework boundaries. Java range reads may request multiple selectors; each
+result is stored under a flat `code_fact_java.<resolver>` key and in the
+authoritative `code_fact_resolutions` envelope. The existing field-shaped
+`code_fact_resolution` and singular `code_fact_resolution_v2` projections remain
+unchanged for compatibility.
+
+The verifier selects a resolution by typed fact category and claim subject,
+rather than taking the first payload. Source-only resolver results cannot prove
+`BEHAVIOR` or `CAUSAL` claims. Parameter declarations without initializers remain
+unresolved for value assertions, although their declaration identity may still
+be queried separately.
+
 ## Independent Verification (2026-10-28, adversarial review session)
 
 An independent pass re-ran every gate from repository root and closed two of the

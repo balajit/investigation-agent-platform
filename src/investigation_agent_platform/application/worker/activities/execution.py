@@ -333,6 +333,7 @@ def _frame_file_matches(frame_file: Any, hit_file: Any) -> bool:
         return hit.endswith("/" + frame) or hit == frame
     return hit.rsplit("/", 1)[-1] == frame
 
+
 def _stack_fingerprint(
     tenant_id: Any, investigation_id: Any, index: int, file_path: Any, line_no: int
 ) -> str:
@@ -349,6 +350,7 @@ def _stack_fingerprint(
         return _hashlib.sha256(raw.encode()).hexdigest()[:64]
     except Exception:
         return f"stack-{index}"
+
 
 async def _fuse_journey_findings(
     *,
@@ -438,6 +440,7 @@ async def _fuse_journey_findings(
     except Exception:
         return
 
+
 def _shape_search_keywords(raw: Any) -> list[str]:
     """Split sentence-like keyword blobs into distinctive tokens (pure).
 
@@ -502,6 +505,7 @@ def _shape_search_keywords(raw: Any) -> list[str]:
         except Exception:
             return []
 
+
 def _caller_chain_targets(edges: list[dict], limit: int = 5) -> list[dict]:
     """Caller-role graph edges worth an automatic call-site read.
 
@@ -529,6 +533,7 @@ def _caller_chain_targets(edges: list[dict], limit: int = 5) -> list[dict]:
         if len(targets) >= max(1, limit):
             break
     return targets
+
 
 async def fallback_call_graph_to_search(
     *,
@@ -824,6 +829,7 @@ async def execute_action_activity(
             VERIFIER_VERSION_CURRENT,
             VerificationEngine,
         )
+
         verifier_version = VERIFIER_VERSION_CURRENT
 
         inv_action = InvestigationAction.create(
@@ -1470,6 +1476,16 @@ async def execute_action_activity(
                 merged_attributes["fetch_reason"] = _fetch_reason
             fact_field = str(parameters.get("field_name", "") or "").strip()
             fact_method = str(parameters.get("method_name", "") or "").strip()
+            from investigation_agent_platform.domain.code.models import (
+                CODE_FACT_RESOLUTIONS_KEY,
+                JAVA_FACT_RESOLUTION_PREFIX,
+            )
+            from investigation_agent_platform.domain.evidence.requests import (
+                validate_java_fact_parameters,
+            )
+
+            java_selectors = validate_java_fact_parameters(parameters)
+            legacy_fact_payloads: list[tuple[str, str, str, dict[str, Any]]] = []
             _evidence_path = str(
                 getattr(
                     getattr(getattr(evidence, "provenance", None), "source_location", None),
@@ -1524,25 +1540,23 @@ async def execute_action_activity(
                         declaring_type=(
                             str(parameters.get("declaring_type") or "").strip() or None
                         ),
-                        class_scope=(
-                            str(parameters.get("class_scope") or "").strip() or None
-                        ),
+                        class_scope=(str(parameters.get("class_scope") or "").strip() or None),
                         function_scope=(
                             str(parameters.get("function_scope") or "").strip() or None
                         ),
                         read_version_file=_read_version_file,
                     )
                     if _py_resolution is not None:
-                        merged_attributes["code_fact_resolution_v2"] = (
-                            _py_resolution.model_dump(mode="json")
+                        merged_attributes["code_fact_resolution_v2"] = _py_resolution.model_dump(
+                            mode="json"
                         )
                         if _config_source is not None:
                             # Names the configuration source for the
                             # verifier's CONFIGURATION_SOURCE family
                             # (declaration file, never a value).
                             merged_attributes["configuration_source"] = _config_source
-                        outcome_detail["code_fact_resolution_v2"] = (
-                            _py_resolution.model_dump(mode="json")
+                        outcome_detail["code_fact_resolution_v2"] = _py_resolution.model_dump(
+                            mode="json"
                         )
                 except Exception:
                     pass
@@ -1564,12 +1578,11 @@ async def execute_action_activity(
                     )
 
                     dual = emit_dual_resolution_attributes(resolution)
-                    merged_attributes["code_fact_resolution_v2"] = dual[
-                        "code_fact_resolution_v2"
-                    ]
-                    outcome_detail["code_fact_resolution_v2"] = dual[
-                        "code_fact_resolution_v2"
-                    ]
+                    merged_attributes["code_fact_resolution_v2"] = dual["code_fact_resolution_v2"]
+                    outcome_detail["code_fact_resolution_v2"] = dual["code_fact_resolution_v2"]
+                    legacy_fact_payloads.append(
+                        ("field", fact_field, "field_name", dual["code_fact_resolution_v2"])
+                    )
                 except Exception:
                     pass
             if fact_method and _is_python:
@@ -1587,19 +1600,25 @@ async def execute_action_activity(
                         declaring_type=(
                             str(parameters.get("declaring_type") or "").strip() or None
                         ),
-                        class_scope=(
-                            str(parameters.get("class_scope") or "").strip() or None
-                        ),
+                        class_scope=(str(parameters.get("class_scope") or "").strip() or None),
                         guard_condition=(
                             str(parameters.get("guard_condition") or "").strip() or None
                         ),
                         read_version_file=_read_version_file,
                     )
-                    merged_attributes["code_fact_resolution_v2"] = (
-                        _method_resolution.model_dump(mode="json")
+                    merged_attributes["code_fact_resolution_v2"] = _method_resolution.model_dump(
+                        mode="json"
                     )
-                    outcome_detail["code_fact_resolution_v2"] = (
-                        _method_resolution.model_dump(mode="json")
+                    outcome_detail["code_fact_resolution_v2"] = _method_resolution.model_dump(
+                        mode="json"
+                    )
+                    legacy_fact_payloads.append(
+                        (
+                            "method_return",
+                            fact_method,
+                            "method_name",
+                            _method_resolution.model_dump(mode="json"),
+                        )
                     )
                 except Exception:
                     pass
@@ -1623,14 +1642,149 @@ async def execute_action_activity(
                             str(parameters.get("declaring_type") or "").strip() or None
                         ),
                     )
-                    merged_attributes["code_fact_resolution_v2"] = (
-                        _method_resolution.model_dump(mode="json")
+                    merged_attributes["code_fact_resolution_v2"] = _method_resolution.model_dump(
+                        mode="json"
                     )
-                    outcome_detail["code_fact_resolution_v2"] = (
-                        _method_resolution.model_dump(mode="json")
+                    outcome_detail["code_fact_resolution_v2"] = _method_resolution.model_dump(
+                        mode="json"
                     )
                 except Exception:
                     pass
+
+            async def _run_java_fact(
+                selector_name: str,
+                resolver_name: str,
+                resolver: Any,
+                **kwargs: Any,
+            ) -> None:
+                selector = java_selectors.get(selector_name, "")
+                if not selector or _is_python or read_mode != "range":
+                    return
+                record: dict[str, Any]
+                try:
+                    resolution = resolver(evidence, selector, **kwargs)
+                    payload = resolution.model_dump(mode="json")
+                    record = {
+                        "resolver": resolver_name,
+                        "selector": selector,
+                        "selector_name": selector_name,
+                        "resolution": payload,
+                    }
+                except Exception as exc:
+                    payload = {
+                        "status": "UNRESOLVED",
+                        "limitation_codes": ["analysis_failed"],
+                    }
+                    record = {
+                        "resolver": resolver_name,
+                        "selector": selector,
+                        "selector_name": selector_name,
+                        "resolution": payload,
+                        "failure_type": type(exc).__name__,
+                    }
+                key = f"{JAVA_FACT_RESOLUTION_PREFIX}{resolver_name}"
+                merged_attributes[key] = payload
+                outcome_detail[key] = record
+                merged_attributes.setdefault(CODE_FACT_RESOLUTIONS_KEY, []).append(record)
+                outcome_detail.setdefault(CODE_FACT_RESOLUTIONS_KEY, []).append(record)
+
+            if not _is_python and read_mode == "range":
+                from investigation_agent_platform.application.analysis.java.boundary_facts import (
+                    resolve_java_framework_boundary,
+                )
+                from investigation_agent_platform.application.analysis.java.dataflow import (
+                    resolve_java_data_flow,
+                )
+                from investigation_agent_platform.application.analysis.java.flow_facts import (
+                    resolve_java_control_flow,
+                    resolve_java_possible_effect,
+                )
+                from investigation_agent_platform.application.analysis.java.init_facts import (
+                    resolve_java_init_fact,
+                )
+                from investigation_agent_platform.application.analysis.java.local_facts import (
+                    resolve_java_local_fact,
+                )
+                from investigation_agent_platform.application.analysis.java.method_facts import (
+                    resolve_java_call_target,
+                )
+                from investigation_agent_platform.application.analysis.java.type_facts import (
+                    resolve_java_type_fact,
+                )
+
+                common = {
+                    "declaring_type": str(parameters.get("declaring_type") or "").strip() or None,
+                    "language_version": parameters.get("language_version"),
+                }
+                await _run_java_fact(
+                    "call_target_name", "call_target", resolve_java_call_target, **common
+                )
+                await _run_java_fact(
+                    "local_name",
+                    "local",
+                    resolve_java_local_fact,
+                    method_scope=str(parameters.get("method_scope") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+                await _run_java_fact("init_name", "init", resolve_java_init_fact, **common)
+                await _run_java_fact(
+                    "dataflow_symbol",
+                    "data_flow",
+                    resolve_java_data_flow,
+                    method_scope=str(parameters.get("method_scope") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+                await _run_java_fact(
+                    "control_symbol",
+                    "control_flow",
+                    resolve_java_control_flow,
+                    branch_hint=str(parameters.get("branch_hint") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+                await _run_java_fact(
+                    "effect_symbol",
+                    "possible_effect",
+                    resolve_java_possible_effect,
+                    effect_hint=str(parameters.get("effect_hint") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+                await _run_java_fact(
+                    "type_symbol",
+                    "type",
+                    resolve_java_type_fact,
+                    feature_hint=str(parameters.get("feature_hint") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+                await _run_java_fact(
+                    "boundary_symbol",
+                    "framework_boundary",
+                    resolve_java_framework_boundary,
+                    binding_hint=str(parameters.get("binding_hint") or "").strip() or None,
+                    language_version=common["language_version"],
+                )
+
+            # The envelope is authoritative whenever more than one fact was
+            # requested. Preserve the legacy singular keys above, and include
+            # their V2 payloads in the same list for new readers.
+            envelope = list(merged_attributes.get(CODE_FACT_RESOLUTIONS_KEY) or [])
+            for resolver_name, selector, selector_name, payload in legacy_fact_payloads:
+                if isinstance(payload, dict) and not any(
+                    isinstance(item, dict)
+                    and item.get("resolver") == resolver_name
+                    and isinstance(item.get("resolution"), dict)
+                    for item in envelope
+                ):
+                    envelope.append(
+                        {
+                            "resolver": resolver_name,
+                            "selector": selector,
+                            "selector_name": selector_name,
+                            "resolution": payload,
+                        }
+                    )
+            if envelope:
+                merged_attributes[CODE_FACT_RESOLUTIONS_KEY] = envelope
+                outcome_detail[CODE_FACT_RESOLUTIONS_KEY] = envelope
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
                 await evidence_repo.save(tenant_id, evidence, investigation_id)
@@ -3776,11 +3930,19 @@ async def execute_action_activity(
                         )
                         kind = ClaimKind(str(typed.get("claim_kind") or "CAUSAL"))
                         edge_targets = [edge_target]
-                        if kind == ClaimKind.CALL_EDGE and verifier_version == VERIFIER_VERSION_CURRENT:
-                            edge_targets = VerificationEngine._aggregate_call_edge_targets(edge_target)
+                        if (
+                            kind == ClaimKind.CALL_EDGE
+                            and verifier_version == VERIFIER_VERSION_CURRENT
+                        ):
+                            edge_targets = VerificationEngine._aggregate_call_edge_targets(
+                                edge_target
+                            )
                             if not edge_targets:
                                 edge_targets = [edge_target]
-                        if kind == ClaimKind.CALL_EDGE and verifier_version == VERIFIER_VERSION_CURRENT:
+                        if (
+                            kind == ClaimKind.CALL_EDGE
+                            and verifier_version == VERIFIER_VERSION_CURRENT
+                        ):
                             for target in edge_targets:
                                 caller_obligations.append(
                                     (target, typed, claim_binding_ids.get(claim_key, []))
@@ -3928,8 +4090,20 @@ async def execute_action_activity(
                         hypothesis_id=str(hypothesis_id),
                         statement=str(statement)[:500],
                         supporting_evidence_ids=[str(e) for e in (claim_cited or [])],
-                        assessment_codes=[str(getattr(a, "reason_code", "?") or "?") for a in (assessments or [])],
-                        assessment_kinds=[str(getattr(getattr(a, "claim_kind", None), "value", getattr(a, "claim_kind", "?")) or "?") for a in (assessments or [])],
+                        assessment_codes=[
+                            str(getattr(a, "reason_code", "?") or "?") for a in (assessments or [])
+                        ],
+                        assessment_kinds=[
+                            str(
+                                getattr(
+                                    getattr(a, "claim_kind", None),
+                                    "value",
+                                    getattr(a, "claim_kind", "?"),
+                                )
+                                or "?"
+                            )
+                            for a in (assessments or [])
+                        ],
                         required_verification=list(required_verification or []),
                     )
                 except Exception as exc:
@@ -4130,9 +4304,7 @@ async def execute_action_activity(
                 try:
                     _provider_total_raw = outcome_detail.get("provider_total_count")
                     _provider_total_count = (
-                        int(_provider_total_raw)
-                        if _provider_total_raw is not None
-                        else None
+                        int(_provider_total_raw) if _provider_total_raw is not None else None
                     )
                 except (TypeError, ValueError):
                     _provider_total_count = None
@@ -4142,9 +4314,7 @@ async def execute_action_activity(
                     parameters=parameters if isinstance(parameters, dict) else {},
                     status=str(_outcome_status),
                     miss_reason=outcome_detail.get("miss_reason"),
-                    row_ids=[
-                        str(e) for e in (outcome_detail.get("evidence_ids") or [])
-                    ],
+                    row_ids=[str(e) for e in (outcome_detail.get("evidence_ids") or [])],
                     rows_returned=int(items_count or 0),
                     truncated_rows=int(outcome_detail.get("truncated_rows") or 0),
                     source_statuses=[
@@ -4156,17 +4326,13 @@ async def execute_action_activity(
                     banked_count=int(items_count or 0),
                 )
                 if _retrieval_attempt is not None:
-                    outcome_detail["retrieval_attempt"] = (
-                        _retrieval_attempt.model_dump(mode="json")
-                    )
+                    outcome_detail["retrieval_attempt"] = _retrieval_attempt.model_dump(mode="json")
                 try:
                     _exec_iteration = data.get("iteration")
                     if _exec_iteration is not None:
-                        _attempt_query, _attempt_scope, _attempt_provider = (
-                            _extract_search_query(
-                                _resolved_action_name,
-                                parameters if isinstance(parameters, dict) else {},
-                            )
+                        _attempt_query, _attempt_scope, _attempt_provider = _extract_search_query(
+                            _resolved_action_name,
+                            parameters if isinstance(parameters, dict) else {},
                         )
                         _attempt_id = _attempt_id_for(
                             inv_id_str,
@@ -4189,14 +4355,9 @@ async def execute_action_activity(
                     TimelineEventType,
                 )
 
-                _retrieval_event_type = getattr(
-                    TimelineEventType, "RETRIEVAL_ATTEMPT", None
-                )
+                _retrieval_event_type = getattr(TimelineEventType, "RETRIEVAL_ATTEMPT", None)
                 _timeline_repo = getattr(ctx, "timeline_repo", None)
-                if (
-                    _retrieval_event_type is not None
-                    and _timeline_repo is not None
-                ):
+                if _retrieval_event_type is not None and _timeline_repo is not None:
                     # No sequence-number read: TimelineEventORM persists
                     # no sequence column (ordering is by timestamp), so a
                     # full-history read here would buy nothing.
@@ -4231,9 +4392,7 @@ async def execute_action_activity(
                                 "action_execution_id": str(inv_action.action_id),
                                 "provider_total_count": _provider_total_count,
                                 "banked_count": int(items_count or 0),
-                                "truncated_rows": int(
-                                    outcome_detail.get("truncated_rows") or 0
-                                ),
+                                "truncated_rows": int(outcome_detail.get("truncated_rows") or 0),
                                 "miss_reason": outcome_detail.get("miss_reason"),
                                 "evidence_ids": _marker_evidence_ids,
                                 "attempt": outcome_detail.get("retrieval_attempt"),
@@ -4292,9 +4451,7 @@ async def execute_action_activity(
                 revision = str(parameters.get("revision") or "").strip()
                 caller_target = ClaimTarget(
                     symbol=str(parameters.get("caller_edge_symbol") or "").strip() or None,
-                    counterpart=str(
-                        parameters.get("caller_edge_counterpart") or ""
-                    ).strip()
+                    counterpart=str(parameters.get("caller_edge_counterpart") or "").strip()
                     or None,
                     file_path=str(parameters.get("file_path") or "").strip() or None,
                     line_start=start_line,
@@ -4337,9 +4494,7 @@ async def execute_action_activity(
                                 if assessment.claim_kind == ClaimKind.CALL_EDGE
                                 and assessment.reason_code == "CALL_EDGE_UNRESOLVED"
                                 and assessment.claim_target is not None
-                                and VerificationEngine.caller_edge_key(
-                                    assessment.claim_target
-                                )
+                                and VerificationEngine.caller_edge_key(assessment.claim_target)
                                 == caller_edge_key
                             ]
                             if not unresolved:

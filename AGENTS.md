@@ -21,3 +21,14 @@ This file augments the global operator contract; it does not replace it.
 
 - When engine semantics evolve, pin the version on the entity at creation (e.g., `metadata["verifier_version"]`) and route on the recorded version: in-flight rows keep the semantics they started with, new rows follow the new version. Unmarked rows resolve to current semantics.
 - Never gate old-vs-new behavior on environment variables. Env-switched legacy branches are the exact complication this contract forbids; recorded versions are the mechanism.
+
+## Operator scope stays in the operator directory
+
+- All operator-related run information and documentation (per-tenant profiles, seed artifacts,
+  probe runs, sampled outputs, respondent identifiers) shall stay in the operator directory
+  (e.g., `~/.iap/scopes/<scope>/...`) and never enter the repo (`docs/`, code, tests, config).
+- No document in the operator directory shall be referenced from repo artifacts — no paths,
+  no file names, no "see ~/.iap/..." pointers — in documentation, code, configuration, or tests.
+- Whatever the repo needs from an operator run must be extracted as anonymized findings
+  (generic technology/role successors, run IDs, dates, counts, outcomes) with no reference
+  to the operator item, per the analyzed-repository non-reference rule.

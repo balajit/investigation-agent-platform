@@ -32,6 +32,7 @@ from investigation_agent_platform.domain.code.models import (
     strip_v2_for_downgrade,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
+from investigation_agent_platform.domain.evidence.requests import validate_java_fact_parameters
 from investigation_agent_platform.domain.hypothesis.models import (
     AssessmentType,
     ClaimTarget,
@@ -99,6 +100,68 @@ def _v2_evidence(v2, evidence=None):
     return base.model_copy(
         update={"attributes": {**base.attributes, CODE_FACT_RESOLUTION_V2_KEY: dumped}}
     )
+
+
+def test_java_fact_proof_selects_matching_resolution_from_multi_fact_envelope():
+    source = _source_evidence("class Foo { int x = 3; }")
+    field = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    )
+    other = field.model_copy(update={"subject_identity": "Foo.other", "field_name": "other"})
+    item = source.model_copy(
+        update={
+            "attributes": {
+                **source.attributes,
+                "code_fact_resolutions": [
+                    {"resolver": "other", "resolution": other.model_dump(mode="json")},
+                    {"resolver": "field", "resolution": field.model_dump(mode="json")},
+                ],
+            }
+        }
+    )
+    target = ClaimTarget(symbol="Foo.x", file_path="src/Foo.java", line_start=10, line_end=10)
+    hyp = SimpleNamespace(
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        claim_target=target,
+        target=target,
+        claimed_value="3",
+        statement="Foo.x is 3",
+        supporting_evidence_ids=[source.evidence_id],
+        assessments=[],
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [item])
+    assert ok, reason
+
+
+def test_java_fact_selector_contract_is_bounded_and_explicit():
+    selectors = validate_java_fact_parameters(
+        {
+            "call_target_name": "  handle  ",
+            "dataflow_symbol": "\x00bad",
+            "type_symbol": "x" * 257,
+            "unknown": "ignored",
+        }
+    )
+    assert selectors == {"call_target_name": "handle"}
 
 
 def _typed_hypothesis(evidence, category, **overrides):

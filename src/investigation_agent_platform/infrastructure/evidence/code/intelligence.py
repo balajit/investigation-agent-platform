@@ -57,6 +57,42 @@ EXT_TO_LANGUAGE: dict[str, str] = {
     ".cs": "c_sharp",
 }
 
+# Test-source exclusion for code lookups (discovery only: SEARCH_CODE,
+# FIND_SYMBOL, FIND_CALLERS/CALLEES). Test doubles and fixtures must never
+# surface as production-code candidates — conclusions about runtime behavior
+# may not rest on JUnit/test sources. Explicit GET_CODE reads of a chosen
+# path are unaffected (the agent named the file; the verifier judges it).
+_TEST_DIR_PARTS = frozenset({"test", "tests", "__tests__", "testdata"})
+_TEST_FILE_RES = (
+    re.compile(r"(?i).*test\.java$"),
+    re.compile(r"(?i).*tests\.java$"),
+    re.compile(r"(?i).*testcase\.java$"),
+    re.compile(r"(?i).*it\.java$"),
+    re.compile(r"(?i).*itcase\.java$"),
+    re.compile(r"(?i)^test.*\.java$"),
+    re.compile(r"(?i).*_test\.go$"),
+    re.compile(r"(?i).*_test\.py$"),
+    re.compile(r"(?i)^test_.*\.py$"),
+    re.compile(r"(?i)^conftest\.py$"),
+)
+
+
+def is_test_source(path: str | Path) -> bool:
+    """True when a repo-relative (or absolute) path is a test source.
+
+    Matches Maven/Gradle `src/test/**`, generic `test/`/`tests/` trees, and
+    JUnit-style test class names (`*Test.java`, `*IT.java`, ...). Pure;
+    fail-closed toward production (unknown layouts are kept).
+    """
+    text = str(path).replace("\\", "/")
+    parts = [seg for seg in text.split("/") if seg]
+    # Maven/Gradle src/test/** and generic test(s)/ trees (part match).
+    if any(seg in _TEST_DIR_PARTS for seg in parts):
+        return True
+    name = parts[-1] if parts else ""
+    return any(rx.match(name) for rx in _TEST_FILE_RES)
+
+
 # Node types that define symbols per language (superset)
 SYMBOL_NODE_TYPES = frozenset(
     {
@@ -227,6 +263,11 @@ class TreeSitterCodeIntelligenceProvider:
 
                 for node_info in data.get("nodes", []):
                     node_id = node_info.get("id", "")
+                    # test sources never enter the call graph: edges touching
+                    # dropped nodes are skipped below via node_lookup.
+                    fp = node_info.get("file_path", "") or node_info.get("file", "")
+                    if fp and is_test_source(str(fp)):
+                        continue
                     idx = graph.add_node(node_info)
                     if node_id:
                         node_lookup[node_id] = idx
@@ -336,7 +377,7 @@ class TreeSitterCodeIntelligenceProvider:
         files: list[Path] = []
         for root in roots:
             if root.is_file():
-                if root.suffix in EXT_TO_LANGUAGE:
+                if root.suffix in EXT_TO_LANGUAGE and not is_test_source(root):
                     files.append(root)
                 continue
             for p in root.rglob("*"):
@@ -352,6 +393,13 @@ class TreeSitterCodeIntelligenceProvider:
                         or part in ("__pycache__", "node_modules", ".venv", "venv")
                         for part in p.parts
                     ):
+                        continue
+                    # test sources never surface as production-code candidates
+                    try:
+                        probe: str | Path = p.resolve().relative_to(self._repo_base_path)
+                    except Exception:
+                        probe = p
+                    if is_test_source(probe):
                         continue
                     files.append(p)
                 if len(files) >= 5000:

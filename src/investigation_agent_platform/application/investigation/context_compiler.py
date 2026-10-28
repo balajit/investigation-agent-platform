@@ -335,6 +335,11 @@ def _code_packet(
             if isinstance(attrs, dict) and isinstance(attrs.get("code_fact_resolution"), dict)
             else None
         ),
+        "code_fact_resolutions": (
+            attrs.get("code_fact_resolutions")
+            if isinstance(attrs, dict) and isinstance(attrs.get("code_fact_resolutions"), list)
+            else []
+        ),
         "next_window": next_window,
         "claim_priority": 0 if bound else (1 if mode == "range" else 2),
     }

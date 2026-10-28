@@ -7,7 +7,11 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from investigation_agent_platform.application.investigation.validator import _has_traversal
-from investigation_agent_platform.domain.code.models import SymbolType
+from investigation_agent_platform.domain.code.models import (
+    JAVA_FACT_SELECTORS,
+    SymbolType,
+    java_fact_selector,
+)
 from investigation_agent_platform.domain.evidence.models import LogSeverity
 
 # Part 10: identifier keys are validated against the resolved mapping's
@@ -203,6 +207,15 @@ class SourceRequest(BaseModel):
                 "the per-read cap is 501 lines — page with a narrower window."
             )
         return v
+
+
+def validate_java_fact_parameters(parameters: dict[str, Any]) -> dict[str, str]:
+    """Return bounded explicit Java GET_CODE selectors from action parameters."""
+    return {
+        name: selector
+        for name in JAVA_FACT_SELECTORS
+        if (selector := java_fact_selector(parameters.get(name)))
+    }
 
 
 class CallGraphRequest(BaseModel):

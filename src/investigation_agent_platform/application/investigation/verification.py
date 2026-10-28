@@ -658,9 +658,7 @@ def build_claim_gaps(
             try:
                 kind_value = str(group.get("kind_value") or "")
                 _raw_target = group.get("target_dict")
-                target: dict[str, Any] = (
-                    _raw_target if isinstance(_raw_target, dict) else {}
-                )
+                target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
                 ref = ""
                 try:
                     key = claim_key(str(group.get("statement") or ""), kind_value)
@@ -1267,9 +1265,7 @@ def attempt_claim_repair(
                         outcome=outcome,
                         binding_version=binding_version,
                         gate_reason=str(gate_reason or "")[:512],
-                        donor_snippet=str(
-                            getattr(donor_row, "content_snippet", "") or ""
-                        )[:500],
+                        donor_snippet=str(getattr(donor_row, "content_snippet", "") or "")[:500],
                     )
                 )
             except Exception:
@@ -2154,25 +2150,61 @@ class VerificationEngine:
         return None
 
     @staticmethod
-    def _v2_any_from_evidence(evidence_items: list[Any]) -> CodeFactResolutionV2 | None:
-        """First well-formed v2 payload regardless of status (for PARTIAL wiring)."""
+    def _v2_any_from_evidence(
+        evidence_items: list[Any],
+        category: JavaFactCategory | None = None,
+        subject: str | None = None,
+    ) -> CodeFactResolutionV2 | None:
+        """Select a v2 payload by category/subject, never by insertion order."""
+        requested_subject = str(subject or "").strip()
         for item in evidence_items or []:
             attrs = getattr(item, "attributes", None) or {}
             if not isinstance(attrs, dict):
                 continue
-            raw = attrs.get(CODE_FACT_RESOLUTION_V2_KEY)
-            if not isinstance(raw, dict):
-                continue
-            try:
-                return CodeFactResolutionV2.model_validate(raw)
-            except Exception:
-                continue
+            raws: list[Any] = []
+            for key in (CODE_FACT_RESOLUTION_V2_KEY, "code_fact_resolutions"):
+                value = attrs.get(key)
+                if key == "code_fact_resolutions" and isinstance(value, list):
+                    raws.extend(
+                        entry.get("resolution")
+                        for entry in value
+                        if isinstance(entry, dict) and isinstance(entry.get("resolution"), dict)
+                    )
+                elif isinstance(value, dict):
+                    raws.append(value)
+            raws.extend(
+                value
+                for key, value in attrs.items()
+                if key.startswith("code_fact_java.") and isinstance(value, dict)
+            )
+            for raw in raws:
+                try:
+                    resolution = CodeFactResolutionV2.model_validate(raw)
+                except Exception:
+                    continue
+                if category is not None and resolution.fact_category != category:
+                    continue
+                if requested_subject:
+                    candidates = {
+                        str(resolution.subject_identity or ""),
+                        str(resolution.declaring_type or ""),
+                        str(resolution.field_name or ""),
+                        str(resolution.call_target or ""),
+                        str(resolution.target_identity or ""),
+                    }
+                    if requested_subject not in candidates:
+                        continue
+                return resolution
         return None
 
     @staticmethod
-    def _v2_resolution_from_evidence(evidence_items: list[Any]) -> CodeFactResolutionV2 | None:
+    def _v2_resolution_from_evidence(
+        evidence_items: list[Any],
+        category: JavaFactCategory | None = None,
+        subject: str | None = None,
+    ) -> CodeFactResolutionV2 | None:
         """Load only well-formed RESOLVED v2 analyzer output."""
-        resolution = VerificationEngine._v2_any_from_evidence(evidence_items)
+        resolution = VerificationEngine._v2_any_from_evidence(evidence_items, category, subject)
         if resolution is not None and resolution.status == CodeFactStatus.RESOLVED:
             return resolution
         return None
@@ -2245,6 +2277,17 @@ class VerificationEngine:
                             families.add("ANALYZER_RESOLUTION")
                         except Exception:
                             pass
+                    envelope = attrs.get("code_fact_resolutions")
+                    if isinstance(envelope, list) and any(
+                        isinstance(entry, dict) and isinstance(entry.get("resolution"), dict)
+                        for entry in envelope
+                    ):
+                        families.add("ANALYZER_RESOLUTION")
+                    if any(
+                        key.startswith("code_fact_java.") and isinstance(value, dict)
+                        for key, value in attrs.items()
+                    ):
+                        families.add("ANALYZER_RESOLUTION")
                     if attrs.get("search_scope") is not None:
                         families.add("CAUSAL_STEP_BINDINGS")
                     if attrs.get("configuration_source") or attrs.get("config_source"):
@@ -2396,11 +2439,15 @@ class VerificationEngine:
             rule = None
         if rule is None:
             return (False, f"unknown fact category {category!r}: fail closed")
-        v2_any = VerificationEngine._v2_any_from_evidence(evidence_items)
+        target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
+        subject = str(getattr(target, "symbol", "") or "").strip() or None
+        v2_any = VerificationEngine._v2_any_from_evidence(evidence_items, category, subject)
         if v2_any is not None and v2_any.status != CodeFactStatus.RESOLVED:
             codes = ",".join(v2_any.limitation_codes) or "untyped_partial"
             return (False, f"resolution is {v2_any.status.value}: {codes}")
-        resolution = VerificationEngine._v2_resolution_from_evidence(evidence_items)
+        resolution = VerificationEngine._v2_resolution_from_evidence(
+            evidence_items, category, subject
+        )
         if resolution is None:
             if v2_any is None:
                 return (False, "no resolved CodeFactResolutionV2 is bound to the cited evidence")
@@ -2687,11 +2734,13 @@ class VerificationEngine:
             for c in (contradictions or [])
         ):
             return None
-        v2_any = self._v2_any_from_evidence(evidence_items)
+        target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
+        subject = str(getattr(target, "symbol", "") or "").strip() or None
+        v2_any = self._v2_any_from_evidence(evidence_items, category, subject)
         ok, reason = self.java_fact_proof(hypothesis, evidence_items)
         if not ok:
             return None
-        resolution = self._v2_resolution_from_evidence(evidence_items)
+        resolution = self._v2_resolution_from_evidence(evidence_items, category, subject)
         if resolution is None or v2_any is None:
             return None
         rule = category_proof_rule(category)
@@ -2732,9 +2781,12 @@ class VerificationEngine:
         self, hypothesis: Any, evidence_items: list[Any]
     ) -> VerificationResult | None:
         """INCONCLUSIVE with typed limitation for PARTIAL/UNRESOLVED v2 rows."""
-        if self._fact_category_of(hypothesis) is None:
+        category = self._fact_category_of(hypothesis)
+        if category is None:
             return None
-        v2_any = self._v2_any_from_evidence(evidence_items)
+        target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
+        subject = str(getattr(target, "symbol", "") or "").strip() or None
+        v2_any = self._v2_any_from_evidence(evidence_items, category, subject)
         if v2_any is None or v2_any.status == CodeFactStatus.RESOLVED:
             return None
         ok, reason = self.java_fact_proof(hypothesis, evidence_items)
@@ -3965,16 +4017,12 @@ class VerificationEngine:
                     count = attrs.get("match_count") if isinstance(attrs, dict) else None
                 except Exception:
                     count = None
-                if not (
-                    isinstance(count, int) and not isinstance(count, bool) and count == 0
-                ):
+                if not (isinstance(count, int) and not isinstance(count, bool) and count == 0):
                     continue
                 try:
                     row_revision = str(
                         getattr(
-                            getattr(
-                                getattr(item, "provenance", None), "source_location", None
-                            ),
+                            getattr(getattr(item, "provenance", None), "source_location", None),
                             "revision",
                             "",
                         )
@@ -4029,9 +4077,8 @@ class VerificationEngine:
         # new verdict unreachable. Commit-naming targets skip absence and
         # continue to the positive path, where they may still verify a
         # positive commit claim. cbv1 keeps today's fall-through.
-        if (
-            self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
-            and not getattr(target, "commit_id", "")
+        if self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3) and not getattr(
+            target, "commit_id", ""
         ):
             outcome, _, qualifying = VerificationEngine.history_absence_outcome(
                 evidence_items, target
@@ -4055,9 +4102,7 @@ class VerificationEngine:
                 return VerificationResult(
                     hypothesis_id=hypothesis.id,
                     status=VerificationStatus.VERIFIED,
-                    corroborating_evidence_ids=[
-                        item.evidence_id for item in qualifying
-                    ],
+                    corroborating_evidence_ids=[item.evidence_id for item in qualifying],
                     explanation=(
                         "HISTORY_ABSENCE_PROVED: scoped history search of "
                         f"{target.file_path} from tip {_tip[:8]} matched no commit; "
@@ -4069,10 +4114,7 @@ class VerificationEngine:
                     limitations=[
                         VerificationLimitation(
                             code=LimitationCode.HISTORY_ABSENCE_PROVED,
-                            detail=(
-                                "Negative proven by scoped empty search "
-                                "over the cited rows."
-                            ),
+                            detail=("Negative proven by scoped empty search over the cited rows."),
                         )
                     ],
                 )

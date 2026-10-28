@@ -102,6 +102,29 @@ class SemanticStage(StrEnum):
 
 CODE_FACT_RESOLUTION_KEY = "code_fact_resolution"
 CODE_FACT_RESOLUTION_V2_KEY = "code_fact_resolution_v2"
+CODE_FACT_RESOLUTIONS_KEY = "code_fact_resolutions"
+JAVA_FACT_RESOLUTION_PREFIX = "code_fact_java."
+
+JAVA_FACT_SELECTORS = frozenset(
+    {
+        "call_target_name",
+        "local_name",
+        "init_name",
+        "dataflow_symbol",
+        "control_symbol",
+        "effect_symbol",
+        "type_symbol",
+        "boundary_symbol",
+    }
+)
+
+
+def java_fact_selector(value: Any) -> str:
+    """Normalize one explicit Java GET_CODE fact selector."""
+    text = str(value or "").strip()
+    if not text or len(text) > 256 or "\x00" in text:
+        return ""
+    return text
 
 
 class CodeFactResolution(BaseModel):
@@ -194,7 +217,10 @@ class CodeFactResolutionV2(BaseModel):
 
     @model_validator(mode="after")
     def validate_v2_resolution(self) -> CodeFactResolutionV2:
-        if self.fact_category == JavaFactCategory.CAUSAL_CLAIM and self.status == CodeFactStatus.RESOLVED:
+        if (
+            self.fact_category == JavaFactCategory.CAUSAL_CLAIM
+            and self.status == CodeFactStatus.RESOLVED
+        ):
             raise ValueError("CAUSAL_CLAIM is a verifier conclusion, never an analyzer resolution")
         if self.status == CodeFactStatus.RESOLVED:
             if self.fact_category == JavaFactCategory.RUNTIME_OBSERVATION_FACT:
@@ -265,9 +291,7 @@ def emit_dual_resolution_attributes(legacy: CodeFactResolution) -> dict[str, Any
     }
 
 
-def detect_dual_resolution_conflict(
-    legacy_raw: Any, v2_raw: Any
-) -> str | None:
+def detect_dual_resolution_conflict(legacy_raw: Any, v2_raw: Any) -> str | None:
     """Return a conflict reason when dual keys disagree, else None.
 
     New readers reject conflicting duplicates; old readers ignore the v2 key.
@@ -288,18 +312,14 @@ def detect_dual_resolution_conflict(
     if legacy.status != v2.status:
         return f"status conflict: {legacy.status.value} vs {v2.status.value}"
     if (legacy.resolved_value or "") != (v2.resolved_value or ""):
-        return (
-            f"resolved value conflict: {legacy.resolved_value!r} vs {v2.resolved_value!r}"
-        )
+        return f"resolved value conflict: {legacy.resolved_value!r} vs {v2.resolved_value!r}"
     if (legacy.revision or "") != (v2.revision or ""):
         return f"revision conflict: {legacy.revision!r} vs {v2.revision!r}"
     if legacy.repository != (v2.repository or legacy.repository):
         return "repository conflict"
     legacy_subject = f"{legacy.declaring_type}.{legacy.field_name}"
     v2_subject = v2.subject_identity or (
-        f"{v2.declaring_type}.{v2.field_name}"
-        if v2.declaring_type and v2.field_name
-        else None
+        f"{v2.declaring_type}.{v2.field_name}" if v2.declaring_type and v2.field_name else None
     )
     if v2_subject is not None and legacy_subject != v2_subject:
         return f"subject conflict: {legacy_subject!r} vs {v2_subject!r}"
@@ -616,9 +636,7 @@ class CallGraph(BaseModel):
                 raise ValueError(f"call edge references unknown caller {edge.caller_node_id}")
             if edge.callee_node_id is not None and edge.callee_node_id not in self.nodes:
                 if edge.resolution_status != CallResolutionStatus.EXTERNAL:
-                    raise ValueError(
-                        f"call edge references unknown callee {edge.callee_node_id}"
-                    )
+                    raise ValueError(f"call edge references unknown callee {edge.callee_node_id}")
         return self
 
 
