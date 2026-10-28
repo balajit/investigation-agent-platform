@@ -358,7 +358,6 @@ def evaluate_obligations(
     revision), or leaves UNSUPPORTED. Never raises on well-formed
     inputs; structural defects resolve OPEN (deny direction).
     """
-    _ = manifest
     bindings = _bindings(certificate)
     entries = _entries(certificate)
     by_id = {str(e.get("evidence_id") or ""): e for e in entries}
@@ -367,7 +366,9 @@ def evaluate_obligations(
         if obligation.status != ObligationStatus.OPEN:
             resolved.append(obligation)
             continue
-        ok = _evaluate_one(obligation, bindings, entries, by_id, artifacts, mapping_authority)
+        ok = _evaluate_one(
+            obligation, bindings, entries, by_id, artifacts, manifest, mapping_authority
+        )
         resolved.append(
             obligation.model_copy(update={"status": ObligationStatus.SATISFIED if ok else ObligationStatus.OPEN})
         )
@@ -379,12 +380,20 @@ def _artifact_available(entry: Mapping[str, Any], artifacts: Mapping[str, Any]) 
     return record if isinstance(record, Mapping) else None
 
 
+def _artifact_digest(record: Mapping[str, Any]) -> str:
+    """Return the canonical digest used by the certificate/checker paths."""
+    from investigation_agent_platform.domain.proof.certificate import _artifact_hash
+
+    return str(_artifact_hash(dict(record)))
+
+
 def _evaluate_one(
     obligation: ProofObligation,
     bindings: dict[str, Any],
     entries: list[Mapping[str, Any]],
     by_id: dict[str, Mapping[str, Any]],
     artifacts: Mapping[str, Any],
+    manifest: EvidenceManifest,
     mapping_authority: Mapping[str, Any] | None,
 ) -> bool:
     kind = obligation.kind
@@ -397,7 +406,7 @@ def _evaluate_one(
     if kind == "behavior/v1":
         return _evaluate_behavior(ordinal, bindings, entries, artifacts, mapping_authority)
     if kind == "absence/v1":
-        return _evaluate_absence(ordinal, bindings, entries, artifacts)
+        return _evaluate_absence(ordinal, bindings, entries, artifacts, manifest)
     if kind == "history/v1":
         return _evaluate_history(ordinal, bindings, entries, artifacts)
     return False
@@ -537,6 +546,7 @@ def _evaluate_absence(
     bindings: dict[str, Any],
     entries: list[Mapping[str, Any]],
     artifacts: Mapping[str, Any],
+    manifest: EvidenceManifest,
 ) -> bool:
     if len(entries) != 1 or str(entries[0].get("premise_type") or "") != "ABSENCE_COVERAGE_FACT":
         return False
@@ -551,16 +561,41 @@ def _evaluate_absence(
         scope = record.get("scope")
         if not isinstance(scope, dict):
             return False
+        retrieval_config = manifest.retrieval_config or {}
         return (
             str(record.get("universe")) == str(bindings.get("universe"))
             and str(record.get("predicate")) == str(bindings.get("predicate"))
             and str(scope.get("repository")) == str(bindings.get("repository"))
             and str(scope.get("revision")) == str(bindings.get("revision"))
             and str(scope.get("path_scope")) == str(bindings.get("path_scope"))
+            and retrieval_config.get("scope") == record.get("universe")
+            and retrieval_config.get("search_config_digest") == record.get("search_config_digest")
+            and list(manifest.exclusions or []) == list(record.get("exclusions") or [])
         )
     if ordinal == 3:
         exclusions = record.get("exclusions")
-        return isinstance(exclusions, list) and all(isinstance(e, str) for e in exclusions)
+        return (
+            isinstance(exclusions, list)
+            and all(isinstance(e, str) for e in exclusions)
+            and not _relevant_exclusion(exclusions, record)
+        )
+    return False
+
+
+def _relevant_exclusion(exclusions: list[Any], record: Mapping[str, Any]) -> bool:
+    scope = record.get("scope")
+    if not isinstance(scope, Mapping):
+        return True
+    path_scope = str(scope.get("path_scope") or "").rstrip("/")
+    universe = str(record.get("universe") or "")
+    for exclusion in exclusions:
+        value = str(exclusion or "").rstrip("/")
+        if value and (
+            value == path_scope
+            or path_scope.startswith(value + "/")
+            or value in universe
+        ):
+            return True
     return False
 
 
@@ -660,14 +695,20 @@ def decide_guarded_promotion(
             if trusted_repo is None:
                 return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:policy-repository-unbound"
             artifact = (evidence_mat.get("artifacts") or {}).get(key[0], {})
+            if not isinstance(artifact, dict):
+                return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:bad-artifact"
+            try:
+                if _artifact_digest(artifact) != digest:
+                    return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:binding-digest-mismatch"
+            except Exception:
+                return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:binding-digest-mismatch"
             artifact_repo = ""
-            if isinstance(artifact, dict):
-                artifact_repo = str(artifact.get("repository") or "")
-                if not artifact_repo and isinstance(artifact.get("scope"), dict):
-                    # Coverage facts carry the repository in scope, not top
-                    # level (AbsenceCoverageFact); the trusted binding still
-                    # governs — this only locates the artifact's claim.
-                    artifact_repo = str(artifact["scope"].get("repository") or "")
+            artifact_repo = str(artifact.get("repository") or "")
+            if not artifact_repo and isinstance(artifact.get("scope"), dict):
+                # Coverage facts carry the repository in scope, not top
+                # level (AbsenceCoverageFact); the trusted binding still
+                # governs — this only locates the artifact's claim.
+                artifact_repo = str(artifact["scope"].get("repository") or "")
             if artifact_repo != trusted_repo:
                 return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:policy-scope:{artifact_repo or '?'}"
             if trusted_repo not in seen_repos:
@@ -680,7 +721,7 @@ def decide_guarded_promotion(
         scope_repo = str(proposition["scope"].get("repository") or "")
         if scope_repo:
             if scope_repo not in seen_repos:
-                seen_repos.append(scope_repo)
+                return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:scope-binding-mismatch"
     if not seen_repos and isinstance(cert_entries, list) and cert_entries:
         return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:policy-scope:no-repository"
     for repo in seen_repos:
@@ -781,11 +822,13 @@ def decide_guarded_promotion(
         )
     except Exception as exc:
         return PublicationDecision.DENY, f"{DenyReason.NOT_CHECKER_ACCEPTED.value}:CHECKER_FAILURE:{exc}"
-    for obligation in resolved:
-        if obligation.status == ObligationStatus.OPEN:
-            return PublicationDecision.DENY, f"{DenyReason.OPEN_OBLIGATION.value}:{obligation.obligation_id}"
-        if obligation.status == ObligationStatus.UNSUPPORTED:
+    if any(obligation.status != ObligationStatus.SATISFIED for obligation in resolved):
+        first = next(obligation for obligation in resolved if obligation.status != ObligationStatus.SATISFIED)
+        if first.status == ObligationStatus.OPEN:
+            return PublicationDecision.DENY, f"{DenyReason.OPEN_OBLIGATION.value}:{first.obligation_id}"
+        if first.status == ObligationStatus.UNSUPPORTED:
             return PublicationDecision.DENY, DenyReason.UNSUPPORTED_OBLIGATION.value
+        return PublicationDecision.DENY, f"{DenyReason.STALE_OBLIGATION.value}:{first.obligation_id}"
 
     # Step 7: linearization sub-step with gate-derived values.
     return _decide_linearization(

@@ -30,6 +30,7 @@ from investigation_agent_platform.domain.proof.obligations import (
     decide_guarded_promotion,
     encode_evidence_bytes,
     encode_trusted_context_bytes,
+    evaluate_obligations,
     expand_obligations,
 )
 from investigation_agent_platform.domain.proof.publication import DenyReason, PublicationDecision
@@ -332,6 +333,18 @@ def test_policy_digest_mismatch_denies() -> None:
     assert reason.startswith(DenyReason.POLICY_DENIED.value)
 
 
+def test_policy_binding_digest_matches_artifact_bytes() -> None:
+    evidence, _, parts = _guarded_definition()
+    payload = json.loads(bytes(evidence).decode())
+    payload["artifacts"]["ev-ob-definition-0"]["window_text"] = "def changed(): pass"
+    forged = encode_evidence_bytes(payload)
+    bindings = _bindings_for([_definition_record()], "definition/v1")
+    trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
+    decision, reason = decide_guarded_promotion(_policy(), forged, trusted)
+    assert decision == PublicationDecision.DENY
+    assert reason.startswith(f"{DenyReason.POLICY_DENIED.value}:binding-digest-mismatch")
+
+
 def test_policy_none_denies() -> None:
     evidence, trusted, _ = _guarded_definition()
     decision, reason = decide_guarded_promotion(None, evidence, trusted)
@@ -373,6 +386,18 @@ def test_policy_artifact_repository_mismatch_denies() -> None:
     # other/repo: the artifact cannot authorize itself.
     assert decision == PublicationDecision.DENY
     assert reason.startswith(DenyReason.POLICY_DENIED.value)
+
+
+def test_policy_scope_repository_must_join_trusted_premise() -> None:
+    evidence, _, parts = _guarded_definition()
+    payload = json.loads(bytes(evidence).decode())
+    payload["proposition"]["scope"]["repository"] = "other/repo"
+    forged = encode_evidence_bytes(payload)
+    bindings = _bindings_for([_definition_record()], "definition/v1")
+    trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
+    decision, reason = decide_guarded_promotion(_policy(repositories=(REPO, "other/repo")), forged, trusted)
+    assert decision == PublicationDecision.DENY
+    assert reason.startswith(f"{DenyReason.POLICY_DENIED.value}:scope-binding-mismatch")
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +651,50 @@ def test_absence_valid_promotes() -> None:
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
     decision, reason = decide_guarded_promotion(_policy(), evidence, trusted)
     assert decision == PublicationDecision.COMMIT, reason
+
+
+def test_absence_obligation_rejects_retrieval_config_mismatch() -> None:
+    record = {
+        "evidence_id": "ev-ob-absence-config-0",
+        "premise_type": "ABSENCE_COVERAGE_FACT",
+        "universe": UNIVERSE,
+        "predicate": "contains_symbol(legacy_hook)",
+        "search_status": "COMPLETE_EMPTY",
+        "search_config_digest": SEARCH_CONFIG,
+        "scope": {"repository": REPO, "revision": REV_B, "path_scope": "src/"},
+        "exclusions": [],
+        "coverage_basis": {"kind": "synthetic_complete_inventory", "value": "all enumerated"},
+        "match_count": 0,
+    }
+    proposition = {
+        "canon_version": "canon/v1",
+        "form": "ABSENCE",
+        "quantifier": "UNIVERSAL",
+        "modality": "STATIC",
+        "completeness": "CLOSED_WORLD",
+        "predicate": "contains_symbol(legacy_hook)",
+        "target": {"universe": UNIVERSE},
+        "scope": {"repository": REPO, "revision": REV_B, "path_scope": "src/"},
+    }
+    evidence, parts = _evidence_bytes(
+        "absence/v1", [record], proposition,
+        retrieval_config={"scope": UNIVERSE, "search_config_digest": SEARCH_CONFIG},
+        coverage=ManifestCoverage.COMPLETE_EMPTY,
+        coverage_evidence_id="ev-ob-absence-config-0",
+        coverage_evidence={k: v for k, v in record.items() if k != "evidence_id"},
+    )
+    manifest = parts["manifest"].model_copy(
+        update={"retrieval_config": {"scope": UNIVERSE, "search_config_digest": "sha256:" + "ff" * 32}}
+    )
+    obligations = expand_obligations("absence/v1", parts["cert"]["inference_instance"]["bindings"], parts["cert"]["premises"], parts["cert"]["derivation_id"])
+    resolved = evaluate_obligations(
+        obligations,
+        parts["cert"],
+        parts["artifacts"],
+        manifest,
+        None,
+    )
+    assert any(item.status == ObligationStatus.OPEN for item in resolved)
 
 
 def test_history_valid_promotes() -> None:
