@@ -132,6 +132,33 @@ def test_battery_never_claims_runtime_effective():
             assert stage.value != "RUNTIME_EFFECTIVE"
 
 
+def test_type_resolver_model_discovery_matches_legacy_fixture_battery():
+    """Keep the model switchover gated by every manifest type case."""
+    for case in _MANIFEST["cases"]:
+        if case["resolver"] != "type":
+            continue
+        evidence = _evidence_for(case["file"])
+        kwargs = dict(case.get("kwargs", {}))
+        if case.get("language_version") is not None:
+            kwargs["language_version"] = case["language_version"]
+        legacy = type_facts._resolve_java_type_fact_legacy(evidence, case["symbol"], **kwargs)
+        model = type_facts.resolve_java_type_fact(evidence, case["symbol"], **kwargs)
+
+        def signature(result):
+            features = result.structured_fact.get("features", []) if result.structured_fact else []
+            return (
+                result.status.value,
+                tuple(sorted(result.limitation_codes)),
+                tuple(sorted(feature["kind"] for feature in features)),
+                tuple(sorted(feature["detail"] for feature in features)),
+            )
+
+        assert signature(model) == signature(legacy), (
+            f"{case['file']}::{case['symbol']}: model={signature(model)!r} "
+            f"legacy={signature(legacy)!r}"
+        )
+
+
 def test_battery_resolved_field_claim_proves_and_tampered_fails():
     evidence = _evidence_for("FieldDefaults.java")
     dumped = field_facts.resolve_java_field_fact(

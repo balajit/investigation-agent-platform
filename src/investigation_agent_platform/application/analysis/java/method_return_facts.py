@@ -121,6 +121,7 @@ def resolve_java_method_return_fact(
         if not fixed:
             return unresolved("java_syntax_error_or_incomplete_source_window")
 
+    # Function-local to match the resolver-wide convention (method_facts <-> model would cycle if hoisted).
     from investigation_agent_platform.application.analysis.java import model as _model
 
     code_model = _model.build_java_model(
@@ -189,7 +190,7 @@ def resolve_java_method_return_fact(
     want_guard = _normalize(guard_condition) if guard_condition else ""
 
     for branch in code_model.guard_returns:
-        if branch.method_key != method.key:
+        if branch.method_identity != f"{method.qualified_name}#{method.key}":
             continue
         if want_guard and want_guard not in branch.guard_text:
             continue

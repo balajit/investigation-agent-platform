@@ -196,9 +196,54 @@ class GuardBranch(BaseModel):
     enclosing_method: str | None = Field(default=None, max_length=1024)
     method_name: str = Field(default="", max_length=512)
     method_key: str = Field(default="", max_length=1024)
+    method_identity: str = Field(default="", max_length=2048)
     guard_text: str = Field(default="", max_length=4096)
     returns: list[ReturnSite] = Field(default_factory=list)
     span: Span
+
+
+class JavaFeature(BaseModel):
+    """One declaration feature, with resolver-facing structured detail."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: str = Field(min_length=1, max_length=128)
+    detail: str = Field(max_length=4096)
+    note: str = Field(max_length=4096)
+    span: Span
+    arms: list[dict[str, str]] = Field(default_factory=list)
+
+
+class TypeDeclaration(BaseModel):
+    """A type declaration and the syntax facts needed by semantic queries."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=512)
+    qualified_name: str = Field(min_length=1, max_length=1024)
+    declaration_type: str = Field(min_length=1, max_length=128)
+    gated_features: list[str] = Field(default_factory=list)
+    permits: list[str] = Field(default_factory=list)
+    generic_params: list[dict[str, str]] = Field(default_factory=list)
+    record_components: list[dict[str, str]] = Field(default_factory=list)
+    has_generics: bool = False
+    type_variables: list[str] = Field(default_factory=list)
+    span: Span
+
+
+class JavaAnalysisSnapshot(BaseModel):
+    """Complete typed analysis snapshot for one declaration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    declaration: TypeDeclaration
+    member_names: list[str] = Field(default_factory=list)
+    features: list[JavaFeature] = Field(default_factory=list)
+    pattern_types: list[str] = Field(default_factory=list)
+    missing_permits: list[str] = Field(default_factory=list)
+    missing_pattern_targets: list[str] = Field(default_factory=list)
+    partial_codes: list[str] = Field(default_factory=list)
+    erasure_sensitive: bool = False
 
 
 class JavaModel(BaseModel):
@@ -222,6 +267,9 @@ class JavaModel(BaseModel):
     locals: list[LocalDef] = Field(default_factory=list)
     params: list[ParamDef] = Field(default_factory=list)
     guard_returns: list[GuardBranch] = Field(default_factory=list)
+    type_declarations: list[TypeDeclaration] = Field(default_factory=list)
+    analysis_snapshots: list[JavaAnalysisSnapshot] = Field(default_factory=list)
+    analysis_limitation_codes: list[str] = Field(default_factory=list)
 
 
 def _tree_has_error(root: Any) -> bool:
@@ -654,6 +702,7 @@ def build_java_model(
                             enclosing_method=qualified,
                             method_name=name,
                             method_key=key,
+                            method_identity=f"{qualified}#{key}",
                             guard_text=_normalize_guard(
                                 _p.node_text(cond, source) if cond is not None else ""
                             ),
@@ -843,7 +892,7 @@ def build_java_model(
     for top in root.children:
         visit(top)
 
-    return JavaModel(
+    model = JavaModel(
         parser_version=_p.parser_version(),
         has_syntax_error=_tree_has_error(root),
         repository=repository,
@@ -859,4 +908,25 @@ def build_java_model(
         locals=locals_,
         params=params,
         guard_returns=guard_returns,
+    )
+    # The advanced feature pass consumes this same parsed tree.  The import is
+    # local to keep the model/query layer independent from fact assembly.
+    from investigation_agent_platform.application.analysis.java.type_facts import (
+        build_type_analysis_snapshots,
+    )
+
+    snapshots = build_type_analysis_snapshots(
+        root,
+        source,
+        file_path=file_path,
+        language_version=level,
+    )
+    return model.model_copy(
+        update={
+            "type_declarations": [snapshot.declaration for snapshot in snapshots],
+            "analysis_snapshots": snapshots,
+            "analysis_limitation_codes": sorted(
+                {code for snapshot in snapshots for code in snapshot.partial_codes}
+            ),
+        }
     )

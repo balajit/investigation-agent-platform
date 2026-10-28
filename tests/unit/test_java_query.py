@@ -32,6 +32,16 @@ def test_question_1_all_calls():
     assert len(calls) == 8
 
 
+def test_model_carries_typed_analysis_snapshots():
+    model = _advanced()
+    record = next(
+        snapshot for snapshot in model.analysis_snapshots if snapshot.declaration.name == "Advanced"
+    )
+    assert record.declaration.declaration_type == "class_declaration"
+    assert record.member_names
+    assert model.parser_version == "tree-sitter-java"
+
+
 def test_question_2_calls_to_named_target():
     calls = list(_q.named(_q.all_calls(_corpus()), "execute"))
     assert len(calls) == 3

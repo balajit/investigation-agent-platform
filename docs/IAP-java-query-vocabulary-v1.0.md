@@ -79,8 +79,8 @@ record, never a silent false.
   fields/locals (name, type, enclosing scope, static/instance,
   declared-type presence, raw initializer, evaluated kind/value/limitation);
   parameters (name, type, enclosing method, varargs flag); guard branches
-  (enclosing method, normalized guard text, per-return shape/value/raw
-  text); all flags and per-arg shapes above.
+  (class-qualified method identity, normalized guard text, per-return
+  shape/value/raw text); all flags and per-arg shapes above.
 - **Annotated (carried, not queryable):** source `text` snippets on args and
   the `key`/overload identity (display/diagnostic use, never proof).
 - **Deferred (named, each with its promoting question — the question whose
@@ -91,9 +91,12 @@ record, never a silent false.
   generics/type arguments ("which declarations use parameterized type T<U>?");
   annotations as entities ("which methods carry annotation @A?");
   try/catch/exception flow ("which exceptions can escape method M?");
-  lambdas beyond the enclosure flag ("which lambdas capture variable V?");
-  use-def links ("where is local V assigned and read?"); comments/Javadoc
-  ("which public methods lack a doc comment?"); whole-subtree type-feature
-  analysis ("which type declarations need feature-shape answers the model
-  cannot yet express?" — the type resolver stays tree-bound until a
-  declaration-feature record family is designed).
+   lambdas beyond the enclosure flag ("which lambdas capture variable V?");
+   use-def links ("where is local V assigned and read?"); comments/Javadoc
+   ("which public methods lack a doc comment?"). Type declarations now carry
+   typed analysis snapshots for version gates, records, sealed permits,
+   generics, lambda capture/escape, method references, switch arms, and
+   patterns. Snapshot features are declarative only; limitation codes remain
+   explicit and no snapshot establishes execution. Concurrency/async marker
+   abstention remains resolver-level because it is a window-level safety rule,
+   not a declaration feature.

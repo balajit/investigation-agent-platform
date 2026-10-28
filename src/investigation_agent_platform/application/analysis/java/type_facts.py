@@ -480,7 +480,239 @@ def _span(node: Any) -> tuple[int, int]:
     return (node.start_byte, node.end_byte)
 
 
-def resolve_java_type_fact(
+def build_type_analysis_snapshots(
+    root: Any,
+    source: bytes,
+    *,
+    file_path: str,
+    language_version: int | None,
+) -> list[Any]:
+    """Build typed feature snapshots from the already parsed Java tree."""
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    declared_names = _declared_type_names(root, source)
+    snapshots: list[Any] = []
+    for declaration in _p.walk(root):
+        if declaration.type not in _DECLARATION_TYPES:
+            continue
+        name_node = declaration.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = _p.node_text(name_node, source).strip()
+        enclosing = _enclosing_type(declaration)
+        qualified = name
+        if enclosing is not None:
+            parent_name = enclosing.child_by_field_name("name")
+            if parent_name is not None:
+                qualified = f"{_p.node_text(parent_name, source).strip()}.{name}"
+        gated = sorted(_gated_features(declaration))
+        permits = _permits_names(declaration, source)
+        type_vars = sorted(_type_parameters_in_scope(declaration, source))
+        generic_params = _generic_params(declaration, source)
+        pattern_types = _pattern_target_types(declaration, source)
+        missing_permits = [
+            item for item in permits if item not in declared_names and item not in _IMPLICIT_TYPES
+        ]
+        missing_targets = [
+            item
+            for item in pattern_types
+            if item not in declared_names and item not in type_vars and item not in _IMPLICIT_TYPES
+        ]
+        features: list[Any] = []
+        partial_codes: list[str] = []
+        span = _model.Span(
+            file_path=file_path,
+            line_start=declaration.start_point[0] + 1,
+            line_end=declaration.end_point[0] + 1,
+        )
+        ref = lambda node: _model.Span(
+            file_path=file_path,
+            line_start=node.start_point[0] + 1,
+            line_end=node.end_point[0] + 1,
+        )
+
+        def feature(
+            kind: str,
+            detail: str,
+            note: str,
+            node: Any,
+            arms=None,
+            *,
+            _features=features,
+            _ref=ref,
+        ) -> None:
+            _features.append(
+                _model.JavaFeature(
+                    kind=kind,
+                    detail=detail,
+                    note=note,
+                    span=_ref(node),
+                    arms=arms or [],
+                )
+            )
+
+        if declaration.type == "record_declaration":
+            feature(
+                "record_declaration",
+                f"record {name} declares components {_record_components(declaration, source)}",
+                "components recorded as declared; construction not established",
+                declaration,
+            )
+        if any(node.type == "compact_constructor_declaration" for node in _p.walk(declaration)):
+            feature(
+                "compact_constructor",
+                f"record {name} declares a compact constructor",
+                "declared validation only; execution not established",
+                declaration,
+            )
+        modifiers = [node for node in declaration.children if node.type == "modifiers"]
+        modifier_text = " ".join(_p.node_text(node, source) for node in modifiers)
+        if "sealed" in modifier_text.split() or "non-sealed" in modifier_text:
+            feature(
+                "sealed_hierarchy",
+                f"sealed declaration {name} permits {permits}",
+                "permits list recorded as declared; exhaustiveness not proven",
+                declaration,
+            )
+        has_generics = bool(generic_params) or any(
+            node.type in {"generic_type", "wildcard", "type_arguments"}
+            for node in _p.walk(declaration)
+        )
+        if has_generics:
+            feature(
+                "generic_declaration",
+                f"{name} declares type parameters {generic_params}",
+                "bounds recorded as declared text, never resolved; erasure-insensitive shape only",
+                declaration,
+            )
+
+        subtree_text = _p.node_text(declaration, source)
+        erasure_sensitive = bool(
+            _ERASURE_INSTANCEOF_RE.search(subtree_text)
+            or _ERASURE_CAST_RE.search(subtree_text)
+            or _ERASURE_CATCH_RE.search(subtree_text)
+        )
+        if erasure_sensitive:
+            partial_codes.append("type_erasure_changes_answer")
+        if language_version is None or any(
+            language_version < _VERSION_GATES[item] for item in gated
+        ):
+            partial_codes.append("unsupported_language_version")
+        if missing_permits or missing_targets:
+            partial_codes.append("branch_target_outside_window")
+
+        for node in _p.walk(declaration):
+            if node.type == "lambda_expression":
+                free = _lambda_free_identifiers(node, source)
+                scope = _enclosing_method_or_field(node)
+                known: set[str] = {"this"}
+                if scope is not None:
+                    params, locals_ = _method_scope_names(scope, source)
+                    known |= params | locals_
+                type_node = _enclosing_type(node)
+                if type_node is not None:
+                    known |= _field_names(type_node, source)
+                unknown = sorted(item for item in free if item not in known)
+                if unknown:
+                    partial_codes.append("lambda_capture_outside_window")
+                    detail = f"lambda with unresolvable captures {unknown}"
+                    note = "capture binding requires out-of-window scope"
+                elif _lambda_escapes(node):
+                    partial_codes.append("lambda_escapes_scope")
+                    detail = (
+                        f"lambda with in-window captures {sorted(free)} crosses the analyzed scope"
+                    )
+                    note = "possible shape only; invocation and ordering not established"
+                else:
+                    detail = f"lambda with in-window captures {sorted(free)}"
+                    note = "possible shape only; invocation and ordering not established"
+                feature("lambda_shape", detail, note, node)
+            elif node.type == "method_reference":
+                target = _method_reference_target(node, source)
+                receiver, member = target.split("::", 1) if "::" in target else (target, "")
+                in_window = receiver.strip() in {item.rsplit(".", 1)[-1] for item in declared_names}
+                if receiver.strip() in {"this", "super"}:
+                    type_node = _enclosing_type(node)
+                    members = {
+                        _p.node_text(item.child_by_field_name("name"), source)
+                        for item in _p.walk(type_node)
+                        if type_node is not None
+                        and item.type
+                        in {
+                            "method_declaration",
+                            "constructor_declaration",
+                            "compact_constructor_declaration",
+                        }
+                        and item.child_by_field_name("name") is not None
+                    }
+                    in_window = member.strip() in members
+                if in_window:
+                    feature(
+                        "method_reference_shape",
+                        f"method reference targets in-window {target}",
+                        "target named, not proven to execute",
+                        node,
+                    )
+                else:
+                    partial_codes.append("method_reference_target_outside_window")
+                    feature(
+                        "method_reference_shape",
+                        f"method reference {target} has no in-window target",
+                        "target declaration outside the window",
+                        node,
+                    )
+        if any(node.type == "switch_expression" for node in _p.walk(declaration)):
+            arms = _switch_arms(declaration, source)
+            feature(
+                "switch_expression_shape",
+                f"switch expression declares {len(arms)} arms ({'default present' if any('default' in arm['label'] for arm in arms) else 'no default arm'})",
+                "possible arm selection only; the selector is not evaluated",
+                declaration,
+                arms,
+            )
+        if any(node.type == "type_pattern" for node in _p.walk(declaration)) or any(
+            node.type == "instanceof_expression" and len(node.children) > 3
+            for node in _p.walk(declaration)
+        ):
+            feature(
+                "pattern_matching_shape",
+                f"patterns bind target types {pattern_types or 'none named'}",
+                "every pattern target type is declared in-window; match outcome not established",
+                declaration,
+            )
+
+        snapshots.append(
+            _model.JavaAnalysisSnapshot(
+                declaration=_model.TypeDeclaration(
+                    name=name,
+                    qualified_name=qualified,
+                    declaration_type=declaration.type,
+                    gated_features=gated,
+                    permits=permits,
+                    generic_params=generic_params,
+                    record_components=_record_components(declaration, source),
+                    has_generics=has_generics,
+                    type_variables=type_vars,
+                    span=span,
+                ),
+                member_names=[
+                    _p.node_text(node.child_by_field_name("name"), source).strip()
+                    for node in _p.walk(declaration)
+                    if node.type in {"method_declaration", "constructor_declaration"}
+                    and node.child_by_field_name("name") is not None
+                ],
+                features=features,
+                pattern_types=pattern_types,
+                missing_permits=missing_permits,
+                missing_pattern_targets=missing_targets,
+                partial_codes=list(dict.fromkeys(partial_codes)),
+                erasure_sensitive=erasure_sensitive,
+            )
+        )
+    return snapshots
+
+
+def _resolve_java_type_fact_legacy(
     evidence: Any,
     symbol_name: str,
     *,
@@ -851,4 +1083,185 @@ def resolve_java_type_fact(
         declaration_location=declaration_location,
         assumptions=tuple(assumptions),
         parser_version=_p.parser_version(),
+    )
+
+
+def resolve_java_type_fact(
+    evidence: Any,
+    symbol_name: str,
+    *,
+    feature_hint: str | None = None,
+    language_version: object = None,
+) -> CodeFactResolutionV2:
+    """Resolve type features from the shared Java model snapshot."""
+    lines, reason = java_source_lines(evidence)
+    provenance = getattr(evidence, "provenance", None)
+    location = getattr(provenance, "source_location", None)
+    source_path = str(getattr(location, "file_path", "") or "")
+    revision = str(getattr(location, "revision", "") or "")
+    identifier = str(getattr(location, "identifier", "") or "")
+    repository = repository_of(identifier, source_path)
+    evidence_id = getattr(evidence, "evidence_id", None)
+    evidence_ids = (evidence_id,) if evidence_id is not None else ()
+    level = _lit.normalize_source_level(language_version)
+    level_text = str(level) if level is not None else None
+    subject = symbol_name or "unknown"
+    if reason:
+        return _base_unresolved(repository, revision, subject, reason, evidence_ids, level_text)
+    assert location is not None
+    if not symbol_name or not symbol_name.strip():
+        return _base_unresolved(
+            repository, revision, subject, "missing_symbol_name", evidence_ids, level_text
+        )
+    if not source_path.lower().endswith(".java"):
+        return _base_unresolved(
+            repository, revision, subject, "not_a_java_source_file", evidence_ids, level_text
+        )
+    if not repository:
+        return _base_unresolved(
+            repository,
+            revision,
+            subject,
+            "repository_identity_unavailable",
+            evidence_ids,
+            level_text,
+        )
+    window_text = "\n".join(line.text for line in lines)
+    if any(marker in window_text for marker in _CONCURRENCY_PARTIAL):
+        codes = (
+            ("async_boundary", "requires_runtime_observation")
+            if any(
+                marker in window_text
+                for marker in ("CompletableFuture", "Executor", "Flux", "Mono")
+            )
+            else ("nondeterministic_scheduling", "requires_runtime_observation")
+        )
+        return _base_unresolved(
+            repository, revision, subject, ",".join(codes), evidence_ids, level_text, partial=True
+        )
+    # Function-local to match the resolver-wide convention (method_facts <-> model would cycle if hoisted).
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    try:
+        code_model = _model.build_java_model(
+            window_text.encode("utf-8"),
+            file_path=source_path,
+            repository=repository,
+            revision=revision,
+            language_version=level,
+        )
+    except Exception as exc:
+        return _base_unresolved(
+            repository,
+            revision,
+            subject,
+            f"java_parser_unavailable:{type(exc).__name__}",
+            evidence_ids,
+            level_text,
+        )
+    if code_model.has_syntax_error:
+        return _base_unresolved(
+            repository,
+            revision,
+            subject,
+            "java_syntax_error_or_incomplete_source_window",
+            evidence_ids,
+            level_text,
+        )
+    snapshots = [
+        item for item in code_model.analysis_snapshots if item.declaration.name == symbol_name
+    ]
+    if not snapshots:
+        snapshots = [
+            item for item in code_model.analysis_snapshots if symbol_name in item.member_names
+        ]
+    if not snapshots:
+        return _base_unresolved(
+            repository, revision, subject, "symbol_not_in_window", evidence_ids, level_text
+        )
+    if len(snapshots) > 1:
+        return _base_unresolved(
+            repository, revision, subject, "ambiguous_symbol", evidence_ids, level_text
+        )
+    snapshot = snapshots[0]
+    codes = list(snapshot.partial_codes)
+    if "unsupported_language_version" in codes:
+        return _base_unresolved(
+            repository, revision, subject, "unsupported_language_version", evidence_ids, level_text
+        )
+    if "type_erasure_changes_answer" in codes:
+        return _base_unresolved(
+            repository, revision, subject, "type_erasure_changes_answer", evidence_ids, level_text
+        )
+    first_line = lines[0].number
+    features = [
+        {
+            "kind": item.kind,
+            "detail": item.detail,
+            "range": f"{item.span.file_path}:{item.span.line_start + first_line - 1}-{item.span.line_end + first_line - 1}",
+            "note": item.note,
+            **({"arms": item.arms} if item.arms else {}),
+        }
+        for item in snapshot.features
+    ]
+    if feature_hint is not None:
+        hint = feature_hint.strip().lower()
+        features = [
+            item
+            for item in features
+            if hint in item["kind"].lower() or hint in item["detail"].lower()
+        ]
+        if not features:
+            return _base_unresolved(
+                repository, revision, subject, "feature_hint_not_found", evidence_ids, level_text
+            )
+    if not features:
+        return _base_unresolved(
+            repository,
+            revision,
+            subject,
+            "no_supported_type_feature_in_window",
+            evidence_ids,
+            level_text,
+        )
+    assumptions = [
+        "declared shapes only; no shape is established as taken, run, or observed",
+        "generic bounds recorded as declared text, never resolved",
+        "language_version is caller-attested, not build authority",
+    ]
+    structured_fact = {
+        "kind": "type_features",
+        "symbol": symbol_name,
+        "features": features,
+        "notes": assumptions,
+    }
+    refs = [
+        f"{source_path}:{snapshot.declaration.span.line_start + first_line - 1}-{snapshot.declaration.span.line_end + first_line - 1}"
+    ]
+    refs.extend(item["range"] for item in features if item["range"] != refs[0])
+    declaration_location = location.model_copy(
+        update={
+            "line_start": snapshot.declaration.span.line_start + first_line - 1,
+            "line_end": snapshot.declaration.span.line_end + first_line - 1,
+        }
+    )
+    status = CodeFactStatus.PARTIAL if codes else CodeFactStatus.RESOLVED
+    return CodeFactResolutionV2(
+        status=status,
+        repository=repository,
+        revision=revision,
+        fact_category=JavaFactCategory.LANGUAGE_SEMANTIC_FACT,
+        semantic_stage=SemanticStage.DECLARATION,
+        declaring_type="unknown",
+        subject_identity=f"{source_path}#{symbol_name}",
+        value_semantics=CodeValueSemantics.EXPLICIT_INITIALIZER,
+        language_version=level_text,
+        analysis_method="tree-sitter-range-v1",
+        structured_fact=structured_fact,
+        control_flow_refs=tuple(refs),
+        source_evidence_ids=evidence_ids,
+        declaration_location=declaration_location,
+        limitation_codes=tuple(dict.fromkeys(codes)),
+        assumptions=tuple(assumptions),
+        parser_version=code_model.parser_version,
     )

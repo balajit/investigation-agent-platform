@@ -166,6 +166,37 @@ def test_method_only_window_still_resolves():
     assert result.resolved_value == "STANDARD"
 
 
+def test_same_signature_in_other_class_does_not_cross_match_guard_branch():
+    source = """package com.sample.orders;
+public class First {
+    public String normalize(String value) {
+        if (value == null) {
+            return "FIRST";
+        }
+        return value;
+    }
+}
+class Second {
+    public String normalize(String value) {
+        if (value == null) {
+            return "SECOND";
+        }
+        return value;
+    }
+}
+"""
+    ev = _source_evidence(source, path="src/First.java")
+    result = resolve_java_method_return_fact(
+        ev,
+        "normalize",
+        guard_condition="value == null",
+        declaring_type="First",
+    )
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.resolved_value == "FIRST"
+    assert result.subject_identity == "com.sample.orders.First.normalize"
+
+
 def test_garbage_window_stays_unresolved():
     """A genuinely broken window is not rescued by brace stripping."""
     ev = _source_evidence("public String normalize( { if ( ", start=6)
