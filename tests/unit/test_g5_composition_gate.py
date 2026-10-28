@@ -39,10 +39,29 @@ from investigation_agent_platform.domain.proof.evaluation import EvaluationInput
 from investigation_agent_platform.domain.proof.manifest import build_manifest
 from investigation_agent_platform.domain.proof.publication import (
     PublicationDecision,
-    PublicationRequest,
+    _decide_linearization,
     build_commit,
-    decide_publication,
 )
+
+
+def _decide(**over: object) -> tuple[PublicationDecision, str]:
+    args: dict[str, object] = {
+        "checker_outcome": CheckerOutcome.VALID,
+        "certificate_context_id": "ctx-live",
+        "expected_context_id": "ctx-live",
+        "reconciliation_adjudicated": True,
+        "policy_eligible": True,
+        "policy_reason": "",
+    }
+    args.update(over)
+    return _decide_linearization(
+        checker_outcome=args["checker_outcome"],  # type: ignore[arg-type]
+        certificate_context_id=str(args["certificate_context_id"]),
+        expected_context_id=args["expected_context_id"],  # type: ignore[arg-type]
+        reconciliation_adjudicated=bool(args["reconciliation_adjudicated"]),
+        policy_eligible=bool(args["policy_eligible"]),
+        policy_reason=str(args["policy_reason"]),
+    )
 from investigation_agent_platform.domain.proof.rules import RULE_REGISTRY
 
 
@@ -151,16 +170,7 @@ def test_gate_no_stale_publication_end_to_end() -> None:
         _request(cert, proposition, manifest, artifacts, expected_context_id=new_ctx)
     )
     assert stale_outcome == CheckerOutcome.STALE_CERTIFICATE
-    decision, reason = decide_publication(
-        PublicationRequest(
-            checker_outcome=CheckerOutcome.VALID,
-            certificate_context_id=str(cert["context_id"]),
-            expected_context_id=new_ctx,
-            derivation_id=der_a,
-            reconciliation_adjudicated=True,
-            policy_eligible=True,
-        )
-    )
+    decision, reason = _decide(checker_outcome=CheckerOutcome.VALID, certificate_context_id=str(cert["context_id"]), expected_context_id=new_ctx, derivation_id=der_a, reconciliation_adjudicated=True, policy_eligible=True)
     assert decision == PublicationDecision.DENY
     assert reason == "STALE_CONTEXT"
     with pytest.raises(ValueError, match="STALE_CONTEXT"):
@@ -173,16 +183,7 @@ def test_gate_alternative_route_commits_after_root_loss() -> None:
         [CheckerOutcome.PREMISE_UNAVAILABLE, CheckerOutcome.VALID]
     )
     assert outcome == CheckerOutcome.VALID
-    decision, _ = decide_publication(
-        PublicationRequest(
-            checker_outcome=outcome,
-            certificate_context_id="ctx-live",
-            expected_context_id="ctx-live",
-            derivation_id="der-survivor",
-            reconciliation_adjudicated=True,
-            policy_eligible=True,
-        )
-    )
+    decision, _ = _decide(checker_outcome=outcome, certificate_context_id="ctx-live", expected_context_id="ctx-live", derivation_id="der-survivor", reconciliation_adjudicated=True, policy_eligible=True)
     assert decision == PublicationDecision.COMMIT
 
 
@@ -293,16 +294,7 @@ def test_sensitivity_freshness_pin_is_load_bearing() -> None:
     assert pinned == CheckerOutcome.VALID
     unpinned, _ = check_certificate(_request(cert, proposition, manifest, artifacts))
     assert unpinned == CheckerOutcome.VALID  # no pin: nothing to be stale against
-    decision, reason = decide_publication(
-        PublicationRequest(
-            checker_outcome=CheckerOutcome.VALID,
-            certificate_context_id=str(cert["context_id"]),
-            expected_context_id="ctx-moved",
-            derivation_id=str(cert["derivation_id"]),
-            reconciliation_adjudicated=True,
-            policy_eligible=True,
-        )
-    )
+    decision, reason = _decide(checker_outcome=CheckerOutcome.VALID, certificate_context_id=str(cert["context_id"]), expected_context_id="ctx-moved", derivation_id=str(cert["derivation_id"]), reconciliation_adjudicated=True, policy_eligible=True)
     assert (decision, reason) == (PublicationDecision.DENY, "STALE_CONTEXT")
 
 

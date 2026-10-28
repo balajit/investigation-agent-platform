@@ -28,7 +28,7 @@ them in the traceability record, never here.
 | M3 | Semantic validation load-bearing | rules.py::validate_behavior_premises: return (DISCHARGED, neutered) unconditionally | all behavior invalid goldens, test_checker_rejects_behavior_predicate_mismatch, test_checker_independent_of_monkeypatched_producer | 23 behavior producer goldens fired incl. test_behavior_predicate_mismatch_invalid. test_checker_rejects_behavior_predicate_mismatch + monkeypatched-producer independence correctly did NOT fire (checker independent of producer) | DETECTED with mapping note (see R-C3-02) |
 | M4 | Dependency edge completeness | composition.py::RULE_DEPS: remove scope.repository from behavior/v1 | test_scope_repository_change_invalidates_behavior_only, test_composition_accepts_new_rule_nodes_and_deps | All 3 fired (scope_repository C3 + oracle drift-pin + composition dep pin C2); P5 operational/undeclared still empty (D4 guard holds) | DETECTED |
 | M5 | Complete-empty admission | rules.py::validate_absence_premises: accept search_status INCOMPLETE as discharging | test_absence_incomplete_search_unsupported, test_absence_failed_search_unsupported | test_absence_incomplete_search_unsupported FIRED; test_absence_failed_search_unsupported passed (mutation admits only INCOMPLETE, not FAILED — mapping over-specified) | DETECTED with mapping note (see R-C3-03) |
-| M6 | Freshness pin load-bearing | certificate.py::check_certificate: ignore expected_context_id | test_k8_k15_stale_context_rejected, test_checker_stale_context_rejected_for_behavior_certificate, decision-level test_stale_context_denies_k8_k15 | Both check_certificate-level detectors FIRED (+ g5 stale end-to-end). test_stale_context_denies_k8_k15 passed (decide_publication's own line-82 layer, untouched by M6) | DETECTED with mapping note (see R-C3-04) |
+| M6 | Freshness pin load-bearing | certificate.py::check_certificate: ignore expected_context_id | test_k8_k15_stale_context_rejected, test_checker_stale_context_rejected_for_behavior_certificate, decision-level test_stale_context_denies_k8_k15 | Both check_certificate-level detectors FIRED (+ g5 stale end-to-end). test_stale_context_denies_k8_k15 passed (the linearization sub-step's own stale-context layer, untouched by M6) | DETECTED with mapping note (see R-C3-04) |
 """
 
 from __future__ import annotations
@@ -64,8 +64,7 @@ from investigation_agent_platform.domain.proof.evaluation import EvaluationInput
 from investigation_agent_platform.domain.proof.manifest import ManifestCoverage, build_manifest
 from investigation_agent_platform.domain.proof.outcomes import CheckerOutcome
 from investigation_agent_platform.domain.proof.publication import (
-    PublicationRequest,
-    decide_publication,
+    _decide_linearization,
 )
 from investigation_agent_platform.domain.proof.rules import (
     RuleOutcome,
@@ -1299,8 +1298,14 @@ def test_decision_request_key_order_invariant() -> None:
     rotations = [keys[i:] + keys[:i] for i in range(len(keys))]
     seen: set[tuple[str, str]] = set()
     for rotation in rotations:
-        request = PublicationRequest(**{k: base[k] for k in rotation})  # type: ignore[arg-type]
-        decision, reason = decide_publication(request)
+        args = {k: base[k] for k in rotation}
+        decision, reason = _decide_linearization(
+            checker_outcome=args["checker_outcome"],
+            certificate_context_id=args["certificate_context_id"],
+            expected_context_id=args["expected_context_id"],
+            reconciliation_adjudicated=args["reconciliation_adjudicated"],
+            policy_eligible=args["policy_eligible"],
+        )
         seen.add((decision.value, reason))
     assert seen == {("COMMIT", "linearization checklist satisfied")}
 

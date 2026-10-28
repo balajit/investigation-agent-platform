@@ -43,20 +43,10 @@ class DenyReason(str, Enum):
     CONFLICT_UNRESOLVED = "CONFLICT_UNRESOLVED"
     STALE_CONTEXT = "STALE_CONTEXT"
     POLICY_DENIED = "POLICY_DENIED"
-
-
-class PublicationRequest(BaseModel):
-    """Frozen inputs to one publication decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    checker_outcome: CheckerOutcome = Field(...)
-    certificate_context_id: str = Field(default="", max_length=256)
-    expected_context_id: str | None = Field(default=None, max_length=256)
-    derivation_id: str = Field(default="", max_length=256)
-    reconciliation_adjudicated: bool = Field(default=False)
-    policy_eligible: bool = Field(default=False)
-    policy_reason: str = Field(default="", max_length=256)
+    OBLIGATIONS_ABSENT = "OBLIGATIONS_ABSENT"
+    OPEN_OBLIGATION = "OPEN_OBLIGATION"
+    UNSUPPORTED_OBLIGATION = "UNSUPPORTED_OBLIGATION"
+    STALE_OBLIGATION = "STALE_OBLIGATION"
 
 
 class PublicationCommit(BaseModel):
@@ -68,21 +58,36 @@ class PublicationCommit(BaseModel):
     context_id: str = Field(..., max_length=256)
 
 
-def decide_publication(request: PublicationRequest) -> tuple[PublicationDecision, str]:
-    """Apply the linearization checklist in order; first failure denies."""
-    if not request.expected_context_id:
+def _decide_linearization(
+    checker_outcome: CheckerOutcome,
+    certificate_context_id: str,
+    expected_context_id: str | None,
+    reconciliation_adjudicated: bool,
+    policy_eligible: bool,
+    policy_reason: str = "",
+) -> tuple[PublicationDecision, str]:
+    """Linearization checklist sub-step (private; not a promotion entry).
+
+    Applies the ordered checklist to gate-derived values only. Callable
+    only by ``decide_guarded_promotion`` (obligations layer); no caller
+    can reach a COMMIT through this helper with a supplied checker
+    outcome, because the helper takes the outcome the guarded entry
+    produced internally. Tests pin the ordering through this private
+    seam; the public promotion contract lives on the guarded entry.
+    """
+    if not expected_context_id:
         return PublicationDecision.DENY, DenyReason.NO_PINNED_CONTEXT.value
-    if request.checker_outcome != CheckerOutcome.VALID:
+    if checker_outcome != CheckerOutcome.VALID:
         return (
             PublicationDecision.DENY,
-            f"{DenyReason.NOT_CHECKER_ACCEPTED.value}:{request.checker_outcome.value}",
+            f"{DenyReason.NOT_CHECKER_ACCEPTED.value}:{checker_outcome.value}",
         )
-    if not request.reconciliation_adjudicated:
+    if not reconciliation_adjudicated:
         return PublicationDecision.DENY, DenyReason.CONFLICT_UNRESOLVED.value
-    if request.certificate_context_id != request.expected_context_id:
+    if certificate_context_id != expected_context_id:
         return PublicationDecision.DENY, DenyReason.STALE_CONTEXT.value
-    if not request.policy_eligible:
-        reason = request.policy_reason.strip() or "layer-B policy denies"
+    if not policy_eligible:
+        reason = policy_reason.strip() or "layer-B policy denies"
         return PublicationDecision.DENY, f"{DenyReason.POLICY_DENIED.value}:{reason}"
     return PublicationDecision.COMMIT, "linearization checklist satisfied"
 

@@ -1,4 +1,11 @@
-"""WP-C2 publication decision: linearization order, stale deny, no bare VERIFIED."""
+"""WP-C2 publication linearization: order, stale deny, no bare VERIFIED.
+
+Pins the private linearization sub-step (``_decide_linearization``) used
+by the guarded promotion entry. The public promotion contract lives on
+``decide_guarded_promotion`` (obligations layer); no test here can
+produce an authoritative promotion decision, by construction — the
+seam takes gate-derived values, not caller requests.
+"""
 
 from __future__ import annotations
 
@@ -8,32 +15,43 @@ from investigation_agent_platform.domain.proof.certificate import CheckerOutcome
 from investigation_agent_platform.domain.proof.publication import (
     DenyReason,
     PublicationDecision,
-    PublicationRequest,
+    _decide_linearization,
     build_commit,
-    decide_publication,
 )
 
 
-def _ok(**over: object) -> PublicationRequest:
+def _ok(**over: object) -> dict[str, object]:
     base: dict[str, object] = {
         "checker_outcome": CheckerOutcome.VALID,
         "certificate_context_id": "ctx-1",
         "expected_context_id": "ctx-1",
-        "derivation_id": "der-1",
         "reconciliation_adjudicated": True,
         "policy_eligible": True,
+        "policy_reason": "",
     }
     base.update(over)
-    return PublicationRequest(**base)  # type: ignore[arg-type]
+    return base
+
+
+def _decide(**over: object) -> tuple[PublicationDecision, str]:
+    args = _ok(**over)
+    return _decide_linearization(
+        checker_outcome=args["checker_outcome"],  # type: ignore[arg-type]
+        certificate_context_id=str(args["certificate_context_id"]),
+        expected_context_id=args["expected_context_id"],  # type: ignore[arg-type]
+        reconciliation_adjudicated=bool(args["reconciliation_adjudicated"]),
+        policy_eligible=bool(args["policy_eligible"]),
+        policy_reason=str(args["policy_reason"]),
+    )
 
 
 def test_commit_when_checklist_satisfied() -> None:
-    decision, _ = decide_publication(_ok())
+    decision, _ = _decide()
     assert decision == PublicationDecision.COMMIT
 
 
 def test_no_pinned_context_denies_first() -> None:
-    decision, reason = decide_publication(_ok(expected_context_id=None))
+    decision, reason = _decide(expected_context_id=None)
     assert decision == PublicationDecision.DENY
     assert reason == DenyReason.NO_PINNED_CONTEXT.value
 
@@ -50,41 +68,37 @@ def test_non_valid_checker_denies_k13() -> None:
         CheckerOutcome.PREMISE_UNAVAILABLE,
         CheckerOutcome.CHECKER_FAILURE,
     ):
-        decision, reason = decide_publication(_ok(checker_outcome=outcome))
+        decision, reason = _decide(checker_outcome=outcome)
         assert decision == PublicationDecision.DENY
         assert reason.startswith(DenyReason.NOT_CHECKER_ACCEPTED.value)
 
 
 def test_unadjudicated_conflict_denies() -> None:
-    decision, reason = decide_publication(_ok(reconciliation_adjudicated=False))
+    decision, reason = _decide(reconciliation_adjudicated=False)
     assert decision == PublicationDecision.DENY
     assert reason == DenyReason.CONFLICT_UNRESOLVED.value
 
 
 def test_stale_context_denies_k8_k15() -> None:
-    decision, reason = decide_publication(
-        _ok(certificate_context_id="ctx-old", expected_context_id="ctx-new")
+    decision, reason = _decide(
+        certificate_context_id="ctx-old", expected_context_id="ctx-new"
     )
     assert decision == PublicationDecision.DENY
     assert reason == DenyReason.STALE_CONTEXT.value
 
 
 def test_policy_denial_preserves_proof() -> None:
-    decision, reason = decide_publication(
-        _ok(policy_eligible=False, policy_reason="freshness window")
-    )
+    decision, reason = _decide(policy_eligible=False, policy_reason="freshness window")
     assert decision == PublicationDecision.DENY
     assert reason.startswith(DenyReason.POLICY_DENIED.value)
 
 
 def test_checklist_order_no_pinned_beats_stale() -> None:
     # Deterministic order: first failure wins, attributable to one cause.
-    decision, reason = decide_publication(
-        _ok(
-            expected_context_id=None,
-            checker_outcome=CheckerOutcome.INVALID_INFERENCE,
-            certificate_context_id="ctx-other",
-        )
+    decision, reason = _decide(
+        expected_context_id=None,
+        checker_outcome=CheckerOutcome.INVALID_INFERENCE,
+        certificate_context_id="ctx-other",
     )
     assert (decision, reason) == (
         PublicationDecision.DENY,

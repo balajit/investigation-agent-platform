@@ -24,10 +24,10 @@ from investigation_agent_platform.application.investigation.action_policy import
 from investigation_agent_platform.domain.proof import dispatch as dispatch_mod
 from investigation_agent_platform.domain.proof import edge_observation as edge_mod
 from investigation_agent_platform.domain.proof.canonical import proposition_id
+from investigation_agent_platform.domain.proof.certificate import CheckerOutcome
 from investigation_agent_platform.domain.proof.dispatch import typed_edges_enabled
 from investigation_agent_platform.domain.proof.publication import (
-    PublicationRequest,
-    decide_publication,
+    _decide_linearization,
 )
 
 _REPO = Path(__file__).parent.parent.parent
@@ -157,16 +157,18 @@ def test_d1_h02_no_kernel_module_references_flag() -> None:
 
 
 def test_d1_g05_flag_on_changes_no_kernel_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
-    req = PublicationRequest(
-        checker_outcome="VALID",
-        certificate_context_id="c",
-        expected_context_id="c",
-        derivation_id="d",
-        reconciliation_adjudicated=True,
-        policy_eligible=True,
-    )
+    def decide_publication(req: object) -> object:
+        assert isinstance(req, str)
+        return _decide_linearization(
+            checker_outcome=CheckerOutcome(req),
+            certificate_context_id="c",
+            expected_context_id="c",
+            reconciliation_adjudicated=True,
+            policy_eligible=True,
+        )
     prop = {"canon_version": "canon/v1", "predicate": "p", "quantifier": "UNIVERSAL"}
     snap = PlannerSnapshot(evidence_banked_total=2)
+    req = "VALID"
     monkeypatch.delenv("IAP_TYPED_EDGES", raising=False)
     off = (decide_publication(req), proposition_id(prop), decide(snap).model_dump())
     for value in ("1", "true", "yes"):

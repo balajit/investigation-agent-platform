@@ -7,6 +7,7 @@
     "src/investigation_agent_platform/domain/proof/second_path.py": "sha256:f5840fe870934cea1499fb2bd96f3408c37a0cffe59ee3189846bad0b27ea95e",
     "src/investigation_agent_platform/domain/proof/manifest.py": "sha256:0fb6aa53157c4f3e3e64435df798782364a8459a8e809a1a3ceac48c46f78c60",
     "src/investigation_agent_platform/domain/proof/evaluation.py": "sha256:65fd4f5e9c066581c606061801caaf3bc4aaa10ec01da8135737f4fc0199341a",
-    "src/investigation_agent_platform/domain/proof/canonical.py": "sha256:77e47390de1739b6db1bef0e45dc6e6dad518a038a0d00e6e6a6d16d2549e795"
+    "src/investigation_agent_platform/domain/proof/canonical.py": "sha256:77e47390de1739b6db1bef0e45dc6e6dad518a038a0d00e6e6a6d16d2549e795",
+    "src/investigation_agent_platform/domain/proof/obligations.py": "sha256:31450cc09a327e912918d8c17340fbe3ce568f2e2350fe64c37dfca889f62ef4"
   }
 }

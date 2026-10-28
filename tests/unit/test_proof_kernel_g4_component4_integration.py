@@ -3,7 +3,7 @@
 D1 (12 tests): five valid routes (definition, call_edge, behavior, absence,
 history) through build_manifest -> EvaluationInputs -> get_rule/apply_rule
 -> certify -> CheckRequest/check_certificate -> make_node/compose ->
-PublicationRequest/decide_publication -> build_commit, plus seven
+_decide_linearization private seam -> build_commit, plus seven
 single-fault negatives (checker-rejection, checker-stale, decision-stale,
 missing-premise, policy-denial, alternative-survival, multi-premise).
 
@@ -13,7 +13,7 @@ policy denial and staleness recompute the decision, never mutate the proof.
 D3 (1 test): static consumer-scan over ``src/`` for the three
 forbidden-pattern definitions (P1 decision-API refs, P2 harness-module refs,
 P3 harness literals); only the allowlist (domain/proof internal, tests/,
-grandfathered decide_publication-only
+grandfathered decide_guarded_promotion-only
 ``publication_commit_service.py``) may match.
 
 D4 (1 test): ``test_c4_report_table_complete`` parses the mapping table below
@@ -59,7 +59,7 @@ Mapping table (transcription of ``C4_CASES``):
 | test_e2e_deny_stale_context | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | DENY / STALE_CONTEXT | DENY / STALE_CONTEXT |
 | test_e2e_deny_policy_denied | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | DENY / POLICY_DENIED:c4-deny-pin | DENY / POLICY_DENIED:c4-deny-pin |
 | test_e2e_denied_decision_preserves_proof_artifact | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | PRESERVED / H0 stable; IDs bound; no commit constructed | PRESERVED / H0 stable; IDs bound; no commit constructed |
-| test_no_production_consumer_of_g4_decision | P1=decide_publication/build_commit import-or-attribute refs; P2=test_proof_kernel_g4_component4_integration refs; P3=component4_integration/g4_component4 literals under src/; allowlist=domain/proof internal, tests/, publication_commit_service.py decide-only; searched-roots=src/ | no violations / zero out-of-allowlist matches | no violations / zero out-of-allowlist matches |
+| test_no_production_consumer_of_g4_decision | P1=decide_publication/build_commit/decide_guarded_promotion import-or-attribute refs; P2=test_proof_kernel_g4_component4_integration refs; P3=component4_integration/g4_component4 literals under src/; allowlist=domain/proof internal, tests/, publication_commit_service.py guarded-only; searched-roots=src/ | no violations / zero out-of-allowlist matches | no violations / zero out-of-allowlist matches |
 """
 
 from __future__ import annotations
@@ -102,9 +102,8 @@ from investigation_agent_platform.domain.proof.manifest import (
 )
 from investigation_agent_platform.domain.proof.publication import (
     PublicationDecision,
-    PublicationRequest,
+    _decide_linearization,
     build_commit,
-    decide_publication,
 )
 from investigation_agent_platform.domain.proof.rules import (
     RULE_BUNDLE_VERSION,
@@ -286,10 +285,10 @@ C4_CASES: dict[str, dict[str, Any]] = {
     },
     "test_no_production_consumer_of_g4_decision": {
         "fixtures": {
-            "P1": "decide_publication/build_commit import-or-attribute refs",
+            "P1": "decide_publication/build_commit/decide_guarded_promotion import-or-attribute refs",
             "P2": "test_proof_kernel_g4_component4_integration refs",
             "P3": "component4_integration/g4_component4 literals under src/",
-            "allowlist": "domain/proof internal, tests/, publication_commit_service.py decide-only",
+            "allowlist": "domain/proof internal, tests/, publication_commit_service.py guarded-only",
             "searched-roots": "src/",
         },
         "expected": "no violations",
@@ -591,16 +590,7 @@ def _compose_and_commit(bundle: dict[str, Any], outcomes: list[Any]) -> tuple[An
     assert node.derivation_id == cert.get("derivation_id")
     assert node.rule_id == cert.get("rule_id")
     composed, composition_reason = compose_conjunction(outcomes)
-    request = PublicationRequest(
-        checker_outcome=composed,
-        certificate_context_id=str(cert.get("context_id") or ""),
-        expected_context_id=str(cert.get("context_id") or ""),
-        derivation_id=str(cert.get("derivation_id") or ""),
-        reconciliation_adjudicated=True,
-        policy_eligible=True,
-        policy_reason="",
-    )
-    decision, reason = decide_publication(request)
+    decision, reason = _decide(cert, composed)
     commit = None
     if decision == PublicationDecision.COMMIT:
         commit = build_commit(
@@ -676,22 +666,37 @@ def _definition_bundle() -> dict[str, Any]:
     return _certified_bundle("definition/v1", [_definition_record()], _definition_proposition(), {})
 
 
-def _commit_ready_request(
+_UNSET: Any = object()
+
+
+def _decide(
     cert: dict[str, Any],
     outcome: Any,
     **over: Any,
-) -> PublicationRequest:
-    base: dict[str, Any] = {
-        "checker_outcome": outcome,
-        "certificate_context_id": str(cert.get("context_id") or ""),
-        "expected_context_id": str(cert.get("context_id") or ""),
-        "derivation_id": str(cert.get("derivation_id") or ""),
-        "reconciliation_adjudicated": True,
-        "policy_eligible": True,
-        "policy_reason": "",
-    }
-    base.update(over)
-    return PublicationRequest(**base)
+) -> tuple[Any, str]:
+    """Linearization sub-step over gate-derived values (private seam)."""
+    if "checker_outcome" in over:
+        outcome = over.pop("checker_outcome")
+    certificate_context_id = over.pop("certificate_context_id", _UNSET)
+    expected_context_id = over.pop("expected_context_id", _UNSET)
+    reconciliation_adjudicated = over.pop("reconciliation_adjudicated", True)
+    policy_eligible = over.pop("policy_eligible", True)
+    policy_reason = over.pop("policy_reason", "")
+    assert not over, f"unexpected _decide kwargs: {sorted(over)}"
+    return _decide_linearization(
+        checker_outcome=outcome,
+        certificate_context_id=(
+            str(cert.get("context_id") or "")
+            if certificate_context_id is _UNSET
+            else certificate_context_id
+        ),
+        expected_context_id=(
+            str(cert.get("context_id") or "") if expected_context_id is _UNSET else expected_context_id
+        ),
+        reconciliation_adjudicated=reconciliation_adjudicated,
+        policy_eligible=policy_eligible,
+        policy_reason=policy_reason,
+    )
 
 
 def _cert_hash(cert: dict[str, Any]) -> str:
@@ -836,7 +841,7 @@ def test_e2e_checker_rejection_denies() -> None:
     assert outcome == CheckerOutcome.PREMISE_UNAVAILABLE, (
         f"{case}: tampered window surfaced {outcome}; reasons={reasons}"
     )
-    decision, reason = decide_publication(_commit_ready_request(bundle["cert"], outcome))
+    decision, reason = _decide(bundle["cert"], outcome)
     _assert_decision_row(case, decision, reason)
     assert decision == PublicationDecision.DENY
 
@@ -858,7 +863,7 @@ def test_e2e_checker_stale_rejection_denies() -> None:
         f"{case}: moved context surfaced {outcome}; reasons={reasons}"
     )
     assert any("K8/K15" in reason for reason in reasons), reasons
-    decision, reason = decide_publication(_commit_ready_request(bundle["cert"], outcome))
+    decision, reason = _decide(bundle["cert"], outcome)
     _assert_decision_row(case, decision, reason)
     assert "STALE_CONTEXT" not in reason, f"{case}: outcome gate must fire first: {reason!r}"
 
@@ -868,10 +873,9 @@ def test_e2e_decision_stale_context_denies() -> None:
     bundle = _definition_bundle()
     _assert_pins(case, bundle["hashes"])
     _assert_checker_row("test_e2e_definition_valid_commit", bundle)
-    request = _commit_ready_request(
+    decision, reason = _decide(
         bundle["cert"], bundle["outcome"], expected_context_id=WRONG_CONTEXT
     )
-    decision, reason = decide_publication(request)
     _assert_decision_row(case, decision, reason)
     with __import__("pytest").raises(ValueError, match="STALE_CONTEXT"):
         build_commit(
@@ -896,7 +900,7 @@ def test_e2e_missing_premise_denies() -> None:
     assert outcome == CheckerOutcome.PREMISE_UNAVAILABLE, (
         f"{case}: withheld bytes surfaced {outcome}; reasons={reasons}"
     )
-    decision, reason = decide_publication(_commit_ready_request(bundle["cert"], outcome))
+    decision, reason = _decide(bundle["cert"], outcome)
     _assert_decision_row(case, decision, reason)
 
 
@@ -919,15 +923,14 @@ def test_e2e_policy_denial_recomputes_without_mutating_proof() -> None:
     cert = bundle["cert"]
     snapshot = copy.deepcopy(cert)
     digest_before = _cert_hash(cert)
-    denied = _commit_ready_request(
+    decision, reason = _decide(
         cert, bundle["outcome"], policy_eligible=False, policy_reason="c4-policy-freeze"
     )
-    decision, reason = decide_publication(denied)
     _assert_decision_row(case, decision, reason)
     _assert_preserved(case, cert, snapshot, digest_before)
-    assert denied.certificate_context_id == cert.get("context_id")
-    assert denied.derivation_id == cert.get("derivation_id")
-    decision, reason = decide_publication(_commit_ready_request(cert, bundle["outcome"]))
+    assert str(cert.get("context_id") or "")
+    assert str(cert.get("derivation_id") or "")
+    decision, reason = _decide(cert, bundle["outcome"])
     assert decision == PublicationDecision.COMMIT, reason
     commit = build_commit(
         str(cert.get("derivation_id") or ""),
@@ -961,7 +964,7 @@ def test_e2e_alternative_survival_commits() -> None:
     )
     composed, _ = compose_alternatives([failed_outcome, survivor["outcome"]])
     assert composed == CheckerOutcome.VALID
-    decision, reason = decide_publication(_commit_ready_request(survivor["cert"], composed))
+    decision, reason = _decide(survivor["cert"], composed)
     entry = C4_CASES[case]
     observed = decision.value
     assert observed == entry["expected"], f"{case}: decision={observed} reason={reason!r}"
@@ -1019,12 +1022,11 @@ def _deny_definition_case(case_key: str, **delta: Any) -> tuple[Any, str, dict[s
     cert = bundle["cert"]
     snapshot = copy.deepcopy(cert)
     digest_before = _cert_hash(cert)
-    request = _commit_ready_request(cert, CheckerOutcome.VALID, **delta)
-    decision, reason = decide_publication(request)
+    decision, reason = _decide(cert, CheckerOutcome.VALID, **delta)
     _assert_decision_row(case_key, decision, reason)
     _assert_preserved(case_key, cert, snapshot, digest_before)
-    assert request.certificate_context_id == cert.get("context_id")
-    assert request.derivation_id == cert.get("derivation_id")
+    assert str(cert.get("context_id") or "")
+    assert str(cert.get("derivation_id") or "")
     return decision, reason, bundle
 
 
@@ -1079,12 +1081,11 @@ def test_e2e_denied_decision_preserves_proof_artifact() -> None:
         {"policy_eligible": False, "policy_reason": "c4-deny-pin"},
     ]
     for delta in deltas:
-        request = _commit_ready_request(cert, CheckerOutcome.VALID, **delta)
-        decision, reason = decide_publication(request)
+        decision, reason = _decide(cert, CheckerOutcome.VALID, **delta)
         assert decision == PublicationDecision.DENY, f"{case}/{delta}: {reason!r}"
         _assert_preserved(case, cert, snapshot, digest_before)
-        assert request.certificate_context_id == cert.get("context_id")
-        assert request.derivation_id == cert.get("derivation_id")
+        assert str(cert.get("context_id") or "")
+        assert str(cert.get("derivation_id") or "")
     entry = C4_CASES[case]
     assert entry["expected"] == "PRESERVED"
 
@@ -1094,7 +1095,7 @@ def test_no_production_consumer_of_g4_decision() -> None:
     root = Path(__file__).resolve().parents[2]
     src_root = root / "src"
     assert src_root.is_dir(), f"searched-root missing: {src_root}"
-    decision_api = re.compile(r"\bdecide_publication\b|\bbuild_commit\b")
+    decision_api = re.compile(r"\bdecide_publication\b|\bbuild_commit\b|\bdecide_guarded_promotion\b")
     harness_ref = re.compile(r"test_proof_kernel_g4_component4_integration")
     harness_literal = re.compile(r"component4_integration|g4_component4")
     grandfathered = (
@@ -1106,7 +1107,8 @@ def test_no_production_consumer_of_g4_decision() -> None:
     )
     assert grandfathered.is_file(), f"allowlist target missing: {grandfathered}"
     text = grandfathered.read_text(encoding="utf-8")
-    assert "decide_publication" in text, "grandfathered consumer lost its decide ref"
+    assert "decide_guarded_promotion" in text, "grandfathered consumer lost its guarded ref"
+    assert "decide_publication" not in text, "grandfathered consumer kept the demoted scalar ref"
     assert "build_commit" not in text, "grandfathered consumer gained a build ref"
     assert "component4_integration" not in text, "grandfathered consumer refs the harness"
     violations: list[str] = []
@@ -1130,6 +1132,8 @@ def test_no_production_consumer_of_g4_decision() -> None:
                 pattern1_files.add(rel)
                 if path != grandfathered:
                     violations.append(f"P1 decision-API ref {rel}:{lineno}: {line.strip()}")
+                elif "decide_publication" in line or "build_commit" in line:
+                    violations.append(f"P1 demoted-API ref in allowlist {rel}:{lineno}: {line.strip()}")
             if harness_ref.search(line):
                 violations.append(f"P2 harness-module ref {rel}:{lineno}: {line.strip()}")
             if harness_literal.search(line):

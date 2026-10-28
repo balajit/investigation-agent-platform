@@ -1,7 +1,7 @@
 # src/investigation_agent_platform/domain/proof/validator_fingerprints.py
 """Executable validator drift control (fingerprints/v1): pure, no I/O on import.
 
-Pins the exact source bytes of the seven semantic-boundary modules whose
+Pins the exact source bytes of the eight semantic-boundary modules whose
 unchecked modification could silently change proof semantics without a
 contract or version change:
 
@@ -36,6 +36,7 @@ FINGERPRINTED_FILES: tuple[str, ...] = (
     "src/investigation_agent_platform/domain/proof/manifest.py",
     "src/investigation_agent_platform/domain/proof/evaluation.py",
     "src/investigation_agent_platform/domain/proof/canonical.py",
+    "src/investigation_agent_platform/domain/proof/obligations.py",
 )
 
 MANIFEST_REL_PATH = "tests/fixtures/proof_kernel/validator_fingerprints_v1.json"
@@ -48,7 +49,7 @@ def fingerprint_file(root: Path, relpath: str) -> str:
 
 
 def compute_manifest(root: Path) -> dict[str, Any]:
-    """Compute the fingerprint manifest for the seven modules."""
+    """Compute the fingerprint manifest for the eight modules."""
     return {
         "schema_version": FINGERPRINT_SCHEMA_VERSION,
         "files": {relpath: fingerprint_file(root, relpath) for relpath in FINGERPRINTED_FILES},

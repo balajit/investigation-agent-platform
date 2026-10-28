@@ -37,10 +37,14 @@ from investigation_agent_platform.domain.proof.evaluation import (
     EvaluationInputs,
     evaluate,
 )
+from investigation_agent_platform.domain.proof.obligations import (
+    DecisionPolicy,
+    decide_guarded_promotion,
+    encode_evidence_bytes,
+    encode_trusted_context_bytes,
+)
 from investigation_agent_platform.domain.proof.publication import (
     PublicationDecision,
-    PublicationRequest,
-    decide_publication,
 )
 from investigation_agent_platform.infrastructure.persistence.proof_commit_repository import (
     advance_hypothesis_guarded,
@@ -77,6 +81,11 @@ class RouteInput:
     universe: str | None = None
     route: str = "mandatory"
     depends_on: list[str] = field(default_factory=list)
+    # Trusted provenance bindings for the guarded promotion entry: one
+    # {evidence_id, content_digest, repository_id} record per premise,
+    # supplied by the operator/test boundary (never inferred from the
+    # artifact). Empty bindings deny at the policy gate by design.
+    repository_bindings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -125,8 +134,15 @@ class ProofPublicationService:
         policy_reason: str = "",
         reconciliation_adjudicated: bool = False,
         lifecycle: LifecycleProjection | None = None,
+        policy: DecisionPolicy | None = None,
     ) -> CommitResult:
-        """Evaluate all routes purely, then commit atomically or deny."""
+        """Evaluate all routes purely, then commit atomically or deny.
+
+        Promotion of each surviving route goes through the guarded
+        obligation entry (policy + evidence + trusted context bytes);
+        the scalar linearization step is internal to that entry and is
+        never called directly here.
+        """
         if not routes:
             return CommitResult(False, "NO_ROUTES")
         if mode == "single" and len(routes) != 1:
@@ -165,6 +181,8 @@ class ProofPublicationService:
                         "certificate": cert,
                         "checker_outcome": outcome,
                         "checker_reasons": reasons,
+                        "manifest_dump": route.manifest.model_dump(mode="json"),
+                        "artifact_map": {str(k): dict(v) for k, v in (route.artifacts or {}).items()},
                     }
                 )
         except (CertificationError, Exception) as exc:
@@ -225,16 +243,31 @@ class ProofPublicationService:
             for item in fresh:
                 derivation = item["derivation"]
                 cert = item["certificate"]
-                decision_request = PublicationRequest(
-                    checker_outcome=item["checker_outcome"],
-                    certificate_context_id=str(cert["context_id"]),
-                    expected_context_id=str(derivation.context_id),
-                    derivation_id=str(derivation.derivation_id),
-                    reconciliation_adjudicated=reconciliation_adjudicated,
-                    policy_eligible=policy_eligible,
-                    policy_reason=policy_reason,
+                route = item["route"]
+                evidence_bytes = encode_evidence_bytes(
+                    {
+                        "rule_id": str(route.rule_id),
+                        "proposition": dict(route.proposition),
+                        "certificate": dict(cert),
+                        "manifest": item["manifest_dump"],
+                        "artifacts": {str(k): dict(v) for k, v in item["artifact_map"].items()},
+                    }
                 )
-                decision, reason = decide_publication(decision_request)
+                trusted_bytes = encode_trusted_context_bytes(
+                    {
+                        "rule_bundle_version": str(route.rule_bundle_version),
+                        "model_encoding": dict(route.model_encoding or {}),
+                        "reconciliation_state": "unreconciled",
+                        "known_normalization_ops": [],
+                        "derivation_deps": {},
+                        "repository_bindings": [dict(b) for b in (route.repository_bindings or ())],
+                        "expected_context_id": str(derivation.context_id),
+                        "reconciliation_adjudicated": bool(reconciliation_adjudicated),
+                        "policy_eligible": bool(policy_eligible),
+                        "policy_reason": str(policy_reason or ""),
+                    }
+                )
+                decision, reason = decide_guarded_promotion(policy, evidence_bytes, trusted_bytes)
                 if decision is not PublicationDecision.COMMIT:
                     return CommitResult(False, f"POLICY_DENIED:{reason}")
                 await store_derivation_nodes(

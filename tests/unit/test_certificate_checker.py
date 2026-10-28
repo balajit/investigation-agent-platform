@@ -680,8 +680,7 @@ def test_causal_abstention_denies_end_to_end_k13() -> None:
     from investigation_agent_platform.domain.proof.publication import (
         DenyReason,
         PublicationDecision,
-        PublicationRequest,
-        decide_publication,
+        _decide_linearization,
     )
     from investigation_agent_platform.domain.proof.rules import (
         UnknownRule,
@@ -698,15 +697,12 @@ def test_causal_abstention_denies_end_to_end_k13() -> None:
     req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": artifact})
     outcome, _ = check_certificate(req)
     assert outcome == CheckerOutcome.UNSUPPORTED_CONSTRUCT
-    decision, reason = decide_publication(
-        PublicationRequest(
-            checker_outcome=outcome,
-            certificate_context_id="ctx-1",
-            expected_context_id="ctx-1",
-            derivation_id="der-1",
-            reconciliation_adjudicated=True,
-            policy_eligible=True,
-        )
+    decision, reason = _decide_linearization(
+        checker_outcome=outcome,
+        certificate_context_id="ctx-1",
+        expected_context_id="ctx-1",
+        reconciliation_adjudicated=True,
+        policy_eligible=True,
     )
     assert decision == PublicationDecision.DENY
     assert reason.startswith(DenyReason.NOT_CHECKER_ACCEPTED.value)
