@@ -1,4 +1,4 @@
-# G4 Traceability Sign-Off Package v1.0 (DRAFT — awaiting owner signature)
+# G4 Traceability Sign-Off Package v1.0 (SIGNED 2026-10-28 — owner GO, Wave-2 authorization session)
 
 ## Purpose and scope
 
@@ -9,11 +9,11 @@ re-disposition: G4 remains PARTIAL with direction per the 2026-10-26 owner
 decision until B1 residuals close and D3-family retesting completes. Signing
 here changes no gate status; it records agreement on the evidence basis.
 
-## Reconciled tallies (current tree)
+## Reconciled tallies (signing rebase, 2026-10-28)
 
-Re-ran 2026-10-28 on the closeout branch (current tree). Full unit suite:
-3992 passed / 4 skipped / 6 xfailed, with only the 2 known pre-existing
-drift pins (`test_phase0_contract_repair`, `test_phase2_remaining`).
+Re-ran at signing time on the closeout branch (`iap-full-1025-proof-kernel-closeout @ 0fa94e8`; code unchanged since the draft tally run — only ledger edits). Full kernel set: **464 collected, 463 passed, 1 skipped** (pre-existing onboarding skip), 0 failed. Fingerprints: 6 modules verified clean.
+
+Correction to the draft total line (432 collected / 431 passed): the draft table had already added the C4 row (20/20) without updating the total. The corrected draft-time total was 452 collected / 451 passed(+1 skip); current growth since is +12 (new composition concurrency/replay file, green) for 464 / 463.
 
 | Suite | Promoted count | Current | Delta |
 |---|---|---|---|
@@ -30,6 +30,7 @@ drift pins (`test_phase0_contract_repair`, `test_phase2_remaining`).
 | G4 validator fingerprints | 4 | 4 passed | — |
 | G4 component 1 evidence | 5 | 5 passed | — |
 | Onboarding CLI | 15 collected | 15 collected (1 skipped) | — |
+| C2 composition concurrency/replay (new) | — | 12 passed | **new file, green** |
 | WP-C1 composition/invalidation | 18 | 18 passed | — |
 | WP-C1 hypothesis CAS | 10 | 10 passed | — |
 | WP-C2 publication decision | 11 | 11 passed | — |
@@ -41,7 +42,7 @@ drift pins (`test_phase0_contract_repair`, `test_phase2_remaining`).
 | D3 shadow bundle | 20 | 20 passed | — |
 | G4 component 4 integration | 20 | 20 passed | — |
 
-Kernel suites total: 432 collected, 431 passed, 1 skipped (pre-existing
+Kernel suites total: 464 collected, 463 passed, 1 skipped (pre-existing
 onboarding skip), 0 failed.
 
 ## K-status deltas since promotion
@@ -85,4 +86,4 @@ Estep pilots.
 
 ## Signature
 
-- [ ] Owner sign-off: traceability matrix v1.0 (as reconciled above) is accepted as G4 A–T explicit-mapping evidence. Date / signature: _______________
+- [x] Owner sign-off: traceability matrix v1.0 (as reconciled above) is accepted as G4 A–T explicit-mapping evidence. Date: 2026-10-28. Recorded as owner GO in the Wave-2 authorization session ("Go Grounded and closed, Wave 2 G4 sign-off"). Gate status unchanged: G4 remains PARTIAL with direction until B1 residuals close and D3-family retesting completes.
