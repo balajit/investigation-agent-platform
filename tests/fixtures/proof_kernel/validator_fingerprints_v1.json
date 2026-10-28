@@ -2,7 +2,7 @@
   "schema_version": "validator-fingerprints/v1",
   "files": {
     "src/investigation_agent_platform/domain/proof/premises.py": "sha256:8639a0691144697880193302cc9813c2b9a934bff0de3e8bd1b2a64b139a8289",
-    "src/investigation_agent_platform/domain/proof/rules.py": "sha256:abc7e214baedc1ab87570203f180e89a9a75e4ff02d8a16d2ed8ee406cf5e4f8",
+    "src/investigation_agent_platform/domain/proof/rules.py": "sha256:eea0f9f15650ed547abf65c89dc278419159a9d34f21944a6fd0149a2068137a",
     "src/investigation_agent_platform/domain/proof/checker_semantics.py": "sha256:68a8519ddad97dde8a5964bdadb221f4aaaaec16adc8ae3de80907e56a5824f9",
     "src/investigation_agent_platform/domain/proof/manifest.py": "sha256:0fb6aa53157c4f3e3e64435df798782364a8459a8e809a1a3ceac48c46f78c60",
     "src/investigation_agent_platform/domain/proof/evaluation.py": "sha256:65fd4f5e9c066581c606061801caaf3bc4aaa10ec01da8135737f4fc0199341a",

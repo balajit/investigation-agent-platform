@@ -709,7 +709,7 @@ def test_monotonicity_extra_valid_callsite_preserves_discharge() -> None:
     assert checker_outcome == CheckerOutcome.VALID
 
 
-def test_callsite_wrong_type_producer_tolerates_checker_rejects() -> None:
+def test_callsite_wrong_type_producer_checker_both_reject() -> None:
     stray = {
         "evidence_id": "ev-stray-001",
         "content_hash": SHA_B,
@@ -717,7 +717,7 @@ def test_callsite_wrong_type_producer_tolerates_checker_rejects() -> None:
     }
     premises = [_call_edge_premise(), stray]
     outcome, _ = apply_rule(get_rule("call_edge/v1"), _call_edge_claim(), premises)
-    assert outcome == RuleOutcome.DISCHARGED
+    assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
     entries = [
         _checker_entry("ev-edge-001", "NORMALIZED_CALLSITE_FACT", SHA_A, "rev-1"),
         _checker_entry("ev-stray-001", "RANGE_READ_FACT", SHA_B, "rev-1"),
@@ -740,10 +740,10 @@ def test_callsite_wrong_type_producer_tolerates_checker_rejects() -> None:
     assert checker_outcome == CheckerOutcome.INADMISSIBLE_PREMISE
 
 
-def test_callsite_duplicate_id_producer_tolerates_checker_rejects() -> None:
+def test_callsite_duplicate_id_producer_checker_both_reject() -> None:
     premises = [_call_edge_premise(), _call_edge_premise()]
     outcome, _ = apply_rule(get_rule("call_edge/v1"), _call_edge_claim(), premises)
-    assert outcome == RuleOutcome.DISCHARGED
+    assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
     entries = [
         _checker_entry("ev-edge-001", "NORMALIZED_CALLSITE_FACT", SHA_A, "rev-1"),
         _checker_entry("ev-edge-001", "NORMALIZED_CALLSITE_FACT", SHA_A, "rev-1"),
@@ -1475,3 +1475,34 @@ def test_authority_withdrawal_rechecks_unsupported() -> None:
         cert, proposition, manifest, artifacts, mapping_authority={"approved_provenance_refs": []}
     )
     assert check_certificate(emptied)[0] == CheckerOutcome.UNSUPPORTED_CONSTRUCT
+
+
+def test_revision_bump_never_discharges_definition() -> None:
+    claim = _definition_claim(revision="rev-9")
+    outcome, _ = apply_rule(get_rule("definition/v1"), claim, [_definition_premise()])
+    assert outcome == RuleOutcome.INVALID_INFERENCE
+
+
+def test_revision_bump_never_discharges_call_edge() -> None:
+    claim = _call_edge_claim(revision="rev-9")
+    outcome, _ = apply_rule(get_rule("call_edge/v1"), claim, [_call_edge_premise()])
+    assert outcome == RuleOutcome.INVALID_INFERENCE
+
+
+def test_missing_premise_revision_inadmissible_when_claim_pinned() -> None:
+    claim = _definition_claim(revision="rev-1")
+    premise = _definition_premise()
+    del premise["revision"]
+    outcome, _ = apply_rule(get_rule("definition/v1"), claim, [premise])
+    assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
+
+
+def test_unpinned_claim_keeps_legacy_discharge() -> None:
+    outcome, _ = apply_rule(
+        get_rule("definition/v1"), _definition_claim(), [_definition_premise()]
+    )
+    assert outcome == RuleOutcome.DISCHARGED
+    outcome, _ = apply_rule(
+        get_rule("call_edge/v1"), _call_edge_claim(), [_call_edge_premise()]
+    )
+    assert outcome == RuleOutcome.DISCHARGED

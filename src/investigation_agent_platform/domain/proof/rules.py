@@ -291,7 +291,8 @@ def validate_definition_premises(
     Discharges only when exactly one RANGE_READ premise cites a file and
     its window text contains the asserted symbol. SEARCH_HIT premises,
     missing symbols, and symbol-free windows are inadmissible or invalid
-    — presence is never definition.
+    — presence is never definition. When the claim pins a revision, the
+    premise must join it (C2 amendment: producer/checker parity with K11).
     """
     symbol = str((claim or {}).get("symbol") or "").strip()
     if not symbol:
@@ -307,6 +308,19 @@ def validate_definition_premises(
         )
     if not str(premise.get("file_path") or "").strip():
         return RuleOutcome.INADMISSIBLE_PREMISE, "definition premise cites no file"
+    claim_revision = str((claim or {}).get("revision") or "").strip()
+    if claim_revision:
+        premise_revision = str(premise.get("revision") or "").strip()
+        if not premise_revision:
+            return (
+                RuleOutcome.INADMISSIBLE_PREMISE,
+                "definition premise carries no revision to join the claim scope",
+            )
+        if premise_revision != claim_revision:
+            return (
+                RuleOutcome.INVALID_INFERENCE,
+                "definition premise source differs from claim scope",
+            )
     window = premise.get("window_text")
     if not isinstance(window, str) or not window.strip():
         return RuleOutcome.MISSING_PREMISE, "definition premise carries no window text"
@@ -320,10 +334,12 @@ def validate_call_edge_premises(
 ) -> tuple[RuleOutcome, str]:
     """Semantic validation for ``call_edge/v1`` (normalized call site).
 
-    Discharges only when at least one NORMALIZED_CALLSITE premise binds
-    the asserted caller and callee and the call expression appears in the
-    cited text. A SEARCH_HIT or COMMENT row relabeled as a call site is
-    rejected even with valid hashes (K1).
+    Discharges only when every premise is a NORMALIZED_CALLSITE_FACT with
+    a unique evidence_id, at least one binds the asserted caller and
+    callee, and the call expression appears in the cited text. A
+    SEARCH_HIT or COMMENT row relabeled as a call site is rejected even
+    with valid hashes (K1). When the claim pins a revision, every premise
+    must join it (C2 amendment: producer/checker parity with K11).
     """
     claim = claim or {}
     caller = str(claim.get("caller") or "").strip()
@@ -333,12 +349,33 @@ def validate_call_edge_premises(
     rows = [p for p in (premises or []) if isinstance(p, dict)]
     if not rows:
         return RuleOutcome.MISSING_PREMISE, "call edge needs at least one premise"
-    callsites = [p for p in rows if _premise_type(p) == "NORMALIZED_CALLSITE_FACT"]
-    if not callsites:
+    mistyped = [p for p in rows if _premise_type(p) != "NORMALIZED_CALLSITE_FACT"]
+    if mistyped:
         return (
             RuleOutcome.INADMISSIBLE_PREMISE,
-            f"call edge needs NORMALIZED_CALLSITE, got {_premise_type(rows[0]) or 'untyped'}",
+            f"call edge needs NORMALIZED_CALLSITE, got {_premise_type(mistyped[0]) or 'untyped'}",
         )
+    callsites = rows
+    duplicate = _duplicate_evidence_id(callsites)
+    if duplicate is not None:
+        return (
+            RuleOutcome.INADMISSIBLE_PREMISE,
+            f"call edge premise repeats evidence_id {duplicate}",
+        )
+    claim_revision = str(claim.get("revision") or "").strip()
+    if claim_revision:
+        for premise in callsites:
+            premise_revision = str(premise.get("revision") or "").strip()
+            if not premise_revision:
+                return (
+                    RuleOutcome.INADMISSIBLE_PREMISE,
+                    "call edge premise carries no revision to join the claim scope",
+                )
+            if premise_revision != claim_revision:
+                return (
+                    RuleOutcome.INVALID_INFERENCE,
+                    "call edge premise source differs from claim scope",
+                )
     for premise in callsites:
         shown_caller = str(premise.get("caller") or "").strip()
         shown_callee = str(premise.get("callee") or "").strip()

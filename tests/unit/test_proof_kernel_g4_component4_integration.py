@@ -1243,3 +1243,19 @@ def test_k11_direct_behavior_revision_mismatch() -> None:
     )
     assert outcome == CheckerOutcome.SCOPE_MISMATCH
     assert "K11" in reason
+
+
+def test_certify_definition_revision_mismatch_refuses() -> None:
+    record = _definition_record()
+    record = dict(record, revision=REV_B)
+    asm = _assemble("definition/v1", [record], _definition_proposition(), {})
+    with __import__("pytest").raises(CertificationError, match="RULE_NOT_DISCHARGED"):
+        certify(asm["inputs"], asm["premises"], asm["artifacts"])
+
+
+def test_certify_call_edge_revision_mismatch_refuses() -> None:
+    record = _call_edge_record()
+    record = dict(record, revision=REV_B)
+    asm = _assemble("call_edge/v1", [record], _call_edge_proposition(), {})
+    with __import__("pytest").raises(CertificationError, match="RULE_NOT_DISCHARGED"):
+        certify(asm["inputs"], asm["premises"], asm["artifacts"])
