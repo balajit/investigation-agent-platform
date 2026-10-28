@@ -30,56 +30,6 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def _literal_value(node: Any, source: bytes) -> str | None:
-    """Unquote a simple literal return expression; None when not a literal."""
-    if node is None:
-        return None
-    if node.type == "string_literal":
-        text = _p.node_text(node, source).strip()
-        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-            return text[1:-1]
-        return None
-    if node.type in {"true", "false", "null"}:
-        return _p.node_text(node, source).strip()
-    if node.type in {
-        "decimal_integer_literal",
-        "hex_integer_literal",
-        "octal_integer_literal",
-        "binary_integer_literal",
-        "decimal_floating_point_literal",
-        "hex_floating_point_literal",
-        "character_literal",
-    }:
-        return _p.node_text(node, source).strip()
-    if node.type == "unary_expression" and node.child_count == 2:
-        text = _p.node_text(node, source).strip()
-        if re.fullmatch(r"[-+][^-+].*", text or ""):
-            return text
-        return None
-    return None
-
-
-def _iter_method_declarations(root: Any, source: bytes, method_name: str) -> Any:
-    for node in _p.walk(root):
-        if node.type != "method_declaration":
-            continue
-        name_node = node.child_by_field_name("name")
-        if name_node is not None and _p.node_text(name_node, source).strip() == method_name:
-            yield node
-
-
-def _enclosing_class(node: Any, source: bytes) -> str | None:
-    parent = node.parent
-    while parent is not None:
-        if parent.type == "class_declaration":
-            name_node = parent.child_by_field_name("name")
-            if name_node is not None:
-                return _p.node_text(name_node, source).strip() or None
-            return None
-        parent = parent.parent
-    return None
-
-
 def resolve_java_method_return_fact(
     evidence: Any,
     method_name: str,
@@ -171,17 +121,31 @@ def resolve_java_method_return_fact(
         if not fixed:
             return unresolved("java_syntax_error_or_incomplete_source_window")
 
-    package = _p.package_name(tree.root_node, source_bytes)
-    methods = list(_iter_method_declarations(tree.root_node, source_bytes, method_name.strip()))
+    from investigation_agent_platform.application.analysis.java import model as _model
+
+    code_model = _model.build_java_model(
+        source_bytes,
+        file_path=source_path,
+        repository=repository,
+        revision=revision,
+    )
+    if code_model.has_syntax_error:
+        # Unreachable after the retry above (it guarantees a clean tree),
+        # retained as defense in depth.
+        return unresolved("java_syntax_error_or_incomplete_source_window")
+
+    package = code_model.package
+    stripped = method_name.strip()
+    methods = [
+        m for m in code_model.methods if m.name == stripped and not m.is_constructor
+    ]
     if declaring_type:
         methods = [
             m
             for m in methods
-            if _p.matches_declaring_type(
-                _enclosing_class(m, source_bytes) or "", declaring_type
-            )
+            if _p.matches_declaring_type(m.nearest_class or "", declaring_type)
             or _p.matches_declaring_type(
-                f"{package}.{(_enclosing_class(m, source_bytes) or '')}", declaring_type
+                f"{package}.{m.nearest_class or ''}", declaring_type
             )
         ]
     if not methods and declaring_type:
@@ -196,16 +160,16 @@ def resolve_java_method_return_fact(
             stem = stem.rsplit(".", 1)[0]
         requested = declaring_type.rsplit(".", 1)[-1]
         if stem and requested and stem.casefold() == requested.casefold():
-            methods = list(
-                _iter_method_declarations(tree.root_node, source_bytes, method_name.strip())
-            )
+            methods = [
+                m for m in code_model.methods if m.name == stripped and not m.is_constructor
+            ]
     if not methods:
         return unresolved("method_not_found")
     if len(methods) > 1:
         return unresolved("ambiguous_method_declaration")
 
     method = methods[0]
-    class_name = _enclosing_class(method, source_bytes) or ""
+    class_name = method.nearest_class or ""
     qualified = (
         f"{package}.{class_name}" if package and class_name else (class_name or package)
     )
@@ -224,26 +188,19 @@ def resolve_java_method_return_fact(
     first_line = lines[0].number
     want_guard = _normalize(guard_condition) if guard_condition else ""
 
-    for node in _p.walk(method):
-        if node.type != "if_statement":
+    for branch in code_model.guard_returns:
+        if branch.method_key != method.key:
             continue
-        if want_guard:
-            cond = node.child_by_field_name("condition")
-            if want_guard not in _normalize(
-                _p.node_text(cond, source_bytes) if cond is not None else ""
-            ):
-                continue
-        consequence = node.child_by_field_name("consequence")
-        if consequence is None:
+        if want_guard and want_guard not in branch.guard_text:
             continue
-        for inner in _iter_branch_returns(consequence):
-            value = _literal_value(_return_value(inner), source_bytes)
+        for ret in branch.returns:
+            value = _model.literal_return_value(ret.value_shape, ret.value_text)
             if value is None:
                 continue
             ret_location = location.model_copy(
                 update={
-                    "line_start": first_line + inner.start_point[0],
-                    "line_end": first_line + inner.end_point[0],
+                    "line_start": first_line + ret.span.line_start - 1,
+                    "line_end": first_line + ret.span.line_end - 1,
                 }
             )
             return CodeFactResolutionV2(
@@ -254,41 +211,10 @@ def resolve_java_method_return_fact(
                 declaring_type=qualified or declaring_type,
                 subject_identity=subject,
                 value_semantics=CodeValueSemantics.GUARDED_RETURN_LITERAL,
-                raw_initializer=_p.node_text(inner, source_bytes).strip()[:512],
+                raw_initializer=ret.raw_text[:512],
                 resolved_value=value,
                 source_evidence_ids=evidence_ids,
                 declaration_location=ret_location,
                 parser_version=_p.parser_version(),
             )
     return unresolved("guard_return_not_found")
-
-
-def _return_value(return_node: Any) -> Any:
-    """The returned expression: first named child of ``return <expr>;``."""
-    for child in return_node.children:
-        if child.is_named:
-            return child
-    return None
-
-
-def _iter_branch_returns(consequence: Any) -> Any:
-    """Yield ``return_statement`` nodes of one guard branch.
-
-    Descends into blocks but not into nested ``if_statement`` subtrees
-    (their returns belong to a narrower guard) — the alternative
-    (``else``) branch is never entered since only the consequence is
-    walked.
-    """
-    if consequence.type == "return_statement":
-        yield consequence
-        return
-    stack = [consequence]
-    while stack:
-        node = stack.pop()
-        for child in node.children:
-            if child.type == "if_statement":
-                continue
-            if child.type == "return_statement":
-                yield child
-            elif child.is_named:
-                stack.append(child)

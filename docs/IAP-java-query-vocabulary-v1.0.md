@@ -70,12 +70,17 @@ record, never a silent false.
 
 ## Buckets (A7 closure)
 
-- **In-model (queryable):** compilation unit package/imports; classes (4
-  declaration kinds, nesting); methods/constructors (name, arity, param
-  types, return, overload key, varargs/override/default flags); call sites
-  (target, arity, receiver, lambda, method-ref flag, per-arg sketches);
-  decoded literals; fields/locals (name, type, enclosing scope, initializer
-  kind); all flags and per-arg shape/operator/type above.
+- **In-model (queryable):** compilation unit package/imports; classes (5
+  declaration kinds incl. annotation types, nesting); methods/constructors
+  (name, arity, param types, return, overload key, varargs/override/default
+  flags, nearest class); call sites (target, receiver, arity, per-arg
+  sketch with shape/operator/static-type, lambda/method-ref flags,
+  enclosing scope); decoded literals (kind, value, location);
+  fields/locals (name, type, enclosing scope, static/instance,
+  declared-type presence, raw initializer, evaluated kind/value/limitation);
+  parameters (name, type, enclosing method, varargs flag); guard branches
+  (enclosing method, normalized guard text, per-return shape/value/raw
+  text); all flags and per-arg shapes above.
 - **Annotated (carried, not queryable):** source `text` snippets on args and
   the `key`/overload identity (display/diagnostic use, never proof).
 - **Deferred (named, each with its promoting question — the question whose
@@ -88,4 +93,7 @@ record, never a silent false.
   try/catch/exception flow ("which exceptions can escape method M?");
   lambdas beyond the enclosure flag ("which lambdas capture variable V?");
   use-def links ("where is local V assigned and read?"); comments/Javadoc
-  ("which public methods lack a doc comment?").
+  ("which public methods lack a doc comment?"); whole-subtree type-feature
+  analysis ("which type declarations need feature-shape answers the model
+  cannot yet express?" — the type resolver stays tree-bound until a
+  declaration-feature record family is designed).
