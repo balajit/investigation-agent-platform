@@ -56,6 +56,8 @@ class Span(BaseModel):
     file_path: str = Field(min_length=1, max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
+    col_start: int = Field(default=0, ge=0)
+    col_end: int = Field(default=0, ge=0)
 
 
 class LiteralValue(BaseModel):
@@ -99,6 +101,7 @@ class CallSite(BaseModel):
     has_method_reference: bool = False
     in_lambda: bool = False
     enclosing_method: str | None = Field(default=None, max_length=1024)
+    enclosing_method_identity: str | None = Field(default=None, max_length=2048)
     enclosing_class: str | None = Field(default=None, max_length=1024)
     span: Span
 
@@ -151,6 +154,7 @@ class LocalDef(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     var_type: str = Field(min_length=1, max_length=512)
     enclosing_method: str | None = Field(default=None, max_length=1024)
+    method_identity: str = Field(default="", max_length=2048)
     method_name: str = Field(default="", max_length=512)
     initializer_kind: str | None = Field(default=None, max_length=64)
     raw_initializer: str | None = Field(default=None, max_length=1024)
@@ -168,6 +172,7 @@ class ParamDef(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     var_type: str = Field(min_length=1, max_length=512)
     enclosing_method: str | None = Field(default=None, max_length=1024)
+    method_identity: str = Field(default="", max_length=2048)
     method_name: str = Field(default="", max_length=512)
     is_varargs: bool = False
     span: Span
@@ -180,7 +185,7 @@ class DataflowBinding(BaseModel):
 
     method_identity: str = Field(min_length=1, max_length=2048)
     method_name: str = Field(min_length=1, max_length=512)
-    symbol: str = Field(min_length=1, max_length=512)
+    symbol: str = Field(max_length=512)
     kind: Literal["local", "parameter"]
     has_initializer: bool = False
     span: Span
@@ -192,7 +197,7 @@ class DataflowEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     method_identity: str = Field(min_length=1, max_length=2048)
-    symbol: str = Field(min_length=1, max_length=512)
+    symbol: str = Field(max_length=512)
     kind: Literal[
         "value_use",
         "return_use",
@@ -214,10 +219,10 @@ class ValueStateRecord(BaseModel):
 
     method_identity: str = Field(min_length=1, max_length=2048)
     binding: str = Field(min_length=1, max_length=512)
-    state: Literal["CONSTANT", "UNKNOWN", "KILLED", "AMBIGUOUS", "ALIASED", "OUT_OF_WINDOW"]
+    state: Literal["CONSTANT", "UNKNOWN"]
     kind: str | None = Field(default=None, max_length=64)
     value: str | None = Field(default=None, max_length=4096)
-    source: Literal["literal", "computed", "propagated", "reassignment", "boundary", "unknown"] = "unknown"
+    source: Literal["literal", "computed", "unknown"] = "unknown"
     span: Span
 
 
@@ -227,7 +232,7 @@ class BarrierFact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     method_identity: str = Field(min_length=1, max_length=2048)
-    kind: Literal["GUARD", "VALIDATION_CALL", "REASSIGNMENT_KILL", "ALIAS_ESCAPE", "UNKNOWN_BARRIER"]
+    kind: Literal["GUARD", "REASSIGNMENT_KILL", "ALIAS_ESCAPE"]
     subject: str | None = Field(default=None, max_length=512)
     target_name: str | None = Field(default=None, max_length=512)
     limitation: str | None = Field(default=None, max_length=128)
@@ -240,7 +245,7 @@ class TypeArgument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["explicit_type", "wildcard_unbounded", "wildcard_extends", "wildcard_super"]
-    type: "TypeSyntax | None" = None
+    type: TypeSyntax | None = None
     bound_kind: Literal["extends", "super"] | None = None
     text: str = Field(max_length=1024)
     span: Span
@@ -277,7 +282,7 @@ class TypeSyntax(BaseModel):
     name: str | None = Field(default=None, max_length=1024)
     segments: list[TypeSegment] = Field(default_factory=list)
     arguments: list[TypeArgument] = Field(default_factory=list)
-    element: "TypeSyntax | None" = None
+    element: TypeSyntax | None = None
     dimensions: int = Field(default=0, ge=0)
     annotations: list[str] = Field(default_factory=list)
     resolution: Literal["UNRESOLVED"] = "UNRESOLVED"
@@ -434,6 +439,8 @@ def _span(node: Any, file_path: str) -> Span:
         file_path=file_path,
         line_start=int(node.start_point[0]) + 1,
         line_end=int(node.end_point[0]) + 1,
+        col_start=int(node.start_point[1]),
+        col_end=int(node.end_point[1]),
     )
 
 
@@ -451,7 +458,6 @@ def _type_syntax(node: Any, source: bytes, file_path: str) -> TypeSyntax:
     if node.type == "wildcard":
         named = [child for child in node.children if child.is_named]
         bound = next((child for child in named if child.type != "marker_annotation"), None)
-        operator = next((child.type for child in node.children if child.type in {"extends", "super"}), None)
         return TypeSyntax(
             kind="wildcard",
             text=text,
@@ -486,13 +492,34 @@ def _type_syntax(node: Any, source: bytes, file_path: str) -> TypeSyntax:
             text=_p.node_text(base, source).strip() if base is not None else text,
             span=_span(base, file_path) if base is not None else span,
         )
-        return TypeSyntax(kind="parameterized", text=text, name=segment.name, segments=[segment], arguments=args, span=span)
-    if node.type in {"integral_type", "floating_point_type", "boolean_type", "void_type"}:
-        return TypeSyntax(kind="primitive" if node.type != "void_type" else "void", text=text, name=text, span=span)
-    if node.type == "annotated_type":
-        inner = next((child for child in node.children if child.is_named and child.type not in {"marker_annotation", "annotation"}), None)
         return TypeSyntax(
-            kind="annotated", text=text, name=None,
+            kind="parameterized",
+            text=text,
+            name=segment.name,
+            segments=[segment],
+            arguments=args,
+            span=span,
+        )
+    if node.type in {"integral_type", "floating_point_type", "boolean_type", "void_type"}:
+        return TypeSyntax(
+            kind="primitive" if node.type != "void_type" else "void",
+            text=text,
+            name=text,
+            span=span,
+        )
+    if node.type == "annotated_type":
+        inner = next(
+            (
+                child
+                for child in node.children
+                if child.is_named and child.type not in {"marker_annotation", "annotation"}
+            ),
+            None,
+        )
+        return TypeSyntax(
+            kind="annotated",
+            text=text,
+            name=None,
             annotations=_type_annotations(node, source),
             element=_type_syntax(inner, source, file_path) if inner is not None else None,
             span=span,
@@ -508,11 +535,21 @@ def _type_arguments(node: Any, source: bytes, file_path: str) -> list[TypeArgume
         if not child.is_named:
             continue
         if child.type == "wildcard":
-            bound_kind = next((item.type for item in child.children if item.type in {"extends", "super"}), None)
+            bound_kind = next(
+                (item.type for item in child.children if item.type in {"extends", "super"}), None
+            )
             arguments.append(
                 TypeArgument(
                     kind=(f"wildcard_{bound_kind}" if bound_kind else "wildcard_unbounded"),
-                    type=next((_type_syntax(item, source, file_path) for item in child.children if item.is_named and item.type != "marker_annotation"), None),
+                    type=next(
+                        (
+                            _type_syntax(item, source, file_path)
+                            for item in child.children
+                            if item.is_named
+                            and item.type not in {"marker_annotation", "super", "extends"}
+                        ),
+                        None,
+                    ),
                     bound_kind=bound_kind,
                     text=_p.node_text(child, source).strip(),
                     span=_span(child, file_path),
@@ -535,65 +572,108 @@ def _build_generic_records(
 ) -> tuple[list[TypeParameterDecl], list[GenericTypeUse]]:
     parameters: list[TypeParameterDecl] = []
     uses: list[GenericTypeUse] = []
-    method_by_span = {(method.span.line_start, method.span.line_end): method for method in methods}
 
     def owner_for(node: Any) -> tuple[str, str]:
         current = node.parent
         while current is not None:
-            if current.type in {"method_declaration", "constructor_declaration", "compact_constructor_declaration"}:
+            if current.type in {
+                "method_declaration",
+                "constructor_declaration",
+                "compact_constructor_declaration",
+            }:
                 name_node = current.child_by_field_name("name")
-                name = _p.node_text(name_node, source).strip() if name_node is not None else "constructor"
+                name = (
+                    _p.node_text(name_node, source).strip()
+                    if name_node is not None
+                    else "constructor"
+                )
                 return name, "method" if current.type == "method_declaration" else "constructor"
-            if current.type in {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}:
+            if current.type in {
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+            }:
                 name_node = current.child_by_field_name("name")
-                return (_p.node_text(name_node, source).strip() if name_node is not None else "unknown"), current.type.replace("_declaration", "")
+                return (
+                    _p.node_text(name_node, source).strip() if name_node is not None else "unknown"
+                ), current.type.replace("_declaration", "")
             current = current.parent
         return "window", "class"
 
     for node in _p.walk(root):
         if node.type == "type_parameters":
             owner_name, owner_kind = owner_for(node)
-            for index, parameter in enumerate(child for child in node.children if child.type == "type_parameter"):
-                name_node = next((child for child in parameter.children if child.type == "type_identifier"), None)
+            for index, parameter in enumerate(
+                child for child in node.children if child.type == "type_parameter"
+            ):
+                name_node = next(
+                    (child for child in parameter.children if child.type == "type_identifier"), None
+                )
                 if name_node is None:
                     continue
-                bounds_node = parameter.child_by_field_name("type_bound") or next((child for child in parameter.children if child.type == "type_bound"), None)
-                bounds = [_type_syntax(child, source, file_path) for child in bounds_node.children if child.is_named] if bounds_node is not None else []
-                parameters.append(TypeParameterDecl(
-                    identity=f"{owner_name}#{_p.node_text(name_node, source)}@{index}",
-                    name=_p.node_text(name_node, source).strip(),
-                    owner_identity=owner_name,
-                    owner_kind=owner_kind if owner_kind in {"class", "interface", "enum", "record", "method", "constructor"} else "class",
-                    bounds=bounds,
-                    annotations=_type_annotations(parameter, source),
-                    span=_span(parameter, file_path),
-                ))
+                bounds_node = parameter.child_by_field_name("type_bound") or next(
+                    (child for child in parameter.children if child.type == "type_bound"), None
+                )
+                bounds = []
+                if bounds_node is not None:
+                    bound_text = " ".join(
+                        _p.node_text(child, source).strip()
+                        for child in bounds_node.children
+                        if child.is_named
+                    )
+                    bound_nodes = [child for child in bounds_node.children if child.is_named]
+                    for bound_node in bound_nodes:
+                        syntax = _type_syntax(bound_node, source, file_path)
+                        if len(bound_nodes) > 1 and bound_node is bound_nodes[0]:
+                            syntax = syntax.model_copy(update={"text": bound_text})
+                        bounds.append(syntax)
+                parameters.append(
+                    TypeParameterDecl(
+                        identity=f"{owner_name}#{_p.node_text(name_node, source)}@{index}",
+                        name=_p.node_text(name_node, source).strip(),
+                        owner_identity=owner_name,
+                        owner_kind=owner_kind
+                        if owner_kind
+                        in {"class", "interface", "enum", "record", "method", "constructor"}
+                        else "class",
+                        bounds=bounds,
+                        annotations=_type_annotations(parameter, source),
+                        span=_span(parameter, file_path),
+                    )
+                )
         if node.type == "generic_type":
             owner_name, _ = owner_for(node)
             syntax = _type_syntax(node, source, file_path)
-            uses.append(GenericTypeUse(
-                identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
-                owner_identity=owner_name,
-                context="other",
-                syntax_kind="parameterized",
-                syntax=syntax,
-                span=_span(node, file_path),
-            ))
+            uses.append(
+                GenericTypeUse(
+                    identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
+                    owner_identity=owner_name,
+                    context="other",
+                    syntax_kind="parameterized",
+                    syntax=syntax,
+                    span=_span(node, file_path),
+                )
+            )
         if node.type == "object_creation_expression":
             type_node = node.child_by_field_name("type")
             if type_node is not None and type_node.type == "generic_type":
-                args = type_node.child_by_field_name("type_arguments") or next((child for child in type_node.children if child.type == "type_arguments"), None)
+                args = type_node.child_by_field_name("type_arguments") or next(
+                    (child for child in type_node.children if child.type == "type_arguments"), None
+                )
                 if args is not None and not any(child.is_named for child in args.children):
                     owner_name, _ = owner_for(node)
-                    uses.append(GenericTypeUse(
-                        identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
-                        owner_identity=owner_name,
-                        context="instance_creation",
-                        syntax_kind="diamond",
-                        syntax=_type_syntax(type_node, source, file_path),
-                        inferred_arguments=True,
-                        span=_span(node, file_path),
-                    ))
+                    uses.append(
+                        GenericTypeUse(
+                            identity=f"{owner_name}@{node.start_byte}:{node.end_byte}",
+                            owner_identity=owner_name,
+                            context="instance_creation",
+                            syntax_kind="diamond",
+                            syntax=_type_syntax(type_node, source, file_path),
+                            inferred_arguments=True,
+                            span=_span(node, file_path),
+                        )
+                    )
     return parameters, uses
 
 
@@ -712,7 +792,23 @@ def _build_dataflow_records(
     method_nodes = sorted(
         captures.get("method", []), key=lambda node: (node.start_byte, node.end_byte)
     )
-    for method_node, method in zip(method_nodes, methods):
+    for method_node in method_nodes:
+        method = next(
+            (
+                item
+                for item in methods
+                if item.span.line_start == method_node.start_point[0] + 1
+                and item.name
+                == (
+                    _p.node_text(method_node.child_by_field_name("name"), source).strip()
+                    if method_node.child_by_field_name("name") is not None
+                    else item.name
+                )
+            ),
+            None,
+        )
+        if method is None:
+            continue
         if method.qualified_name == "":
             continue
         identity = f"{method.qualified_name}#{method.key}"
@@ -738,7 +834,11 @@ def _build_dataflow_records(
                         )
                     )
         for node in _p.walk(method_node):
-            if node.type == "method_declaration" and not _same_node(node, method_node):
+            if node is not method_node and node.type in {
+                "method_declaration",
+                "constructor_declaration",
+                "compact_constructor_declaration",
+            }:
                 continue
             if node.type == "variable_declarator":
                 name_node = node.child_by_field_name("name")
@@ -757,7 +857,7 @@ def _build_dataflow_records(
                 events.append(
                     DataflowEvent(
                         method_identity=identity,
-                        symbol=method.name,
+                        symbol="",
                         kind="early_return",
                         value_role="rvalue",
                         span=_span(node, file_path),
@@ -766,15 +866,17 @@ def _build_dataflow_records(
             if node.type == "assignment_expression":
                 left = node.child_by_field_name("left")
                 if left is not None and left.type == "identifier":
-                    operator = next((child.type for child in node.children if not child.is_named), "=")
+                    operator = next(
+                        (child.type for child in node.children if not child.is_named), "="
+                    )
                     kind = "assignment" if operator == "=" else "compound_assignment"
                     symbol = _p.node_text(left, source).strip()
                     events.append(
                         DataflowEvent(
                             method_identity=identity,
-                        symbol=symbol,
-                        kind=kind,
-                        value_role="lvalue" if kind == "assignment" else "read_modify_write",
+                            symbol=symbol,
+                            kind=kind,
+                            value_role="lvalue" if kind == "assignment" else "read_modify_write",
                             span=_span(left, file_path),
                         )
                     )
@@ -817,7 +919,14 @@ def _build_dataflow_records(
                     for child in args.children:
                         if child.is_named:
                             for descendant in _p.walk(child):
-                                if descendant.type == "identifier":
+                                if descendant.type == "identifier" and not (
+                                    descendant.parent is not None
+                                    and descendant.parent.type == "method_invocation"
+                                    and _same_node(
+                                        descendant,
+                                        descendant.parent.child_by_field_name("name"),
+                                    )
+                                ):
                                     events.append(
                                         DataflowEvent(
                                             method_identity=identity,
@@ -830,21 +939,68 @@ def _build_dataflow_records(
             if node.type == "identifier":
                 parent = node.parent
                 if parent is not None and parent.type in {
+                    "method_declaration",
+                    "constructor_declaration",
+                    "compact_constructor_declaration",
+                }:
+                    continue
+                if parent is not None and parent.type in {
                     "variable_declarator",
                     "formal_parameter",
                     "method_invocation",
                 }:
                     continue
+                if parent is not None and parent.type == "assignment_expression":
+                    left = parent.child_by_field_name("left")
+                    if left is not None and _same_node(left, node):
+                        continue
+                in_return = parent is not None and parent.type == "return_statement"
                 events.append(
                     DataflowEvent(
                         method_identity=identity,
                         symbol=_p.node_text(node, source).strip(),
-                        kind="value_use",
+                        kind="return_use" if in_return else "value_use",
                         value_role="rvalue",
                         span=_span(node, file_path),
                     )
                 )
-    return bindings, events
+    # Nested or anonymous methods share their enclosing method's identity
+    # string today, so overlapping walks can record the same declaration or
+    # event twice. Collapse exact duplicates (identity, symbol, kind, role,
+    # span) to keep single-binding resolution sound; occurrence-unique method
+    # identity remains an open follow-up and is intentionally not done here.
+    seen_bindings: set[tuple[str, str, str, int, int, int, int]] = set()
+    unique_bindings: list[DataflowBinding] = []
+    for binding in bindings:
+        key = (
+            binding.method_identity,
+            binding.symbol,
+            binding.kind,
+            binding.span.line_start,
+            binding.span.line_end,
+            binding.span.col_start,
+            binding.span.col_end,
+        )
+        if key not in seen_bindings:
+            seen_bindings.add(key)
+            unique_bindings.append(binding)
+    seen_events: set[tuple[str, str, str, str, int, int, int, int]] = set()
+    unique_events: list[DataflowEvent] = []
+    for event in events:
+        key = (
+            event.method_identity,
+            event.symbol,
+            event.kind,
+            event.value_role,
+            event.span.line_start,
+            event.span.line_end,
+            event.span.col_start,
+            event.span.col_end,
+        )
+        if key not in seen_events:
+            seen_events.add(key)
+            unique_events.append(event)
+    return unique_bindings, unique_events
 
 
 def _build_value_and_barrier_records(
@@ -858,13 +1014,13 @@ def _build_value_and_barrier_records(
 ) -> tuple[list[ValueStateRecord], list[BarrierFact]]:
     states: list[ValueStateRecord] = []
     barriers: list[BarrierFact] = []
-    method_by_name = {method.name: method for method in methods}
     for binding in bindings:
-        method = method_by_name.get(binding.method_name)
-        if method is None:
-            continue
         local = next(
-            (item for item in locals_ if item.name == binding.symbol and item.method_name == binding.method_name),
+            (
+                item
+                for item in locals_
+                if item.name == binding.symbol and item.method_identity == binding.method_identity
+            ),
             None,
         )
         if local is not None and local.evaluated_kind is not None:
@@ -875,7 +1031,9 @@ def _build_value_and_barrier_records(
                     state="CONSTANT",
                     kind=local.evaluated_kind,
                     value=None if local.evaluated_value is None else str(local.evaluated_value),
-                    source="computed" if local.initializer_kind != f"value:{local.evaluated_kind}" else "literal",
+                    source="computed"
+                    if local.initializer_kind != f"value:{local.evaluated_kind}"
+                    else "literal",
                     span=binding.span,
                 )
             )
@@ -1106,6 +1264,7 @@ def build_java_model(
 
     class_stack: list[str] = []
     method_stack: list[str] = []
+    method_identity_stack: list[str] = []
     bare_stack: list[str] = []
     container_types: list[str] = []
     class_only: list[str] = []
@@ -1116,6 +1275,9 @@ def build_java_model(
 
     def enclosing_method() -> str | None:
         return method_stack[-1] if method_stack else None
+
+    def enclosing_method_identity() -> str | None:
+        return method_identity_stack[-1] if method_identity_stack else None
 
     def enclosing_bare() -> str:
         return bare_stack[-1] if bare_stack else ""
@@ -1238,6 +1400,7 @@ def build_java_model(
             )
             if qualified:
                 method_stack.append(qualified)
+                method_identity_stack.append(f"{qualified}#{key}")
                 bare_stack.append(name)
                 for sub in _p.walk(node):
                     if sub.type != "if_statement":
@@ -1262,6 +1425,7 @@ def build_java_model(
                 for child in node.children:
                     visit(child)
                 bare_stack.pop()
+                method_identity_stack.pop()
                 method_stack.pop()
             return
         if node_type == "method_invocation":
@@ -1284,6 +1448,7 @@ def build_java_model(
                         has_method_reference="::" in target or "::" in receiver,
                         in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
+                        enclosing_method_identity=enclosing_method_identity(),
                         enclosing_class=enclosing_class(),
                         span=_span(node, file_path),
                     )
@@ -1309,6 +1474,7 @@ def build_java_model(
                         has_method_reference="::" in target,
                         in_lambda=lambda_depth > 0,
                         enclosing_method=enclosing_method(),
+                        enclosing_method_identity=enclosing_method_identity(),
                         enclosing_class=enclosing_class(),
                         span=_span(node, file_path),
                     )
@@ -1392,6 +1558,7 @@ def build_java_model(
                             else "unknown"
                         ),
                         enclosing_method=enclosing_method(),
+                        method_identity=enclosing_method_identity() or "",
                         method_name=enclosing_bare(),
                         initializer_kind=kind,
                         raw_initializer=raw,
@@ -1427,6 +1594,7 @@ def build_java_model(
                         else "unknown"
                     ),
                     enclosing_method=enclosing_method(),
+                    method_identity=enclosing_method_identity() or "",
                     method_name=enclosing_bare(),
                     is_varargs=node_type == "spread_parameter",
                     span=_span(node, file_path),
@@ -1441,9 +1609,7 @@ def build_java_model(
     for top in root.children:
         visit(top)
 
-    dataflow_bindings, dataflow_events = _build_dataflow_records(
-        root, source, file_path, methods
-    )
+    dataflow_bindings, dataflow_events = _build_dataflow_records(root, source, file_path, methods)
     value_states, barriers = _build_value_and_barrier_records(
         methods, locals_, params, dataflow_bindings, dataflow_events, guard_returns, file_path
     )

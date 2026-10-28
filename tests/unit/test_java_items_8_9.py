@@ -9,8 +9,9 @@ from investigation_agent_platform.application.analysis.java import model, query
 
 
 def test_framework_boundary_catalog_is_versioned_and_well_formed():
-    path = Path(
-        "src/investigation_agent_platform/application/analysis/java/data/framework_boundaries_v1.json"
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src/investigation_agent_platform/application/analysis/java/data/framework_boundaries_v1.json"
     )
     payload = json.loads(path.read_text())
     assert payload["schema_version"] == "iap/java-framework-boundaries/v1"

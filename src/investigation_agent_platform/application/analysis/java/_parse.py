@@ -108,20 +108,16 @@ def find_field_declarations(
     captures = query_captures(
         root,
         source,
-        "(field_declaration declarator: (variable_declarator name: (identifier) @field)) @declaration",
+        "(field_declaration) @declaration",
     )
-    declarations = captures.get("declaration", [])
-    names = captures.get("field", [])
-    for node, name_node in zip(declarations, names):
-        if node_text(name_node, source) != field_name:
-            continue
+    for node in captures.get("declaration", []):
         parent = node.parent
         class_node = parent.parent if parent is not None else None
         if class_node is None or class_node.type not in _CLASS_TYPES:
             continue
-        declarator = next(
-            (child for child in node.children if child.type == "variable_declarator"), None
-        )
-        if declarator is not None:
+        for declarator in (child for child in node.children if child.type == "variable_declarator"):
+            name_node = declarator.child_by_field_name("name")
+            if name_node is None or node_text(name_node, source) != field_name:
+                continue
             found.append((node, declarator, qualified_class_name(class_node, source, package)))
     return found

@@ -15,7 +15,7 @@ from __future__ import annotations
 import configparser
 import re
 import tomllib
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from investigation_agent_platform.application.analysis.python import literals as _lit
 

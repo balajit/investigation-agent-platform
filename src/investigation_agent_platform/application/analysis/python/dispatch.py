@@ -11,7 +11,8 @@ dispatch must never break the surrounding GET_CODE read.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from investigation_agent_platform.application.analysis.python.class_facts import (
     resolve_python_class_attr_fact,

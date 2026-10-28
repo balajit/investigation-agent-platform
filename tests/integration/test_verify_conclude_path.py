@@ -99,9 +99,7 @@ def _ev(
             ),
             source_location=SourceLocation(
                 system="Git",
-                identifier=f"samplecorp/orders-internal/{file_path}"
-                if file_path
-                else "x",
+                identifier=f"samplecorp/orders-internal/{file_path}" if file_path else "x",
                 file_path=file_path,
                 line_start=line_start,
                 line_end=line_end,
@@ -145,15 +143,13 @@ def _asm(
     )
 
 
-def run_path(statement: str, hyp: Hypothesis, banked: list[Evidence], engine=None) -> dict[str, Any]:
+def run_path(
+    statement: str, hyp: Hypothesis, banked: list[Evidence], engine=None
+) -> dict[str, Any]:
     """Mirror the activities' bound-augment-verify-gate-next_check sequence."""
     eng = engine or ENGINE
     evidence_by_id = {e.evidence_id: e for e in banked}
-    bound = [
-        evidence_by_id[k]
-        for k in (hyp.supporting_evidence_ids or [])
-        if k in evidence_by_id
-    ]
+    bound = [evidence_by_id[k] for k in (hyp.supporting_evidence_ids or []) if k in evidence_by_id]
     bound_ids = {e.evidence_id for e in bound}
     for extra in VerificationEngine.statement_range_reads(statement, banked):
         if extra.evidence_id not in bound_ids:
@@ -189,9 +185,7 @@ def run_path(statement: str, hyp: Hypothesis, banked: list[Evidence], engine=Non
     denial_reasons = (
         [verification.explanation] if str(verification.explanation or "").strip() else []
     ) + list(decision.blockers)
-    next_check = VerificationEngine.next_check_for_abstention(
-        "insufficient", denial_reasons
-    )
+    next_check = VerificationEngine.next_check_for_abstention("insufficient", denial_reasons)
     return {
         "bound": bound,
         "kind_gate": kind_gate,
@@ -269,7 +263,7 @@ def test_l2_comment_row_needs_rebind_end_to_end():
     hyp = hyp.model_copy(update={"id": hyp_id})
     out = run_path(hyp.statement, hyp, [cited, showing])
     assert out["kind_gate"][0] is False
-    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
+    assert "no cited row shows a call to 'OrderServiceHandler'" in out["kind_gate"][1]
     assert out["verification"].status == VerificationStatus.INCONCLUSIVE
     assert out["next_check"] is not None
 
@@ -346,7 +340,7 @@ def test_l2_sibling_repair_and_proxy_gap_end_to_end():
     # ... but no proxy showing row exists anywhere, so the run still abstains,
     # localized to the missing call site rather than a generic chain message.
     assert out["kind_gate"][0] is False
-    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
+    assert "no cited row shows a call to 'OrderServiceHandler'" in out["kind_gate"][1]
     assert out["next_check"] is not None
 
 
@@ -412,7 +406,7 @@ def test_l2_joint_construction_only_abstains_end_to_end():
     hyp = hyp.model_copy(update={"id": hyp_id})
     out = run_path(statement, hyp, [proxy_comment, proxy_ctor, helper_ctor])
     assert out["kind_gate"][0] is False
-    assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in out["kind_gate"][1]
+    assert "no cited row shows a call to 'OrderServiceHandler'" in out["kind_gate"][1]
     assert out["verification"].status == VerificationStatus.INCONCLUSIVE
     assert out["decision"].approved is False
 
@@ -624,7 +618,7 @@ def test_l5_answered_via_method_return_end_to_end():
         "10|         switch (orderType) {\n"
         '11|             case "LEGACY-BULK":\n'
         '12|                 return "BULK";\n'
-        "13|             case \"LEGACY-RES\":\n"
+        '13|             case "LEGACY-RES":\n'
         '14|                 return "RESIDENTIAL";\n'
         "15|             default:\n"
         "16|                 return orderType;\n"

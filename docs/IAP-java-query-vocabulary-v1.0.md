@@ -94,18 +94,18 @@ call when attribution is ambiguous; it must not guess from a same-name match.
 
 ## Use-Def and Barrier Semantics
 
-Effective-value states are intraprocedural and revision-pinned: `CONSTANT`
-means one supported source-level value reaches the record, `UNKNOWN` means no
-safe value is established, `KILLED` means a write invalidates a prior value,
-`AMBIGUOUS` means differing definitions reach the point, `ALIASED` means a
-call/return/field/array/lambda boundary prevents local certainty, and
-`OUT_OF_WINDOW` means the binding is outside the supplied model. A propagated
+Effective-value states currently produced by the bounded builder are
+intraprocedural and revision-pinned: `CONSTANT` means one supported source-level
+value reaches the record, and `UNKNOWN` means no safe value is established.
+Killed, ambiguous, aliased, and out-of-window transfer states are withdrawn
+until a definition/use transfer engine produces and tests them. A computed
 constant is distinct from a syntactic literal; existing `arg_is_constant` and
 `arg_is_literal` semantics do not change.
 
 Barrier records are source-level possibilities only: `GUARD`,
-`VALIDATION_CALL`, `REASSIGNMENT_KILL`, `ALIAS_ESCAPE`, and `UNKNOWN_BARRIER`.
-They never establish execution, validation effectiveness, or runtime safety.
+`REASSIGNMENT_KILL`, and `ALIAS_ESCAPE`. Validation-call and unknown-barrier
+records are withdrawn until their producers and truth conditions exist. They
+never establish execution, validation effectiveness, or runtime safety.
 `flow_is_blocked` returns `BLOCKED`, `UNKNOWN`, or
 `NOT_BLOCKED_IN_WINDOW`; the last value means only that no recognized blocker
 was found in the supplied bounded records.
@@ -117,7 +117,7 @@ was found in the supplied bounded records.
   (name, arity, param types, return, overload key, varargs/override/default
   flags, nearest class); call sites (target, receiver, arity, per-arg
   sketch with shape/operator/static-type, lambda/method-ref flags,
-  enclosing scope); decoded literals (kind, value, location);
+   enclosing scope and method identity); decoded literals (kind, value, location);
    fields/locals (name, type, enclosing scope, static/instance,
    declared-type presence, raw initializer, evaluated kind/value/limitation);
    parameters (name, type, enclosing method, varargs flag); guard branches
@@ -126,6 +126,32 @@ was found in the supplied bounded records.
    source-level guard, alias, and reassignment barrier facts; all flags and
    per-arg shapes above. Dataflow events carry `lvalue`, `rvalue`, or
    `read_modify_write` roles; unknown roles remain explicit.
+- **Model-field inventory:** `schema_version`, `parser_version`,
+  `has_syntax_error`, `repository`, `revision`, `file_path`, `package`,
+  `imports`, `classes`, `methods`, `calls`, `literals`, `fields`, `locals`,
+  `params`, `guard_returns`, `dataflow_bindings`, `dataflow_events`,
+  `value_states`, `barriers`, `type_declarations`, `analysis_snapshots`, and
+  `analysis_limitation_codes` are model metadata or queryable records; their
+  presence does not establish semantic attribution or runtime behavior.
+- **Public query catalog:** `all_calls`, `all_methods`, `all_literals`,
+  `named`, `named_qualified`, `with_arity`, `definitions_named`, `in_library`,
+  `in_enclosing_package`, `arg_kind`, `arg_is_literal`, `arg_is_constant`,
+  `arg_not_literal`, `arg_evaluates_to`, `takes_string_literal`,
+  `definitions_in_package`, `calls_to_in_library`, `methods_with_arity`,
+  `arg_shape`, `arg_operator`, `arg_static_type`, `arg_is_name`,
+  `arg_is_complex`, `arg_has_limitation`, `calls_with_computed_arg`,
+  `is_string_arg`, `is_int_arg`, `is_boolean_arg`, `is_null_arg`,
+  `calls_with_receiver`, `calls_in_lambda`, `all_fields`, `all_locals`,
+  `all_params`, `all_dataflow_bindings`, `all_dataflow_events`,
+  `events_with_value_role`, `all_value_states`, `all_barriers`,
+  `calls_with_effective_constant_arg`, `value_is_constant`,
+  `value_is_propagated_constant`, `guards_for_method`, `barriers_for_method`,
+  `reassignment_kills`, `flow_is_blocked`, `calls_with_validation_barrier`,
+  `locals_named`, `params_named`, `guard_branches`,
+  `guard_branches_for_method`, `all_type_parameters`, `type_parameters_for`,
+  `all_generic_type_uses`, `generic_type_uses_for`, `type_uses_named`,
+  `type_uses_wildcard`, `type_uses_diamond`, and `candidate_targets` are
+  public query operations with local-record semantics.
 - **Framework data:** boundary recognition is loaded from the versioned
   `iap/java-framework-boundaries/v1` catalog. Catalog entries are exact textual
   markers and are not runtime authority.

@@ -200,7 +200,6 @@ def resolve_python_framework_fact(
                             if len(_named) >= 2:
                                 kw, val = _named[0], _named[-1]
                         if kw is not None and _p.node_text(kw, source_bytes).strip() == "default" and val is not None:
-                            inner_raw = _p.node_text(val, source_bytes).strip()
                             evaluated, limitation = _expr.evaluate(val, source_bytes)
                             if limitation is not None or evaluated is None:
                                 return CodeFactResolutionV2(

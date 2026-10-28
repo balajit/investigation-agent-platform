@@ -127,6 +127,7 @@ _LOMBOK_ANNOTATIONS = frozenset(
     }
 )
 
+
 def _load_boundary_markers() -> tuple[tuple[str, tuple[str, ...]], ...]:
     payload = json.loads(
         files("investigation_agent_platform.application.analysis.java.data")
@@ -137,15 +138,18 @@ def _load_boundary_markers() -> tuple[tuple[str, tuple[str, ...]], ...]:
         raise RuntimeError("unsupported Java framework boundary catalog")
     boundaries = payload.get("boundaries")
     if not isinstance(boundaries, list):
-        raise RuntimeError("invalid Java framework boundary catalog")
+        raise TypeError("invalid Java framework boundary catalog")
     result: list[tuple[str, tuple[str, ...]]] = []
     for item in boundaries:
         code = item.get("code") if isinstance(item, dict) else None
         markers = item.get("markers") if isinstance(item, dict) else None
-        if not isinstance(code, str) or not code or not isinstance(markers, list) or not all(
-            isinstance(marker, str) and marker for marker in markers
+        if (
+            not isinstance(code, str)
+            or not code
+            or not isinstance(markers, list)
+            or not all(isinstance(marker, str) and marker for marker in markers)
         ):
-            raise RuntimeError("invalid Java framework boundary entry")
+            raise TypeError("invalid Java framework boundary entry")
         result.append((code, tuple(markers)))
     return tuple(result)
 

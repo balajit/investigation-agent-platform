@@ -506,12 +506,21 @@ def resolve_java_data_flow(
         return _unresolved(repository, revision, subject, reason, evidence_ids, level_text)
     assert location is not None
     if not symbol_name or not symbol_name.strip():
-        return _unresolved(repository, revision, subject, "missing_symbol_name", evidence_ids, level_text)
+        return _unresolved(
+            repository, revision, subject, "missing_symbol_name", evidence_ids, level_text
+        )
     if not source_path.lower().endswith(".java"):
-        return _unresolved(repository, revision, subject, "not_a_java_source_file", evidence_ids, level_text)
+        return _unresolved(
+            repository, revision, subject, "not_a_java_source_file", evidence_ids, level_text
+        )
     if not repository:
         return _unresolved(
-            repository, revision, subject, "repository_identity_unavailable", evidence_ids, level_text
+            repository,
+            revision,
+            subject,
+            "repository_identity_unavailable",
+            evidence_ids,
+            level_text,
         )
 
     from investigation_agent_platform.application.analysis.java import model as _model
@@ -544,7 +553,14 @@ def resolve_java_data_flow(
             level_text,
         )
 
-    bindings = [binding for binding in code_model.dataflow_bindings if binding.symbol == symbol_name]
+    bindings = [
+        binding for binding in code_model.dataflow_bindings if binding.symbol == symbol_name
+    ]
+    # A window can contain separate same-name bindings. Match the legacy
+    # resolver's first in-window declaration when no method scope is supplied;
+    # callers needing disambiguation must pass method_scope.
+    if not method_scope and bindings:
+        bindings = [min(bindings, key=lambda item: item.span.line_start)]
     if method_scope:
         bindings = [
             binding
@@ -556,20 +572,38 @@ def resolve_java_data_flow(
         return _unresolved(repository, revision, subject, code, evidence_ids, level_text)
     binding = bindings[0]
     method = next(
-        (item for item in code_model.methods if item.name == binding.method_name), None
+        (
+            item
+            for item in code_model.methods
+            if f"{item.qualified_name}#{item.key}" == binding.method_identity
+        ),
+        None,
     )
     if method is None:
-        return _unresolved(repository, revision, subject, "local_not_found", evidence_ids, level_text)
+        return _unresolved(
+            repository, revision, subject, "local_not_found", evidence_ids, level_text
+        )
     method_identity = binding.method_identity
     method_events = [
         event
         for event in code_model.dataflow_events
-        if event.method_identity == method_identity and event.symbol == symbol_name
+        if event.method_identity == method_identity
+        and (event.symbol == symbol_name or event.kind == "early_return")
     ]
-    method_text = window_text[binding.span.line_start - 1 :] if window_text else ""
+    method_text = "\n".join(
+        line.text
+        for line in lines
+        if method.span.line_start <= line.number - lines[0].number + 1 <= method.span.line_end
+    )
     if any(marker in method_text for marker in _CONCURRENCY_MARKERS):
         return _unresolved(
-            repository, revision, subject, "concurrent_visibility", evidence_ids, level_text, partial=True
+            repository,
+            revision,
+            subject,
+            "concurrent_visibility",
+            evidence_ids,
+            level_text,
+            partial=True,
         )
     if any(marker in method_text for marker in _STREAM_MARKERS):
         return _unresolved(
@@ -582,20 +616,30 @@ def resolve_java_data_flow(
     early_returns: list[dict[str, int]] = []
     if binding.kind == "local" and binding.has_initializer:
         definitions.append(
-            {"kind": "initializer", "line_start": first_line + binding.span.line_start - 1,
-             "col_start": 0, "line_end": first_line + binding.span.line_end - 1, "col_end": 0}
+            {
+                "kind": "initializer",
+                "line_start": first_line + binding.span.line_start - 1,
+                "col_start": binding.span.col_start,
+                "line_end": first_line + binding.span.line_end - 1,
+                "col_end": binding.span.col_end,
+            }
         )
     elif binding.kind == "parameter":
         definitions.append(
-            {"kind": "parameter_binding", "line_start": first_line + binding.span.line_start - 1,
-             "col_start": 0, "line_end": first_line + binding.span.line_end - 1, "col_end": 0}
+            {
+                "kind": "parameter_binding",
+                "line_start": first_line + binding.span.line_start - 1,
+                "col_start": binding.span.col_start,
+                "line_end": first_line + binding.span.line_end - 1,
+                "col_end": binding.span.col_end,
+            }
         )
     for event in method_events:
         span = {
             "line_start": first_line + event.span.line_start - 1,
-            "col_start": 0,
+            "col_start": event.span.col_start,
             "line_end": first_line + event.span.line_end - 1,
-            "col_end": 0,
+            "col_end": event.span.col_end,
         }
         if event.kind in {"assignment", "compound_assignment", "update"}:
             definitions.append({"kind": event.kind, **span})
@@ -607,19 +651,33 @@ def resolve_java_data_flow(
     uses.sort(key=lambda item: (item["line_start"], item["col_start"]))
     if any(event.kind == "method_argument" for event in method_events):
         return _unresolved(
-            repository, revision, subject, "interprocedural_aliasing", evidence_ids, level_text, partial=True
+            repository,
+            revision,
+            subject,
+            "interprocedural_aliasing",
+            evidence_ids,
+            level_text,
+            partial=True,
         )
     other_bindings = [
         item
         for item in code_model.dataflow_bindings
         if item.symbol == symbol_name and item.method_identity != method_identity
     ]
-    if other_bindings and any(
-        event.symbol == symbol_name and event.method_identity != method_identity
+    other_events = [
+        event
         for event in code_model.dataflow_events
-    ):
+        if event.symbol == symbol_name and event.method_identity != method_identity
+    ]
+    if other_events and not other_bindings:
         return _unresolved(
-            repository, revision, subject, "out_of_window_reference", evidence_ids, level_text, partial=True
+            repository,
+            revision,
+            subject,
+            "out_of_window_reference",
+            evidence_ids,
+            level_text,
+            partial=True,
         )
     definite = bool(definitions)
     if definitions:
@@ -627,20 +685,31 @@ def resolve_java_data_flow(
         definite = all(
             (use["line_start"], use["col_start"]) >= first_def
             and any(
-                (item["line_start"], item["col_start"])
-                <= (use["line_start"], use["col_start"])
+                (item["line_start"], item["col_start"]) <= (use["line_start"], use["col_start"])
                 for item in definitions
             )
             for use in uses
         )
-    qualified_subject = f"{code_model.package + '.' if code_model.package else ''}{method.qualified_name}.{symbol_name}"
-    refs = [
-        f"{repository}@{revision}:{source_path}:def({item['line_start']}:{item['col_start']}-"
-        f"{item['col_end']})->use({use['line_start']}:{use['col_start']}-{use['col_end']})"
-        for use in uses
-        for item in definitions
-        if (item["line_start"], item["col_start"]) <= (use["line_start"], use["col_start"])
-    ]
+    qualified_subject = f"{method.name}.{symbol_name}"
+    refs: list[str] = []
+    for use in uses:
+        reaching = [
+            item
+            for item in definitions
+            if (item["line_start"], item["col_start"]) <= (use["line_start"], use["col_start"])
+        ]
+        if reaching:
+            item = reaching[-1]
+            refs.append(
+                f"{repository}@{revision}:{source_path}:def({item['line_start']}:{item['col_start']}-"
+                f"{item['col_end']})->use({use['line_start']}:{use['col_start']}-{use['col_end']})"
+            )
+    if not uses and definitions:
+        item = definitions[-1]
+        refs.append(
+            f"{repository}@{revision}:{source_path}:def({item['line_start']}:{item['col_start']}-"
+            f"{item['col_end']})->use(none)"
+        )
     fact = {
         "kind": "local_data_flow",
         "symbol": symbol_name,

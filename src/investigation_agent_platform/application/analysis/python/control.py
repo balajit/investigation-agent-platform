@@ -116,7 +116,7 @@ def resolve_python_write_sites_fact(
         named = [c for c in node.children if c.is_named]
         if not named:
             continue
-        left, value = named[0], named[-1] if len(named) > 1 else (named[0], None)
+        left = named[0]
         line_no = lines[0].number + node.start_point[0]
         if class_scope:
             if left.type != "attribute":

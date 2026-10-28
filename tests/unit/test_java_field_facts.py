@@ -105,6 +105,13 @@ def test_resolves_multiple_declarators_with_shared_type():
     assert result.resolved_value == "4"
 
 
+def test_resolves_second_multi_declarator_field():
+    evidence = _source_evidence("class TransactionProcessor { int first = 1, second = 2; }")
+    result = resolve_java_field_fact(evidence, "second")
+    assert result.status == CodeFactStatus.RESOLVED
+    assert result.resolved_value == "2"
+
+
 def test_resolves_literal_signs_and_numeric_bases():
     for literal, expected in (("-3", "-3"), ("0x10", "16"), ("012", "10")):
         evidence = _source_evidence(f"class TransactionProcessor {{ int retryCount = {literal}; }}")

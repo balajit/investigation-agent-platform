@@ -62,13 +62,7 @@ def _source_evidence(source: str, *, start: int = 10, path: str = "src/Runner.ja
 
 def test_reaching_definitions_resolve_with_exact_ranges():
     evidence = _source_evidence(
-        "class Runner {\n"
-        "  int run() {\n"
-        "    int x = 1;\n"
-        "    x = 2;\n"
-        "    return x;\n"
-        "  }\n"
-        "}"
+        "class Runner {\n  int run() {\n    int x = 1;\n    x = 2;\n    return x;\n  }\n}"
     )
     result = resolve_java_data_flow(evidence, "x")
     assert result.status == CodeFactStatus.RESOLVED
@@ -105,13 +99,7 @@ def test_early_returns_enumerated():
 
 def test_use_before_definition_is_partial():
     evidence = _source_evidence(
-        "class Runner {\n"
-        "  int run() {\n"
-        "    int y = x + 1;\n"
-        "    int x = 1;\n"
-        "    return y;\n"
-        "  }\n"
-        "}"
+        "class Runner {\n  int run() {\n    int y = x + 1;\n    int x = 1;\n    return y;\n  }\n}"
     )
     result = resolve_java_data_flow(evidence, "x")
     assert result.status == CodeFactStatus.PARTIAL
@@ -236,11 +224,30 @@ def test_model_dataflow_discovery_matches_legacy_reference_cases():
             model.status,
             tuple(sorted(model.limitation_codes)),
             model.structured_fact,
+            model.subject_identity,
+            model.declaration_location,
+            model.data_flow_refs,
         ) == (
             legacy.status,
             tuple(sorted(legacy.limitation_codes)),
             legacy.structured_fact,
+            legacy.subject_identity,
+            legacy.declaration_location,
+            legacy.data_flow_refs,
         )
+
+
+def test_nested_call_argument_does_not_pollute_barrier_subjects():
+    from investigation_agent_platform.application.analysis.java import model, query
+
+    code = model.build_java_model(
+        b"class Runner { void run() { int x = 1; sink(foo(x)); } int foo(int x) { return x; } void sink(int x) {} }",
+        file_path="src/Runner.java",
+        repository="repo",
+        revision="abc123",
+    )
+    subjects = [barrier.subject for barrier in query.all_barriers(code)]
+    assert "foo" not in subjects
 
 
 def test_model_dataflow_records_are_queryable():
@@ -260,6 +267,49 @@ def test_model_dataflow_records_are_queryable():
     )
     assert list(query.all_dataflow_bindings(code))
     assert any(event.kind == "compound_assignment" for event in query.all_dataflow_events(code))
+
+
+def test_same_name_sibling_binding_is_not_out_of_window():
+    evidence = _source_evidence(
+        "class Runner {\n  void run() { int x = 1; }\n  void walk() { int x = 2; return; }\n}"
+    )
+    result = resolve_java_data_flow(evidence, "x")
+    assert result.status == CodeFactStatus.RESOLVED
+
+
+def test_nested_method_scope_does_not_pollute_outer_events():
+    evidence = _source_evidence(
+        "class Runner {\n"
+        "  void run() { int x = 1; return; }\n"
+        "  void walk() { int y = 2; return; }\n"
+        "}"
+    )
+    result = resolve_java_data_flow(evidence, "x")
+    assert result.status == CodeFactStatus.RESOLVED
+    assert all(
+        use["kind"] != "value_use" or use["line_start"] <= 12
+        for use in result.structured_fact["uses"]
+    )
+
+
+def test_anonymous_class_binding_is_recorded_once_and_resolves():
+    from investigation_agent_platform.application.analysis.java import model
+
+    source = (
+        "class Outer { void run() { int x = 1; Runnable r = new Runnable() { "
+        "public void run() { int q = x; }; }; } }"
+    )
+    code = model.build_java_model(
+        source.encode(),
+        file_path="src/Outer.java",
+        repository="repo",
+        revision="abc123",
+    )
+    matches = [b for b in code.dataflow_bindings if b.symbol == "q"]
+    assert len(matches) == 1
+    evidence = _source_evidence(source)
+    result = resolve_java_data_flow(evidence, "q")
+    assert result.status == CodeFactStatus.RESOLVED
 
 
 def test_effective_value_and_barrier_records_are_conservative():
@@ -323,15 +373,49 @@ def test_effective_constant_call_filter_requires_bare_name_and_explicit_validato
     )
     calls = list(query.all_calls(code))
     states = list(query.all_value_states(code))
-    assert [call.target_name for call in query.calls_with_effective_constant_arg(calls, states, 0)] == [
+    assert [
+        call.target_name for call in query.calls_with_effective_constant_arg(calls, states, 0)
+    ] == [
         "sink",
         "validateNowhere",
     ]
     assert [
-        call.target_name
-        for call in query.calls_with_validation_barrier(calls, ["validate"])
+        call.target_name for call in query.calls_with_validation_barrier(calls, ["validate"])
     ] == []
     assert [
-        call.target_name
-        for call in query.calls_with_validation_barrier(calls, ["validateNowhere"])
+        call.target_name for call in query.calls_with_validation_barrier(calls, ["validateNowhere"])
     ] == ["validateNowhere"]
+
+
+def test_effective_constant_call_filter_isolated_by_overloaded_method_identity():
+    from investigation_agent_platform.application.analysis.java import model, query
+
+    source = """class Runner {
+        void run() {
+            String queryText = "select";
+            sink(queryText);
+        }
+        void run(int ignored) {
+            String queryText = "other";
+            sink(queryText);
+        }
+        void sink(String value) {}
+    }"""
+    evidence = _source_evidence(source)
+    lines, _ = __import__(
+        "investigation_agent_platform.application.analysis.java._provenance",
+        fromlist=["java_source_lines"],
+    ).java_source_lines(evidence)
+    code = model.build_java_model(
+        "\n".join(line.text for line in lines).encode(),
+        file_path="src/Runner.java",
+        repository="repo",
+        revision="abc123",
+    )
+    calls = list(query.all_calls(code))
+    states = list(query.all_value_states(code))
+    assert len(list(query.calls_with_effective_constant_arg(calls, states, 0))) == 2
+    assert {call.enclosing_method_identity for call in calls if call.target_name == "sink"} == {
+        "Runner.run#run/0()",
+        "Runner.run#run/1(int)",
+    }

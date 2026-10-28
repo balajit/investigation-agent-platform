@@ -129,8 +129,10 @@ def resolve_java_field_fact(
             for item in declarations
             if _p.matches_declaring_type(item.enclosing_class or "", declaring_type)
         ]
-    if len(declarations) != 1:
-        return unresolved("field_not_found" if not declarations else "ambiguous_field_declaration")
+    if not declarations:
+        return unresolved("field_not_found")
+    if len(declarations) > 1:
+        return unresolved("ambiguous_field_declaration")
 
     declaration = declarations[0]
     if not declaration.has_declared_type:

@@ -107,9 +107,7 @@ def resolve_java_method_return_fact(
                 break
             stripped = stripped[:-1]
             try:
-                candidate = _p.parse_java(
-                    "\n".join(line.text for line in stripped).encode("utf-8")
-                )
+                candidate = _p.parse_java("\n".join(line.text for line in stripped).encode("utf-8"))
             except Exception:
                 break
             if not candidate.root_node.has_error:
@@ -137,17 +135,13 @@ def resolve_java_method_return_fact(
 
     package = code_model.package
     stripped = method_name.strip()
-    methods = [
-        m for m in code_model.methods if m.name == stripped and not m.is_constructor
-    ]
+    methods = [m for m in code_model.methods if m.name == stripped and not m.is_constructor]
     if declaring_type:
         methods = [
             m
             for m in methods
             if _p.matches_declaring_type(m.nearest_class or "", declaring_type)
-            or _p.matches_declaring_type(
-                f"{package}.{m.nearest_class or ''}", declaring_type
-            )
+            or _p.matches_declaring_type(f"{package}.{m.nearest_class or ''}", declaring_type)
         ]
     if not methods and declaring_type:
         # Method-anchored windows carry no enclosing class, so the
@@ -161,9 +155,7 @@ def resolve_java_method_return_fact(
             stem = stem.rsplit(".", 1)[0]
         requested = declaring_type.rsplit(".", 1)[-1]
         if stem and requested and stem.casefold() == requested.casefold():
-            methods = [
-                m for m in code_model.methods if m.name == stripped and not m.is_constructor
-            ]
+            methods = [m for m in code_model.methods if m.name == stripped and not m.is_constructor]
     if not methods:
         return unresolved("method_not_found")
     if len(methods) > 1:
@@ -171,9 +163,7 @@ def resolve_java_method_return_fact(
 
     method = methods[0]
     class_name = method.nearest_class or ""
-    qualified = (
-        f"{package}.{class_name}" if package and class_name else (class_name or package)
-    )
+    qualified = f"{package}.{class_name}" if package and class_name else (class_name or package)
     _mname = method_name.strip()
     if qualified:
         subject = f"{qualified}.{_mname}"

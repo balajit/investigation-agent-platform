@@ -17,20 +17,20 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from investigation_agent_platform.application.analysis.java.model import (
+    BarrierFact,
     CallSite,
     DataflowBinding,
     DataflowEvent,
-    BarrierFact,
-    ValueStateRecord,
-    GenericTypeUse,
-    TypeParameterDecl,
     FieldDef,
+    GenericTypeUse,
     GuardBranch,
     JavaModel,
     LiteralValue,
     LocalDef,
     MethodDef,
     ParamDef,
+    TypeParameterDecl,
+    ValueStateRecord,
 )
 
 
@@ -321,9 +321,7 @@ def all_dataflow_events(models: JavaModel | Iterable[JavaModel]) -> Iterator[Dat
         yield from model.dataflow_events
 
 
-def events_with_value_role(
-    events: Iterable[DataflowEvent], role: str
-) -> Iterator[DataflowEvent]:
+def events_with_value_role(events: Iterable[DataflowEvent], role: str) -> Iterator[DataflowEvent]:
     """Yield events with the exact lvalue/rvalue role."""
     for event in events:
         if event.value_role == role:
@@ -391,10 +389,14 @@ def type_uses_wildcard(
         arguments = use.syntax.arguments
         if any(
             argument.kind == kind
-            and (bound_name is None or argument.type is not None and argument.type.name == bound_name)
+            and (
+                bound_name is None or argument.type is not None and argument.type.name == bound_name
+            )
             for argument in arguments
             if kind is not None
-        ) or (kind is None and any(argument.kind.startswith("wildcard_") for argument in arguments)):
+        ) or (
+            kind is None and any(argument.kind.startswith("wildcard_") for argument in arguments)
+        ):
             yield use
 
 
@@ -405,7 +407,9 @@ def type_uses_diamond(models: JavaModel | Iterable[JavaModel]) -> Iterator[Gener
             yield use
 
 
-def value_is_constant(state: ValueStateRecord, kind: str | None = None, value: str | None = None) -> bool:
+def value_is_constant(
+    state: ValueStateRecord, kind: str | None = None, value: str | None = None
+) -> bool:
     """True only for a bounded constant with optional exact kind/value filters."""
     return (
         state.state == "CONSTANT"
@@ -428,13 +432,19 @@ def calls_with_effective_constant_arg(
 ) -> Iterator[CallSite]:
     """Yield calls whose named argument has a matching bounded value state."""
     state_by_binding = {
-        state.binding: state for state in states if value_is_constant(state, kind, value)
+        (state.method_identity, state.binding): state
+        for state in states
+        if value_is_constant(state, kind, value)
     }
     for call in calls:
         if not 0 <= index < len(call.args):
             continue
         argument = call.args[index]
-        if argument.kind == "name" and argument.text in state_by_binding:
+        if (
+            argument.kind == "name"
+            and call.enclosing_method_identity is not None
+            and (call.enclosing_method_identity, argument.text) in state_by_binding
+        ):
             yield call
 
 
@@ -456,23 +466,25 @@ def barriers_for_method(
             yield barrier
 
 
-def reassignment_kills(
-    events: Iterable[DataflowEvent], binding: str
-) -> Iterator[DataflowEvent]:
+def reassignment_kills(events: Iterable[DataflowEvent], binding: str) -> Iterator[DataflowEvent]:
     """Yield assignment/update events that kill a binding's prior value."""
     for event in events:
-        if event.symbol == binding and event.kind in {"assignment", "compound_assignment", "update"}:
+        if event.symbol == binding and event.kind in {
+            "assignment",
+            "compound_assignment",
+            "update",
+        }:
             yield event
 
 
-def flow_is_blocked(
-    state: ValueStateRecord, barriers: Iterable[BarrierFact]
-) -> str:
+def flow_is_blocked(state: ValueStateRecord, barriers: Iterable[BarrierFact]) -> str:
     """Return BLOCKED, NOT_BLOCKED_IN_WINDOW, or UNKNOWN conservatively."""
     relevant = [barrier for barrier in barriers if barrier.subject in {None, state.binding}]
     if any(barrier.kind in {"ALIAS_ESCAPE", "UNKNOWN_BARRIER"} for barrier in relevant):
         return "UNKNOWN"
-    if any(barrier.kind in {"REASSIGNMENT_KILL", "VALIDATION_CALL", "GUARD"} for barrier in relevant):
+    if any(
+        barrier.kind in {"REASSIGNMENT_KILL", "VALIDATION_CALL", "GUARD"} for barrier in relevant
+    ):
         return "BLOCKED"
     return "NOT_BLOCKED_IN_WINDOW"
 
