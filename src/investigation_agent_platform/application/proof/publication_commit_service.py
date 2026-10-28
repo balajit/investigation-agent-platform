@@ -269,21 +269,21 @@ class ProofPublicationService:
                         "artifacts": {str(k): dict(v) for k, v in item["artifact_map"].items()},
                     }
                 )
-            trusted_bytes = assemble_trusted_context_bytes(
-                rule_bundle_version=str(route.rule_bundle_version),
-                model_encoding=dict(route.model_encoding or {}),
-                reconciliation_state="unreconciled",
-                known_normalization_ops=[],
-                derivation_deps={},
-                repository_bindings=list(route.repository_bindings or ()),
-                expected_context_id=str(derivation.context_id),
-                reconciliation_adjudicated=bool(reconciliation_adjudicated),
-                policy_eligible=bool(policy_eligible),
-                policy_reason=str(policy_reason or ""),
-            )
-            decision, reason = decide_guarded_promotion(policy, evidence_bytes, trusted_bytes)
-            if decision is not PublicationDecision.COMMIT:
-                return CommitResult(False, f"POLICY_DENIED:{reason}")
+                trusted_bytes = assemble_trusted_context_bytes(
+                    rule_bundle_version=str(route.rule_bundle_version),
+                    model_encoding=dict(route.model_encoding or {}),
+                    reconciliation_state="unreconciled",
+                    known_normalization_ops=[],
+                    derivation_deps={},
+                    repository_bindings=list(route.repository_bindings or ()),
+                    expected_context_id=str(derivation.context_id),
+                    reconciliation_adjudicated=bool(reconciliation_adjudicated),
+                    policy_eligible=bool(policy_eligible),
+                    policy_reason=str(policy_reason or ""),
+                )
+                decision, reason = decide_guarded_promotion(policy, evidence_bytes, trusted_bytes)
+                if decision is not PublicationDecision.COMMIT:
+                    return CommitResult(False, f"POLICY_DENIED:{reason}")
                 await store_derivation_nodes(
                     session,
                     tenant_id,
