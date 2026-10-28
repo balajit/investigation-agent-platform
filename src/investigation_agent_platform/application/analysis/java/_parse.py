@@ -7,6 +7,9 @@ from typing import Any
 
 _FIELD_TYPES = frozenset({"field_declaration"})
 _CLASS_TYPES = frozenset({"class_declaration"})
+_METHOD_DECL_TYPES = frozenset(
+    {"method_declaration", "constructor_declaration", "compact_constructor_declaration"}
+)
 _PARSER_VERSION = "tree-sitter-java"
 _QUERY_VERSION = "tree-sitter-query-v1"
 
@@ -53,6 +56,41 @@ def walk(node: Any) -> Any:
         current = stack.pop()
         yield current
         stack.extend(reversed(current.children))
+
+
+def same_node(left: Any, right: Any) -> bool:
+    """Identity by type and byte span (tree-sitter nodes are value-compared)."""
+    return (
+        left.type == right.type
+        and left.start_byte == right.start_byte
+        and left.end_byte == right.end_byte
+    )
+
+
+def is_method_declaration(node: Any) -> bool:
+    """True for method, constructor, and compact-constructor declarations."""
+    return node.type in _METHOD_DECL_TYPES
+
+
+def innermost_method_scope(root: Any, node: Any) -> Any:
+    """Nearest method-ish ancestor-or-self of node, bounded below by root.
+
+    Returns root itself when no nested method declaration intervenes. Used to
+    attribute declarations and events to the method scope that owns them
+    instead of the walked method, so nested methods never pollute the
+    enclosing method's records. Never raises; falls back to root.
+    """
+    try:
+        current = node
+        while current is not None:
+            if is_method_declaration(current) and not same_node(current, root):
+                return current
+            if same_node(current, root):
+                return root
+            current = current.parent
+    except Exception:
+        pass
+    return root
 
 
 def package_name(root: Any, source: bytes) -> str:

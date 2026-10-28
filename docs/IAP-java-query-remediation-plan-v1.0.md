@@ -262,3 +262,24 @@ outstanding items. Raw numbers where they differ from the section above:
   dedupe against double-recording — needs an explicit decision, not silent drift;
   (2) occurrence-unique method identity (same-signature nested methods share one identity
   string) is a documented open follow-up; (3) Items 4–5 remain undefined anywhere.
+
+## Addendum 2026-10-28: legacy removal, B-full identity, explicit goldens
+
+- Legacy resolvers `_resolve_java_data_flow_legacy` and `_resolve_java_type_fact_legacy`
+  removed from `dataflow.py` and `type_facts.py` per the no-legacy rule; no alternate
+  branch remains. Legacy-vs-model parity harnesses converted to explicit golden tests:
+  `test_model_dataflow_reference_cases` (8 cases with status/codes/defs/uses/early) and
+  `test_type_resolver_shape_fixture_reports_sealed_hierarchy` (Shapes.java sealed hierarchy).
+- B-full single-sided adopted: occurrence-qualified identity
+  `{qualified}#{key}@{start_byte}` via `method_identity_for`, scope-attributed
+  bindings/events via `scope_of`/`attribute`, single-binding resolution downstream.
+  CallSite `enclosing_method_identity` carries the suffix; stems stay matching-keys
+  (never proof). Overloaded-identity test asserts stems plus `@` suffix and distinctness.
+- Nested scope goldens in `test_nested_scope_attribution_is_per_scope`: shadowing
+  per-scope (outer/inner `x` distinct identities), inner-only resolve (`q`), inner
+  returns absent (outer `x` early_returns `[]` despite inner `return`), capture-reads
+  outward (inner `sink(x)` attributed to outer identity).
+- Verification 2026-10-28: focused Java 133 passed; full unit 4149 passed + 2 known pins
+  (`test_range_read_is_labeled_range`,
+  `test_forced_range_read_reconciles_unresolved_edge_with_occ_retry`); scoped
+  `ruff check` clean; `ruff format` applied to touched files; `git diff --check` clean.

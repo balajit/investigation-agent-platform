@@ -174,67 +174,105 @@ def test_missing_symbol_is_unresolved():
     assert "local_not_found" in result.limitation_codes
 
 
-def test_model_dataflow_discovery_matches_legacy_reference_cases():
+def test_model_dataflow_reference_cases():
+    """Explicit golden expectations for the core dataflow shapes.
+
+    Converted from the legacy-vs-model parity harness after the legacy
+    resolver was removed per the no-legacy rule: these pin intended
+    behavior directly instead of proving equality with the old tree walk.
+    """
     cases = [
+        # (source, symbol, kwargs, expected_status, expected_codes, defs, uses, early)
         (
             "class Runner { int run() { int x = 1; x = 2; return x; } }",
             "x",
             {},
+            CodeFactStatus.RESOLVED,
+            [],
+            2,
+            1,
+            1,
         ),
         (
             "class Runner { int run(int flag) { int x = 1; if (flag > 0) { return x; } x = 2; return x; } }",
             "x",
             {},
+            CodeFactStatus.RESOLVED,
+            [],
+            2,
+            2,
+            2,
         ),
         (
             "class Runner { int run() { int y = x + 1; int x = 1; return y; } }",
             "x",
             {},
+            CodeFactStatus.PARTIAL,
+            ["use_before_definition"],
+            1,
+            1,
+            1,
         ),
         (
             "class Runner { void sink(int v) {} void run() { int x = 1; sink(x); } }",
             "x",
             {},
+            CodeFactStatus.PARTIAL,
+            ["interprocedural_aliasing"],
+            0,
+            0,
+            0,
         ),
         (
             "class Runner { void run() { int x = 1; synchronized (this) { x = 2; } } }",
             "x",
             {},
+            CodeFactStatus.PARTIAL,
+            ["concurrent_visibility"],
+            0,
+            0,
+            0,
         ),
         (
             "import java.util.List; class Runner { void run(List<String> items) { int x = items.stream().map(String::length).reduce(0, Integer::sum); } }",
             "x",
             {},
+            CodeFactStatus.PARTIAL,
+            ["stream_laziness"],
+            0,
+            0,
+            0,
         ),
         (
             "class Runner { void run() { int x = 1; } void walk() { int y = x + 1; } }",
             "x",
             {},
+            CodeFactStatus.PARTIAL,
+            ["out_of_window_reference"],
+            0,
+            0,
+            0,
         ),
-        ("class Runner { void run() { int x = 1; } }", "absent", {}),
+        (
+            "class Runner { void run() { int x = 1; } }",
+            "absent",
+            {},
+            CodeFactStatus.UNRESOLVED,
+            ["local_not_found"],
+            0,
+            0,
+            0,
+        ),
     ]
-    for source, symbol, kwargs in cases:
+    for source, symbol, kwargs, status, codes, n_defs, n_uses, n_early in cases:
         evidence = _source_evidence(source)
-        legacy = __import__(
-            "investigation_agent_platform.application.analysis.java.dataflow",
-            fromlist=["_resolve_java_data_flow_legacy"],
-        )._resolve_java_data_flow_legacy(evidence, symbol, **kwargs)
-        model = resolve_java_data_flow(evidence, symbol, **kwargs)
-        assert (
-            model.status,
-            tuple(sorted(model.limitation_codes)),
-            model.structured_fact,
-            model.subject_identity,
-            model.declaration_location,
-            model.data_flow_refs,
-        ) == (
-            legacy.status,
-            tuple(sorted(legacy.limitation_codes)),
-            legacy.structured_fact,
-            legacy.subject_identity,
-            legacy.declaration_location,
-            legacy.data_flow_refs,
-        )
+        result = resolve_java_data_flow(evidence, symbol, **kwargs)
+        assert result.status == status, source
+        assert sorted(result.limitation_codes) == sorted(codes), source
+        fact = result.structured_fact or {}
+        assert len(fact.get("definitions", [])) == n_defs, source
+        assert len(fact.get("uses", [])) == n_uses, source
+        assert len(fact.get("early_returns", [])) == n_early, source
 
 
 def test_nested_call_argument_does_not_pollute_barrier_subjects():
@@ -415,7 +453,82 @@ def test_effective_constant_call_filter_isolated_by_overloaded_method_identity()
     calls = list(query.all_calls(code))
     states = list(query.all_value_states(code))
     assert len(list(query.calls_with_effective_constant_arg(calls, states, 0))) == 2
-    assert {call.enclosing_method_identity for call in calls if call.target_name == "sink"} == {
+    identities = {call.enclosing_method_identity for call in calls if call.target_name == "sink"}
+    # B-full single-sided: occurrence-qualified identity `{qualified}#{key}@{start_byte}`.
+    # The byte suffix distinguishes same-signature occurrences; matching keys never proof.
+    assert {identity.rsplit("@", 1)[0] for identity in identities} == {
         "Runner.run#run/0()",
         "Runner.run#run/1(int)",
     }
+    assert all("@" in identity for identity in identities)
+    assert len(identities) == 2
+
+
+def test_nested_scope_attribution_is_per_scope():
+    """B-full single-sided goldens: inner scopes never pollute the outer record."""
+
+    from investigation_agent_platform.application.analysis.java import model
+
+    # Shadowing per-scope: same symbol binds once per occurrence identity.
+    shadow = (
+        "class Outer { void run() { int x = 1; Runnable r = new Runnable() { "
+        "public void run() { int x = 2; int y = x; }; }; int z = x; } }"
+    )
+    code = model.build_java_model(
+        shadow.encode(),
+        file_path="src/Outer.java",
+        repository="repo",
+        revision="abc123",
+    )
+    outer_x = [b for b in code.dataflow_bindings if b.symbol == "x"]
+    assert len(outer_x) == 2
+    assert outer_x[0].method_identity != outer_x[1].method_identity
+    assert all("@" in b.method_identity for b in outer_x)
+    inner_y = [b for b in code.dataflow_bindings if b.symbol == "y"]
+    assert len(inner_y) == 1
+    outer_z = [b for b in code.dataflow_bindings if b.symbol == "z"]
+    assert len(outer_z) == 1
+    assert outer_z[0].method_identity == outer_x[0].method_identity
+
+    # Inner resolve: an inner-only symbol resolves inside its own scope.
+    inner_only = (
+        "class Outer { void run() { Runnable r = new Runnable() { "
+        "public void run() { int q = 1; int y = q; }; }; } }"
+    )
+    inner_code = model.build_java_model(
+        inner_only.encode(),
+        file_path="src/Outer.java",
+        repository="repo",
+        revision="abc123",
+    )
+    assert len([b for b in inner_code.dataflow_bindings if b.symbol == "q"]) == 1
+
+    # Inner returns absent: an inner `return` never counts for the outer symbol.
+    outer_src = (
+        "class Outer { void run() { int x = 1; Runnable r = new Runnable() { "
+        "public void run() { return; } }; } }"
+    )
+    outer_evidence = _source_evidence(outer_src)
+    outer_result = resolve_java_data_flow(outer_evidence, "x")
+    assert outer_result.status == CodeFactStatus.RESOLVED
+    assert outer_result.structured_fact["early_returns"] == []
+
+    # Capture-reads outward: an inner `sink(x)` attributes to the outer binding.
+    capture_src = (
+        "class Outer { void run() { int x = 1; Runnable r = new Runnable() { "
+        "public void run() { sink(x); } }; } void sink(int v) {} }"
+    )
+    capture_code = model.build_java_model(
+        capture_src.encode(),
+        file_path="src/Outer.java",
+        repository="repo",
+        revision="abc123",
+    )
+    outer_identity = next(
+        b.method_identity for b in capture_code.dataflow_bindings if b.symbol == "x"
+    )
+    capture_events = [
+        e for e in capture_code.dataflow_events if e.symbol == "x" and e.kind == "method_argument"
+    ]
+    assert capture_events
+    assert all(e.method_identity == outer_identity for e in capture_events)

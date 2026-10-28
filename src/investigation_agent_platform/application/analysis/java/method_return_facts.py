@@ -180,7 +180,14 @@ def resolve_java_method_return_fact(
     want_guard = _normalize(guard_condition) if guard_condition else ""
 
     for branch in code_model.guard_returns:
-        if branch.method_identity != f"{method.qualified_name}#{method.key}":
+        host = _model.method_for_identity(code_model.methods, branch.method_identity, branch.span)
+        if host is None:
+            continue
+        if (
+            host.span != method.span
+            or host.qualified_name != method.qualified_name
+            or host.key != method.key
+        ):
             continue
         if want_guard and want_guard not in branch.guard_text:
             continue

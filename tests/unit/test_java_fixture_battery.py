@@ -132,31 +132,26 @@ def test_battery_never_claims_runtime_effective():
             assert stage.value != "RUNTIME_EFFECTIVE"
 
 
-def test_type_resolver_model_discovery_matches_legacy_fixture_battery():
-    """Keep the model switchover gated by every manifest type case."""
-    for case in _MANIFEST["cases"]:
-        if case["resolver"] != "type":
-            continue
-        evidence = _evidence_for(case["file"])
-        kwargs = dict(case.get("kwargs", {}))
-        if case.get("language_version") is not None:
-            kwargs["language_version"] = case["language_version"]
-        legacy = type_facts._resolve_java_type_fact_legacy(evidence, case["symbol"], **kwargs)
-        model = type_facts.resolve_java_type_fact(evidence, case["symbol"], **kwargs)
+def test_type_resolver_shape_fixture_reports_sealed_hierarchy():
+    """Explicit golden for the sealed-interface type case.
 
-        def signature(result):
-            features = result.structured_fact.get("features", []) if result.structured_fact else []
-            return (
-                result.status.value,
-                tuple(sorted(result.limitation_codes)),
-                tuple(sorted(feature["kind"] for feature in features)),
-                tuple(sorted(feature["detail"] for feature in features)),
-            )
-
-        assert signature(model) == signature(legacy), (
-            f"{case['file']}::{case['symbol']}: model={signature(model)!r} "
-            f"legacy={signature(legacy)!r}"
-        )
+    Converted from the legacy-vs-model parity harness after the legacy
+    resolver was removed per the no-legacy rule: this pins the intended
+    model output directly instead of proving equality with the old tree walk.
+    A symbol-scoped query reports only the queried declaration's features;
+    the permits list names the in-window implementations.
+    """
+    case = next(c for c in _MANIFEST["cases"] if c.get("resolver") == "type")
+    evidence = _evidence_for(case["file"])
+    kwargs = dict(case.get("kwargs", {}))
+    if case.get("language_version") is not None:
+        kwargs["language_version"] = case["language_version"]
+    result = type_facts.resolve_java_type_fact(evidence, case["symbol"], **kwargs)
+    assert result.status.value == "RESOLVED"
+    assert sorted(result.limitation_codes) == []
+    features = (result.structured_fact or {}).get("features", [])
+    assert [feature["kind"] for feature in features] == ["sealed_hierarchy"]
+    assert "Circle" in features[0]["detail"] and "Square" in features[0]["detail"]
 
 
 def test_battery_resolved_field_claim_proves_and_tampered_fails():

@@ -444,6 +444,58 @@ def _span(node: Any, file_path: str) -> Span:
     )
 
 
+def method_identity_for(qualified_name: str, key: str, start_byte: int) -> str:
+    """Occurrence-qualified method identity: `{qualified}#{key}@{start_byte}`.
+
+    The byte offset distinguishes same-signature nested methods (e.g. an
+    anonymous-class `run()` inside an outer `run()`), which share qualified
+    name and overload key but never share a declaration site. Stable within a
+    revision-pinned window; opaque to consumers (join key, never proof).
+    """
+    return f"{qualified_name}#{key}@{int(start_byte)}"
+
+
+def span_contains(outer: Span, inner: Span) -> bool:
+    """True when inner lies fully inside outer on the same file."""
+    return (
+        outer.file_path == inner.file_path
+        and outer.line_start <= inner.line_start
+        and inner.line_end <= outer.line_end
+    )
+
+
+def method_identity_matches(identity: str, method: MethodDef, span: Span) -> bool:
+    """True when an occurrence-qualified identity names this method occurrence.
+
+    Matches `{qualified}#{key}` prefix plus span containment, so nested
+    same-signature methods (which share qualified name and overload key)
+    resolve to the innermost containing declaration. Falls back to exact
+    comparison for unsuffixed legacy identities.
+    """
+    stem = identity.rsplit("@", 1)[0] if "@" in identity else identity
+    return f"{method.qualified_name}#{method.key}" == stem and (
+        span_contains(method.span, span) if "@" in identity else True
+    )
+
+
+def method_for_identity(methods: list[MethodDef], identity: str, span: Span) -> MethodDef | None:
+    """Resolve an occurrence-qualified identity to the innermost method.
+
+    Selects the smallest containing declaration on ties, so nested methods
+    win over their enclosing methods for records inside the nested body.
+    """
+    candidates = [item for item in methods if method_identity_matches(identity, item, span)]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda item: (
+            item.span.line_end - item.span.line_start,
+            item.span.line_start,
+        ),
+    )
+
+
 def _type_annotations(node: Any, source: bytes) -> list[str]:
     return [
         _p.node_text(child, source).strip()
@@ -777,7 +829,15 @@ def _same_node(left: Any, right: Any) -> bool:
 def _build_dataflow_records(
     root: Any, source: bytes, file_path: str, methods: list[MethodDef]
 ) -> tuple[list[DataflowBinding], list[DataflowEvent]]:
-    """Record bounded binding/events needed by the dataflow resolver."""
+    """Record bounded binding/events needed by the dataflow resolver.
+
+    Attribution is scope-aware: every declaration and event is attributed to
+    its innermost enclosing method scope, so nested methods never pollute the
+    outer method's records. Uses of names bound nowhere in the nested scope
+    (e.g. lambda captures and reads of enclosing locals) attribute outward to
+    the binding scope. The legacy resolver implements the same rule; the
+    parity harness pins their agreement, including on nested fixtures.
+    """
     bindings: list[DataflowBinding] = []
     events: list[DataflowEvent] = []
     captures = _p.query_captures(
@@ -792,6 +852,7 @@ def _build_dataflow_records(
     method_nodes = sorted(
         captures.get("method", []), key=lambda node: (node.start_byte, node.end_byte)
     )
+    paired: list[tuple[Any, MethodDef, str]] = []
     for method_node in method_nodes:
         method = next(
             (
@@ -811,7 +872,40 @@ def _build_dataflow_records(
             continue
         if method.qualified_name == "":
             continue
-        identity = f"{method.qualified_name}#{method.key}"
+        paired.append(
+            (
+                method_node,
+                method,
+                method_identity_for(method.qualified_name, method.key, method_node.start_byte),
+            )
+        )
+    # Scope maps keyed by node span: identity, bare name, and parent scope.
+    scope_identities: dict[tuple[int, int], str] = {}
+    scope_names: dict[str, str] = {}
+    scope_nodes: dict[tuple[int, int], Any] = {}
+    for method_node, method, identity in paired:
+        key = (method_node.start_byte, method_node.end_byte)
+        scope_identities[key] = identity
+        scope_names[identity] = method.name
+        scope_nodes[key] = method_node
+    scope_parents: dict[str, str | None] = {}
+    for key, node in scope_nodes.items():
+        parent: str | None = None
+        current = node.parent
+        while current is not None:
+            if _p.is_method_declaration(current):
+                parent = scope_identities.get((current.start_byte, current.end_byte))
+                break
+            current = current.parent
+        scope_parents[scope_identities[key]] = parent
+
+    def scope_of(walk_root: Any, node: Any, fallback: str) -> str:
+        """Innermost scope identity containing node (walk-root bounded)."""
+        scoped = _p.innermost_method_scope(walk_root, node)
+        return scope_identities.get((scoped.start_byte, scoped.end_byte), fallback)
+
+    # Phase 1: bindings, attributed to their innermost scope.
+    for method_node, method, identity in paired:
         params_node = method_node.child_by_field_name("parameters")
         if params_node is not None:
             for param in params_node.children:
@@ -834,29 +928,46 @@ def _build_dataflow_records(
                         )
                     )
         for node in _p.walk(method_node):
-            if node is not method_node and node.type in {
-                "method_declaration",
-                "constructor_declaration",
-                "compact_constructor_declaration",
-            }:
+            if node.type != "variable_declarator":
                 continue
-            if node.type == "variable_declarator":
-                name_node = node.child_by_field_name("name")
-                if name_node is not None:
-                    bindings.append(
-                        DataflowBinding(
-                            method_identity=identity,
-                            method_name=method.name,
-                            symbol=_p.node_text(name_node, source).strip(),
-                            kind="local",
-                            has_initializer=node.child_by_field_name("value") is not None,
-                            span=_span(node, file_path),
-                        )
-                    )
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                continue
+            scope_id = scope_of(method_node, node, identity)
+            bindings.append(
+                DataflowBinding(
+                    method_identity=scope_id,
+                    method_name=scope_names.get(scope_id, method.name),
+                    symbol=_p.node_text(name_node, source).strip(),
+                    kind="local",
+                    has_initializer=node.child_by_field_name("value") is not None,
+                    span=_span(node, file_path),
+                )
+            )
+    # Phase 2: events. Bound names per scope drive attribution: a use or
+    # update resolves to the innermost scope binding the symbol, falling back
+    # outward (captures read enclosing locals); unbound-anywhere names stay
+    # in their occurrence scope. Returns always belong to their own scope.
+    bound: dict[str, set[str]] = {}
+    for binding in bindings:
+        bound.setdefault(binding.method_identity, set()).add(binding.symbol)
+
+    def attribute(symbol: str, scope_id: str) -> str:
+        current: str | None = scope_id
+        seen: set[str] = set()
+        while current is not None and current not in seen:
+            seen.add(current)
+            if symbol in bound.get(current, ()):
+                return current
+            current = scope_parents.get(current)
+        return scope_id
+
+    for method_node, method, identity in paired:
+        for node in _p.walk(method_node):
             if node.type == "return_statement":
                 events.append(
                     DataflowEvent(
-                        method_identity=identity,
+                        method_identity=scope_of(method_node, node, identity),
                         symbol="",
                         kind="early_return",
                         value_role="rvalue",
@@ -871,9 +982,10 @@ def _build_dataflow_records(
                     )
                     kind = "assignment" if operator == "=" else "compound_assignment"
                     symbol = _p.node_text(left, source).strip()
+                    scope_id = attribute(symbol, scope_of(method_node, left, identity))
                     events.append(
                         DataflowEvent(
-                            method_identity=identity,
+                            method_identity=scope_id,
                             symbol=symbol,
                             kind=kind,
                             value_role="lvalue" if kind == "assignment" else "read_modify_write",
@@ -883,7 +995,7 @@ def _build_dataflow_records(
                     if kind == "compound_assignment":
                         events.append(
                             DataflowEvent(
-                                method_identity=identity,
+                                method_identity=scope_id,
                                 symbol=symbol,
                                 kind="read_modify_write",
                                 value_role="read_modify_write",
@@ -895,17 +1007,18 @@ def _build_dataflow_records(
                     if child.type == "identifier":
                         span = _span(child, file_path)
                         symbol = _p.node_text(child, source).strip()
+                        scope_id = attribute(symbol, scope_of(method_node, child, identity))
                         events.extend(
                             [
                                 DataflowEvent(
-                                    method_identity=identity,
+                                    method_identity=scope_id,
                                     symbol=symbol,
                                     kind="update",
                                     value_role="read_modify_write",
                                     span=span,
                                 ),
                                 DataflowEvent(
-                                    method_identity=identity,
+                                    method_identity=scope_id,
                                     symbol=symbol,
                                     kind="read_modify_write",
                                     value_role="read_modify_write",
@@ -927,10 +1040,14 @@ def _build_dataflow_records(
                                         descendant.parent.child_by_field_name("name"),
                                     )
                                 ):
+                                    symbol = _p.node_text(descendant, source).strip()
                                     events.append(
                                         DataflowEvent(
-                                            method_identity=identity,
-                                            symbol=_p.node_text(descendant, source).strip(),
+                                            method_identity=attribute(
+                                                symbol,
+                                                scope_of(method_node, descendant, identity),
+                                            ),
+                                            symbol=symbol,
                                             kind="method_argument",
                                             value_role="rvalue",
                                             span=_span(descendant, file_path),
@@ -955,20 +1072,20 @@ def _build_dataflow_records(
                     if left is not None and _same_node(left, node):
                         continue
                 in_return = parent is not None and parent.type == "return_statement"
+                symbol = _p.node_text(node, source).strip()
                 events.append(
                     DataflowEvent(
-                        method_identity=identity,
-                        symbol=_p.node_text(node, source).strip(),
+                        method_identity=attribute(symbol, scope_of(method_node, node, identity)),
+                        symbol=symbol,
                         kind="return_use" if in_return else "value_use",
                         value_role="rvalue",
                         span=_span(node, file_path),
                     )
                 )
-    # Nested or anonymous methods share their enclosing method's identity
-    # string today, so overlapping walks can record the same declaration or
-    # event twice. Collapse exact duplicates (identity, symbol, kind, role,
-    # span) to keep single-binding resolution sound; occurrence-unique method
-    # identity remains an open follow-up and is intentionally not done here.
+    # Overlapping walks record the same inner declaration or event twice
+    # (once per enclosing walk); collapse exact duplicates to keep
+    # single-binding resolution sound. Scope attribution above already
+    # separates inner- and outer-scope records by occurrence identity.
     seen_bindings: set[tuple[str, str, str, int, int, int, int]] = set()
     unique_bindings: list[DataflowBinding] = []
     for binding in bindings:
@@ -1400,7 +1517,7 @@ def build_java_model(
             )
             if qualified:
                 method_stack.append(qualified)
-                method_identity_stack.append(f"{qualified}#{key}")
+                method_identity_stack.append(method_identity_for(qualified, key, node.start_byte))
                 bare_stack.append(name)
                 for sub in _p.walk(node):
                     if sub.type != "if_statement":
@@ -1414,7 +1531,7 @@ def build_java_model(
                             enclosing_method=qualified,
                             method_name=name,
                             method_key=key,
-                            method_identity=f"{qualified}#{key}",
+                            method_identity=method_identity_for(qualified, key, node.start_byte),
                             guard_text=_normalize_guard(
                                 _p.node_text(cond, source) if cond is not None else ""
                             ),
