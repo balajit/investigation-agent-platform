@@ -360,6 +360,13 @@ async def _expectation(live: Any, hyp: Any) -> CommitExpectation:
     )
 
 
+@pytest.fixture()
+def _writers_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    # R4c writer routing: multi-mode live tests explicitly opt into
+    # all/any; the default remains single-only.
+    monkeypatch.setenv("IAP_PUBLISH_WRITERS", "single,all,any")
+
+
 def _lifecycle(symbol: str = "OrderService") -> LifecycleProjection:
     return LifecycleProjection(
         new_status="VERIFIED",
@@ -457,7 +464,7 @@ async def test_k6_invalidation_over_persisted_graph(live: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_k5_alternative_survival(live: Any) -> None:
+async def test_k5_alternative_survival(live: Any, _writers_all: None) -> None:
     inv_id = await _investigation(live)
     hyp = await _hypothesis(live, inv_id)
     await _evidence(live, inv_id, "fp-k5", "k-k5")

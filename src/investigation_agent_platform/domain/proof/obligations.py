@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from investigation_agent_platform.domain.proof.certificate import (
@@ -273,6 +275,64 @@ def encode_evidence_bytes(payload: Mapping[str, Any]) -> bytes:
 def encode_trusted_context_bytes(payload: Mapping[str, Any]) -> bytes:
     """Canonical trusted-context bytes for the guarded entry."""
     return _canonical_bytes(dict(payload))
+
+
+def assemble_trusted_context_bytes(
+    *,
+    rule_bundle_version: str,
+    model_encoding: Mapping[str, Any],
+    reconciliation_state: str,
+    known_normalization_ops: list[str],
+    derivation_deps: Mapping[str, list[str]],
+    repository_bindings: list[Mapping[str, Any]],
+    expected_context_id: str | None,
+    reconciliation_adjudicated: bool,
+    policy_eligible: bool,
+    policy_reason: str = "",
+) -> bytes:
+    """Operator-boundary helper: build canonical trusted context bytes.
+
+    Validates shapes eagerly (fail fast at the boundary, not inside the
+    gate): every binding names a non-empty evidence_id, content_digest,
+    and repository_id with no duplicate (evidence_id, content_digest)
+    pairs. The guarded entry re-validates everything on parse; this
+    helper only guarantees the bytes are well-formed canonical input.
+    """
+    bindings: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in repository_bindings or []:
+        if not isinstance(row, Mapping):
+            raise SnapshotError("repository binding must be an object")
+        key = (str(row.get("evidence_id") or ""), str(row.get("content_digest") or ""))
+        repo = str(row.get("repository_id") or "")
+        if not key[0] or not key[1] or not repo:
+            raise SnapshotError("repository binding needs evidence_id, content_digest, repository_id")
+        if not _SHA256_RE.match(key[1]):
+            raise SnapshotError("repository binding content_digest must be a sha256 digest")
+        if key in seen:
+            raise SnapshotError(f"duplicate repository binding: {key[0]}")
+        seen.add(key)
+        bindings.append({"evidence_id": key[0], "content_digest": key[1], "repository_id": repo})
+    if not isinstance(model_encoding, Mapping):
+        raise SnapshotError("model_encoding must be an object")
+    if not isinstance(known_normalization_ops, list) or not all(isinstance(v, str) for v in known_normalization_ops):
+        raise SnapshotError("known_normalization_ops must be a string list")
+    if not isinstance(derivation_deps, Mapping):
+        raise SnapshotError("derivation_deps must be an object")
+    return encode_trusted_context_bytes(
+        {
+            "rule_bundle_version": str(rule_bundle_version or ""),
+            "model_encoding": dict(model_encoding),
+            "reconciliation_state": str(reconciliation_state or ""),
+            "known_normalization_ops": list(known_normalization_ops),
+            "derivation_deps": {str(k): [str(v) for v in (vals or [])] for k, vals in derivation_deps.items()},
+            "repository_bindings": bindings,
+            "expected_context_id": expected_context_id,
+            "reconciliation_adjudicated": bool(reconciliation_adjudicated),
+            "policy_eligible": bool(policy_eligible),
+            "policy_reason": str(policy_reason or ""),
+        }
+    )
 
 
 def expand_obligations(

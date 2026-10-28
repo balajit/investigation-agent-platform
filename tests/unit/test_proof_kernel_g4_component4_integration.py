@@ -13,8 +13,7 @@ policy denial and staleness recompute the decision, never mutate the proof.
 D3 (1 test): static consumer-scan over ``src/`` for the three
 forbidden-pattern definitions (P1 decision-API refs, P2 harness-module refs,
 P3 harness literals); only the allowlist (domain/proof internal, tests/,
-grandfathered decide_guarded_promotion-only
-``publication_commit_service.py``) may match.
+guarded-only ``publication_commit_service.py`` + ``kernel_conclude_wiring.py``) may match.
 
 D4 (1 test): ``test_c4_report_table_complete`` parses the mapping table below
 and fails unless every row matches its ``C4_CASES`` entry exactly.
@@ -59,7 +58,7 @@ Mapping table (transcription of ``C4_CASES``):
 | test_e2e_deny_stale_context | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | DENY / STALE_CONTEXT | DENY / STALE_CONTEXT |
 | test_e2e_deny_policy_denied | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | DENY / POLICY_DENIED:c4-deny-pin | DENY / POLICY_DENIED:c4-deny-pin |
 | test_e2e_denied_decision_preserves_proof_artifact | ev-c4-definition-0=sha256:26eacd8379495e50e98069b18f62ccbfb775163ca4e55fe5debf79f52ec5ddd2 | PRESERVED / H0 stable; IDs bound; no commit constructed | PRESERVED / H0 stable; IDs bound; no commit constructed |
-| test_no_production_consumer_of_g4_decision | P1=decide_publication/build_commit/decide_guarded_promotion import-or-attribute refs; P2=test_proof_kernel_g4_component4_integration refs; P3=component4_integration/g4_component4 literals under src/; allowlist=domain/proof internal, tests/, publication_commit_service.py guarded-only; searched-roots=src/ | no violations / zero out-of-allowlist matches | no violations / zero out-of-allowlist matches |
+| test_no_production_consumer_of_g4_decision | P1=decide_publication/build_commit/decide_guarded_promotion import-or-attribute refs; P2=test_proof_kernel_g4_component4_integration refs; P3=component4_integration/g4_component4 literals under src/; allowlist=domain/proof internal, tests/, service + conclude-tap guarded-only; searched-roots=src/ | no violations / zero out-of-allowlist matches | no violations / zero out-of-allowlist matches |
 """
 
 from __future__ import annotations
@@ -288,7 +287,7 @@ C4_CASES: dict[str, dict[str, Any]] = {
             "P1": "decide_publication/build_commit/decide_guarded_promotion import-or-attribute refs",
             "P2": "test_proof_kernel_g4_component4_integration refs",
             "P3": "component4_integration/g4_component4 literals under src/",
-            "allowlist": "domain/proof internal, tests/, publication_commit_service.py guarded-only",
+            "allowlist": "domain/proof internal, tests/, service + conclude-tap guarded-only",
             "searched-roots": "src/",
         },
         "expected": "no violations",
@@ -1098,14 +1097,21 @@ def test_no_production_consumer_of_g4_decision() -> None:
     decision_api = re.compile(r"\bdecide_publication\b|\bbuild_commit\b|\bdecide_guarded_promotion\b")
     harness_ref = re.compile(r"test_proof_kernel_g4_component4_integration")
     harness_literal = re.compile(r"component4_integration|g4_component4")
-    grandfathered = (
+    allowlisted = (
         src_root
         / "investigation_agent_platform"
         / "application"
         / "proof"
-        / "publication_commit_service.py"
+        / "publication_commit_service.py",
+        src_root
+        / "investigation_agent_platform"
+        / "application"
+        / "proof"
+        / "kernel_conclude_wiring.py",
     )
-    assert grandfathered.is_file(), f"allowlist target missing: {grandfathered}"
+    for target in allowlisted:
+        assert target.is_file(), f"allowlist target missing: {target}"
+    grandfathered = allowlisted[0]
     text = grandfathered.read_text(encoding="utf-8")
     assert "decide_guarded_promotion" in text, "grandfathered consumer lost its guarded ref"
     assert "decide_publication" not in text, "grandfathered consumer kept the demoted scalar ref"
@@ -1130,7 +1136,7 @@ def test_no_production_consumer_of_g4_decision() -> None:
         for lineno, line in enumerate(lines, 1):
             if decision_api.search(line):
                 pattern1_files.add(rel)
-                if path != grandfathered:
+                if path != grandfathered and path not in allowlisted:
                     violations.append(f"P1 decision-API ref {rel}:{lineno}: {line.strip()}")
                 elif "decide_publication" in line or "build_commit" in line:
                     violations.append(f"P1 demoted-API ref in allowlist {rel}:{lineno}: {line.strip()}")
@@ -1138,8 +1144,8 @@ def test_no_production_consumer_of_g4_decision() -> None:
                 violations.append(f"P2 harness-module ref {rel}:{lineno}: {line.strip()}")
             if harness_literal.search(line):
                 violations.append(f"P3 harness literal {rel}:{lineno}: {line.strip()}")
-    assert pattern1_files == {grandfathered.relative_to(root).as_posix()}, (
-        f"{case}: P1 files {sorted(pattern1_files)} != grandfathered-only"
+    assert pattern1_files == {t.relative_to(root).as_posix() for t in allowlisted}, (
+        f"{case}: P1 files {sorted(pattern1_files)} != allowlist-only"
     )
     assert violations == [], f"{case}: {len(violations)} out-of-allowlist: {violations[:8]}"
     entry = C4_CASES[case]

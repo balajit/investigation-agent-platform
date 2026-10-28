@@ -209,3 +209,154 @@ def test_gate_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = SimpleNamespace(evidence_repo=SimpleNamespace(find_by_investigation_id=_boom))
     allowed, blockers = _run(wiring.kernel_gate_for_conclusion("t", uuid4(), ctx))
     assert allowed is False and blockers
+
+
+# ---------------------------------------------------------------------------
+# R4b: trusted context producer + policy source
+# ---------------------------------------------------------------------------
+
+
+def test_select_policy_from_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Env(monkeypatch)
+    assert wiring.select_policy("t") is None
+    _Env(
+        monkeypatch,
+        IAP_KERNEL_POLICY_REPOSITORIES="repo-a,repo-b, repo-a",
+        IAP_KERNEL_POLICY_AUTHORITIES="auth-1",
+    )
+    policy = wiring.select_policy("t")
+    assert policy is not None
+    assert policy.repositories == ("repo-a", "repo-b")
+    assert policy.approved_mapping_provenance_refs == ("auth-1",)
+    assert policy.policy_id == "policy:t:conclude:v1"
+
+
+def test_assemble_trusted_context_round_trip() -> None:
+    from investigation_agent_platform.domain.proof.obligations import (
+        SnapshotError,
+        assemble_trusted_context_bytes,
+        encode_trusted_context_bytes,
+    )
+
+    payload = {
+        "rule_bundle_version": "rules/v2",
+        "model_encoding": {},
+        "reconciliation_state": "unreconciled",
+        "known_normalization_ops": [],
+        "derivation_deps": {},
+        "repository_bindings": [
+            {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"}
+        ],
+        "expected_context_id": "ctx-1",
+        "reconciliation_adjudicated": True,
+        "policy_eligible": True,
+        "policy_reason": "",
+    }
+    assert assemble_trusted_context_bytes(**payload) == encode_trusted_context_bytes(payload)
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**payload, "repository_bindings": [
+            {"evidence_id": "r1", "content_digest": "bad", "repository_id": "repo-a"}
+        ][:1]})
+    dupes = [
+        {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"},
+        {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"},
+    ]
+    with pytest.raises(SnapshotError):
+        assemble_trusted_context_bytes(**{**payload, "repository_bindings": dupes})
+
+
+# ---------------------------------------------------------------------------
+# R4c: writer routing single-first
+# ---------------------------------------------------------------------------
+
+
+def test_writer_routing_defaults_single_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from investigation_agent_platform.application.proof.publication_commit_service import (
+        ProofPublicationService,
+    )
+
+    _Env(monkeypatch)
+    svc = ProofPublicationService(None)
+    denied = asyncio.new_event_loop().run_until_complete(
+        svc.commit("t", uuid4(), None, [], mode="all")
+    )
+    assert denied.committed is False
+    assert denied.reason == "MODE_NOT_ENABLED:all"
+    _Env(monkeypatch, IAP_PUBLISH_WRITERS="single,all,any")
+    denied2 = asyncio.new_event_loop().run_until_complete(
+        svc.commit("t", uuid4(), None, [], mode="all")
+    )
+    # Passes routing; denies later on empty routes (no DB touched either way).
+    assert denied2.reason == "NO_ROUTES"
+
+
+# ---------------------------------------------------------------------------
+# R4d: publish seam (gated, unwired)
+# ---------------------------------------------------------------------------
+
+
+def _committed_report(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    _Env(
+        monkeypatch,
+        IAP_KERNEL_WIRING="shadow",
+        IAP_KERNEL_POLICY_REPOSITORIES="tenant-repo",
+    )
+    return wiring.evaluate_conclusion_kernel("t", uuid4(), [_row()], _policy())
+
+
+def test_publish_seam_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Env(monkeypatch)
+    calls: list[str] = []
+
+    class _Svc:
+        async def commit(self, *args: Any, **kwargs: Any) -> Any:
+            calls.append("commit")
+            raise AssertionError("must not be called when disabled")
+
+    report = _committed_report(monkeypatch)
+    assert report["claims"] and report["claims"][0]["decision"] == "COMMIT"
+    import asyncio
+
+    out = asyncio.new_event_loop().run_until_complete(
+        wiring.maybe_publish_committed(_Svc(), "t", uuid4(), None, None, report, _policy())
+    )
+    assert out == {"published": False, "reason": "publish-disabled"}
+    assert calls == []
+
+
+def test_publish_seam_calls_service_for_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Env(monkeypatch, IAP_KERNEL_PUBLISH="1")
+    calls: list[dict[str, Any]] = []
+
+    class _Svc:
+        async def commit(self, *args: Any, **kwargs: Any) -> Any:
+            from types import SimpleNamespace
+
+            calls.append({"mode": kwargs.get("mode", args[4] if len(args) > 4 else None)})
+            return SimpleNamespace(committed=True, reason="COMMITTED")
+
+    report = _committed_report(monkeypatch)
+    import asyncio
+
+    out = asyncio.new_event_loop().run_until_complete(
+        wiring.maybe_publish_committed(_Svc(), "t", uuid4(), None, None, report, _policy())
+    )
+    assert out["published"] is True and out["committed"] is True
+    assert calls and calls[0]["mode"] == "single"
+
+
+def test_publish_seam_skips_without_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Env(monkeypatch, IAP_KERNEL_PUBLISH="1")
+
+    class _Svc:
+        async def commit(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("must not be called with no commits")
+
+    import asyncio
+
+    out = asyncio.new_event_loop().run_until_complete(
+        wiring.maybe_publish_committed(_Svc(), "t", uuid4(), None, None, {"claims": []}, _policy())
+    )
+    assert out == {"published": False, "reason": "no-committed-claims"}

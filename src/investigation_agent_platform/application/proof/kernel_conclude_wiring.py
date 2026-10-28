@@ -246,6 +246,7 @@ def evaluate_conclusion_kernel(
             bundle = _definition_bundle(item, repository)
             record = bundle["record"]
             proposition = bundle["proposition"]
+            manifest = bundle["manifest"]
             cert = bundle["cert"]
             digest = bundle["digest"]
             art = bundle["artifact"]
@@ -287,6 +288,20 @@ def evaluate_conclusion_kernel(
             }
             if decision == PublicationDecision.COMMIT:
                 entry["derivation_id"] = str(cert.get("derivation_id") or "")
+                entry["bundle"] = {
+                    "rule_id": "definition/v1",
+                    "proposition": proposition,
+                    "certificate": cert,
+                    "manifest_dump": manifest.model_dump(mode="json"),
+                    "artifacts": {record["evidence_id"]: art},
+                    "premises": list(cert.get("premises") or []),
+                    "repository_id": repository,
+                    "binding": {
+                        "evidence_id": record["evidence_id"],
+                        "content_digest": digest,
+                        "repository_id": repository,
+                    },
+                }
             report["claims"].append(entry)
         except Exception as exc:
             report["claims"].append(
@@ -298,6 +313,66 @@ def evaluate_conclusion_kernel(
                 }
             )
     return report
+
+
+async def maybe_publish_committed(
+    service: Any,
+    tenant_id: str,
+    investigation_id: Any,
+    expectation: Any,
+    lifecycle: Any,
+    report: dict[str, Any],
+    policy: Any,
+    mode: str = "single",
+) -> dict[str, Any]:
+    """R4d seam (option a, gated): publish COMMIT-evaluated claims.
+
+    NOT called by the conclude tap: activation needs B2 shadow evidence
+    plus a live-run GO (design option (c) until then). Gating: requires
+    ``IAP_KERNEL_PUBLISH=1``; otherwise returns not-enabled without
+    touching the service. Maps each COMMIT claim's evaluated bundle to
+    a service route (premises/artifacts/manifest as evaluated, trusted
+    bindings carried over) and delegates the atomic commit decision to
+    the publication service (writer routing enforced there).
+    """
+    if str(os.environ.get("IAP_KERNEL_PUBLISH", "") or "").strip() != "1":
+        return {"published": False, "reason": "publish-disabled"}
+    from investigation_agent_platform.application.proof.publication_commit_service import RouteInput
+    from investigation_agent_platform.domain.proof.manifest import EvidenceManifest
+    from investigation_agent_platform.domain.proof.rules import RULE_BUNDLE_VERSION, get_rule
+
+    routes = []
+    for claim in report.get("claims", []):
+        if claim.get("decision") != "COMMIT" or not isinstance(claim.get("bundle"), dict):
+            continue
+        bundle = claim["bundle"]
+        rule = get_rule(str(bundle.get("rule_id") or "definition/v1"))
+        routes.append(
+            RouteInput(
+                proposition=dict(bundle["proposition"]),
+                manifest=EvidenceManifest.model_validate(bundle["manifest_dump"]),
+                premises=[dict(p) for p in bundle.get("premises", [])],
+                artifacts={str(k): dict(v) for k, v in bundle.get("artifacts", {}).items()},
+                rule_bundle_version=RULE_BUNDLE_VERSION,
+                rule_id=rule.rule_id,
+                rule_version=rule.rule_version,
+                implementation_digest=rule.implementation_digest,
+                repository_bindings=(dict(bundle.get("binding") or {}),),
+            )
+        )
+    if not routes:
+        return {"published": False, "reason": "no-committed-claims"}
+    result = await service.commit(
+        tenant_id,
+        investigation_id,
+        expectation,
+        routes,
+        mode=mode,
+        reconciliation_adjudicated=True,
+        lifecycle=lifecycle,
+        policy=policy,
+    )
+    return {"published": True, "committed": bool(result.committed), "reason": str(result.reason)}
 
 
 async def kernel_gate_for_conclusion(

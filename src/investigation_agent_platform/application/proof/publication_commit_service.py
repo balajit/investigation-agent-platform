@@ -16,6 +16,7 @@ verify/conclude paths; production writers are untouched.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
@@ -39,9 +40,9 @@ from investigation_agent_platform.domain.proof.evaluation import (
 )
 from investigation_agent_platform.domain.proof.obligations import (
     DecisionPolicy,
+    assemble_trusted_context_bytes,
     decide_guarded_promotion,
     encode_evidence_bytes,
-    encode_trusted_context_bytes,
 )
 from investigation_agent_platform.domain.proof.publication import (
     PublicationDecision,
@@ -60,6 +61,19 @@ from investigation_agent_platform.infrastructure.persistence.proof_commit_reposi
 from investigation_agent_platform.infrastructure.persistence.rls import (
     rls_session,
 )
+
+#: Writer routing (R4c decision: single-first). Operator allowlist of
+#: publish modes; unset means single-only. Changing this to all/any is
+#: an explicit owner decision per mode (recorded in the ledger entry).
+_WRITER_ENV_VAR = "IAP_PUBLISH_WRITERS"
+
+
+def _allowed_modes() -> frozenset[str]:
+    raw = str(os.environ.get(_WRITER_ENV_VAR, "") or "")
+    if not raw.strip():
+        return frozenset({"single"})
+    return frozenset(m.strip().lower() for m in raw.split(",") if m.strip())
+
 
 #: Hypothesis statuses the commit may advance FROM (lifecycle graph).
 _COMMITTABLE_FROM = frozenset({"SUPPORTED", "UNDER_INVESTIGATION"})
@@ -143,6 +157,8 @@ class ProofPublicationService:
         the scalar linearization step is internal to that entry and is
         never called directly here.
         """
+        if mode not in _allowed_modes():
+            return CommitResult(False, f"MODE_NOT_ENABLED:{mode}")
         if not routes:
             return CommitResult(False, "NO_ROUTES")
         if mode == "single" and len(routes) != 1:
@@ -253,23 +269,21 @@ class ProofPublicationService:
                         "artifacts": {str(k): dict(v) for k, v in item["artifact_map"].items()},
                     }
                 )
-                trusted_bytes = encode_trusted_context_bytes(
-                    {
-                        "rule_bundle_version": str(route.rule_bundle_version),
-                        "model_encoding": dict(route.model_encoding or {}),
-                        "reconciliation_state": "unreconciled",
-                        "known_normalization_ops": [],
-                        "derivation_deps": {},
-                        "repository_bindings": [dict(b) for b in (route.repository_bindings or ())],
-                        "expected_context_id": str(derivation.context_id),
-                        "reconciliation_adjudicated": bool(reconciliation_adjudicated),
-                        "policy_eligible": bool(policy_eligible),
-                        "policy_reason": str(policy_reason or ""),
-                    }
-                )
-                decision, reason = decide_guarded_promotion(policy, evidence_bytes, trusted_bytes)
-                if decision is not PublicationDecision.COMMIT:
-                    return CommitResult(False, f"POLICY_DENIED:{reason}")
+            trusted_bytes = assemble_trusted_context_bytes(
+                rule_bundle_version=str(route.rule_bundle_version),
+                model_encoding=dict(route.model_encoding or {}),
+                reconciliation_state="unreconciled",
+                known_normalization_ops=[],
+                derivation_deps={},
+                repository_bindings=list(route.repository_bindings or ()),
+                expected_context_id=str(derivation.context_id),
+                reconciliation_adjudicated=bool(reconciliation_adjudicated),
+                policy_eligible=bool(policy_eligible),
+                policy_reason=str(policy_reason or ""),
+            )
+            decision, reason = decide_guarded_promotion(policy, evidence_bytes, trusted_bytes)
+            if decision is not PublicationDecision.COMMIT:
+                return CommitResult(False, f"POLICY_DENIED:{reason}")
                 await store_derivation_nodes(
                     session,
                     tenant_id,
