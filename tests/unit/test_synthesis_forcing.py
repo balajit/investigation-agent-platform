@@ -332,6 +332,69 @@ def test_log_force_skips_non_error_get_code_and_capped():
     assert derived is not None and len(derived["keywords"]) >= 1
 
 
+def test_log_force_ignores_code_identifiers_and_substrings():
+    from investigation_agent_platform.application.worker.workflows import (
+        _should_force_log_search,
+    )
+
+    # S3: "ErrorConstants" is a class name, not an error complaint —
+    # whole-word trigger must not fire on the embedded "error".
+    code = {"next_action": "SEARCH_CODE", "action_parameters": {"query": "ErrorConstants"}}
+    desc = (
+        "In the context-exchange-service Java service, where is the class "
+        "ErrorConstants defined? Give the repo-relative file path."
+    )
+    assert _should_force_log_search(desc, code, [], 0) is None
+    # "catalogs" embeds "logs" — same substring trap.
+    assert (
+        _should_force_log_search(
+            "Show catalogs for the service",
+            {"next_action": "SEARCH_CODE", "action_parameters": {"query": "catalogs"}},
+            [],
+            0,
+        )
+        is None
+    )
+    # Whole-word error language still fires.
+    err = {"next_action": "SEARCH_CODE", "action_parameters": {"query": "errors"}}
+    assert (
+        _should_force_log_search("Show me recent errors for the payments service", err, [], 0)
+        is not None
+    )
+    assert (
+        _should_force_log_search(
+            "The request timed out after 500ms",
+            {"next_action": "SEARCH_CODE", "action_parameters": {"query": "timeout"}},
+            [],
+            0,
+        )
+        is not None
+    )
+
+
+def test_log_force_never_reforces_denied_surface():
+    from investigation_agent_platform.application.worker.workflows import (
+        _should_force_log_search,
+    )
+
+    desc = "Show me recent errors for the payments service"
+    err = {"next_action": "SEARCH_CODE", "action_parameters": {"query": "errors"}}
+    denied = [
+        {
+            "action": "SEARCH_LOGS",
+            "evidence_added": 0,
+            "outcome_status": "BLOCKED",
+            "miss_reason": "authorization_denied",
+        }
+    ]
+    assert _should_force_log_search(desc, err, denied, 0) is None
+    # An empty (non-denied) attempt still allows one bounded retry.
+    assert (
+        _should_force_log_search(desc, err, [{"action": "SEARCH_LOGS", "evidence_added": 0}], 0)
+        is not None
+    )
+
+
 def test_reason_summary_carries_forced_and_outcome():
     from investigation_agent_platform.application.worker.workflows import (
         _reason_summary,

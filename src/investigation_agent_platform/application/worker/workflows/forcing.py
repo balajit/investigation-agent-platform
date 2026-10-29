@@ -221,6 +221,24 @@ _LOG_FORCE_STOPWORDS = frozenset(
 )
 
 
+# S3: whole-word trigger patterns. The complaint is matched with
+# alphanumeric boundaries so code identifiers never trip the log force:
+# "ErrorConstants" must not match "error", "catalogs" must not match
+# "logs". Multi-word patterns ("log lines", "timed out") and numeric
+# codes ("500") work unchanged under the same boundaries.
+_LOG_FORCE_ERROR_RES = tuple(
+    re.compile(r"(?<![a-z0-9])" + re.escape(pattern.strip().lower()) + r"(?![a-z0-9])")
+    for pattern in _LOG_FORCE_ERROR_PATTERNS
+)
+
+# S3: a forced SEARCH_LOGS that the tenant could not execute must never
+# be forced again in the same run. The execute activity records the
+# denial on the history entry (outcome_status BLOCKED, miss_reason
+# authorization_denied); the force rule reads only that record — pure.
+_LOG_FORCE_DENIED_MISS_REASONS = frozenset({"authorization_denied"})
+_LOG_FORCE_DENIED_STATUSES = frozenset({"BLOCKED"})
+
+
 # D2: intake frames force a stack walk before any other gathering. An
 # explicit frame list is the strongest first-turn signal (stronger than
 # log-first or synthesis forcing): the fault location is already named.
@@ -1215,8 +1233,9 @@ def _should_force_log_search(
 ) -> dict | None:
     """SEARCH_LOGS parameters to force, or None.
 
-    Fires when the complaint uses error/log language, the model proposes a
-    non-log gathering action, and no SEARCH_LOGS has banked evidence yet.
+    Fires when the complaint uses error/log language as whole words, the
+    model proposes a non-log gathering action, no SEARCH_LOGS has banked
+    evidence yet, and no prior SEARCH_LOGS was denied for this tenant.
     Keywords come from the proposed SEARCH_CODE query when present, else
     from complaint nouns. Bounded (max 2 per run). Pure — workflow-safe.
     """
@@ -1227,15 +1246,26 @@ def _should_force_log_search(
         if int(forced_count or 0) >= 2:
             return None
         lowered_desc = f" {(description or '').lower()} "
-        if not any(pattern in lowered_desc for pattern in _LOG_FORCE_ERROR_PATTERNS):
+        if not any(rx.search(lowered_desc) for rx in _LOG_FORCE_ERROR_RES):
             return None
         for entry in action_history or []:
             try:
                 action = str((entry or {}).get("action", "")).upper()
                 evidenced = int((entry or {}).get("evidence_added", 0) or 0)
+                miss_reason = str((entry or {}).get("miss_reason", "") or "")
+                outcome_status = str((entry or {}).get("outcome_status", "") or "").upper()
             except (TypeError, ValueError):
                 continue
             if action == "SEARCH_LOGS" and evidenced > 0:
+                return None
+            if (
+                action == "SEARCH_LOGS"
+                and evidenced <= 0
+                and (
+                    miss_reason in _LOG_FORCE_DENIED_MISS_REASONS
+                    or outcome_status in _LOG_FORCE_DENIED_STATUSES
+                )
+            ):
                 return None
         params = data.get("action_parameters") or {}
         query = str(params.get("query", "") or "").strip()
