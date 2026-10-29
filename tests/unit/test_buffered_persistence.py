@@ -349,3 +349,64 @@ def test_transition_replay_carries_stable_buffer_id(tmp_path) -> None:
         assert seen[0] is not None  # stable id passed on replay
 
     asyncio.run(_run())
+
+
+class _SplitBrainConfig:
+    def __init__(self, *, buffering_enabled: bool, db_uri: str | None):
+        from types import SimpleNamespace
+
+        self.buffer = SimpleNamespace(enabled=buffering_enabled)
+        uri = db_uri
+
+        class _Secret:
+            def get_secret_value(self):
+                return uri
+
+        self.database = SimpleNamespace(connection_uri=_Secret())
+
+
+def _plain_ctx():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(_buffered=False)
+
+
+def test_split_brain_boot_refuses_amnesiac_store(monkeypatch) -> None:
+    """Buffering disabled with a reachable Postgres must fail loud."""
+    import asyncio
+
+    from investigation_agent_platform.bootstrap import buffered_dev
+    from investigation_agent_platform.domain.common.exceptions import (
+        SplitBrainStoreError,
+    )
+
+    async def _reachable(uri: str, timeout_seconds: float = 3.0) -> bool:
+        return True
+
+    async def _run() -> None:
+        cfg = _SplitBrainConfig(
+            buffering_enabled=False, db_uri="postgresql://iap:iap@localhost:5452/iap"
+        )
+        with pytest.raises(SplitBrainStoreError, match="SPLIT-BRAIN REFUSED"):
+            await buffered_dev.ensure_buffered_dev_context(_plain_ctx(), cfg)
+
+    monkeypatch.setattr(buffered_dev, "_postgres_reachable", _reachable)
+    asyncio.run(_run())
+
+
+def test_offline_boot_stays_tolerated(monkeypatch) -> None:
+    """Buffering disabled with no reachable Postgres keeps memory mode."""
+    import asyncio
+
+    from investigation_agent_platform.bootstrap import buffered_dev
+
+    async def _unreachable(uri: str, timeout_seconds: float = 3.0) -> bool:
+        return False
+
+    async def _run() -> None:
+        cfg = _SplitBrainConfig(buffering_enabled=False, db_uri="postgresql://x")
+        ctx = await buffered_dev.ensure_buffered_dev_context(_plain_ctx(), cfg)
+        assert getattr(ctx, "_store_divergence_risk", None) is False
+
+    monkeypatch.setattr(buffered_dev, "_postgres_reachable", _unreachable)
+    asyncio.run(_run())

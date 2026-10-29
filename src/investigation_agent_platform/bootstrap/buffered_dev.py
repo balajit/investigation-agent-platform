@@ -192,8 +192,11 @@ def _require_dev(*, environment: str | None = None) -> None:
 async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
     """Wrap a live ``AppContext``'s stores with buffered proxies (idempotent).
 
-    Must be called from a running event loop (lifespan). Never raises: on any
-    unexpected failure the context is left untouched so startup proceeds.
+    Must be called from a running event loop (lifespan). Unexpected
+    failures leave the context untouched so startup proceeds — except
+    the split-brain boot below, which always raises: serving
+    process-local memory while a shared Postgres is reachable silently
+    loses every row on restart.
     """
     from investigation_agent_platform.infrastructure.persistence.buffered import (
         BufferedProxy,
@@ -221,14 +224,19 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
             except Exception:
                 db_uri = ""
             if db_uri and await _postgres_reachable(db_uri, timeout_seconds=3.0):
-                logger.error(
-                    "SPLIT-BRAIN RISK: IAP_BUFFER_ENABLED=false with a reachable "
-                    "Postgres; this process serves process-local memory while "
-                    "seed scripts and workers share Postgres. Unset "
-                    "IAP_BUFFER_ENABLED (or stop the database for true offline "
-                    "dev) so API and worker converge on the shared store."
+                from investigation_agent_platform.domain.common.exceptions import (
+                    SplitBrainStoreError,
                 )
+
                 ctx._store_divergence_risk = True  # type: ignore[attr-defined]
+                raise SplitBrainStoreError(
+                    "SPLIT-BRAIN REFUSED: IAP_BUFFER_ENABLED=false with a reachable "
+                    "Postgres; this process would serve process-local memory "
+                    "while seed scripts and workers share Postgres, silently "
+                    "losing every row on restart. Unset IAP_BUFFER_ENABLED "
+                    "(or stop the database for true offline dev) so API and "
+                    "worker converge on the shared store."
+                )
             else:
                 logger.info("Buffered persistence disabled (IAP_BUFFER_ENABLED=false)")
                 ctx._store_divergence_risk = False  # type: ignore[attr-defined]
@@ -342,6 +350,12 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
             )
         return ctx
     except Exception as exc:
+        from investigation_agent_platform.domain.common.exceptions import (
+            SplitBrainStoreError,
+        )
+
+        if isinstance(exc, SplitBrainStoreError):
+            raise
         logger.warning(
             "Buffered persistence wiring failed; continuing with plain context",
             extra={"error": str(exc)},

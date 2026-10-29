@@ -219,6 +219,19 @@ class PlatformConfigurationError(DomainException):
         )
 
 
+class SplitBrainStoreError(PlatformConfigurationError):
+    """Dev persistence would diverge between API and worker stores.
+
+    Raised when ``IAP_BUFFER_ENABLED=false`` in development while Postgres
+    is reachable: rows written directly to Postgres would be invisible to
+    the worker's in-memory store (and vice versa). Subclasses
+    PlatformConfigurationError so existing handlers still categorize it as
+    a boot configuration failure; callers that must refuse to boot match
+    this type specifically, leaving other config errors (e.g. missing env
+    vars in tests) on their previous warn-and-continue path.
+    """
+
+
 class CredentialProviderError(DomainException):
     """Outbound credential acquisition failure (Part 11.4).
 

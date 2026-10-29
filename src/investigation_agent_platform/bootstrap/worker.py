@@ -237,6 +237,15 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
 
             await ensure_buffered_dev_context(worker_ctx, config)
         except Exception as exc:
+            from investigation_agent_platform.domain.common.exceptions import (
+                SplitBrainStoreError,
+            )
+
+            if isinstance(exc, SplitBrainStoreError):
+                # Split-brain boot (amnesiac store with a reachable shared
+                # Postgres) must fail loud, never serve. Other config errors
+                # keep the pre-existing warn-and-continue path.
+                raise
             logger.warning("Buffered worker context unavailable", extra={"error": str(exc)})
         # Re-wire the evidence gateway AFTER proxy installation so it
         # captures the Postgres-backed proxies, not the bare in-memory

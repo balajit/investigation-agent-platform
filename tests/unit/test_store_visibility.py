@@ -144,14 +144,18 @@ def _disabled_config() -> SimpleNamespace:
 
 class TestBufferedDevSplitBrainGuard:
     @pytest.mark.asyncio
-    async def test_disabled_with_reachable_postgres_flags_divergence(self) -> None:
+    async def test_disabled_with_reachable_postgres_refuses_boot(self) -> None:
         from investigation_agent_platform.bootstrap import buffered_dev
+        from investigation_agent_platform.domain.common.exceptions import (
+            SplitBrainStoreError,
+        )
 
         ctx = SimpleNamespace()
         with patch.object(buffered_dev, "_postgres_reachable", return_value=True):
-            out = await buffered_dev.ensure_buffered_dev_context(ctx, _disabled_config())
-        assert getattr(out, "_store_divergence_risk", None) is True
-        assert getattr(out, "_buffered", False) is False
+            with pytest.raises(SplitBrainStoreError, match="SPLIT-BRAIN REFUSED"):
+                await buffered_dev.ensure_buffered_dev_context(ctx, _disabled_config())
+        assert getattr(ctx, "_store_divergence_risk", None) is True
+        assert getattr(ctx, "_buffered", False) is False
 
     @pytest.mark.asyncio
     async def test_disabled_without_reachable_postgres_is_quiet_offline(self) -> None:

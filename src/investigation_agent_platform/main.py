@@ -223,6 +223,16 @@ def _create_lifespan_app() -> FastAPI:
                 )
             start_buffer_flusher(get_app_context())
         except Exception as exc:
+            from investigation_agent_platform.domain.common.exceptions import (
+                SplitBrainStoreError,
+            )
+
+            if isinstance(exc, SplitBrainStoreError):
+                # Split-brain boot (amnesiac store with a reachable shared
+                # Postgres) must fail loud, never serve. Other config errors
+                # (e.g. missing env vars) keep the pre-existing
+                # warn-and-continue path.
+                raise
             logger.warning(
                 "Buffered persistence unavailable; continuing in-memory",
                 extra={"error": str(exc)},
