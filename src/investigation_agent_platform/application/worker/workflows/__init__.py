@@ -154,7 +154,6 @@ from .forcing import (
     _should_force_replan,
     _should_force_synthesis,
     _should_force_walk_stack,
-    _source_value_target,
 )
 from .indexing import ReferenceDocsIndexInput, ReferenceDocsIndexResult, ReferenceDocsIndexWorkflow
 from .maintenance import (

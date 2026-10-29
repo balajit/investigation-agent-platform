@@ -1,6 +1,7 @@
 # src/investigation_agent_platform/application/investigation/reasoning.py
 import html
 import logging
+import re
 from typing import Any
 from uuid import UUID
 from xml.sax.saxutils import quoteattr
@@ -444,6 +445,36 @@ class ReasoningContext(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict)
 
 
+def _statement_literal(statement: str) -> str | None:
+    """Parseable asserted literal from a value statement, or None (pure).
+
+    Guarded method returns first ("returns LIT ..."), then the same
+    field-value extractor the P0 gate uses — one parser family, so the
+    completion and the gate agree by construction. Never invents: prose
+    without a literal yields None.
+    """
+    try:
+        text = str(statement or "")
+        guarded = re.search(
+            r"(?i)\breturns?\s+"
+            r"(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)"
+            r"(?=\s|[.,;:!?)\]]|$)",
+            text,
+        )
+        if guarded is not None:
+            raw = str(guarded.group(1) or "").strip()
+            if len(raw) >= 2 and raw[0] in {"'", '"'} and raw[-1] == raw[0]:
+                raw = raw[1:-1]
+            return raw or None
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+
+        return VerificationEngine._claimed_literal_from_statement(text)
+    except Exception:
+        return None
+
+
 class EvidenceContextFormatter:
     """Formats evidence safely within XML envelope boundaries, escaping payloads and attributes."""
 
@@ -696,6 +727,12 @@ class ReasoningCoordinator(InvestigationReasoner):
         faces per-step grounding at VERIFY time, so nothing verifies for
         free. The model/auto split is emitted for compliance measurement:
         a high auto rate means prompt work, never blocking.
+
+        Consolidation: this function never types, fills, or normalizes
+        claim content. Value-shaped statements stay exactly as the model
+        emitted them; structure is demanded at formulation time with one
+        feedback retry, or the claim takes the honest path. The binding
+        layer derives targets from banked rows.
         """
         try:
             from investigation_agent_platform.domain.hypothesis.models import ClaimKind
@@ -741,6 +778,104 @@ class ReasoningCoordinator(InvestigationReasoner):
             )
         except Exception:
             return decision
+
+    @staticmethod
+    def _unstructured_value_claims(decision: Any) -> list[int]:
+        """Indexes of value-shaped claims missing machine structure (pure).
+
+        A claim needs the retry when its statement is value-shaped with
+        an extractable literal but it lacks fact_category, claimed_value,
+        or a target symbol. Content is never filled here — the indexes
+        only name what the feedback retry must demand.
+        """
+        try:
+            from investigation_agent_platform.application.investigation.claim_shape import (
+                value_shape_of,
+            )
+
+            missing: list[int] = []
+            for index, claim in enumerate(getattr(decision, "claims", None) or []):
+                try:
+                    statement = str(getattr(claim, "statement", "") or "")
+                    if value_shape_of(statement) is None:
+                        continue
+                    # The statement's own literal is the exactness bar when
+                    # present — but missing structure alone justifies the
+                    # retry. The note names every missing field.
+                    literal = _statement_literal(statement)
+                    target = getattr(claim, "target", None)
+                    symbol = str(getattr(target, "symbol", "") or "").strip()
+                    claimed = getattr(claim, "claimed_value", None)
+                    try:
+                        from investigation_agent_platform.application.investigation.verification import (
+                            VerificationEngine,
+                        )
+
+                        claimed_bare = VerificationEngine._bare_literal(claimed)
+                    except Exception:
+                        claimed_bare = str(claimed or "")
+                    if (
+                        getattr(claim, "fact_category", None) is None
+                        or claimed is None
+                        or not symbol
+                        or (literal is not None and claimed is not None and claimed_bare != literal)
+                    ):
+                        missing.append(index)
+                except Exception:
+                    continue
+            return missing
+        except Exception:
+            return []
+
+    @staticmethod
+    def _structure_repair_note(decision: Any, indexes: list[int]) -> str:
+        """Feedback note demanding structure for value claims (pure)."""
+        try:
+            from investigation_agent_platform.application.investigation.claim_shape import (
+                suggested_typing,
+                value_shape_of,
+            )
+
+            lines = [
+                (
+                    "STRUCTURE REPAIR (once): the decision is otherwise valid, but "
+                    "the following claims assert source values without "
+                    "machine-readable structure. Resubmit the SAME decision with "
+                    "each listed claim completed — nothing else changes:"
+                )
+            ]
+            claims = list(getattr(decision, "claims", None) or [])
+            for index in indexes[:5]:
+                try:
+                    claim = claims[index]
+                    statement = str(getattr(claim, "statement", "") or "")
+                    shape = value_shape_of(statement) or "method-return"
+                    typing = suggested_typing(shape)
+                    lines.append(
+                        f"- claim {index} ({shape}; "
+                        f"{statement[:120]}...): set "
+                        f"fact_category={typing['fact_category']!r}, "
+                        f"value_semantics={typing['value_semantics']!r}, "
+                        "claimed_value to the exact literal the statement "
+                        "asserts (bare value, no surrounding quotes), and "
+                        "target.symbol/target.file_path to the "
+                        "declaring type and repo-relative source path."
+                    )
+                except Exception:
+                    lines.append(
+                        "- complete fact_category, claimed_value, and "
+                        "target.symbol/target.file_path for the value claim."
+                    )
+            lines.append(
+                "If the source does not support the asserted value, leave "
+                "the claim untyped instead of guessing."
+            )
+            return "\n".join(lines)
+        except Exception:
+            return (
+                "STRUCTURE REPAIR: complete fact_category, claimed_value, "
+                "and target for value claims."
+            )
 
     @traced(
         "reason",
@@ -1136,6 +1271,82 @@ class ReasoningCoordinator(InvestigationReasoner):
                 )
                 return self._unavailable_decision(f"invalid_llm_schema:{type(_last_exc).__name__}")
         decision = self._ensure_claim_coverage(decision, tenant_id, state)
+        # Consolidation: one feedback retry for unstructured value claims.
+        # The model formulates the claim but omits fact_category /
+        # claimed_value / target — instead of repairing prose downstream,
+        # demand the structure at the source once, then accept whatever
+        # comes back (honest path if still untyped). Gated on FORMULATE
+        # (claims are born there) and on banked SOURCE_CODE (nothing to
+        # verify against without a source row).
+        try:
+            from investigation_agent_platform.domain.investigation.models import ActionType
+
+            _formulate = False
+            try:
+                _action = getattr(decision, "action", None)
+                _formulate = bool(
+                    _action is not None
+                    and getattr(_action, "action_type", None) == ActionType.FORMULATE_HYPOTHESIS
+                )
+            except Exception:
+                _formulate = False
+            if _formulate:
+                _missing = self._unstructured_value_claims(decision)
+                _has_source = False
+                try:
+                    for _row in getattr(state, "evidence", None) or []:
+                        _etype = getattr(_row, "evidence_type", None)
+                        if str(getattr(_etype, "value", _etype) or "").upper() == "SOURCE_CODE":
+                            _has_source = True
+                            break
+                except Exception:
+                    _has_source = False
+                try:
+                    _n_claims = len(list(getattr(decision, "claims", None) or []))
+                except Exception:
+                    _n_claims = -1
+                logger.info(
+                    "structure retry check",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "claims": _n_claims,
+                        "missing": list(_missing[:5]),
+                        "has_source": _has_source,
+                    },
+                )
+                if _missing and _has_source:
+                    _note = self._structure_repair_note(decision, _missing)
+                    logger.info(
+                        "structure retry: demanding typed claims",
+                        extra={"tenant_id": tenant_id, "claims": list(_missing[:5])},
+                    )
+                    try:
+                        _req2 = req.model_copy(update={"prompt": f"{prompt_summary}\n\n{_note}"})
+                        _resp2 = await gateway.complete(tenant_id, _req2)
+                        if _resp2.parsed:
+                            _decision2 = self._validate_llm_decision(
+                                _resp2.parsed, tenant_id, state.investigation.id
+                            )
+                            _decision2 = self._ensure_claim_coverage(_decision2, tenant_id, state)
+                            decision = _decision2
+                            logger.info(
+                                "structure retry: model resubmitted",
+                                extra={"tenant_id": tenant_id},
+                            )
+                            try:
+                                merged_retry = dict(getattr(decision, "metadata", None) or {})
+                                merged_retry["structure_retry"] = True
+                                merged_retry["structure_repaired_claims"] = list(_missing[:5])
+                                decision = decision.model_copy(update={"metadata": merged_retry})
+                            except Exception:
+                                pass
+                    except Exception:
+                        logger.warning(
+                            "structure retry failed; keeping original decision",
+                            extra={"tenant_id": tenant_id},
+                        )
+        except Exception:
+            pass
         # Token accounting: surface this call's usage on the decision so
         # the worker can accumulate per-investigation spend (budget
         # ledger) without a second telemetry channel.

@@ -112,7 +112,6 @@ from .forcing import (
     _should_force_walk_stack,
     _smallest_fetch_dispatchable,
     _smallest_fetch_target,
-    _source_value_target,
 )
 
 
@@ -497,7 +496,6 @@ class RunInvestigationWorkflow:
         evidence_banked_total = 0
         forced_formulate_count = 0
         forced_reread_count = 0
-        forced_value_read_count = 0
         forced_log_search_count = 0
         forced_walk_stack_count = 0
         forced_replan_count = 0
@@ -698,17 +696,6 @@ class RunInvestigationWorkflow:
                 _reason_data["action_parameters"] = _absence_target["action_parameters"]
                 _reason_data["forced_absence_disconfirmation"] = True
             _absence_forced = bool(_reason_data.get("forced_absence_disconfirmation"))
-            _value_target = (
-                None
-                if _is_defer or _absence_forced or _d6_fired
-                else _source_value_target(_reason_data, action_history, forced_value_read_count)
-            )
-            if _value_target is not None:
-                forced_value_read_count += 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "GET_CODE"
-                _reason_data["action_parameters"] = _value_target
-                _reason_data["forced_source_value_read"] = True
             # D2: stack-walk forcing first — explicit intake frames outrank
             # every other gathering rule.
             _walk_params = (
@@ -733,14 +720,9 @@ class RunInvestigationWorkflow:
             # dict — without that stamp, a summary and its persisted
             # marker count as two attempts and the budget exhausts early.
             _ledger_marker_ref: dict | None = None
-            # G3 precedence: value-read (intake, like stack-walk) outranks
-            # the ledger requery, so a fired value-read also suppresses
-            # ledger evaluation — the ledger never overwrites it.
-            if (
-                not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_source_value_read")
-                and not _d6_fired
-            ):
+            # G3 precedence: a fired stack-walk suppresses ledger
+            # evaluation — the ledger never overwrites it.
+            if not _reason_data.get("forced_walk_stack") and not _d6_fired:
                 _recorded_summaries = recorded_attempt_summaries(action_history or []) or []
                 _ledger_override = _should_force_ledger_requery(action_history, _recorded_summaries)
                 if _ledger_override is not None and _ledger_override.get("mark_consumed"):
@@ -813,7 +795,6 @@ class RunInvestigationWorkflow:
                 not _is_defer
                 and not _absence_forced
                 and not _d6_fired
-                and not _reason_data.get("forced_source_value_read")
                 and _should_force_formulate(
                     iteration,
                     formulated_count,
@@ -838,7 +819,6 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_source_value_read")
                 and not _reason_data.get("forced_requery")
             ):
                 if _should_force_synthesis(
@@ -862,7 +842,6 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_formulate")
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_source_value_read")
                 and not _reason_data.get("forced_requery")
             ):
                 _reread_path = _reread_target(_reason_data, action_history, forced_reread_count)
@@ -883,7 +862,6 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_walk_stack")
                 and not _reason_data.get("forced_floor")
                 and not _reason_data.get("forced_reread")
-                and not _reason_data.get("forced_source_value_read")
                 and not _reason_data.get("forced_requery")
             ):
                 _callsite = _callsite_target(
@@ -965,7 +943,6 @@ class RunInvestigationWorkflow:
                 and not _reason_data.get("forced_callsite")
                 and not _reason_data.get("forced_requery")
                 and not _reason_data.get("forced_log_search")
-                and not _reason_data.get("forced_source_value_read")
                 and not _reason_data.get("forced_replan")
                 and not _reason_data.get("forced_not_checkable")
             ):
@@ -1054,7 +1031,6 @@ class RunInvestigationWorkflow:
                     k
                     for k in (
                         "forced_absence_disconfirmation",
-                        "forced_source_value_read",
                         "forced_walk_stack",
                         "forced_floor",
                         "forced_formulate",
@@ -1108,8 +1084,6 @@ class RunInvestigationWorkflow:
                     unverified_count=_unverified_count,
                     verified_present=_verified_present,
                     reasoning_available=True,
-                    value_target_present=_source_value_target(_shadow_proposal, action_history, 0)
-                    is not None,
                     stack_walk_owed=_should_force_walk_stack(
                         knowledge_seed, _shadow_proposal, action_history, 0
                     )
@@ -1135,7 +1109,6 @@ class RunInvestigationWorkflow:
                     is not None,
                     callsite_owed=_callsite_target(_shadow_proposal, action_history, 0) is not None,
                     forcing_used={
-                        "value_read": forced_value_read_count,
                         "walk_stack": forced_walk_stack_count,
                         "floor": forced_floor_count,
                         "formulate": forced_formulate_count,
@@ -1178,7 +1151,6 @@ class RunInvestigationWorkflow:
                 _shadow_turn["forced"] = sorted(
                     short
                     for key, short in (
-                        ("forced_source_value_read", "value_read"),
                         ("forced_walk_stack", "walk_stack"),
                         ("forced_floor", "floor"),
                         ("forced_formulate", "formulate"),
@@ -1201,7 +1173,6 @@ class RunInvestigationWorkflow:
                     _shadow_turn["forced"].append("synthesis")
                     _shadow_turn["forced"] = sorted(_shadow_turn["forced"])
                 _shadow_turn["owed"] = {
-                    "value_read": bool(_value_target is not None),
                     "walk_stack": _shadow_snapshot.stack_walk_owed,
                     "floor": _shadow_snapshot.below_evidence_floor,
                     "formulate": _shadow_snapshot.formulate_owed,

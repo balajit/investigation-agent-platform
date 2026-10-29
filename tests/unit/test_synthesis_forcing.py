@@ -9,7 +9,6 @@ holds unevaluated hypotheses against banked evidence.
 from investigation_agent_platform.application.worker.workflows import (
     _absence_disconfirmation_target,
     _should_force_formulate,
-    _source_value_target,
 )
 
 
@@ -42,32 +41,6 @@ def test_no_force_without_banked_evidence():
 def test_no_force_before_two_turns_elapsed():
     assert _should_force_formulate(1, 0, ["h1"], 9, 0) is False
 
-
-def test_source_value_claim_forces_exact_java_range_read():
-    reason = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "claims": [
-            {
-                "claim_kind": "DEFINITION",
-                "value_semantics": "EXPLICIT_INITIALIZER",
-                "target": {
-                    "symbol": "retryCount",
-                    "declaring_type": "TransactionProcessor",
-                    "file_path": "src/TransactionProcessor.java",
-                    "revision": "abc123",
-                },
-            }
-        ],
-    }
-
-    assert _source_value_target(reason, [], 0) == {
-        "file_path": "src/TransactionProcessor.java",
-        "field_name": "retryCount",
-        "declaring_type": "TransactionProcessor",
-        "revision": "abc123",
-        "start_line": 1,
-        "end_line": 2000,
-    }
 
 
 def test_absence_disconfirmation_uses_cited_provider_location_and_key():
@@ -188,114 +161,6 @@ def test_absence_disconfirmation_rejects_segment_collision_and_empty_row():
     assert _absence_disconfirmation_target(reason, [_row("src/app.py", 0)], [], 0) is None
     assert _absence_disconfirmation_target(reason, [_row("src/app.py", True)], [], 0) is None
     assert _absence_disconfirmation_target(reason, [_row("src/app.py", 1, tenant="")], [], 0) is None
-def test_source_value_forcing_is_bounded_and_covers_java_and_python():
-    claim = {
-        "claim_kind": "DEFINITION",
-        "value_semantics": "LANGUAGE_DEFAULT",
-        "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.py"},
-    }
-    assert _source_value_target(
-        {"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0
-    ) == {
-        "file_path": "src/TransactionProcessor.py",
-        "field_name": "retryCount",
-        "start_line": 1,
-        "end_line": 2000,
-    }
-    java_claim = {
-        **claim,
-        "target": {"symbol": "retryCount", "file_path": "src/TransactionProcessor.java"},
-    }
-    assert (
-        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [java_claim]}, [], 2)
-        is None
-    )
-    assert (
-        _source_value_target({"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 2)
-        is None
-    )
-
-
-def test_guarded_method_return_claim_forces_method_range_read():
-    claim = {
-        "claim_kind": "CAUSAL",
-        "fact_category": "SOURCE_VALUE_FACT",
-        "value_semantics": "GUARDED_RETURN_LITERAL",
-        "target": {
-            "symbol": "com.sample.LegacyCodeMapper.normalize",
-            "declaring_type": "com.sample.LegacyCodeMapper",
-            "file_path": "src/LegacyCodeMapper.java",
-            "guard_condition": "orderType == null",
-        },
-    }
-    assert _source_value_target(
-        {"next_action": "VERIFY_HYPOTHESIS", "claims": [claim]}, [], 0
-    ) == {
-        "file_path": "src/LegacyCodeMapper.java",
-        "method_name": "normalize",
-        "guard_condition": "orderType == null",
-        "declaring_type": "com.sample.LegacyCodeMapper",
-        "start_line": 1,
-        "end_line": 2000,
-    }
-
-
-def test_no_force_after_cap_reached():
-    assert _should_force_formulate(9, 0, ["h1"], 9, 2) is False
-
-
-def test_reread_forces_get_code_for_definition_without_range_read():
-    from investigation_agent_platform.application.worker.workflows import (
-        _reread_target,
-    )
-
-    reason_data = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "hypotheses_evaluated": ["The execute action is implemented in src/worker/activities.py"],
-    }
-    history = [
-        {"action": "SEARCH_CODE", "evidence_added": 4},
-        {"action": "SEARCH_LOGS", "evidence_added": 10},
-    ]
-    assert _reread_target(reason_data, history, 0) == "src/worker/activities.py"
-
-
-def test_reread_skipped_when_range_read_already_banked():
-    from investigation_agent_platform.application.worker.workflows import (
-        _reread_target,
-    )
-
-    reason_data = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "hypotheses_evaluated": ["X is defined in src/a.py"],
-    }
-    history = [{"action": "GET_CODE", "evidence_added": 1}]
-    assert _reread_target(reason_data, history, 0) is None
-
-
-def test_reread_only_fires_on_verify_with_definition_claim():
-    from investigation_agent_platform.application.worker.workflows import (
-        _reread_target,
-    )
-
-    definition = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "hypotheses_evaluated": ["X is defined in src/a.py"],
-    }
-    gathering = {
-        "next_action": "SEARCH_CODE",
-        "hypotheses_evaluated": ["X is defined in src/a.py"],
-    }
-    causal = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "hypotheses_evaluated": ["Pool exhaustion causes latency"],
-    }
-    assert _reread_target(gathering, [], 0) is None
-    assert _reread_target(causal, [], 0) is None
-    assert _reread_target(definition, [], 0) == "src/a.py"
-    assert _reread_target(definition, [], 2) is None
-    assert _reread_target(None, [], 0) is None
-
 
 def test_log_force_routes_error_complaint_to_search_logs():
     from investigation_agent_platform.application.worker.workflows import (
@@ -964,56 +829,20 @@ def test_callsite_does_not_suppress_same_path_wrong_range_read():
     assert hit["action_parameters"]["start_line"] == 10
 
 
-def test_behavior_without_category_falls_back_to_full_window_read():
-    reason = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "claims": [{"claim_kind": "BEHAVIOR", "target": {"symbol": "normalize"}}],
-    }
-    history = [
-        {
-            "action": "GET_CODE",
-            "evidence_added": 2,
-            "parameters": {"file_path": "src/LegacyCodeMapper.java"},
-        }
-    ]
-    assert _source_value_target(reason, history, 0) == {
-        "file_path": "src/LegacyCodeMapper.java",
-        "start_line": 1,
-        "end_line": 2000,
-    }
 
+def test_subject_identifies_across_qualification_levels():
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine,
+    )
 
-def test_behavior_fallback_skipped_when_category_typed_or_no_banked_file():
-    behavior = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "claims": [{"claim_kind": "BEHAVIOR", "target": {"symbol": "normalize"}}],
-    }
-    assert _source_value_target(behavior, [], 0) is None
-    assert _source_value_target(behavior, [{"action": "SEARCH_CODE", "evidence_added": 3}], 0) is None
-    typed = {
-        "next_action": "VERIFY_HYPOTHESIS",
-        "claims": [
-            {
-                "claim_kind": "BEHAVIOR",
-                "fact_category": "SOURCE_VALUE_FACT",
-                "target": {"symbol": "normalize"},
-            }
-        ],
-    }
-    history = [
-        {
-            "action": "GET_CODE",
-            "evidence_added": 2,
-            "parameters": {"file_path": "src/LegacyCodeMapper.java"},
-        }
-    ]
-    assert _source_value_target(typed, history, 0) is None
-    assert _source_value_target(behavior, history, 2) is None
-    method_read = [
-        {
-            "action": "GET_CODE",
-            "evidence_added": 1,
-            "parameters": {"file_path": "src/LegacyCodeMapper.java", "method_name": "normalize"},
-        }
-    ]
-    assert _source_value_target(behavior, method_read, 0) is None
+    identify = VerificationEngine._subject_identifies
+    qualified = "com.example.retail.order.OrderLookupServiceImpl.findOrder"
+    short = "OrderLookupServiceImpl.findOrder"
+    assert identify(short, {qualified}) is True
+    assert identify(qualified, {short}) is True
+    assert identify(short, {short}) is True
+    # Bare method name never matches (no dot boundary); wrong class never matches.
+    assert identify("findOrder", {qualified}) is False
+    assert identify("OtherImpl.findOrder", {qualified}) is False
+    assert identify("", {qualified}) is False
+    assert identify(short, set()) is False

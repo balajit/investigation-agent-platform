@@ -30,6 +30,7 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
 )
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
+    CODE_FACT_RESOLUTIONS_KEY,
     CodeFactResolution,
     CodeFactResolutionV2,
     CodeFactStatus,
@@ -2150,6 +2151,36 @@ class VerificationEngine:
         return None
 
     @staticmethod
+    def _subject_identifies(requested: str | None, candidates: set[str]) -> bool:
+        """Subject match across qualification levels (pure).
+
+        Claims carry short symbols (``OrderLookupServiceImpl.findOrder``)
+        while analyzer resolutions carry fully-qualified identities
+        (``com.example.retail.order.OrderLookupServiceImpl.findOrder``), or the
+        reverse for method-anchored windows. Exact match wins; otherwise a
+        dot-boundary suffix in either direction matches — except a bare
+        requested name (no dot) never suffix-matches a qualified
+        candidate: an unscoped method name must not select across classes.
+        Never substring: ``OtherImpl.findOrder`` matches nothing.
+        Selection-only — revision, path, window, and value checks below
+        still bind the evidence.
+        """
+        req = str(requested or "").strip()
+        if not req:
+            return False
+        for candidate in candidates:
+            cand = str(candidate or "").strip()
+            if not cand:
+                continue
+            if cand == req:
+                return True
+            if "." in req and cand.endswith("." + req):
+                return True
+            if req.endswith("." + cand):
+                return True
+        return False
+
+    @staticmethod
     def _v2_any_from_evidence(
         evidence_items: list[Any],
         category: JavaFactCategory | None = None,
@@ -2192,10 +2223,105 @@ class VerificationEngine:
                         str(resolution.call_target or ""),
                         str(resolution.target_identity or ""),
                     }
-                    if requested_subject not in candidates:
+                    if not VerificationEngine._subject_identifies(requested_subject, candidates):
                         continue
                 return resolution
         return None
+
+    @staticmethod
+    def _with_window_backfill(evidence_items: list[Any]) -> list[Any]:
+        """Splice bank-time-enumerated records into rows lacking analysis (pure).
+
+        Covers shared/reused rows banked before enumeration existed: runs
+        the window enumerator over numbered, pinned SOURCE_CODE range rows
+        that carry no v2 payload and returns in-memory copies with
+        RESOLVED records appended to the envelope. Banked rows are never
+        mutated; the enumerator is deterministic, so verification stays a
+        pure function of (hypothesis, evidence).
+
+        The spliced copy also drops the discovery_only label: that label
+        records that no method/field selector was passed, and enumeration
+        takes no selectors — it resolves every cleanly-declared value in
+        the window. The row itself is a numbered, pinned range read, and
+        soundness rests on the proof's own checks (revision, path, window
+        containment, subject, exact value), which all still bind every
+        backfilled record. Sibling proof paths (definition, caller) keep
+        the label and their confirming-read doctrine — only this
+        analyzer-bound value path treats the enumerated row as
+        proof-grade. Rows whose analysis copy still refuses (unnumbered,
+        unpinned, truncated) contribute nothing.
+        """
+        try:
+            from investigation_agent_platform.application.analysis.java.window_facts import (
+                enumerate_java_window_facts,
+            )
+        except Exception:
+            return evidence_items
+        out: list[Any] = []
+        for item in evidence_items or []:
+            try:
+                attrs = getattr(item, "attributes", None)
+                if not isinstance(attrs, dict):
+                    out.append(item)
+                    continue
+                if isinstance(attrs.get(CODE_FACT_RESOLUTION_V2_KEY), dict):
+                    out.append(item)
+                    continue
+                if any(
+                    key.startswith("code_fact_java.") and isinstance(value, dict)
+                    for key, value in attrs.items()
+                ):
+                    out.append(item)
+                    continue
+                envelope = attrs.get("code_fact_resolutions")
+                if isinstance(envelope, list) and any(
+                    isinstance(entry, dict) and isinstance(entry.get("resolution"), dict)
+                    for entry in envelope
+                ):
+                    out.append(item)
+                    continue
+                copier = getattr(item, "model_copy", None)
+                if not callable(copier):
+                    out.append(item)
+                    continue
+                probe_attrs = dict(attrs)
+                probe_attrs.pop("discovery_only", None)
+                probe = copier(update={"attributes": probe_attrs})
+                records = enumerate_java_window_facts(probe)
+                if not records:
+                    out.append(item)
+                    continue
+                merged = list(envelope) if isinstance(envelope, list) else []
+                for record in records:
+                    payload = record.model_dump(mode="json")
+                    if any(
+                        isinstance(entry, dict)
+                        and isinstance(entry.get("resolution"), dict)
+                        and entry.get("resolution", {}).get("subject_identity")
+                        == record.subject_identity
+                        and entry.get("resolution", {}).get("resolved_value")
+                        == record.resolved_value
+                        for entry in merged
+                    ):
+                        continue
+                    merged.append(
+                        {
+                            "resolver": "window_enumeration",
+                            "selector": record.subject_identity,
+                            "selector_name": "window",
+                            "resolution": payload,
+                        }
+                    )
+                if not merged:
+                    out.append(item)
+                    continue
+                sense = dict(attrs)
+                sense[CODE_FACT_RESOLUTIONS_KEY] = merged
+                sense.pop("discovery_only", None)
+                out.append(copier(update={"attributes": sense}))
+            except Exception:
+                out.append(item)
+        return out
 
     @staticmethod
     def _v2_resolution_from_evidence(
@@ -2563,7 +2689,9 @@ class VerificationEngine:
                     return (False, "source-value claim has no structured claimed_value")
                 if resolution.resolved_value is None:
                     return (False, "resolved source fact has no comparable value")
-                if str(claimed_value) != str(resolution.resolved_value):
+                if VerificationEngine._bare_literal(
+                    claimed_value
+                ) != VerificationEngine._bare_literal(resolution.resolved_value):
                     return (
                         False,
                         f"claimed value {claimed_value!r} conflicts with resolved source value {resolution.resolved_value!r}",
@@ -2583,12 +2711,15 @@ class VerificationEngine:
                 )
                 expected_subjects = {
                     str(resolution.subject_identity or ""),
+                    str(resolution.declaring_type or ""),
                     str(resolution.field_name or ""),
                     f"{resolution.declaring_type}.{resolution.field_name}"
                     if resolution.declaring_type and resolution.field_name
                     else "",
                 }
-                if subject and subject not in expected_subjects:
+                if subject and not VerificationEngine._subject_identifies(
+                    subject, expected_subjects
+                ):
                     return (False, "claim target does not identify the resolved subject")
         node_ok, node_reason = VerificationEngine._node_ids_match(hypothesis, resolution)
         if not node_ok:
@@ -2642,10 +2773,15 @@ class VerificationEngine:
         if match is None:
             # Confident fallback for "<trigger> of <symbol> is <literal>",
             # e.g. "The default value of x is 999". The symbol slot is a
-            # single dotted identifier; nothing else may intervene.
+            # single dotted identifier, optionally introduced by "the"
+            # and/or "field" ("the initial value of the field X is ...").
+            # A repo-relative path may sit between the symbol and "is"
+            # ("of the field X in src/.../F.java is ...") — models cite
+            # paths everywhere. Nothing else may intervene.
             match = re.search(
                 r"(?i)(?:default\s+value|initial\s+value|field\s+value|value)"
-                r"\s+of\s+[A-Za-z_][\w.]*\s+is\s+"
+                r"\s+of\s+(?:the\s+)?(?:field\s+)?[A-Za-z_][\w.]*"
+                r"(?:\s+in\s+[A-Za-z0-9_.\-/]+)?\s+is\s+"
                 r"(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)",
                 statement or "",
             )
@@ -2655,6 +2791,22 @@ class VerificationEngine:
         if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
             return value[1:-1]
         return value
+
+    @staticmethod
+    def _bare_literal(value: Any) -> str:
+        """Literal with one layer of surrounding quotes removed (pure).
+
+        Models commit claimed_value with the quotes they see in the
+        statement; the analyzer resolves the bare value. Both denote the
+        same source literal — compare canonical forms, once, here.
+        """
+        try:
+            text = str(value or "").strip()
+            if len(text) >= 2 and text[0] in {"'", '"'} and text[-1] == text[0]:
+                return text[1:-1]
+            return text
+        except Exception:
+            return str(value)
 
     def validate_code_value_claim(
         self, hypothesis: Any, evidence_items: list[Any], contradictions: list[Any]
@@ -2734,6 +2886,7 @@ class VerificationEngine:
             for c in (contradictions or [])
         ):
             return None
+        evidence_items = self._with_window_backfill(evidence_items)
         target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
         subject = str(getattr(target, "symbol", "") or "").strip() or None
         v2_any = self._v2_any_from_evidence(evidence_items, category, subject)
@@ -2784,6 +2937,7 @@ class VerificationEngine:
         category = self._fact_category_of(hypothesis)
         if category is None:
             return None
+        evidence_items = self._with_window_backfill(evidence_items)
         target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
         subject = str(getattr(target, "symbol", "") or "").strip() or None
         v2_any = self._v2_any_from_evidence(evidence_items, category, subject)

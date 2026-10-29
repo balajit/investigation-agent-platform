@@ -1763,6 +1763,50 @@ async def execute_action_activity(
                     language_version=common["language_version"],
                 )
 
+            # Bank-time enumeration (consolidation): a selector-free range
+            # read still gets its cleanly-declared source-value facts
+            # attached as envelope records. Verify-time selection picks by
+            # subject; no method_name/field_name parameter and no forcing
+            # turn is ever needed to make analysis happen.
+            if (
+                not _is_python
+                and read_mode == "range"
+                and not merged_attributes.get("code_fact_resolution_v2")
+                and not merged_attributes.get("truncated")
+            ):
+                try:
+                    from investigation_agent_platform.application.analysis.java.window_facts import (
+                        enumerate_java_window_facts,
+                    )
+
+                    for _record in enumerate_java_window_facts(
+                        evidence, language_version=parameters.get("language_version")
+                    ):
+                        _payload = _record.model_dump(mode="json")
+                        _prior = merged_attributes.get(CODE_FACT_RESOLUTIONS_KEY) or []
+                        if any(
+                            isinstance(_item, dict)
+                            and isinstance(_item.get("resolution"), dict)
+                            and _item.get("resolution", {}).get("subject_identity")
+                            == _record.subject_identity
+                            and _item.get("resolution", {}).get("resolved_value")
+                            == _record.resolved_value
+                            for _item in _prior
+                        ):
+                            continue
+                        _entry = {
+                            "resolver": "window_enumeration",
+                            "selector": _record.subject_identity,
+                            "selector_name": "window",
+                            "resolution": _payload,
+                        }
+                        if isinstance(_prior, list):
+                            _prior.append(_entry)
+                            merged_attributes[CODE_FACT_RESOLUTIONS_KEY] = _prior
+                        outcome_detail.setdefault(CODE_FACT_RESOLUTIONS_KEY, []).append(_entry)
+                except Exception:
+                    pass
+
             # The envelope is authoritative whenever more than one fact was
             # requested. Preserve the legacy singular keys above, and include
             # their V2 payloads in the same list for new readers.
