@@ -1029,7 +1029,7 @@ def repair_citation(
     candidate_row: Any,
     donor_row: Any,
     binding_version: str = CLAIM_BINDING_CURRENT,
-) -> bool:
+) -> bool | None:
     """Phase 3 repair predicate (live behind the cbv3/shadow gate).
 
     Returns True only when the donor row may stand in for a misattributed
@@ -1045,7 +1045,7 @@ def repair_citation(
         try:
             kind = ClaimKind(str(claim_kind)) if claim_kind else None
         except Exception:
-            return False
+            return None
         if kind == ClaimKind.DEFINITION:
             ok, _ = VerificationEngine.definition_window_proof([donor_row], target)
             return bool(ok)
@@ -2187,7 +2187,24 @@ class VerificationEngine:
         subject: str | None = None,
     ) -> CodeFactResolutionV2 | None:
         """Select a v2 payload by category/subject, never by insertion order."""
+        candidates, malformed = VerificationEngine._v2_candidates_from_evidence(
+            evidence_items, category, subject
+        )
+        if malformed or not candidates:
+            return None
+        resolved = [item for item in candidates if item.status == CodeFactStatus.RESOLVED]
+        return resolved[0] if resolved else candidates[0]
+
+    @staticmethod
+    def _v2_candidates_from_evidence(
+        evidence_items: list[Any],
+        category: JavaFactCategory | None = None,
+        subject: str | None = None,
+    ) -> tuple[list[CodeFactResolutionV2], bool]:
+        """Collect all relevant payloads and flag malformed matching entries."""
         requested_subject = str(subject or "").strip()
+        candidates: list[CodeFactResolutionV2] = []
+        malformed = False
         for item in evidence_items or []:
             attrs = getattr(item, "attributes", None) or {}
             if not isinstance(attrs, dict):
@@ -2209,24 +2226,51 @@ class VerificationEngine:
                 if key.startswith("code_fact_java.") and isinstance(value, dict)
             )
             for raw in raws:
+                raw_category = raw.get("fact_category") if isinstance(raw, dict) else None
+                raw_subjects = {
+                    str(raw.get(name) or "")
+                    for name in (
+                        "subject_identity",
+                        "declaring_type",
+                        "field_name",
+                        "call_target",
+                        "target_identity",
+                    )
+                    if isinstance(raw, dict)
+                }
+                if category is not None and raw_category not in {
+                    category,
+                    category.value,
+                    None,
+                }:
+                    continue
+                if (
+                    requested_subject
+                    and raw_subjects
+                    and not VerificationEngine._subject_identifies(requested_subject, raw_subjects)
+                ):
+                    continue
                 try:
                     resolution = CodeFactResolutionV2.model_validate(raw)
                 except Exception:
+                    malformed = True
                     continue
                 if category is not None and resolution.fact_category != category:
                     continue
                 if requested_subject:
-                    candidates = {
+                    resolution_subjects = {
                         str(resolution.subject_identity or ""),
                         str(resolution.declaring_type or ""),
                         str(resolution.field_name or ""),
                         str(resolution.call_target or ""),
                         str(resolution.target_identity or ""),
                     }
-                    if not VerificationEngine._subject_identifies(requested_subject, candidates):
+                    if not VerificationEngine._subject_identifies(
+                        requested_subject, resolution_subjects
+                    ):
                         continue
-                return resolution
-        return None
+                candidates.append(resolution)
+        return candidates, malformed
 
     @staticmethod
     def _with_window_backfill(evidence_items: list[Any]) -> list[Any]:
@@ -2389,8 +2433,16 @@ class VerificationEngine:
                     item
                 ) in {"SOURCE_CODE", "EXCEPTION_PATH"}:
                     families.add("SOURCE_RANGE")
-                    families.add("CALL_SITE_RANGE")
-                    families.add("TARGET_DECLARATION_RANGE")
+                    if resolution is not None:
+                        structured = resolution.structured_fact or {}
+                        if (
+                            resolution.fact_category == JavaFactCategory.CALL_TARGET_FACT
+                            and isinstance(structured, dict)
+                            and structured.get("call_site_line") is not None
+                        ):
+                            families.add("CALL_SITE_RANGE")
+                        if resolution.declaration_location is not None:
+                            families.add("TARGET_DECLARATION_RANGE")
                 if VerificationEngine._item_type(item) in VerificationEngine.RUNTIME_EVIDENCE_TYPES:
                     families.add("RUNTIME_OBSERVATION")
                 attrs = getattr(item, "attributes", None) or {}
@@ -2559,6 +2611,26 @@ class VerificationEngine:
         category = VerificationEngine._fact_category_of(hypothesis)
         if category is None:
             return (False, "claim carries no typed fact_category; legacy proof paths only")
+        claim_kind = VerificationEngine.effective_claim_kind(hypothesis)
+        allowed_kinds = {
+            JavaFactCategory.DECLARATION_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.SOURCE_VALUE_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.LANGUAGE_SEMANTIC_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.CONTROL_FLOW_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.DATA_FLOW_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.CALL_TARGET_FACT: {ClaimKind.CALL_EDGE},
+            JavaFactCategory.POSSIBLE_EFFECT_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.CONFIGURATION_FACT: {ClaimKind.DEFINITION},
+            JavaFactCategory.RUNTIME_OBSERVATION_FACT: {ClaimKind.BEHAVIOR},
+            JavaFactCategory.CAUSAL_CLAIM: {ClaimKind.CAUSAL},
+        }.get(category, set())
+        if claim_kind is not None and claim_kind not in allowed_kinds:
+            return (
+                False,
+                f"fact category {category.value} is incompatible with claim kind {claim_kind.value}",
+            )
+        if category == JavaFactCategory.CAUSAL_CLAIM:
+            return (False, "causal claims are verifier conclusions, never analyzer facts")
         try:
             rule = category_proof_rule(category)
         except Exception:
@@ -2567,7 +2639,38 @@ class VerificationEngine:
             return (False, f"unknown fact category {category!r}: fail closed")
         target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
         subject = str(getattr(target, "symbol", "") or "").strip() or None
-        v2_any = VerificationEngine._v2_any_from_evidence(evidence_items, category, subject)
+        candidates, malformed = VerificationEngine._v2_candidates_from_evidence(
+            evidence_items, category, subject
+        )
+        if malformed:
+            return (False, "malformed matching analyzer resolution")
+        resolved_candidates = [
+            item for item in candidates if item.status == CodeFactStatus.RESOLVED
+        ]
+        if len(resolved_candidates) > 1:
+            # Content fingerprint: binding IDs (which row the fact came
+            # from) and per-run node IDs are excluded — the same true
+            # fact banked twice (shared + owned rows, overlapping reads)
+            # must not read as a conflict. Only genuine divergence in
+            # the resolved content fails the proof.
+            fingerprints = {
+                item.model_dump_json(
+                    exclude={
+                        "assumptions",
+                        "source_evidence_ids",
+                        "conflicting_evidence_ids",
+                        "node_id",
+                    }
+                )
+                for item in resolved_candidates
+            }
+            if len(fingerprints) > 1:
+                return (False, "conflicting matching analyzer resolutions")
+        v2_any = (
+            resolved_candidates[0]
+            if resolved_candidates
+            else (candidates[0] if candidates else None)
+        )
         if v2_any is not None and v2_any.status != CodeFactStatus.RESOLVED:
             codes = ",".join(v2_any.limitation_codes) or "untyped_partial"
             return (False, f"resolution is {v2_any.status.value}: {codes}")
@@ -2580,6 +2683,33 @@ class VerificationEngine:
             return (False, f"resolution is {v2_any.status.value}: non-verifying status")
         if resolution.fact_category != category:
             return (False, "claim category does not match the resolved fact category")
+        if target is not None:
+            target_subject = str(getattr(target, "symbol", "") or "").strip()
+            resolution_subjects = {
+                str(getattr(resolution, name, "") or "").strip()
+                for name in (
+                    "subject_identity",
+                    "target_identity",
+                    "call_target",
+                    "field_name",
+                    "declaring_type",
+                )
+            }
+            structured = resolution.structured_fact or {}
+            if isinstance(structured, dict):
+                for name in ("symbol", "method", "target"):
+                    value = structured.get(name)
+                    if value:
+                        structured_subject = str(value).strip()
+                        if not VerificationEngine._subject_identifies(
+                            target_subject, {structured_subject}
+                        ):
+                            return (False, "claim target does not identify the structured fact")
+                        resolution_subjects.add(structured_subject)
+            if target_subject and not VerificationEngine._subject_identifies(
+                target_subject, resolution_subjects
+            ):
+                return (False, "claim target does not identify the resolved fact")
         families = VerificationEngine._java_evidence_families(evidence_items, resolution)
         missing = set(rule.required_evidence_families) - families
         if missing:
@@ -5601,26 +5731,35 @@ class VerificationEngine:
                 attrs = getattr(item, "attributes", None) or {}
                 if not isinstance(attrs, dict):
                     continue
-                payload = attrs.get("code_fact_resolution_v2")
-                if payload is None:
-                    continue
-                if isinstance(payload, dict):
+                payloads: list[dict[str, Any]] = []
+                singular = attrs.get("code_fact_resolution_v2")
+                if isinstance(singular, dict):
+                    payloads.append(singular)
+                envelope = attrs.get("code_fact_resolutions")
+                if isinstance(envelope, list):
+                    payloads.extend(
+                        entry["resolution"]
+                        for entry in envelope
+                        if isinstance(entry, dict) and isinstance(entry.get("resolution"), dict)
+                    )
+                payloads.extend(
+                    value
+                    for key, value in attrs.items()
+                    if key.startswith("code_fact_java.") and isinstance(value, dict)
+                )
+                for payload in payloads:
                     status = str(payload.get("status") or "")
                     subject = str(payload.get("subject_identity") or "")
                     value = payload.get("resolved_value")
-                else:
-                    status = str(getattr(payload, "status", "") or "")
-                    subject = str(getattr(payload, "subject_identity", "") or "")
-                    value = getattr(payload, "resolved_value", None)
-                if "RESOLVED" not in status.upper() or not subject or value is None:
-                    continue
-                subject_hit = any(
-                    len(part) >= 3 and part.lower() in lowered
-                    for part in re.split(r"[.:#]", subject)
-                )
-                value_hit = str(value).strip() != "" and str(value).lower() in lowered
-                if subject_hit and value_hit:
-                    return True
+                    if "RESOLVED" not in status.upper() or not subject or value is None:
+                        continue
+                    subject_hit = any(
+                        len(part) >= 3 and part.lower() in lowered
+                        for part in re.split(r"[.:#]", subject)
+                    )
+                    value_hit = str(value).strip() != "" and str(value).lower() in lowered
+                    if subject_hit and value_hit:
+                        return True
             return False
         except Exception:
             return False
@@ -5670,8 +5809,7 @@ class VerificationEngine:
                     return True
             return VerificationEngine._state_value_grounded(text, list(value_texts))
         except Exception:
-            # Fail-open on analysis errors: never demote on a crash.
-            return True
+            return False
 
     @staticmethod
     def _region_tokens(region: str, min_len: int = 4) -> list[str]:
@@ -5718,7 +5856,7 @@ class VerificationEngine:
                     first = (verb, index)
             return first
         except Exception:
-            return None
+            return False
 
     @staticmethod
     def causal_sentence_entailed(
@@ -5733,7 +5871,8 @@ class VerificationEngine:
         entailed, not merely consistent across scattered rows. Returns False
         when the sentence asserts causation but no single row shows both
         sides: cause in row 3 + effect in row 7 is consistency, not proof.
-        Fail-open (True) on any analysis error: never newly demote on a crash.
+        Analysis errors return conservative non-entailment rather than proving
+        a causal relation.
         """
         try:
             span = VerificationEngine._causal_verb_span(sentence)
@@ -5764,7 +5903,7 @@ class VerificationEngine:
                     return True
             return False
         except Exception:
-            return None
+            return False
 
     @staticmethod
     def map_conclusion_sentences(
@@ -5802,7 +5941,11 @@ class VerificationEngine:
                 if not VerificationEngine.sentence_mapped(sentence, value_texts, file_paths):
                     unmapped.append(sentence)
         except Exception:
-            return []
+            return [
+                sentence
+                for sentence in re.split(r"(?<=[.!?])\s+", (root_cause or "").strip())
+                if sentence
+            ]
         return unmapped
 
     @staticmethod

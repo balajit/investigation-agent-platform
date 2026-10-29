@@ -667,15 +667,10 @@ def test_l5_answered_via_method_return_end_to_end():
     )
     hyp = hyp.model_copy(update={"id": hyp_id})
     out = run_path(hyp.statement, hyp, [row])
-    # BEHAVIOR kind-gate still wants runtime, but the Java SOURCE_VALUE_FACT
-    # path preempts it and verifies from the resolved range read.
+    # A source-value analyzer result must not bypass the BEHAVIOR kind gate.
     assert out["kind_gate"][0] is False
-    assert out["verification"].status == VerificationStatus.VERIFIED
-    assert out["verification"].tier == "established"
-    # The sentence restates the bound RESOLVED fact (subject + literal), so
-    # no CONCLUSION_UNMAPPED demotion fires — the 042953 L5 PARTIAL shape.
-    assert out["unmapped"] == []
-    assert out["decision"].approved is True
+    assert out["verification"].status == VerificationStatus.INCONCLUSIVE
+    assert out["decision"].approved is False
 
 
 def test_history_absence_verifies_negative_end_to_end():

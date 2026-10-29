@@ -164,6 +164,306 @@ def test_java_fact_selector_contract_is_bounded_and_explicit():
     assert selectors == {"call_target_name": "handle"}
 
 
+def test_java_fact_proof_does_not_depend_on_partial_before_resolved_order():
+    source = _source_evidence("class Foo { int x = 3; }")
+    resolved = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    )
+    partial = resolved.model_copy(
+        update={
+            "status": CodeFactStatus.PARTIAL,
+            "resolved_value": None,
+            "limitation_codes": ("unsupported",),
+        }
+    )
+    target = ClaimTarget(symbol="Foo.x", file_path="src/Foo.java", line_start=10, line_end=10)
+    hyp = SimpleNamespace(
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        claim_target=target,
+        target=target,
+        claimed_value="3",
+        statement="Foo.x is 3",
+        supporting_evidence_ids=[source.evidence_id],
+        assessments=[],
+    )
+    item = source.model_copy(
+        update={
+            "attributes": {
+                **source.attributes,
+                "code_fact_resolutions": [
+                    {"resolver": "partial", "resolution": partial.model_dump(mode="json")},
+                    {"resolver": "resolved", "resolution": resolved.model_dump(mode="json")},
+                ],
+            }
+        }
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [item])
+    assert ok, reason
+
+
+def test_java_fact_proof_rejects_conflicting_resolved_same_subject_payloads():
+    source = _source_evidence("class Foo { int x = 3; }")
+    base = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    )
+    conflict = base.model_copy(update={"resolved_value": "4"})
+    target = ClaimTarget(symbol="Foo.x", file_path="src/Foo.java", line_start=10, line_end=10)
+    hyp = SimpleNamespace(
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        claim_target=target,
+        target=target,
+        claimed_value="3",
+        statement="Foo.x is 3",
+        supporting_evidence_ids=[source.evidence_id],
+        assessments=[],
+    )
+    item = source.model_copy(
+        update={
+            "attributes": {
+                **source.attributes,
+                "code_fact_resolutions": [
+                    {"resolver": "one", "resolution": base.model_dump(mode="json")},
+                    {"resolver": "two", "resolution": conflict.model_dump(mode="json")},
+                ],
+            }
+        }
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [item])
+    assert not ok
+    assert "conflict" in reason.lower()
+
+
+def test_java_fact_proof_rejects_malformed_selected_payload():
+    source = _source_evidence("class Foo { int x = 3; }")
+    valid = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    )
+    target = ClaimTarget(symbol="Foo.x", file_path="src/Foo.java", line_start=10, line_end=10)
+    hyp = SimpleNamespace(
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        claim_target=target,
+        target=target,
+        claimed_value="3",
+        statement="Foo.x is 3",
+        supporting_evidence_ids=[source.evidence_id],
+        assessments=[],
+    )
+    item = source.model_copy(
+        update={
+            "attributes": {
+                **source.attributes,
+                "code_fact_resolutions": [
+                    {
+                        "resolver": "field",
+                        "resolution": {
+                            "fact_category": "SOURCE_VALUE_FACT",
+                            "subject_identity": "Foo.x",
+                        },
+                    },
+                    {"resolver": "other", "resolution": valid.model_dump(mode="json")},
+                ],
+            }
+        }
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [item])
+    assert not ok
+    assert "malformed" in reason.lower() or "resolved" in reason.lower()
+
+
+def test_java_evidence_families_do_not_claim_call_site_without_call_location():
+    source = _source_evidence("class Foo { void run() { bar(); } void bar() {} }")
+    resolution = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    ).model_copy(
+        update={
+            "fact_category": JavaFactCategory.CALL_TARGET_FACT,
+            "call_target": "Foo.bar()",
+            "structured_fact": {"kind": "static_call_target", "declaration_line_start": 10},
+        }
+    )
+    families = VerificationEngine._java_evidence_families([source], resolution)
+    assert "TARGET_DECLARATION_RANGE" in families
+    assert "CALL_SITE_RANGE" not in families
+
+
+def test_java_fact_proof_rejects_wrong_subject_for_non_value_category():
+    source = _source_evidence("class Foo { void run() { bar(); } void bar() {} }")
+    resolution = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    ).model_copy(
+        update={
+            "fact_category": JavaFactCategory.POSSIBLE_EFFECT_FACT,
+            "subject_identity": "Foo.other",
+            "structured_fact": {"kind": "possible_effect", "symbol": "run"},
+        }
+    )
+    item = _v2_evidence(resolution, source)
+    target = ClaimTarget(symbol="Foo.other", file_path="src/Foo.java", line_start=10, line_end=10)
+    hyp = SimpleNamespace(
+        fact_category=JavaFactCategory.POSSIBLE_EFFECT_FACT,
+        claim_target=target,
+        target=target,
+        statement="Foo.other may have an effect",
+        supporting_evidence_ids=[source.evidence_id],
+        assessments=[],
+    )
+    ok, reason = VerificationEngine.java_fact_proof(hyp, [item])
+    assert not ok
+    assert "identify" in reason.lower() or "bound" in reason.lower()
+
+
+def test_resolution_grounded_reads_selected_resolution_envelope():
+    source = _source_evidence("class Foo { int x = 3; }")
+    resolved = legacy_to_v2_resolution(
+        CodeFactResolution(
+            status=CodeFactStatus.RESOLVED,
+            repository="repo",
+            revision="abc123",
+            declaring_type="Foo",
+            field_name="x",
+            field_type="int",
+            field_category="INSTANCE_FIELD",
+            value_semantics="EXPLICIT_INITIALIZER",
+            resolved_value="3",
+            source_evidence_ids=(source.evidence_id,),
+            declaration_location=SourceLocation(
+                system="Git",
+                identifier="repo/src/Foo.java",
+                file_path="src/Foo.java",
+                revision="abc123",
+                line_start=10,
+                line_end=10,
+            ),
+        )
+    )
+    item = source.model_copy(
+        update={
+            "attributes": {
+                **source.attributes,
+                "code_fact_resolutions": [
+                    {"resolver": "field", "resolution": resolved.model_dump(mode="json")}
+                ],
+            }
+        }
+    )
+    assert VerificationEngine._resolution_grounded("Foo.x is 3", [item]) is True
+
+
+def test_sentence_mapping_exception_is_unmapped(monkeypatch):
+    monkeypatch.setattr(
+        VerificationEngine,
+        "sentence_mapped",
+        staticmethod(lambda *_args: (_ for _ in ()).throw(RuntimeError("parser"))),
+    )
+    assert VerificationEngine.map_conclusion_sentences("unsupported conclusion", []) == [
+        "unsupported conclusion"
+    ]
+
+
+def test_causal_mapping_exception_is_not_entailed(monkeypatch):
+    monkeypatch.setattr(
+        VerificationEngine,
+        "_causal_verb_span",
+        staticmethod(lambda _sentence: (_ for _ in ()).throw(RuntimeError("parser"))),
+    )
+    assert VerificationEngine.causal_sentence_entailed("A causes B", []) is False
+
+
 def _typed_hypothesis(evidence, category, **overrides):
     target = SimpleNamespace(
         symbol="x",

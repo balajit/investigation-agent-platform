@@ -269,3 +269,46 @@ def test_backfill_treats_enumerated_row_as_proof_grade():
     # Banked row untouched.
     assert discovery.attributes.get("discovery_only") is True
     assert "code_fact_resolutions" not in discovery.attributes
+
+
+def test_duplicate_coverage_of_same_fact_is_not_a_conflict():
+    """Two overlapping reads resolving the same subject+value agree —
+    the conflict check compares content, not row binding."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine,
+        VerificationStatus,
+    )
+    from investigation_agent_platform.domain.code.models import JavaFactCategory
+
+    ev1 = _evidence(
+        _NORMALIZE_MAPPER,
+        path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
+    )
+    ev2 = _evidence(
+        _NORMALIZE_MAPPER,
+        path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
+    )
+    assert ev1.evidence_id != ev2.evidence_id
+    hyp = SimpleNamespace(
+        id=uuid4(),
+        statement='The normalize method returns "STANDARD" if orderType is null.',
+        fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
+        claimed_value="STANDARD",
+        claim_target=SimpleNamespace(
+            symbol="com.sample.orders.legacy.LegacyCodeMapper.normalize",
+            file_path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
+        ),
+        supporting_evidence_ids=[ev1.evidence_id, ev2.evidence_id],
+        assessments=[],
+        required_verification=[],
+    )
+    engine = VerificationEngine()
+    items = engine._with_window_backfill([ev1, ev2])
+    ok, reason = engine.java_fact_proof(hyp, items)
+    assert ok, reason
+    result = engine.validate_java_fact_claim(hyp, items, [])
+    assert result is not None
+    assert result.status == VerificationStatus.VERIFIED
