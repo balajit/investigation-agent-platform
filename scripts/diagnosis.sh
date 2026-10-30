@@ -141,6 +141,34 @@ async def main():
     n = await conn.fetchval(
         "SELECT count(*) FROM investigation_tool_executions WHERE investigation_id=$1", iid)
     print(f"  investigation_tool_executions: {n}")
+    print("-- authorization profile --")
+    prof = await conn.fetchrow(
+        "SELECT id,status,version,profile_json FROM application_profiles"
+        " WHERE tenant_id=$1 AND id=$2 ORDER BY version DESC LIMIT 1",
+        tenant, inv["application_id"])
+    if prof is None:
+        print(f"  NO profile for app {inv['application_id']} (authorizer fail-closes: all provider calls denied)")
+    else:
+        print(f"  profile {prof['id']} status={prof['status']} version={prof['version']}")
+        import json as _json
+        pj = prof["profile_json"] or {}
+        if isinstance(pj, str):
+            try:
+                pj = _json.loads(pj)
+            except Exception:
+                pj = {}
+        if not isinstance(pj, dict):
+            pj = {}
+        inv_cfg = pj.get("investigation", {}) or {}
+        for key in ("enabledEvidenceTypes", "enabled_evidence_types"):
+            if key in inv_cfg:
+                print(f"  investigation.{key} = {inv_cfg[key]}")
+        for key in ("allowedCapabilities", "allowed_capabilities"):
+            if key in pj:
+                print(f"  {key} = {pj[key]}")
+                break
+        else:
+            print("  allowedCapabilities absent (empty preserves evidence-type gate alone)")
     print("-- transitions --")
     for r in await conn.fetch(
             "SELECT timestamp,from_status,to_status,actor,substr(reason,1,90) AS reason"
@@ -200,20 +228,33 @@ with open(path, encoding="utf-8", errors="replace") as fh:
             d = json.loads(line)
         except Exception:
             continue
-        m, e = d.get("message", ""), d.get("extra", {})
+        m, e = d.get("message", ""), d.get("extra", {}) or {}
         ts = str(d.get("timestamp", ""))[11:19]
         if "reason_activity completed" in m and e.get("iteration") is not None:
             completions.append((ts, e.get("iteration")))
             continue
-        raw.append((ts, d.get("level", ""), m))
+        raw.append((ts, d.get("level", ""), m, e))
 completions.sort()
-for ts, level, m in raw:
+for ts, level, m, e in raw:
     it = next((c[1] for c in completions if c[0] >= ts), "?")
     if "reason_activity decision" in m:
         turns += 1
         print(f"{ts} REASON it={it} {m[:130]}")
-    elif level in ("WARNING", "ERROR"):
-        print(f"{ts} {level} {m[:150]}")
+        continue
+    if level in ("WARNING", "ERROR"):
+        parts = []
+        if e.get("error_type") or e.get("error"):
+            parts.append(f"{e.get('error_type', '?')}: {e.get('error', '')}")
+        ctx = "/".join(str(e.get(k, "")) for k in ("stage", "step", "outcome") if e.get(k))
+        if ctx:
+            parts.append(f"[{ctx}]")
+        out = e.get("outputs", {}) or {}
+        if out.get("degraded"):
+            parts.append(f"degraded={out['degraded']}")
+        if out.get("items_count") is not None:
+            parts.append(f"items={out['items_count']}")
+        detail = " :: ".join(p for p in parts if p)
+        print(f"{ts} {level} {m[:120]}" + (f" :: {detail}" if detail else ""))
 print(f"-- {turns} reason turns in log --")
 if matched == 0:
     print("-- note: no lines matched; start-platform.sh --restart truncates tmp/*.log --")
