@@ -1551,7 +1551,8 @@ async def execute_action_activity(
             )
             merged_attributes = dict(getattr(evidence, "attributes", None) or {})
             merged_attributes["read_mode"] = read_mode
-            merged_attributes["discovery_only"] = True
+            if read_mode == "path_only":
+                merged_attributes["discovery_only"] = True
             # Phase 4 (claim binding): same fetch_reason stamp as the
             # shared _bank helper (GET_CODE banks via singleton save).
             if _fetch_reason:

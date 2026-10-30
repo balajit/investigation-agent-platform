@@ -1647,11 +1647,6 @@ class RunInvestigationWorkflow:
             if _proposed in ("VERIFY_HYPOTHESIS", "CONCLUDE") or _readiness_value >= 0.8:
                 overconfident_turns += 1
 
-            # Also break on high conclusion readiness.
-            readiness = reason_res.data.get("conclusion_readiness")
-            if isinstance(readiness, (int, float)) and float(readiness) >= 0.95:
-                break
-
             # Loop back: VERIFYING -> HYPOTHESIZING or INVESTIGATING for next iteration
             if iteration < max_iterations - 1 and not self._is_cancelled:
                 await _transition(
