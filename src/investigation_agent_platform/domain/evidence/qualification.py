@@ -202,9 +202,12 @@ def qualify_history_row(item: Any, scope_path: str | None = None) -> Qualificati
 
 
 def _scope_covers(proof_scope: str, scope: str) -> bool:
-    proof = (proof_scope or "").strip().lower()
-    want = (scope or "").strip().lower()
-    return bool(proof and want) and (proof == want or want in proof)
+    # Aligned with the verifier's absence gate (exact scope equality,
+    # case-insensitive): readiness must never pass what verification
+    # rejects, so substring matching is refused here.
+    proof = (proof_scope or "").strip().casefold()
+    want = (scope or "").strip().casefold()
+    return bool(proof and want) and proof == want
 
 
 def qualify_absence_proof(item: Any, scope: str) -> Qualification:
@@ -325,24 +328,90 @@ def qualify_item(
         return _unqualified("unknown", f"qualification failed closed: {type(exc).__name__}")
 
 
+def qualify_contrast_half(item: Any) -> tuple[Any, bool, str]:
+    """One contrast half: present, timestamped, and sourced.
+
+    Lighter than full layer qualification on purpose — the old half sits
+    at/before G, outside the investigation window, so window pinning can
+    never apply to it. The joint window-ordering (pair level) does the
+    real work; P3 binding judges whether the pair proves anything.
+    Returns (timestamp-or-None, ok, reason).
+    """
+    try:
+        failure = _failure_reason(item)
+        if failure:
+            return None, False, f"infrastructure failure row ({failure})"
+        ts = _observed_at(item)
+        if ts is None:
+            return None, False, "contrast half has no event timestamp"
+        identity = _source_identity(item)
+        file_path, _, _, _ = _location(item)
+        if not identity and not file_path:
+            return None, False, "contrast half has no source identity"
+        return ts, True, "half present, timestamped, and sourced"
+    except Exception as exc:
+        return None, False, f"qualification failed closed: {type(exc).__name__}"
+
+
 def qualify_contrast_pair(
-    old_item: Any, new_item: Any
+    old_item: Any, new_item: Any, g: Any = None, t: Any = None
 ) -> Qualification:
     """Contrast pairs qualify jointly: both halves present and
-    window-ordered (old at/before G, new at/after T). The code row
-    encoding the broken assumption is bound downstream (P3), never here."""
+    window-ordered, old at/before G and new at/after T when the
+    endpoints are given. The code row encoding the broken assumption is
+    bound downstream (P3), never here.
+    """
     try:
-        old_ts = _observed_at(old_item)
-        new_ts = _observed_at(new_item)
-        if old_ts is None or new_ts is None:
-            return _unqualified("contrast", "contrast half has no event timestamp")
+        old_ts, old_ok, old_reason = qualify_contrast_half(old_item)
+        if not old_ok:
+            return _unqualified("contrast", f"old half: {old_reason}")
+        new_ts, new_ok, new_reason = qualify_contrast_half(new_item)
+        if not new_ok:
+            return _unqualified("contrast", f"new half: {new_reason}")
         if new_ts < old_ts:
             return _unqualified("contrast", "contrast halves misordered")
+        if g is not None:
+            g_ts = _as_utc(g)
+            if g_ts is not None and old_ts > g_ts:
+                return _unqualified("contrast", "old half is newer than G")
+        if t is not None:
+            t_ts = _as_utc(t)
+            if t_ts is not None and new_ts < t_ts:
+                return _unqualified("contrast", "new half is older than T")
         return Qualification(
             qualified=True, layer="contrast", reason="halves present and window-ordered"
         )
     except Exception as exc:
         return _unqualified("contrast", f"qualification failed closed: {type(exc).__name__}")
+
+
+def _contrast_coverage(
+    items: Any, window: tuple[datetime, datetime] | None, t_anchored: bool
+) -> bool:
+    """Readiness-level contrast: an old-side half (at/before window start)
+    and a new-side half both present. New side is at/after window end when
+    onset T is anchored, else anywhere in-window-or-newer (current-state
+    rows are the new half when T is unknown).
+    """
+    try:
+        if window is None:
+            return False
+        start, end = window
+        old_ok = new_ok = False
+        for item in items or []:
+            ts, ok, _ = qualify_contrast_half(item)
+            if not ok or ts is None:
+                continue
+            if ts <= start:
+                old_ok = True
+            new_bar = end if t_anchored else start
+            if ts >= new_bar:
+                new_ok = True
+            if old_ok and new_ok:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 _POSITIVE_LAYERS = frozenset({"code", "history", "runtime", "state", "probe", "divergence"})
@@ -352,14 +421,18 @@ def s4_ready(
     question_shape: str,
     qualifications: list[Qualification],
     scope: str | None = None,
+    window: tuple[datetime, datetime] | None = None,
+    items: Any = None,
+    t_anchored: bool = False,
 ) -> tuple[bool, str, str]:
     """Shape-aware readiness: passes iff qualifying evidence is banked.
 
     Returns (ready, missing, satisfied_by). missing names the gap for
     downstream discriminating-check construction (P4); satisfied_by names
-    the layer that carried readiness (or the absence-proof branch).
+    the layer that carried readiness (or the contrast branch).
     Qualification never judges answer quality — thin banks pass here and
-    fail downstream.
+    fail downstream. Contrast coverage needs the raw items plus the
+    window; without them the contrast branch is skipped (never assumed).
     """
     _ = scope
     quals = list(qualifications or [])
@@ -370,6 +443,7 @@ def s4_ready(
     positive = any(by_layer.get(layer, 0) > 0 for layer in _POSITIVE_LAYERS)
     absence = by_layer.get("absence-proof", 0) > 0
     shape = (question_shape or "unknown").strip().lower()
+    contrast = _contrast_coverage(items, window, t_anchored)
 
     def _absence_branch() -> tuple[bool, str, str] | None:
         if absence and not positive:
@@ -381,20 +455,23 @@ def s4_ready(
             return True, "", "code"
         if by_layer.get("history", 0) > 0:
             return True, "", "history"
-        branch = _absence_branch()
-        if branch is not None:
-            return branch
+        if contrast:
+            return True, "", "contrast"
+        # No absence fallback: the contract requires a qualified
+        # code/history row. A proven absence is an S6 verdict on a
+        # complete empty-history proof, never S4 readiness.
         return False, "qualified code row (4 pinned fields) or pinned history row", ""
     if shape == "state":
         if by_layer.get("state", 0) > 0:
             return True, "", "state"
-        branch = _absence_branch()
-        if branch is not None:
-            return branch
+        # No absence fallback: the contract requires qualified state
+        # evidence for state questions.
         return False, "qualified state row with source identity", ""
     if shape == "log":
         if by_layer.get("runtime", 0) > 0:
             return True, "", "runtime"
+        if contrast:
+            return True, "", "contrast"
         branch = _absence_branch()
         if branch is not None:
             return branch
@@ -404,6 +481,8 @@ def s4_ready(
     for layer in ("code", "history", "runtime", "state", "probe", "divergence"):
         if by_layer.get(layer, 0) > 0:
             return True, "", layer
+    if contrast:
+        return True, "", "contrast"
     branch = _absence_branch()
     if branch is not None:
         return branch

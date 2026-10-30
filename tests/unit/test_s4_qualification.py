@@ -83,7 +83,7 @@ class TestHistoryQualification:
     def test_zero_match_routes_to_proof(self):
         qual = qualify_item(
             self._history(attributes={"match_count": 0, "search_scope": "repo@tip:src/A.java"}),
-            scope_path="src/A.java",
+            scope_path="repo@tip:src/A.java",
         )
         assert qual.qualified is True
         assert qual.layer == "absence-proof"
@@ -121,7 +121,7 @@ class TestAbsenceProof:
             location={"file_path": "src/A.java", "revision": "tip"},
             attributes={"match_count": 0, "search_scope": "repo@tip:src/A.java"},
         )
-        qual = qualify_absence_proof(row, "src/A.java")
+        qual = qualify_absence_proof(row, "repo@tip:src/A.java")
         assert qual.qualified is True
 
     def test_wrong_scope_rejected(self):
@@ -167,15 +167,93 @@ class TestRuntimeQualification:
         assert "window" in qual.reason
 
 
-class TestContrastQualification:
+    def test_scope_match_is_exact_casefold(self):
+        row = _row(
+            "COMMIT_HISTORY",
+            location={"file_path": "src/A.java", "revision": "tip"},
+            attributes={"match_count": 0, "search_scope": "repo@tip:src/A.java"},
+        )
+        # Case differs, exact after casefold → qualifies.
+        assert qualify_absence_proof(row, "REPO@TIP:SRC/A.JAVA").qualified is True
+        # Superstring scope no longer covers (verifier demands equality).
+        assert (
+            qualify_absence_proof(row, "repo@tip:src/A.java:extra").qualified is False
+        )
+
+
+class TestContrastEndpoints:
+    def _half(self, observed, identity="Elasticsearch"):
+        return _row(
+            "RUNTIME_LOG",
+            attributes={},
+            observed_at=observed,
+        ) | {"provenance": {"source_system": identity, "source_location": {}}}
+
+    def test_endpoints_enforced(self):
+        old = self._half("2026-10-29T09:00:00Z")
+        new = self._half("2026-10-30T11:00:00Z")
+        assert qualify_contrast_pair(old, new, _G, _T).qualified is True
+        # Old half newer than G.
+        late_old = self._half("2026-10-29T11:00:00Z")
+        assert qualify_contrast_pair(late_old, new, _G, _T).qualified is False
+        # New half older than T.
+        early_new = self._half("2026-10-30T09:00:00Z")
+        assert qualify_contrast_pair(old, early_new, _G, _T).qualified is False
+
+    def test_endpoints_optional(self):
+        old = self._half("2026-10-29T09:00:00Z")
+        new = self._half("2026-10-30T11:00:00Z")
+        assert qualify_contrast_pair(old, new).qualified is True
+
+
+class TestContrastReadiness:
+    def _stamped(self, observed):
+        return _row(
+            "RUNTIME_LOG",
+            attributes={},
+            observed_at=observed,
+        ) | {"provenance": {"source_system": "Elasticsearch", "source_location": {}}}
+
+    def test_spanning_halves_carry_code_shape(self):
+        items = [
+            self._stamped("2026-10-29T09:00:00Z"),
+            self._stamped("2026-10-30T11:00:00Z"),
+        ]
+        ready, _, by = s4_ready("code", [], window=_WINDOW, items=items, t_anchored=True)
+        assert ready is True and by == "contrast"
+
+    def test_single_sided_window_not_ready(self):
+        items = [self._stamped("2026-10-29T12:00:00Z")]
+        ready, _, _ = s4_ready("code", [], window=_WINDOW, items=items, t_anchored=True)
+        assert ready is False
+
+    def test_unanchored_onset_counts_in_window_new_side(self):
+        # T unknown: current-state rows (in-window) are the new half.
+        items = [
+            self._stamped("2026-10-29T09:00:00Z"),
+            self._stamped("2026-10-29T12:00:00Z"),
+        ]
+        ready, _, by = s4_ready("log", [], window=_WINDOW, items=items, t_anchored=False)
+        assert ready is True and by == "contrast"
+        # Same items with anchored T: nothing at/after T → not ready.
+        ready, _, _ = s4_ready("log", [], window=_WINDOW, items=items, t_anchored=True)
+        assert ready is False
+
+    def test_no_window_no_contrast(self):
+        items = [
+            self._stamped("2026-10-29T09:00:00Z"),
+            self._stamped("2026-10-30T11:00:00Z"),
+        ]
+        assert s4_ready("code", [], items=items)[0] is False
+
     def test_ordered_halves_qualify(self):
-        old = _row("RUNTIME_LOG", observed_at="2026-10-29T09:00:00Z")
-        new = _row("RUNTIME_LOG", observed_at="2026-10-30T11:00:00Z")
+        old = self._stamped("2026-10-29T09:00:00Z")
+        new = self._stamped("2026-10-30T11:00:00Z")
         assert qualify_contrast_pair(old, new).qualified is True
 
     def test_misordered_rejected(self):
-        old = _row("RUNTIME_LOG", observed_at="2026-10-30T11:00:00Z")
-        new = _row("RUNTIME_LOG", observed_at="2026-10-29T09:00:00Z")
+        old = self._stamped("2026-10-30T11:00:00Z")
+        new = self._stamped("2026-10-29T09:00:00Z")
         assert qualify_contrast_pair(old, new).qualified is False
 
     def test_missing_timestamp_rejected(self):
@@ -190,6 +268,25 @@ class TestS4Ready:
     def test_code_shape_accepts_history(self):
         ready, _, by = s4_ready("code", [Qualification(True, "history", "")])
         assert ready is True and by == "history"
+
+    def test_code_shape_has_no_absence_fallback(self):
+        # Review: code requires code/history — a scoped absence proof
+        # alone must not carry readiness (absence is an S6 verdict).
+        quals = [Qualification(True, "absence-proof", "")]
+        ready, missing, _ = s4_ready("code", quals)
+        assert ready is False
+        assert "qualified code row" in missing
+
+    def test_state_shape_has_no_absence_fallback(self):
+        quals = [Qualification(True, "absence-proof", "")]
+        ready, missing, _ = s4_ready("state", quals)
+        assert ready is False
+        assert "qualified state row" in missing
+
+    def test_log_shape_keeps_absence_fallback(self):
+        quals = [Qualification(True, "absence-proof", "")]
+        ready, _, by = s4_ready("log", quals)
+        assert ready is True and by == "absence-proof"
 
     def test_path_only_rows_never_carry_readiness(self):
         quals = [Qualification(False, "code", "start-line-only row is not ready")]

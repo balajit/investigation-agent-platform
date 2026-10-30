@@ -960,6 +960,24 @@ def _explore_floor_target(
                 code_shaped = False
         if not code_shaped and not s4_floor:
             return None
+        s4_shape = str((reason_data or {}).get("s4_shape") or "").strip().lower()
+        if s4_floor and s4_shape == "log":
+            # P2 review: a not-ready log question must gather from the log
+            # layer, never code reads. Keywords mirror the SEARCH_CODE
+            # fallback below; SEARCH_LOGS takes a keyword list.
+            log_keywords = _description_keywords(description)
+            if not log_keywords:
+                return None
+            return {
+                "next_action": "SEARCH_LOGS",
+                "action_parameters": {"keywords": log_keywords[:5]},
+            }
+        if s4_floor and s4_shape == "state":
+            # P2 review: a not-ready state question must gather from the
+            # state layer. No template binds are derivable here, so the
+            # default template applies (fail-open gather, may miss); the
+            # bound (max 2/run) caps the cost of a blind probe.
+            return {"next_action": "QUERY_STATE", "action_parameters": {}}
         haystacks = [str(description or "")]
         try:
             for key in ("top_frame_file", "failing_symbol", "caller_symbol"):

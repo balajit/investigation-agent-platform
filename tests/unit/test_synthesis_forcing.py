@@ -683,6 +683,7 @@ def test_floor_fires_when_s4_not_ready_despite_counts():
 
 def test_floor_fires_for_non_code_shape_when_s4_not_ready():
     # P2: the code-shaped gate is bypassed once s4 reports unreadiness.
+    # With log shape the floor gathers from the log layer, never code.
     hit = _floor(
         reason_data={
             "next_action": "VERIFY_HYPOTHESIS",
@@ -696,6 +697,60 @@ def test_floor_fires_for_non_code_shape_when_s4_not_ready():
         seed={},
     )
     assert hit is not None
+    assert hit["next_action"] == "SEARCH_LOGS"
+    assert hit["action_parameters"]["keywords"]
+
+
+def test_floor_targets_state_layer_for_state_shape():
+    # Review: a not-ready state question gathers from the state layer.
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": False,
+            "s4_shape": "state",
+            "s4_missing": "qualified state row with source identity",
+        },
+        triage_route="DATA",
+        description="Why is revenue down?",
+        seed={},
+    )
+    assert hit is not None
+    assert hit["next_action"] == "QUERY_STATE"
+
+
+def test_floor_targets_code_chain_for_unknown_shape():
+    # s4 unreadiness with unknown shape keeps the description-grounded
+    # code chain as best effort (bounded like every floor turn).
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": False,
+            "s4_shape": "unknown",
+            "s4_missing": "any qualified evidence row",
+        },
+        triage_route="DATA",
+        description="Why is revenue down?",
+        seed={},
+    )
+    assert hit is not None
+    assert hit["next_action"] == "SEARCH_CODE"
+
+
+def test_floor_log_shape_without_keywords_passes():
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": False,
+            "s4_shape": "log",
+        },
+        triage_route="DATA",
+        description="???",
+        seed={},
+    )
+    assert hit is None
 
 
 def test_floor_keyword_fallback():

@@ -464,7 +464,13 @@ def _s4_readiness(
         request = getattr(investigation, "request", None)
         problem = str(getattr(request, "problem_description", "") or "")
         shape = classify_question_shape(problem)
-        ready, missing, satisfied_by = s4_ready(shape, quals)
+        ready, missing, satisfied_by = s4_ready(
+            shape,
+            quals,
+            window=(start, end),
+            items=list(evidence_items or []),
+            t_anchored=bool(anchors.onset_given),
+        )
         layers: dict[str, int] = {}
         for qual in quals:
             if qual.qualified:
