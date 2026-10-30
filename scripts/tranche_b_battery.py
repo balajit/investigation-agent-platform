@@ -287,6 +287,40 @@ def _check_absence(expect: dict, root: str, rows: list) -> tuple:
     return (False, f"no scoped empty-search proof covers '{scope}'")
 
 
+def _proven_absence_insufficient(expect: dict, root: str, hyps: dict, evidence: dict) -> tuple:
+    """Proven-absence INSUFFICIENT: an abstention backed by a banked scoped
+    empty-search proof passes (DES-S6: proven-absence INSUFFICIENT passes;
+    unbound INSUFFICIENT routes into spread, never into a stop). Anything
+    else stays a status FAIL — the proof, not the status alone, earns it."""
+    if str(expect.get("claim") or "") != "absence":
+        return (False, "not an absence claim")
+    subject = expect.get("absent_subject", "")
+    scope = str(expect.get("scope") or "").strip().lower()
+    if not scope:
+        return (False, "absence claim states no scope")
+    if subject:
+        # Abstention conclusions carry root_cause=None, so the subject may
+        # live in the hypothesis statement that drove the scoped search.
+        texts = [root]
+        for hyp in ((hyps or {}).get("items") or []):
+            try:
+                texts.append(str(hyp.get("statement") or ""))
+            except Exception:
+                continue
+        if not any(_word_in(subject, t) for t in texts):
+            return (False, f"abstention states no '{subject}'")
+    for row in (evidence or {}).get("items", []) or []:
+        attrs = row.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            continue
+        proof_scope = str(attrs.get("search_scope", "") or "").strip().lower()
+        if attrs.get("match_count") != 0 or not proof_scope:
+            continue
+        if proof_scope == scope or scope in proof_scope:
+            return (True, "proven-absence INSUFFICIENT (scoped empty-search proof banked)")
+    return (False, f"no scoped empty-search proof covers '{scope}'")
+
+
 def _check_no_failure(rows: list) -> tuple:
     for row in rows:
         attrs = row.get("attributes") or {}
@@ -367,6 +401,10 @@ def score_supported(
             return ("FAIL", "fabricated answer to unanswerable")
         return ("FAIL", f"status={cstatus or 'missing'}")
     if cstatus not in ANSWERED_SET:
+        if cstatus in ABSTAIN_SET:
+            ok, reason = _proven_absence_insufficient(expect, root, hyps, evidence)
+            if ok:
+                return ("PASS", reason)
         return ("FAIL", f"status={cstatus or 'missing'}, want answered")
 
     by_id = _rows_by_id(evidence)
@@ -398,6 +436,40 @@ def score_supported(
     if not ok:
         return ("PARTIAL", reason)
     return ("PASS", "conclusion supported by cited evidence")
+
+
+def _follow_primary(base: str, tenant: str, case: dict, inv: dict, timeout: int) -> tuple | None:
+    """Grade a CANCELLED duplicate via its primary (P0 create-race fix).
+
+    Returns (primary_id, verdict, detail) or None when the close names no
+    followable primary. Mirrors live_battery._cached_primary for the
+    serve_cached/duplicate actions: duplicate-of-active primaries are
+    polled to terminal first, then scored.
+    """
+    meta = (inv.get("metadata") or {}) if isinstance(inv, dict) else {}
+    disp = meta.get("disposition") or {}
+    action = disp.get("action")
+    if action not in ("serve_cached", "duplicate"):
+        return None
+    pid = disp.get("primary_target_id") or ""
+    if not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        str(pid),
+    ):
+        match = re.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            str(disp.get("reason", "")),
+        )
+        if not match:
+            return None
+        pid = match.group(0)
+    if action == "duplicate":
+        try:
+            poll(base, tenant, pid, timeout)
+        except Exception:
+            return None
+    verdict, detail = score_case(base, tenant, case, {"id": pid})
+    return pid, verdict, detail
 
 
 def score_case(base: str, tenant: str, case: dict, inv: dict) -> tuple[str, str]:
@@ -450,6 +522,18 @@ def main() -> int:
         except TimeoutError as exc:
             print(f"  {exc}")
             results.append((case["id"], "FAIL", "timeout", iid))
+            continue
+        if inv.get("status") == "CANCELLED":
+            # P0 create-race fix: a duplicate-of-active close must follow
+            # the primary and grade its answer, not fail as "status=missing".
+            followed = _follow_primary(args.api_base, args.tenant, case, inv, args.timeout)
+            if followed is not None:
+                pid, verdict, detail = followed
+                print(f"  {verdict}: followed primary {pid[:8]}: {detail} ({iid[:8]})")
+                results.append((case["id"], verdict, detail, iid))
+                continue
+            results.append((case["id"], "FAIL", "run CANCELLED, no followable primary", iid))
+            print(f"  run CANCELLED, no followable primary {iid}")
             continue
         if inv.get("status") == "FAILED":
             results.append((case["id"], "FAIL", "run FAILED", iid))

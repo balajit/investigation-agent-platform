@@ -504,6 +504,90 @@ class TestOfflineDimensions:
         assert verdict == "PARTIAL"
 
 
+class TestProvenAbsenceInsufficient:
+    def _absence_case(self):
+        return _case(
+            expect={
+                "status": "ANSWERED",
+                "claim": "absence",
+                "absent_subject": "audit",
+                "scope": "audit_log/order-9",
+            }
+        )
+
+    def _proof(self, scope="audit_log/order-9"):
+        return _row(
+            "e1",
+            etype="DATABASE_STATE",
+            file_path="",
+            line_start=None,
+            line_end=None,
+            revision="",
+            snippet="0 rows",
+            attributes={"search_scope": scope, "match_count": 0},
+        )
+
+    def test_abstention_with_banked_proof_passes(self):
+        # Pipeline-correct shape: INSUFFICIENT_EVIDENCE with a scoped
+        # empty-search proof banked. Abstentions cite nothing and carry
+        # root_cause=None; the subject lives in the hypothesis statement.
+        hyps = _hyps([_hyp("h1", "No audit row was written for order-9.", [])])
+        verdict, detail = battery.score_supported(
+            self._absence_case(),
+            _conclusion(status="INSUFFICIENT_EVIDENCE", root=None, supporting=[]),
+            {},
+            _ev([self._proof()]),
+            hyps,
+        )
+        assert verdict == "PASS"
+        assert "proven-absence" in detail
+
+    def test_abstention_without_proof_still_fails(self):
+        hyps = _hyps([_hyp("h1", "No audit row was written for order-9.", [])])
+        verdict, _ = battery.score_supported(
+            self._absence_case(),
+            _conclusion(status="INSUFFICIENT_EVIDENCE", root=None, supporting=[]),
+            {},
+            _ev([]),
+            hyps,
+        )
+        assert verdict == "FAIL"
+
+    def test_abstention_with_wrong_scope_proof_fails(self):
+        hyps = _hyps([_hyp("h1", "No audit row was written for order-9.", [])])
+        verdict, _ = battery.score_supported(
+            self._absence_case(),
+            _conclusion(status="INSUFFICIENT_EVIDENCE", root=None, supporting=[]),
+            {},
+            _ev([self._proof(scope="audit_log/order-10")]),
+            hyps,
+        )
+        assert verdict == "FAIL"
+
+    def test_abstention_naming_no_subject_fails(self):
+        verdict, _ = battery.score_supported(
+            self._absence_case(),
+            _conclusion(status="INSUFFICIENT_EVIDENCE", root=None, supporting=[]),
+            {},
+            _ev([self._proof()]),
+            _hyps([_hyp("h1", "Something inconclusive happened.", [])]),
+        )
+        assert verdict == "FAIL"
+
+    def test_non_absence_claim_abstention_still_fails(self):
+        # test_wrong_status_fails pins this: status mismatch on a
+        # definition claim stays FAIL even with rows present.
+        row = _row("e1")
+        verdict, _ = battery.score_supported(
+            _case(),
+            _conclusion(status="INSUFFICIENT_EVIDENCE", root="", supporting=["e1"]),
+            {},
+            _ev([row]),
+            _hyps([]),
+        )
+        assert verdict == "FAIL"
+
+
 class TestCleanupScope:
     def test_battery_tenant_wipes_all(self):
         sys.path.insert(0, str(ROOT / "scripts"))
@@ -651,3 +735,79 @@ class TestCachedPrimary:
             importlib.reload(live_battery)
         assert out is not None
         assert out[0] == pid
+
+    def test_duplicate_of_active_primary_is_polled_then_graded(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import live_battery
+
+        pid = "33333333-4444-5555-6666-777777777777"
+        concl = {"status": "ANSWERED", "root_cause": "r", "supporting_evidence_ids": []}
+
+        def _fake_api(base, tenant, method, path, body=None, timeout=30):
+            if path.endswith(f"/investigations/{pid}/conclusion"):
+                return 200, {"conclusion": concl}
+            if path.endswith("/findings"):
+                return 200, {}
+            if "evidence" in path:
+                return 200, {"items": []}
+            if path.endswith("/hypotheses"):
+                return 200, {"items": []}
+            if path.endswith(f"/investigations/{pid}"):
+                return 200, {"investigation": {"status": "COMPLETED"}}
+            return 200, {
+                "investigation": {
+                    "status": "CANCELLED",
+                    "metadata": {
+                        "disposition": {
+                            "action": "duplicate",
+                            "primary_target_id": pid,
+                            "reason": f"active investigation {pid} already covers this request",
+                        }
+                    },
+                }
+            }
+
+        live_battery.api = _fake_api
+        try:
+            out, note = live_battery._cached_primary("b", "t", "deadbeef", timeout=60)
+        finally:
+            import importlib
+
+            importlib.reload(live_battery)
+        assert out is not None
+        assert out[0] == pid
+        assert out[1]["status"] == "ANSWERED"
+
+    def test_duplicate_with_unfinished_primary_returns_none(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import live_battery
+
+        pid = "44444444-5555-6666-7777-888888888888"
+
+        def _fake_api(base, tenant, method, path, body=None, timeout=30):
+            return 200, {
+                "investigation": {
+                    "status": "CANCELLED",
+                    "metadata": {
+                        "disposition": {"action": "duplicate", "primary_target_id": pid}
+                    },
+                }
+            }
+
+        def _never_terminal(base, tenant, iid, timeout):
+            raise TimeoutError("still running")
+
+        live_battery.api = _fake_api
+        live_battery.poll = _never_terminal
+        try:
+            out, note = live_battery._cached_primary("b", "t", "deadbeef", timeout=60)
+        finally:
+            import importlib
+
+            importlib.reload(live_battery)
+        assert out is None
+        assert "primary not terminal" in note

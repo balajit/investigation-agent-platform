@@ -110,7 +110,7 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
                 # Same cached-serve follow as the post-poll CANCELLED path:
                 # a serve_cached create is already CANCELLED here, so start
                 # 409s without the run ever polling. Grade the primary.
-                followed, follow_note = _cached_primary(api_base, tenant, iid)
+                followed, follow_note = _cached_primary(api_base, tenant, iid, timeout)
                 if followed is not None:
                     pid, concl, findings, evidence, hyps = followed
                     verdict, detail = score_supported(case, concl, findings, evidence, hyps)
@@ -148,8 +148,9 @@ def run_case(api_base, tenant, app_id, case, rep, timeout, run_tag):
         # serve_cached is the product working (a re-verified prior
         # conclusion was served instead of re-running): follow the cached
         # primary and grade THAT answer rather than failing the run for
-        # not running. Anything else stays not-startable FAIL.
-        followed, follow_note = _cached_primary(api_base, tenant, iid)
+        # not running. A duplicate of an active run follows the primary
+        # the same way once it lands. Anything else stays not-startable FAIL.
+        followed, follow_note = _cached_primary(api_base, tenant, iid, timeout)
         if followed is not None:
             pid, concl, findings, evidence, hyps = followed
             verdict, detail = score_supported(case, concl, findings, evidence, hyps)
@@ -309,8 +310,8 @@ async def _analyze_one(conn, iid: str) -> dict:
     return out
 
 
-def _cached_primary(api_base, tenant, iid):
-    """(primary_id, conclusion, findings, evidence, hyps, note) or (None, note).
+def _cached_primary(api_base, tenant, iid, timeout=600):
+    """(primary_id, conclusion, findings, evidence, hyps) or (None, note).
 
     A CANCELLED investigation whose disposition served a re-verified
     cached conclusion names the primary in ``primary_target_id``
@@ -318,6 +319,11 @@ def _cached_primary(api_base, tenant, iid):
     Prefer the structured field; fall back to the reason-text regex for
     older rows. Fetches retry once on transport failure (conclusion GETs
     must not die on a blip after the investigation did all the work).
+
+    P0 create-race fix: a CANCELLED duplicate of an ACTIVE run is also
+    followed — the primary is polled to terminal first, then graded, so
+    duplicate dispatches score the answer instead of failing as
+    "not startable".
     """
     def _get(path, tries=2):
         last = None
@@ -332,8 +338,9 @@ def _cached_primary(api_base, tenant, iid):
         _, det = _get(f"/api/v1/investigations/{iid}")
         meta = ((det.get("investigation") or {}).get("metadata")) or {}
         disp = meta.get("disposition") or {}
-        if disp.get("action") != "serve_cached":
-            return None, f"disposition={disp.get('action')}"
+        action = disp.get("action")
+        if action not in ("serve_cached", "duplicate"):
+            return None, f"disposition={action}"
         pid = disp.get("primary_target_id") or ""
         if not re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -346,6 +353,15 @@ def _cached_primary(api_base, tenant, iid):
             if not match:
                 return None, "no primary uuid in reason"
             pid = match.group(0)
+        if action == "duplicate":
+            # The primary was still running when this duplicate closed:
+            # wait it out, then grade its answer.
+            try:
+                poll(api_base, tenant, pid, timeout)
+            except TimeoutError as exc:
+                return None, f"primary not terminal: {exc}"
+            except Exception as exc:
+                return None, f"primary poll failed: {type(exc).__name__}: {str(exc)[:160]}"
         _, conclusion = _get(f"/api/v1/investigations/{pid}/conclusion")
         _, findings = _get(f"/api/v1/investigations/{pid}/findings")
         _, evidence = _get(f"/api/v1/investigations/{pid}/evidence?limit=100")

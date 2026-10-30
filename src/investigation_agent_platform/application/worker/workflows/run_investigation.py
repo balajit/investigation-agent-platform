@@ -303,6 +303,37 @@ class RunInvestigationWorkflow:
         inv_id = create_res.investigation_id
         tenant_id = input_data.tenant_id
 
+        # P0 create-race fix: a CANCELLED investigation is not startable by
+        # construction (duplicate of an active run, served-cached, or
+        # declined — the start gate allows CREATED/FAILED/RUNNING only).
+        # Report CANCELED with the disposition link instead of driving
+        # CREATED→CONTEXTUALIZING transitions that must fail and reconciling
+        # to FAILED, which poisoned battery tallies on duplicate dispatches.
+        if create_res.status == "CANCELLED":
+            _action = getattr(create_res, "disposition_action", None) or "unknown"
+            _pid = getattr(create_res, "primary_target_id", None) or "none"
+            workflow.logger.info(
+                "RunInvestigationWorkflow not startable; reporting CANCELED: %s",
+                inv_id,
+                extra={
+                    "tenant_id": tenant_id,
+                    "investigation_id": inv_id,
+                    "event": "workflow not startable",
+                    "comp": COMP_WFLW,
+                    "func": "RunInvestigationWorkflow._run_inner",
+                    "stage": "intake",
+                    "step": "create",
+                    "outcome": "CANCELED",
+                    "disposition_action": str(_action),
+                    "primary_target_id": str(_pid),
+                },
+            )
+            return RunInvestigationResult(
+                investigation_id=inv_id,
+                status="CANCELED",
+                error=f"not_startable:CANCELLED:disposition={_action}:primary={_pid}",
+            )
+
         async def _transition(target: str, reason: str) -> None:
             await workflow.execute_activity(
                 transition_investigation_activity,

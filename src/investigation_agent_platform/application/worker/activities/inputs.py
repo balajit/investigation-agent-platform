@@ -30,6 +30,12 @@ class CreateInvestigationInput:
 class CreateInvestigationOutput:
     investigation_id: str
     status: str
+    # §2 disposition routing (P0 create-race fix): when the loaded/created
+    # investigation is not startable (CANCELLED as duplicate/serve-cached/
+    # declined), the workflow reports CANCELED with this link instead of
+    # driving transitions that must fail and reconciling to FAILED.
+    disposition_action: str | None = None
+    primary_target_id: str | None = None
 
 
 @dataclass

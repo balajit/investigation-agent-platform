@@ -285,6 +285,12 @@ class BulkIntakeWorkflow:
                 return (index, "DONE", None)
             if terminal in ("FAILED", "ERROR"):
                 return (index, "FAILED", getattr(result, "error", None))
+            if terminal in ("CANCELED", "CANCELLED"):
+                # P0 create-race fix: a not-startable duplicate reports
+                # CANCELED with its primary link (recorded, not retried —
+                # retrying the same CANCELLED investigation could never
+                # succeed). DONE here would overclaim a run that never ran.
+                return (index, "CANCELED", getattr(result, "error", None))
             if getattr(result, "error", None):
                 return (index, "FAILED", str(getattr(result, "error", None))[:500])
             return (index, "DONE", None)

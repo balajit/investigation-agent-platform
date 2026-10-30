@@ -51,6 +51,24 @@ from .inputs import (
 )
 
 
+def _disposition_routing(investigation: Any) -> tuple[str | None, str | None]:
+    """Extract §2 disposition routing (action + primary link) for workflow
+    not-startable handling. Never raises: unparsable metadata yields Nones."""
+    try:
+        metadata = getattr(investigation, "metadata", None) or {}
+        disp = metadata.get("disposition") if isinstance(metadata, dict) else None
+        if not isinstance(disp, dict):
+            return None, None
+        action = disp.get("action")
+        pid = disp.get("primary_target_id")
+        return (
+            str(action) if action else None,
+            str(pid) if pid else None,
+        )
+    except Exception:
+        return None, None
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def create_investigation_activity(
@@ -121,8 +139,12 @@ async def create_investigation_activity(
                 outputs={"outcome": "loaded_existing", "status": existing.status.value},
                 elapsed_ms=elapsed_ms(t0),
             )
+            _disp, _pid = _disposition_routing(existing)
             return CreateInvestigationOutput(
-                investigation_id=str(existing.id), status=existing.status.value
+                investigation_id=str(existing.id),
+                status=existing.status.value,
+                disposition_action=_disp,
+                primary_target_id=_pid,
             )
 
         from investigation_agent_platform.domain.investigation.models import InvestigationRequest
@@ -148,9 +170,15 @@ async def create_investigation_activity(
             investigation_id=str(inv.id),
             event="create_investigation_activity completed",
             outputs={"outcome": "created", "status": inv.status.value},
-            elapsed_ms=elapsed_ms(t0),
+                elapsed_ms=elapsed_ms(t0),
+            )
+        _disp, _pid = _disposition_routing(inv)
+        return CreateInvestigationOutput(
+            investigation_id=str(inv.id),
+            status=inv.status.value,
+            disposition_action=_disp,
+            primary_target_id=_pid,
         )
-        return CreateInvestigationOutput(investigation_id=str(inv.id), status=inv.status.value)
     except ApplicationFailure:
         raise
     except Exception as exc:
