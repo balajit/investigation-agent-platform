@@ -141,3 +141,51 @@ def test_in_tenant_and_cross_boundary_coexist():
     fetches = [t for t in templates if t.discriminating_fetch is not None]
     handoffs = [t for t in templates if t.handoff_candidate is not None]
     assert len(fetches) == 1 and len(handoffs) == 1
+
+
+def test_unpinned_revision_rejected():
+    for bad in ("HEAD", "UNPINNED"):
+        with pytest.raises(ValidationError):
+            SuspectPath(
+                repository="tenant-repo",
+                revision=bad,
+                sites=[_site(SuspectSiteKind.FLAG_GATE)],
+            )
+
+
+def test_pinned_revision_accepted():
+    path = _path(_site(SuspectSiteKind.FLAG_GATE))
+    assert path.revision == "abc123"
+
+
+def test_long_target_summarized_deterministically():
+    sites = [_site(SuspectSiteKind.FLAG_GATE, detail="x" * 900) for _ in range(5)]
+    (template,) = instantiate_templates(_path(*sites))
+    assert template.discriminating_fetch is not None
+    target = template.discriminating_fetch.target
+    assert len(target) <= 1024
+    assert "more sites" in target
+    # Leading whole segments survive; the omit count is explicit.
+    assert target.startswith("svc/app.py:10")
+    assert "+4 more sites" in target
+    # Deterministic: same input order, same output.
+    (repeat,) = instantiate_templates(_path(*sites))
+    assert repeat.discriminating_fetch is not None
+    assert repeat.discriminating_fetch.target == target
+
+
+def test_long_localizing_evidence_summarized():
+    sites = [
+        _site(
+            SuspectSiteKind.EXTERNAL_CALL,
+            cross_boundary=True,
+            upstream_identity="upstream-u",
+            detail="y" * 900,
+        )
+        for _ in range(5)
+    ]
+    (template,) = instantiate_templates(_path(*sites))
+    assert template.handoff_candidate is not None
+    evidence = template.handoff_candidate.localizing_evidence
+    assert len(evidence) <= 2048
+    assert "more sites" in evidence

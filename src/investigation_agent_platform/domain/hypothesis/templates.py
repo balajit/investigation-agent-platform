@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 #: the semantics they started with; unmarked rows resolve to current.
 TEMPLATES_VERSION_CURRENT = "templates-v1"
 
+#: Field caps for assembled multi-site strings. The join helper guarantees
+#: these bounds; the Field max_length is the fail-closed backstop.
+TARGET_MAX_LENGTH = 1024
+LOCALIZING_EVIDENCE_MAX_LENGTH = 2048
+
 
 class TemplateKind(StrEnum):
     """The four dormant-activation template families (DES-S2 section 1)."""
@@ -100,6 +105,15 @@ class SuspectPath(BaseModel):
     revision: str = Field(..., min_length=1, max_length=128)
     sites: list[SuspectSite] = Field(..., min_length=1, max_length=200)
 
+    @model_validator(mode="after")
+    def _require_pinned_revision(self) -> "SuspectPath":
+        # Templates inherit source identity from the path: an unpinned
+        # revision would let every downstream fetch float. Same fail-closed
+        # set as CodeFactResolutionV2.
+        if self.revision in {"HEAD", "UNPINNED"}:
+            raise ValueError("suspect paths require a pinned revision, never HEAD/UNPINNED")
+        return self
+
 
 class DiscriminatingFetch(BaseModel):
     """The fetch named at template birth; the cheapest observation that
@@ -108,7 +122,7 @@ class DiscriminatingFetch(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     fetch_kind: DiscriminatingFetchKind
-    target: str = Field(..., min_length=1, max_length=1024)
+    target: str = Field(..., min_length=1, max_length=TARGET_MAX_LENGTH)
     window_note: str = Field(default="", max_length=512)
 
 
@@ -130,7 +144,7 @@ class HandoffCandidate(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     upstream_identity: str = Field(..., min_length=1, max_length=512)
-    localizing_evidence: str = Field(..., min_length=1, max_length=2048)
+    localizing_evidence: str = Field(..., min_length=1, max_length=LOCALIZING_EVIDENCE_MAX_LENGTH)
     reason: str = Field(..., min_length=1, max_length=1024)
 
 
@@ -193,7 +207,7 @@ def instantiate_templates(path: SuspectPath) -> list[DormantTemplate]:
         in_tenant.setdefault(kind, []).append(site)
     for kind, sites in in_tenant.items():
         fetch_kind = TEMPLATE_DISCRIMINATOR[kind]
-        target = "; ".join(f"{s.file_path}:{s.line}" + (f" ({s.detail})" if s.detail else "") for s in sites)
+        target = _bounded_join([_site_segment(s) for s in sites], TARGET_MAX_LENGTH)
         assumptions = _assumptions_for(kind, sites)
         templates.append(
             DormantTemplate(
@@ -214,8 +228,8 @@ def instantiate_templates(path: SuspectPath) -> list[DormantTemplate]:
             # All-OTHER group: no template family applies, so nothing
             # activates — same rule as in-tenant OTHER sites.
             continue
-        localizing = "; ".join(
-            f"{s.file_path}:{s.line}" + (f" ({s.detail})" if s.detail else "") for s in sites
+        localizing = _bounded_join(
+            [_site_segment(s) for s in sites], LOCALIZING_EVIDENCE_MAX_LENGTH
         )
         templates.append(
             DormantTemplate(
@@ -233,6 +247,36 @@ def instantiate_templates(path: SuspectPath) -> list[DormantTemplate]:
             )
         )
     return templates
+
+
+def _site_segment(site: SuspectSite) -> str:
+    """Render one site as ``file:line (detail)``."""
+    segment = f"{site.file_path}:{site.line}"
+    if site.detail:
+        segment += f" ({site.detail})"
+    return segment
+
+
+def _bounded_join(segments: list[str], limit: int) -> str:
+    """Join site segments deterministically within ``limit`` characters.
+
+    Whole leading segments are kept in input order; dropped trailing
+    segments collapse into an explicit ``… (+K more sites)`` suffix so
+    omitted sites are counted, never silently lost. The result always fits.
+    """
+    full = "; ".join(segments)
+    if len(full) <= limit:
+        return full
+    for keep in range(len(segments) - 1, -1, -1):
+        omitted = len(segments) - keep
+        suffix = f"… (+{omitted} more site{'s' if omitted != 1 else ''})"
+        prefix = "; ".join(segments[:keep])
+        candidate = f"{prefix}; {suffix}" if prefix else suffix
+        if len(candidate) <= limit:
+            return candidate
+    # Unreachable: the bare suffix is far shorter than any real limit, but
+    # truncate defensively so the field constraint always holds.
+    return f"… (+{len(segments)} more sites)"[:limit]
 
 
 def _assumptions_for(kind: TemplateKind, sites: list[SuspectSite]) -> list[TemplateAssumption]:
