@@ -466,6 +466,9 @@ class InvestigationConclusionORM(Base):
     # P3 (S6 rival bar): ruled-out rivals + ruling-out evidence
     # (NULL = legacy/pre-marker row, never backfilled).
     eliminated_rivals: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    # P4 (S7 handoff): structured terminal handoff (version/state/target/
+    # fetch/resume). NULL = legacy/pre-marker row, never backfilled.
+    handoff: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

@@ -1834,6 +1834,161 @@ class TestActivityPathsBlockUnlinkedCaller:
             "NO_ROOT_CAUSE_FOUND",
         )
 
+    def test_conclude_keeps_string_causal_step_evidence_id(self):
+        # String/UUID mismatch must not wipe causal-step evidence. The
+        # shape is the cbv2 unmapped waiver: observed retrieval linkage,
+        # nothing claim-local, so the gate publishes only when a causal
+        # chain survives. The causal step cites the row ID as text (as
+        # raw/deserialized rows do — bypassing the HypothesisCausalStep
+        # UUID coercion) while the banked row keeps the UUID key. With the
+        # raw `in evidence_by_id` check the chain evaporates and the gate
+        # abstains; with normalization it publishes.
+        from types import SimpleNamespace
+
+        inv_id = uuid4()
+        row = _ev(provider="test", etype=EvidenceType.SOURCE_CODE)
+        row = row.model_copy(
+            update={
+                "tenant_id": "t",
+                "investigation_id": inv_id,
+                "content_snippet": "10| class Widget:",
+                "attributes": {"read_mode": "range"},
+                "provenance": row.provenance.model_copy(
+                    update={
+                        "tenant_id": "t",
+                        "investigation_id": inv_id,
+                        "query_fingerprint": row.provenance.query_fingerprint.model_copy(
+                            update={"operation": "GET_SOURCE"}
+                        ),
+                        "source_location": row.provenance.source_location.model_copy(
+                            update={
+                                "file_path": "src/widgets.py",
+                                "line_start": 10,
+                                "line_end": 20,
+                                "revision": "abc123",
+                            }
+                        ),
+                    }
+                ),
+            }
+        )
+        causal_step = SimpleNamespace(
+            cause="Widget class declared",
+            mechanism="class definition",
+            effect="Widget defined",
+            evidence_ids=[str(row.evidence_id)],
+        )
+        hyp = _hyp("Widget is defined in src/widgets.py")
+        hyp = hyp.model_copy(
+            update={
+                "status": HypothesisStatus.SUPPORTED,
+                "assessments": [
+                    HypothesisEvidenceAssessment(
+                        hypothesis_id=hyp.id,
+                        evidence_id=row.evidence_id,
+                        assessment=AssessmentType.SUPPORTS,
+                        strength=AssessmentStrength.STRONG,
+                        reason="definition",
+                        claim_kind=ClaimKind.DEFINITION,
+                        claim_target=ClaimTarget(symbol="Widget", file_path="src/widgets.py"),
+                    )
+                ],
+                "supporting_evidence_ids": [row.evidence_id],
+                "causal_steps": [causal_step],
+            }
+        )
+        hyp = hyp.model_copy(update={"investigation_id": inv_id, "tenant_id": "t"})
+        saved: dict = {}
+
+        async def _save_conclusion(tenant_id, conclusion):
+            saved["conclusion"] = conclusion
+
+        from unittest.mock import AsyncMock
+
+        ctx = _activity_ctx(
+            {"claim_binding_version": "cbv2", "verifier_version": "v2"},
+            hyp,
+            [row],
+            # Observed linkage for an unrelated row: the cited DEFINITION
+            # row stays unmapped with nothing claim-local.
+            [_attempt_event([uuid4()])],
+        )
+        ctx.finding_repo = SimpleNamespace(
+            save_conclusion=_save_conclusion,
+            save_finding_record=AsyncMock(),
+        )
+        ctx.hypothesis_repo.save = AsyncMock()
+        import asyncio
+
+        from investigation_agent_platform.application.worker.activities.lifecycle import (
+            _gate_conclusion_or_fail,
+        )
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationStatus,
+        )
+
+        status = asyncio.run(
+            _gate_conclusion_or_fail("t", inv_id, ctx, shadow_notes=None, triage_route="")
+        )
+        assert status == InvestigationStatus.COMPLETED
+        conclusion = saved.get("conclusion")
+        assert conclusion is not None
+        assert "UNMAPPED_CITATION" in str(getattr(conclusion, "limitations", ""))
+        assert str(getattr(conclusion, "status", "")) not in (
+            "INSUFFICIENT_EVIDENCE",
+            "NO_ROOT_CAUSE_FOUND",
+        )
+        # The verdict persists its structured handoff (P4 finding 1).
+        assert conclusion.handoff is not None
+        assert str(conclusion.handoff.state) == "PROVED"
+        assert conclusion.handoff.version == "handoff-v1"
+
+    def test_caller_edge_validated_without_location_result_falls_back(self):
+        # Caller-edge gate passing while location resolution returns None
+        # must not assign None to the verify result; it falls back to a
+        # caller-edge-incomplete INCONCLUSIVE verdict.
+        from unittest.mock import patch
+
+        from investigation_agent_platform.application.investigation.verification import (
+            VerificationEngine,
+        )
+        from investigation_agent_platform.application.worker.activities import (
+            VerifyRootCauseInput,
+            verify_root_cause_activity,
+        )
+
+        row_a, row_b = _two_caller_rows()
+        hyp = _two_caller_hyp(row_a, row_b)
+        inv_id = uuid4()
+        hyp = hyp.model_copy(update={"investigation_id": inv_id, "tenant_id": "t"})
+        _activity_ctx(
+            {"claim_binding_version": "cbv1", "verifier_version": "v2"},
+            hyp,
+            [row_a, row_b],
+            [_attempt_event([row_a.evidence_id, row_b.evidence_id])],
+        )
+        with (
+            patch.object(
+                VerificationEngine, "validate_location_claim", return_value=None
+            ),
+            patch.object(
+                VerificationEngine,
+                "evaluate_caller_edge",
+                return_value=(True, "edge validated"),
+            ),
+        ):
+            import asyncio
+
+            result = asyncio.run(
+                verify_root_cause_activity(
+                    VerifyRootCauseInput(tenant_id="t", investigation_id=str(inv_id))
+                )
+            )
+        assert result.success is True
+        assert result.data.get("verified") is False
+        assert result.data.get("status") == "INCONCLUSIVE"
+        assert result.data.get("producing_path") == "caller-edge-incomplete"
+
     def test_creation_paths_stamp_cbv1(self):
         import asyncio
 

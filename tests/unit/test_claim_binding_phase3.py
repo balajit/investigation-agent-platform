@@ -1829,6 +1829,50 @@ class TestConcludeNotCheckableEarlySkip:
         assert conclusion is not None
         assert "NOT_CHECKABLE_SKIPPED" in list(getattr(conclusion, "limitations", None) or [])
 
+    @pytest.mark.asyncio
+    async def test_provider_blocked_conclude_persists_telemetry_deferred(self):
+        # A provider-blocked run ends as a telemetry-deferred handoff, not
+        # a FAILED platform error: INSUFFICIENT_EVIDENCE with a persisted
+        # TELEMETRY_DEFERRED handoff and a resume-at-blocked-fetch check.
+        from investigation_agent_platform.application.worker.activities.inputs import (
+            ConcludeInvestigationInput,
+        )
+        from investigation_agent_platform.application.worker.activities.lifecycle import (
+            conclude_investigation_activity,
+        )
+        from investigation_agent_platform.domain.finding.models import HandoffState
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationStatus,
+        )
+
+        inv_id = uuid4()
+        hyp = TestVerifyActivityNotCheckableEarlySkip()._nc_hyp(inv_id)
+        _, saved = self._conclude_ctx(
+            {"claim_binding_version": "cbv3", "verifier_version": "v2"},
+            hyp,
+        )
+        result = await conclude_investigation_activity(
+            ConcludeInvestigationInput(
+                tenant_id="t",
+                investigation_id=str(inv_id),
+                status="FAILED",
+                reason="provider_blocked:auth_failed",
+            )
+        )
+        assert result.success is True
+        assert result.data.get("status") == InvestigationStatus.COMPLETED.value
+        conclusion = saved.get("conclusion")
+        assert conclusion is not None
+        assert str(getattr(conclusion, "status", "")) == "INSUFFICIENT_EVIDENCE"
+        assert conclusion.handoff is not None
+        assert conclusion.handoff.state == HandoffState.TELEMETRY_DEFERRED
+        assert conclusion.handoff.version == "handoff-v1"
+        assert "blocked provider fetch" in (conclusion.next_check or "")
+        assert any(
+            "blocked provider fetch" in step
+            for step in (conclusion.recommended_next_steps or [])
+        )
+
 
 class TestVerifyActivityRepair:
     def _activity_ctx(self, inv_metadata, hyp, rows, events):

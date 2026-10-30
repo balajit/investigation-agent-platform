@@ -753,7 +753,10 @@ class TestKnowledgeMigrationChain:
         newest37 = script.get_revision("037_conclusion_eliminated_rivals")
         assert newest37 is not None
         assert newest37.down_revision == "036_test_role_grants"
-        assert script.get_heads() == ["037_conclusion_eliminated_rivals"]
+        newest38 = script.get_revision("038_conclusion_s7_handoff")
+        assert newest38 is not None
+        assert newest38.down_revision == "037_conclusion_eliminated_rivals"
+        assert script.get_heads() == ["038_conclusion_s7_handoff"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

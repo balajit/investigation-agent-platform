@@ -296,8 +296,9 @@ async def _analyze_one(conn, iid: str) -> dict:
     out["hyps_with_chain"] = with_chain
     out["hypotheses"] = statements[:8]
     concl = await conn.fetchrow(
-        "SELECT status, limitations, next_check,"
-        " jsonb_array_length(supporting_evidence_ids) AS n_support"
+        "SELECT status, limitations, next_check, recommended_next_steps, handoff,"
+        " jsonb_array_length(supporting_evidence_ids) AS n_support,"
+        " jsonb_array_length(COALESCE(eliminated_rivals, '[]'::jsonb)) AS n_eliminated"
         " FROM investigation_conclusions"
         " WHERE investigation_id::text = $1",
         iid,
@@ -306,6 +307,14 @@ async def _analyze_one(conn, iid: str) -> dict:
         out["conclusion_status"] = concl["status"]
         out["limitations_total"] = len(_j(concl["limitations"], []))
         out["has_next_check"] = bool(concl["next_check"])
+        out["recommended_next_steps"] = _j(concl["recommended_next_steps"], [])
+        out["n_eliminated_db"] = concl["n_eliminated"]
+        handoff = _j(concl["handoff"], {}) or {}
+        out["handoff_state"] = (handoff.get("state") if isinstance(handoff, dict) else None)
+        out["handoff_version"] = (handoff.get("version") if isinstance(handoff, dict) else None)
+        out["has_handoff"] = bool(out["handoff_state"]) or bool(concl["next_check"]) or bool(
+            _j(concl["recommended_next_steps"], [])
+        )
         out["n_support_db"] = concl["n_support"]
     return out
 
@@ -415,6 +424,7 @@ def diagnose(concl, findings, evidence, hyps):
         "hypotheses": hyp_list,
         "limitations": list((concl or {}).get("limitations") or []),
         "next_check": str((concl or {}).get("next_check") or "")[:220],
+        "recommended_next_steps": list((concl or {}).get("recommended_next_steps") or [])[:5],
         "unresolvable_citations": unresolvable,
     }
 

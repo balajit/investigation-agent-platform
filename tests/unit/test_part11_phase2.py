@@ -284,6 +284,89 @@ class TestSqlFindingRepoScope:
             await repo.save_conclusion("tenant-a", _conclusion("tenant-a", uuid4()))
             assert session.execute.called
 
+    def test_conclusion_from_orm_rehydrates_handoff(self) -> None:
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from investigation_agent_platform.domain.finding.models import HandoffState
+        from investigation_agent_platform.infrastructure.persistence.finding_repository import (
+            SqlAlchemyFindingConclusionRepository,
+        )
+
+        iid = uuid4()
+        row = SimpleNamespace(
+            tenant_id="tenant-a",
+            investigation_id=iid,
+            status="INSUFFICIENT_EVIDENCE",
+            root_cause=None,
+            supporting_evidence_ids=[],
+            supporting_hypothesis_ids=[],
+            contradicting_evidence_ids=[],
+            confidence=0.0,
+            limitations=["provider_blocked:auth_failed"],
+            recommended_next_steps=["Restore the blocked provider fetch and resume."],
+            generated_at=datetime.now(UTC),
+            best_reason="",
+            against_evidence=[],
+            provisional=False,
+            ranked_alternatives=[],
+            verifier_version="v2",
+            next_check="Restore the blocked provider fetch and resume.",
+            proven_callers=[],
+            unresolved_callers=[],
+            caller_coverage=None,
+            eliminated_rivals=[],
+            handoff={
+                "version": "handoff-v1",
+                "state": "TELEMETRY_DEFERRED",
+                "target": "n/a",
+                "next_fetch": "Restore the blocked provider fetch and resume.",
+                "resume_pointer": "Restore the blocked provider fetch and resume.",
+                "recommended_next_steps": ["Restore the blocked provider fetch and resume."],
+            },
+        )
+        conclusion = SqlAlchemyFindingConclusionRepository._conclusion_from_orm(row)
+        assert conclusion.handoff is not None
+        assert conclusion.handoff.state == HandoffState.TELEMETRY_DEFERRED
+        assert conclusion.handoff.version == "handoff-v1"
+
+    def test_conclusion_from_orm_tolerates_missing_handoff(self) -> None:
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from investigation_agent_platform.infrastructure.persistence.finding_repository import (
+            SqlAlchemyFindingConclusionRepository,
+        )
+
+        row = SimpleNamespace(
+            tenant_id="tenant-a",
+            investigation_id=uuid4(),
+            status="INSUFFICIENT_EVIDENCE",
+            root_cause=None,
+            supporting_evidence_ids=[],
+            supporting_hypothesis_ids=[],
+            contradicting_evidence_ids=[],
+            confidence=0.0,
+            limitations=[],
+            recommended_next_steps=[],
+            generated_at=datetime.now(UTC),
+            best_reason="",
+            against_evidence=[],
+            provisional=False,
+            ranked_alternatives=[],
+            verifier_version="v2",
+            next_check=None,
+            proven_callers=[],
+            unresolved_callers=[],
+            caller_coverage=None,
+            eliminated_rivals=[],
+            handoff=None,
+        )
+        conclusion = SqlAlchemyFindingConclusionRepository._conclusion_from_orm(row)
+        assert conclusion.handoff is None
+
     @pytest.mark.asyncio
     async def test_get_conclusion_empty(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.finding_repository import (

@@ -16,9 +16,28 @@ from investigation_agent_platform.domain.finding.models import (
     Finding,
     FindingType,
     InvestigationConclusion,
+    S7Handoff,
     SeverityLevel,
     conclusion_rewrite_allowed,
 )
+
+
+def _handoff_from_row(row: Any) -> "S7Handoff | None":
+    """Rehydrate the persisted S7 handoff; fail open to None on legacy/garbled rows."""
+    try:
+        raw = getattr(row, "handoff", None)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, S7Handoff):
+            return raw
+        if isinstance(raw, dict):
+            return S7Handoff.model_validate(raw)
+    except Exception:
+        return None
+    return None
 from investigation_agent_platform.infrastructure.persistence.models import (
     FindingORM,
     InvestigationConclusionORM,
@@ -99,6 +118,7 @@ class SqlAlchemyFindingConclusionRepository:
                 for e in (getattr(row, "eliminated_rivals", None) or [])
                 if isinstance(e, dict)
             ],
+            handoff=_handoff_from_row(row),
         )
 
     # -- writes ----------------------------------------------------------
@@ -281,6 +301,11 @@ class SqlAlchemyFindingConclusionRepository:
                         e.model_dump(mode="json")
                         for e in (getattr(conclusion, "eliminated_rivals", None) or [])
                     ],
+                    "handoff": (
+                        conclusion.handoff.model_dump(mode="json")
+                        if getattr(conclusion, "handoff", None) is not None
+                        else None
+                    ),
                 }
                 if current is None:
                     await session.execute(insert(InvestigationConclusionORM).values(**values))

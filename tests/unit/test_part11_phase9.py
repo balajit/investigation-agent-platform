@@ -803,4 +803,4 @@ class TestMigration015:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["037_conclusion_eliminated_rivals"]
+        assert script.get_heads() == ["038_conclusion_s7_handoff"]

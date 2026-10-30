@@ -786,6 +786,7 @@ async def _gate_conclusion_or_fail(
         Finding,
         FindingType,
         InvestigationConclusion,
+        classify_terminal_handoff,
     )
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
@@ -923,6 +924,31 @@ async def _gate_conclusion_or_fail(
             if kind == "refuted"
             else ConclusionStatus.INSUFFICIENT_EVIDENCE
         )
+        _ranked_alternatives = _ranked_alternative_statements()
+        _abstention_next = VerificationEngine.next_check_for_abstention(
+            kind, list(limitations or [])
+        )
+        # P4: refusal/abstention still records what was ruled out. The
+        # elimination record resolves sibling refuting IDs against the bank
+        # (fail-closed); without a bank it stays empty, never fabricated.
+        _abstention_eliminated: list = []
+        try:
+            _abstention_eliminated = VerificationEngine.elimination_record(
+                candidate, list(hypotheses or []), list(evidence_by_id.values())
+            )
+        except Exception:
+            _abstention_eliminated = []
+        # P4: the handoff is explicit. Abstention/refusal conclusions carry
+        # the S7 handoff in recommended_next_steps with target "n/a"; the
+        # helper never mutates the investigation status target.
+        _abstention_handoff = classify_terminal_handoff(
+            status=status,
+            reason="refuted" if kind == "refuted" else "insufficient",
+            next_check=_abstention_next,
+            limitations=[str(l) for l in (limitations or [])],
+            ranked_alternatives=_ranked_alternatives,
+            eliminated_rivals=list(_abstention_eliminated or []),
+        )
         await finding_repo.save_conclusion(
             tenant_id,
             InvestigationConclusion(
@@ -937,10 +963,13 @@ async def _gate_conclusion_or_fail(
                 limitations=[str(l)[:500] for l in limitations][:20],
                 # F: abstention still publishes ranked alternatives so
                 # partial answers survive instead of evaporating.
-                ranked_alternatives=_ranked_alternative_statements(),
-                next_check=VerificationEngine.next_check_for_abstention(
-                    kind, list(limitations or [])
+                ranked_alternatives=_ranked_alternatives,
+                next_check=_abstention_next,
+                recommended_next_steps=list(
+                    _abstention_handoff.recommended_next_steps or []
                 ),
+                eliminated_rivals=list(_abstention_eliminated or []),
+                handoff=_abstention_handoff,
                 proven_callers=_proven_callers,
                 unresolved_callers=_unresolved_callers,
                 caller_coverage=_caller_coverage,
@@ -1208,16 +1237,37 @@ async def _gate_conclusion_or_fail(
         except Exception:
             pass
 
-    causal_chain = [
-        CausalRelationship(
-            cause=s.cause,
-            effect=s.effect,
-            mechanism=s.mechanism,
-            confidence=0.7,
-            evidence_ids=[e for e in (s.evidence_ids or []) if e in evidence_by_id],
-        )
-        for s in (getattr(candidate, "causal_steps", []) or [])
-    ]
+    def _resolve_evidence_key(raw: Any) -> Any:
+        if raw in evidence_by_id:
+            return raw
+        try:
+            as_uuid = raw if not isinstance(raw, str) else UUID(raw)
+            if as_uuid in evidence_by_id:
+                return as_uuid
+            as_str = str(raw)
+            if as_str in evidence_by_id:
+                return as_str
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return None
+
+    causal_chain = []
+    for s in (getattr(candidate, "causal_steps", []) or []):
+        resolved_ids = []
+        for raw_eid in (s.evidence_ids or []):
+            matched_key = _resolve_evidence_key(raw_eid)
+            if matched_key is not None:
+                resolved_ids.append(matched_key)
+        if resolved_ids:
+            causal_chain.append(
+                CausalRelationship(
+                    cause=s.cause,
+                    effect=s.effect,
+                    mechanism=s.mechanism,
+                    confidence=0.7,
+                    evidence_ids=resolved_ids,
+                )
+            )
     causal_chain = [c for c in causal_chain if c.evidence_ids]
     if not causal_chain and (
         verifier_version == VERIFIER_VERSION_CURRENT
@@ -1760,9 +1810,13 @@ async def _gate_conclusion_or_fail(
     # the conclusion to likely (never silently established), and the typed
     # limitations plus the single next check persist on the conclusion.
     from investigation_agent_platform.application.investigation.verification import (
-        VerificationEngine as _VerificationEngine,
-        VerificationLimitation as _VerificationLimitation,
         LimitationCode as _LimitationCode,
+    )
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationEngine as _VerificationEngine,
+    )
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationLimitation as _VerificationLimitation,
     )
 
     _unmapped: list[str] = []
@@ -1887,12 +1941,8 @@ async def _gate_conclusion_or_fail(
             )
     except Exception:
         pass
-    conclusion = InvestigationConclusion(
-        tenant_id=tenant_id,
-        investigation_id=investigation_id,
-        limitations=_verification_limitations,
-        next_check=_next_check,
-        status=ConclusionStatus.ANSWERED
+    _conclusion_status = (
+        ConclusionStatus.ANSWERED
         if (location_answered or code_value_answered or doc_answered)
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
@@ -1903,7 +1953,24 @@ async def _gate_conclusion_or_fail(
                 if verification.status == VerificationStatus.VERIFIED
                 else ConclusionStatus.ROOT_CAUSE_LIKELY
             )
-        ),
+        )
+    )
+    # P4: every terminal verdict persists its structured handoff. PROVED
+    # verdicts carry an empty follow-up; LIKELY verdicts fall through the
+    # classifier so their next fetch survives instead of being dropped.
+    _verdict_handoff = classify_terminal_handoff(
+        status=_conclusion_status,
+        next_check=_next_check,
+        limitations=list(_verification_limitations or []),
+        ranked_alternatives=list(_alternatives or []),
+        eliminated_rivals=list(_eliminated_rivals or []),
+    )
+    conclusion = InvestigationConclusion(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        limitations=_verification_limitations,
+        next_check=_next_check,
+        status=_conclusion_status,
         root_cause=hyp.statement,
         supporting_evidence_ids=supporting_ids,
         supporting_hypothesis_ids=[hyp.id],
@@ -1920,6 +1987,7 @@ async def _gate_conclusion_or_fail(
             or _rival_bar_failed,
             ranked_alternatives=_alternatives,
             eliminated_rivals=list(_eliminated_rivals),
+            handoff=_verdict_handoff,
         proven_callers=_proven_callers,
         unresolved_callers=_unresolved_callers,
         caller_coverage=_caller_coverage,
@@ -2076,10 +2144,6 @@ def _route_terminal_check(reasons: list[str], generic: str) -> str:
         return generic
     except Exception:
         return generic
-    passthrough = f"Resolve '{reasons[0][:300]}', then re-verify." if reasons else None
-    if routed and routed != passthrough:
-        return routed
-    return generic
 
 
 async def _collect_hypothesis_gate_reasons(
@@ -2202,13 +2266,20 @@ async def conclude_investigation_activity(
                     conclude_reason = f"Workflow concluded with {target.value}"
                     if target == InvestigationStatus.FAILED:
                         # P0-3 honest abstention: epistemic endings (unverified
-                        # within budget, budget exhausted) persist an
-                        # INSUFFICIENT_EVIDENCE conclusion and complete —
-                        # FAILED is reserved for platform/workflow errors.
-                        epistemic = (reason or "").strip().lower() in (
-                            "verification_failed_or_limit_reached",
-                            "budget_exceeded",
-                            "defer_repair_budget_exhausted",
+                        # within budget, budget exhausted, provider-blocked
+                        # telemetry) persist an INSUFFICIENT_EVIDENCE
+                        # conclusion and complete — FAILED is reserved for
+                        # platform/workflow errors. A blocked provider fetch
+                        # is a telemetry-deferred handoff, not a crash.
+                        _epistemic_reason_lower = (reason or "").strip().lower()
+                        epistemic = (
+                            _epistemic_reason_lower
+                            in (
+                                "verification_failed_or_limit_reached",
+                                "budget_exceeded",
+                                "defer_repair_budget_exhausted",
+                            )
+                            or _epistemic_reason_lower.startswith("provider_blocked")
                         )
                         if epistemic:
                             from investigation_agent_platform.application.investigation.verification import (
@@ -2217,6 +2288,7 @@ async def conclude_investigation_activity(
                             from investigation_agent_platform.domain.finding.models import (
                                 ConclusionStatus,
                                 InvestigationConclusion,
+                                classify_terminal_handoff,
                             )
 
                             finding_repo: Any = getattr(ctx, "finding_repo", None)
@@ -2231,18 +2303,23 @@ async def conclude_investigation_activity(
                                             "Gather the missing proof kind within the "
                                             "bounded repair budget, then re-verify."
                                             if _epistemic_reason == "defer_repair_budget_exhausted"
-                                            else "Bind supporting evidence and a cited causal "
-                                            "chain to a candidate hypothesis, then re-verify."
+                                            else (
+                                                "Restore the blocked provider fetch "
+                                                "and resume, then re-verify."
+                                                if "provider_blocked" in _epistemic_reason
+                                                else "Bind supporting evidence and a cited causal "
+                                                "chain to a candidate hypothesis, then re-verify."
+                                            )
                                         )
                                     )
-                                    if _epistemic_reason == "verification_failed_or_limit_reached":
-                                        # D4 (claim-proof gaps): route through the
-                                        # existing abstention reason router using
-                                        # persisted assessment reasons. Only a
-                                        # recognized targeted directive replaces
-                                        # the generic fallback; ordinary prose
-                                        # is ignored. Fail-closed throughout.
-                                        try:
+                                    # P4: budget endings use the same persisted
+                                    # assessment reasons as verification-limit endings,
+                                    # so a priced next fetch names the actual gap
+                                    # instead of generic budget filler. Provider
+                                    # blocks skip this routing: no banked gap is
+                                    # actionable while the fetch itself is down.
+                                    try:
+                                        if "provider_blocked" not in _epistemic_reason:
                                             _hyp_reasons = (
                                                 await _collect_hypothesis_gate_reasons(
                                                     ctx, tenant_id, investigation_id
@@ -2251,8 +2328,16 @@ async def conclude_investigation_activity(
                                             _epistemic_check = _route_terminal_check(
                                                 _hyp_reasons, _epistemic_check
                                             )
-                                        except Exception:
-                                            pass
+                                    except Exception:
+                                        pass
+                                    _epistemic_handoff = classify_terminal_handoff(
+                                        status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
+                                        reason=_epistemic_reason,
+                                        next_check=_epistemic_check,
+                                        limitations=[
+                                            f"Investigation ended: {reason}."
+                                        ],
+                                    )
                                     await finding_repo.save_conclusion(
                                         tenant_id,
                                         InvestigationConclusion(
@@ -2272,6 +2357,10 @@ async def conclude_investigation_activity(
                                                 )
                                             ],
                                             next_check=_epistemic_check,
+                                            recommended_next_steps=list(
+                                                _epistemic_handoff.recommended_next_steps or []
+                                            ),
+                                            handoff=_epistemic_handoff,
                                             verifier_version=VERIFIER_VERSION_CURRENT,
                                         ),
                                     )

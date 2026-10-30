@@ -266,6 +266,11 @@ async def insert_conclusion_record(
         "unresolved_callers": list(conclusion.get("unresolved_callers") or []),
         "caller_coverage": conclusion.get("caller_coverage"),
         "eliminated_rivals": list(conclusion.get("eliminated_rivals") or []),
+        "handoff": (
+            conclusion["handoff"].model_dump(mode="json")
+            if hasattr(conclusion.get("handoff"), "model_dump")
+            else conclusion.get("handoff")
+        ),
         "verifier_version": str(conclusion.get("verifier_version") or "v2"),
     }
     if current is None:

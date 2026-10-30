@@ -87,6 +87,20 @@ def reload_definition_dispatch_table() -> tuple[Any, Any]:
     return table, registry
 
 
+def _verification_status_value(result: Any) -> str:
+    """Verification status as a plain string, Enum- or string-safe.
+
+    Never raises: unparseable/missing statuses read as "" (unverified).
+    """
+    try:
+        status = getattr(result, "status", None)
+        if status is None:
+            return ""
+        return str(getattr(status, "value", status) or "")
+    except Exception:
+        return ""
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def verify_root_cause_activity(
@@ -118,7 +132,14 @@ async def verify_root_cause_activity(
             return GenericActivityResult(
                 success=False, error="tenant_id and investigation_id required"
             )
-        investigation_id = UUID(inv_id_str)
+        try:
+            investigation_id = UUID(inv_id_str)
+        except (ValueError, TypeError) as exc:
+            # Malformed IDs are non-retryable client errors: fail fast here
+            # instead of bubbling into ApplicationFailure (Temporal retry).
+            return GenericActivityResult(
+                success=False, error=f"invalid investigation_id format: {exc}"
+            )
         _inv: Any = None
         try:
             definition_shadow_mode = resolve_definition_mode()
@@ -801,16 +822,37 @@ async def verify_root_cause_activity(
                 and not state_answered
                 and not code_value_claim
             ):
-                causal_chain = [
-                    CausalRelationship(
-                        cause=s.cause,
-                        effect=s.effect,
-                        mechanism=s.mechanism,
-                        confidence=0.7,
-                        evidence_ids=[e for e in (s.evidence_ids or []) if e in evidence_by_id],
-                    )
-                    for s in (getattr(candidate, "causal_steps", []) or [])
-                ]
+                def _resolve_evidence_key(raw: Any) -> Any:
+                    if raw in evidence_by_id:
+                        return raw
+                    try:
+                        as_uuid = raw if not isinstance(raw, str) else UUID(raw)
+                        if as_uuid in evidence_by_id:
+                            return as_uuid
+                        as_str = str(raw)
+                        if as_str in evidence_by_id:
+                            return as_str
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                    return None
+
+                causal_chain = []
+                for s in (getattr(candidate, "causal_steps", []) or []):
+                    resolved_ids = []
+                    for raw_eid in (s.evidence_ids or []):
+                        matched_key = _resolve_evidence_key(raw_eid)
+                        if matched_key is not None:
+                            resolved_ids.append(matched_key)
+                    if resolved_ids:
+                        causal_chain.append(
+                            CausalRelationship(
+                                cause=s.cause,
+                                effect=s.effect,
+                                mechanism=s.mechanism,
+                                confidence=0.7,
+                                evidence_ids=resolved_ids,
+                            )
+                        )
             causal_chain = [c for c in causal_chain if c.evidence_ids]
             caller_edge_gate = None
             caller_edge_validated = False
@@ -887,9 +929,30 @@ async def verify_root_cause_activity(
                     )
                     producing_path = "caller-edge-incomplete"
             elif caller_edge_validated:
-                result = location_result
-                producing_path = "caller-edge"
-                causal_chain = []
+                if location_result is not None:
+                    result = location_result
+                    producing_path = "caller-edge"
+                    causal_chain = []
+                else:
+                    from investigation_agent_platform.application.investigation.verification import (
+                        InvestigationConfidence,
+                        VerificationResult,
+                        VerificationStatus,
+                    )
+
+                    result = VerificationResult(
+                        hypothesis_id=candidate.id,
+                        status=VerificationStatus.INCONCLUSIVE,
+                        corroborating_evidence_ids=[e.evidence_id for e in bound],
+                        explanation="caller edge gate passed but location result resolution returned None",
+                        confidence=InvestigationConfidence(
+                            coverage_score=0.3,
+                            reliability_score=0.5,
+                            causal_score=0.0,
+                            contradiction_penalty=0.0,
+                        ),
+                    )
+                    producing_path = "caller-edge-incomplete"
             elif code_value_answered:
                 result = code_value_result
                 producing_path = "code-value"
@@ -1072,7 +1135,7 @@ async def verify_root_cause_activity(
                 recorded=_binding_recorded,
                 evidence=list(evidence_by_id.values()),
             )
-            verified = result.status.value == "VERIFIED"
+            verified = _verification_status_value(result).upper() == "VERIFIED"
             # Debug story: per-candidate gate verdict. Shows which proof
             # path answered (or which blockers abstained) for each ranked
             # hypothesis — the verify side of the gate story.
@@ -1132,7 +1195,7 @@ async def verify_root_cause_activity(
                     error="verify verdict materialization failed",
                     data={
                         "verified": False,
-                        "status": result.status.value,
+                        "status": _verification_status_value(result),
                         "hypothesis_id": str(result.hypothesis_id),
                         "reason": "outcome_materialization_failed",
                         "persisted": False,
@@ -1168,7 +1231,7 @@ async def verify_root_cause_activity(
                         error=f"verify verdict persistence conflict ({type(exc).__name__})",
                         data={
                             "verified": False,
-                            "status": result.status.value,
+                            "status": _verification_status_value(result),
                             "confidence": result.confidence.overall_confidence,
                             "hypothesis_id": str(result.hypothesis_id),
                             "reason": "persistence_conflict",
@@ -1191,10 +1254,10 @@ async def verify_root_cause_activity(
             event="verify_root_cause_activity completed",
             outputs={
                 "outcome": "verified" if verified else "unverified",
-                "verification_status": result.status.value,
+                "verification_status": _verification_status_value(result),
             },
             elapsed_ms=elapsed_ms(t0),
-            verification_status=result.status.value,
+            verification_status=_verification_status_value(result),
         )
         # G3: bounded re-retrieval directive producer (D3 lifecycle
         # step 1). Current-version runs only — legacy-pinned rows keep
@@ -1463,7 +1526,7 @@ async def verify_root_cause_activity(
             )
         _verify_result_data: dict[str, Any] = {
             "verified": verified,
-            "status": result.status.value,
+            "status": _verification_status_value(result),
             "confidence": result.confidence.overall_confidence,
             "hypothesis_id": str(result.hypothesis_id),
             "answer_mode": bool(getattr(result, "location_validated", False)),

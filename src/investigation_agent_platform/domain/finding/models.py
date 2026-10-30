@@ -3,6 +3,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -99,6 +100,182 @@ class EliminatedRival(BaseModel):
     ruled_out_by_evidence_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
+HANDOFF_VERSION_CURRENT = "handoff-v1"
+
+
+class HandoffState(StrEnum):
+    """Explicit S7 terminal-handoff states (DES-S7-handoff v1.0)."""
+
+    PROVED = "PROVED"
+    BUDGET_DEFERRED = "BUDGET_DEFERRED"
+    FRONTIER_EXHAUSTED = "FRONTIER_EXHAUSTED"
+    CROSS_BOUNDARY = "CROSS_BOUNDARY"
+    TELEMETRY_DEFERRED = "TELEMETRY_DEFERRED"
+
+
+class S7Handoff(BaseModel):
+    """Explicit priced handoff for a terminal investigation.
+
+    ``target`` is the named downstream fetch/recipient target. Abstention
+    and refusal handoffs use ``"n/a"``: the handoff names the next fetch
+    or the elimination record, but it never asserts a fetch target and
+    never mutates the investigation status target.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    version: str = Field(default=HANDOFF_VERSION_CURRENT, max_length=16)
+    state: HandoffState
+    target: str = Field(default="n/a", max_length=1024)
+    next_fetch: str | None = Field(default=None, max_length=1024)
+    resume_pointer: str | None = Field(default=None, max_length=1024)
+    recommended_next_steps: list[str] = Field(default_factory=list, max_length=20)
+
+
+def classify_terminal_handoff(
+    *,
+    status: ConclusionStatus | str,
+    reason: str = "",
+    next_check: str | None = None,
+    limitations: list[str] | None = None,
+    ranked_alternatives: list[str] | None = None,
+    eliminated_rivals: list[EliminatedRival | dict[str, Any]] | None = None,
+    upstream_identity: str | None = None,
+) -> S7Handoff:
+    """Map a terminal outcome to its explicit S7 handoff (handoff-v1).
+
+    Pure; never raises. Established/answered verdicts map to PROVED.
+    ROOT_CAUSE_LIKELY is provisional, never proved: it falls through so
+    its follow-up (next fetch, ranked alternatives, elimination record)
+    survives. Non-verdict terminals map to the failure character in
+    ``reason`` plus ``limitations`` (provider details live in the
+    limitations while callers pass generic reasons): provider/telemetry
+    blocks defer with a resume pointer, budget exhaustion defers with the
+    priced next fetch, and refuted/frontier endings publish the elimination
+    record instead of generic filler.
+    """
+    try:
+        status_text = str(
+            getattr(status, "value", status) if status is not None else ""
+        ).upper()
+    except Exception:
+        status_text = ""
+    try:
+        reason_text = str(reason or "").strip()
+        reason_lower = reason_text.lower()
+    except Exception:
+        reason_text, reason_lower = "", ""
+    try:
+        fetch = str(next_check or "").strip() or None
+    except Exception:
+        fetch = None
+    try:
+        alternatives = [
+            str(item or "").strip()
+            for item in (ranked_alternatives or [])
+            if str(item or "").strip()
+        ][:10]
+    except Exception:
+        alternatives = []
+    try:
+        eliminated = list(eliminated_rivals or [])
+    except Exception:
+        eliminated = []
+    try:
+        upstream = str(upstream_identity or "").strip() or None
+    except Exception:
+        upstream = None
+    try:
+        limitation_texts = [
+            str(item or "").strip()
+            for item in (limitations or [])
+            if str(item or "").strip()
+        ]
+    except Exception:
+        limitation_texts = []
+    # Provider/telemetry details travel in the limitations while callers
+    # pass generic reasons ("refuted"/"insufficient"), so signal matching
+    # reads both. Budget matching also reads both: the epistemic path
+    # restates the reason inside its limitation line.
+    signal_text = " ".join([reason_lower, *[t.lower() for t in limitation_texts]])
+
+    if status_text in (
+        ConclusionStatus.ANSWERED.value,
+        ConclusionStatus.ROOT_CAUSE_ESTABLISHED.value,
+    ):
+        return S7Handoff(state=HandoffState.PROVED)
+
+    if upstream is not None:
+        steps = [
+            f"Named handoff to {upstream[:200]}: no fetch crosses the tenant boundary."
+        ]
+        if fetch is not None:
+            steps.append(f"Localizing evidence/next fetch: {fetch[:300]}")
+        return S7Handoff(
+            state=HandoffState.CROSS_BOUNDARY,
+            target=upstream[:1024],
+            next_fetch=fetch,
+            resume_pointer=None,
+            recommended_next_steps=steps[:20],
+        )
+
+    if (
+        "provider_blocked" in signal_text
+        or "auth_failed" in signal_text
+        or "telemetry" in signal_text
+    ):
+        resume = fetch or (
+            "Restore provider authorization, then resume at the blocked "
+            "telemetry fetch and re-verify."
+        )
+        return S7Handoff(
+            state=HandoffState.TELEMETRY_DEFERRED,
+            next_fetch=fetch,
+            resume_pointer=resume[:1024],
+            recommended_next_steps=[resume[:500]][:20],
+        )
+
+    if (
+        "budget_exceeded" in signal_text
+        or "defer_repair_budget_exhausted" in signal_text
+        or "verification_failed_or_limit_reached" in signal_text
+        or "limit_reached" in signal_text
+    ):
+        if fetch is not None:
+            resume = (
+                f"Resume with a larger iteration/evidence budget at the "
+                f"blocked fetch: {fetch[:300]}"
+            )
+            return S7Handoff(
+                state=HandoffState.BUDGET_DEFERRED,
+                next_fetch=fetch,
+                resume_pointer=resume[:1024],
+                recommended_next_steps=[fetch[:500], resume[:500]][:20],
+            )
+
+    record: list[str] = []
+    if eliminated:
+        record.append(
+            f"Frontier exhausted: {len(eliminated)} rival(s) ruled out; "
+            "see the elimination record."
+        )
+    if alternatives:
+        record.append(f"Ranked alternatives: {alternatives[0][:300]}")
+    if fetch is not None:
+        record.append(fetch[:500])
+    if not record:
+        record.append(
+            "Frontier exhausted: no ruled-out rival, ranked alternative, "
+            "or discriminating fetch was recorded."
+        )
+    return S7Handoff(
+        state=HandoffState.FRONTIER_EXHAUSTED,
+        next_fetch=fetch,
+        resume_pointer=None,
+        recommended_next_steps=record[:20],
+    )
+
+
 class InvestigationConclusion(BaseModel):
     """Terminal investigation report and root cause conclusion."""
 
@@ -138,6 +315,10 @@ class InvestigationConclusion(BaseModel):
     # A causal ESTABLISHED verdict requires a non-empty record; without one
     # the verdict demotes to LIKELY. Empty on legacy rows (never backfilled).
     eliminated_rivals: list["EliminatedRival"] = Field(default_factory=list, max_length=10)
+    # P4 (S7 handoff): the structured terminal handoff (version + state +
+    # target + fetch + resume pointer). None = legacy/pre-marker row.
+    # The operator-facing steps stay duplicated in recommended_next_steps.
+    handoff: S7Handoff | None = Field(default=None)
     # 020: verifier provenance. None = legacy/pre-marker historical row.
     verifier_version: str | None = Field(default=None, max_length=16)
 

@@ -138,6 +138,42 @@ def test_latest_fuzzy_orientation_newest_wins():
     assert _latest_fuzzy_orientation(None) is None
 
 
+def test_verification_status_value_handles_enum_and_string() -> None:
+    from investigation_agent_platform.application.investigation.verification import (
+        VerificationStatus,
+    )
+    from investigation_agent_platform.application.worker.activities.verification import (
+        _verification_status_value,
+    )
+
+    assert _verification_status_value(SimpleNamespace(status=VerificationStatus.VERIFIED)) == "VERIFIED"
+    assert _verification_status_value(SimpleNamespace(status="VERIFIED")) == "VERIFIED"
+    assert _verification_status_value(SimpleNamespace(status="inconclusive")) == "inconclusive"
+    assert _verification_status_value(SimpleNamespace(status=None)) == ""
+    assert _verification_status_value(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_verify_malformed_investigation_id_fails_fast() -> None:
+    # A malformed ID is a non-retryable client error: success=False is
+    # returned directly instead of bubbling into ApplicationFailure.
+    try:
+        from temporalio.exceptions import ApplicationFailure
+    except ImportError:
+        from temporalio.exceptions import ApplicationError as ApplicationFailure
+
+    ctx = AppContext()
+    set_app_context(ctx)
+    try:
+        result = await verify_root_cause_activity(
+            VerifyRootCauseInput(tenant_id="tenant-a", investigation_id="not-a-uuid")
+        )
+    except ApplicationFailure as exc:
+        pytest.fail(f"malformed ID must not raise ApplicationFailure: {exc}")
+    assert result.success is False
+    assert "invalid investigation_id format" in (result.error or "")
+
+
 @pytest.mark.asyncio
 async def test_verify_no_hypotheses_emits_skipped_envelope(caplog) -> None:  # type: ignore[no-untyped-def]
     # Story integrity (live trace 3c80875c): verify started twice with zero
