@@ -51,9 +51,17 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-api() { # method path [body-file]
-  curl -sf -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
-    ${3:+--data @"$3"} "$API_BASE$2" -X "$1" 2>/dev/null
+api() { # method path [body-file]; prints body; on HTTP error prints body to stderr, returns nonzero
+  local out code
+  out="$(curl -s -w '\n%{http_code}' -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
+    ${3:+--data @"$3"} "$API_BASE$2" -X "$1" 2>/dev/null)"
+  code="$(echo "$out" | tail -1)"
+  out="$(echo "$out" | sed '$d')"
+  if [[ "$code" -ge 400 || -z "$code" ]]; then
+    echo "$out" | jq -c '.error // .' 2>/dev/null || echo "$out"
+    return 1
+  fi
+  echo "$out"
 }
 
 if [[ -z "$DB_ONLY" ]]; then
@@ -73,11 +81,12 @@ if [[ -z "$DB_ONLY" ]]; then
   jq -n --arg app "spring-sample-service" --arg pd "$SYMPTOM" --arg ctx "$CONTEXT" \
     '{application_id:$app, problem_description:$pd, initial_context:$ctx}' > "$TMPBODY"
   CREATE="$(api POST /api/v1/investigations "$TMPBODY")" \
-    || { echo "error: create failed" >&2; exit 1; }
+    || { echo "error: create failed (see API error above)" >&2; exit 1; }
   IID="$(echo "$CREATE" | jq -r .id)" || exit 1
+  test -n "$IID" && test "$IID" != "null" || { echo "error: create returned no id" >&2; exit 1; }
   echo "investigation: $IID"
   api POST "/api/v1/investigations/$IID/start" >/dev/null \
-    || { echo "error: start failed" >&2; exit 1; }
+    || { echo "error: start failed for $IID (see API error above)" >&2; exit 1; }
 
   echo "-- polling every 10s (timeout ${TIMEOUT}s, terminal = COMPLETED/FAILED/CANCELLED) --"
   T0="$(date +%s)"
