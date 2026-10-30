@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from investigation_agent_platform.domain.evidence.qualification import (
     QUALIFIER_VERSION,
@@ -113,6 +114,13 @@ class TestHistoryQualification:
         qual = qualify_history_row(self._history(), scope_path="src/Other.java")
         assert qual.qualified is False
 
+    def test_scope_prefix_must_end_at_a_path_boundary(self):
+        qual = qualify_history_row(
+            self._history(location={"file_path": "src/Foo.javax"}),
+            scope_path="src/Foo.java",
+        )
+        assert qual.qualified is False
+
 
 class TestAbsenceProof:
     def test_scoped_proof_qualifies(self):
@@ -160,6 +168,11 @@ class TestRuntimeQualification:
 
     def test_no_timestamp_rejected(self):
         assert qualify_runtime_row(self._runtime(None), _WINDOW).qualified is False
+
+    def test_retrieval_time_does_not_substitute_for_observation_time(self):
+        row = self._runtime(None)
+        row["retrieved_at"] = "2026-10-29T12:00:00Z"
+        assert qualify_runtime_row(row, _WINDOW).qualified is False
 
     def test_no_window_rejected(self):
         qual = qualify_runtime_row(self._runtime("2026-10-29T12:00:00Z"), None)
@@ -225,6 +238,13 @@ class TestContrastReadiness:
     def test_single_sided_window_not_ready(self):
         items = [self._stamped("2026-10-29T12:00:00Z")]
         ready, _, _ = s4_ready("code", [], window=_WINDOW, items=items, t_anchored=True)
+        assert ready is False
+
+    def test_one_boundary_row_cannot_be_both_contrast_halves(self):
+        items = [self._stamped("2026-10-29T10:00:00Z")]
+        ready, _, _ = s4_ready(
+            "log", [], window=(_G, _T), items=items, t_anchored=False
+        )
         assert ready is False
 
     def test_unanchored_onset_counts_in_window_new_side(self):
@@ -317,6 +337,16 @@ class TestS4Ready:
 
 
 class TestBankStamp:
+    def test_unknown_stored_qualifier_version_fails_closed(self):
+        row = _row(
+            "SOURCE_CODE",
+            location={"file_path": "src/A.java", "line_start": 1, "line_end": 2, "revision": "r"},
+            attributes={"s4_qualifier_version": "future-v9"},
+        )
+        qual = qualify_item(row)
+        assert qual.qualified is False
+        assert "unsupported qualifier version" in qual.reason
+
     def test_stamp_marks_qualified_dict_row(self):
         from investigation_agent_platform.application.worker.activities.execution import (
             _with_s4_qualification,
@@ -367,7 +397,7 @@ class TestReasonReadiness:
             problem_description = "Where is SampleOrderFilter implemented?"
 
         class _Investigation:
-            metadata = {"anchors": {"onset_t": None, "last_good_g": None}}
+            metadata: ClassVar = {"anchors": {"onset_t": None, "last_good_g": None}}
             request = _Request()
 
         rows = [
@@ -396,7 +426,7 @@ class TestReasonReadiness:
             problem_description = "Where is SampleOrderFilter implemented?"
 
         class _Investigation:
-            metadata = {}
+            metadata: ClassVar = {}
             request = _Request()
 
         out = _s4_readiness([], _Investigation())

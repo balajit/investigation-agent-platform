@@ -20,7 +20,14 @@ from investigation_agent_platform.application.investigation.verification import 
     rank_hypotheses,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
-from investigation_agent_platform.domain.hypothesis.models import Hypothesis, HypothesisStatus
+from investigation_agent_platform.domain.hypothesis.models import (
+    AssessmentStrength,
+    AssessmentType,
+    ClaimKind,
+    Hypothesis,
+    HypothesisEvidenceAssessment,
+    HypothesisStatus,
+)
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -97,6 +104,19 @@ def test_supported_hypothesis_with_causal_chain_verifies():
         "route filters versions",
         status=HypothesisStatus.SUPPORTED,
         supporting=tuple(e.evidence_id for e in items),
+    )
+    hyp = hyp.model_copy(
+        update={
+            "assessments": [
+                HypothesisEvidenceAssessment(
+                    hypothesis_id=hyp.id,
+                    assessment=AssessmentType.SUPPORTS,
+                    strength=AssessmentStrength.STRONG,
+                    reason="typed causal replay claim",
+                    claim_kind=ClaimKind.CAUSAL,
+                )
+            ]
+        }
     )
     chain = [
         CausalRelationship(

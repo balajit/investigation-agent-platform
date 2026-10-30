@@ -1089,8 +1089,8 @@ async def execute_action_activity(
             _s4_lb = getattr(_s4_cfg, "default_time_window", None)
             if isinstance(_s4_lb, int) and not isinstance(_s4_lb, bool) and _s4_lb > 0:
                 _s4_lookback = _s4_lb
-            from datetime import datetime as _datetime
             from datetime import UTC as _UTC
+            from datetime import datetime as _datetime
 
             _s4_start, _s4_end, _ = derive_working_window(
                 _s4_anchors, _datetime.now(_UTC), _s4_lookback

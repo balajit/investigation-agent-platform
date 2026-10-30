@@ -409,18 +409,28 @@ def _row_evidence_type(row: object) -> str:
     return str(getattr(etype, "value", etype) or "")
 
 
-def _row_location(row: object) -> tuple[str, int | None, str]:
-    """Return (file_path, line_start, revision) from row provenance."""
+def _row_location(row: object) -> tuple[str, int | None, int | None, str]:
+    """Return (file_path, line_start, line_end, revision) from provenance."""
     prov = getattr(row, "provenance", None)
     location = getattr(prov, "source_location", None)
     file_path = str(getattr(location, "file_path", "") or "")
     line_start = getattr(location, "line_start", None)
+    line_end = getattr(location, "line_end", None)
     try:
         line = int(line_start) if line_start is not None else None
     except (TypeError, ValueError):
         line = None
+    try:
+        end = int(line_end) if line_end is not None else None
+    except (TypeError, ValueError):
+        end = None
     revision = str(getattr(location, "revision", "") or "")
-    return file_path, (line if line is not None and line >= 1 else None), revision
+    return (
+        file_path,
+        line if line is not None and line >= 1 else None,
+        end if end is not None and end >= 1 else None,
+        revision,
+    )
 
 
 def _is_range_row(attrs: dict[str, object], snippet: str) -> bool:
@@ -458,6 +468,19 @@ def _code_lines(snippet: str) -> tuple[list[tuple[int | None, str]], int | None]
         else:
             lines.append((None, raw))
     return lines, first_numbered
+
+
+def _matchable_code(body: str) -> str:
+    """Remove obvious comments and string literals before syntax matching.
+
+    This is deliberately conservative and language-neutral: uncertain text is
+    left alone, while common comment/string decoys cannot create a site.
+    """
+    text = re.sub(r"(['\"])(?:\\.|(?!\1).)*\1", "", body)
+    text = re.sub(r"(^|\s)(?:#|//).*$", r"\1", text)
+    if text.strip().startswith(("/*", "*", "*/")):
+        return ""
+    return text
 
 
 def _row_repository(row: object) -> str:
@@ -506,20 +529,23 @@ def classify_banked_sites(
         snippet = str(getattr(row, "content_snippet", "") or "")
         if not snippet.strip() or not _is_range_row(attrs, snippet):
             continue
-        file_path, line_start, revision = _row_location(row)
+        file_path, line_start, line_end, revision = _row_location(row)
         if (
             not file_path
             or len(file_path) > 1024
             or ".." in file_path
             or "\x00" in file_path
             or revision in UNPINNED_REVISIONS
+            or line_start is None
+            or line_end is None
+            or line_end < line_start
         ):
             continue
         lines, first_numbered = _code_lines(snippet)
         line = line_start if line_start is not None else first_numbered
         if line is None:
             continue
-        text = "\n".join(body for _, body in lines)
+        text = "\n".join(_matchable_code(body) for _, body in lines)
         if not text.strip():
             continue
         external = bool(is_external(file_path)) if is_external is not None else False
@@ -527,9 +553,10 @@ def classify_banked_sites(
         candidates: list[tuple[int, str, SuspectSiteKind, str]] = []
         for kind, pattern in _SITE_SYNTAX:
             for lineno, body in lines:
-                if not pattern.search(body):
+                matchable = _matchable_code(body)
+                if not pattern.search(matchable):
                     continue
-                hit_text = body.strip()
+                hit_text = matchable.strip()
                 site_line = lineno if lineno is not None else line
                 if site_line is None:
                     site_line = first_numbered
@@ -556,7 +583,7 @@ def classify_banked_sites(
                 continue
             groups.setdefault((repository, revision, file_path), []).append(site)
     paths: list[SuspectPath] = []
-    for (repository, revision, _file), sites in groups.items():
+    for (repository, revision, _file), sites in sorted(groups.items()):
         ordered = sorted(sites, key=lambda s: (s.line, s.kind.value))
         try:
             paths.append(

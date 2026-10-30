@@ -31,6 +31,7 @@ def _range_row(
     file_path="tenant/svc/app.py",
     revision="abc123",
     line_start=10,
+    line_end=11,
     etype=EvidenceType.SOURCE_CODE,
     attrs=None,
     attrs_override=None,
@@ -68,6 +69,7 @@ def _range_row(
                 identifier=file_path,
                 file_path=file_path,
                 line_start=line_start,
+                line_end=line_end,
                 revision=revision,
             ),
         ),
@@ -147,6 +149,10 @@ def test_excluded_rows_activate_nothing():
         _range_row(PLAIN_SNIPPET),
         # Empty snippet.
         _range_row("   "),
+        # Incomplete range provenance.
+        _range_row(FLAG_SNIPPET, attrs_override={"read_mode": "range"}, line_end=None),
+        # Syntax decoys in comments and strings.
+        _range_row('50| # retry and httpClient.get("https://fake")'),
     ]
     section = compile_dormant_templates(rows, anchors=_anchors())
     assert section["templates"] == []
@@ -188,6 +194,7 @@ def test_grouped_cross_boundary_handoff_never_fetches():
             "40| resp2 = httpClient.post(path2, body2)",
             file_path="upstream/lib/a.py",
             line_start=30,
+            line_end=40,
         ),
     ]
     section = compile_dormant_templates(rows, anchors=_anchors(), is_external=is_external)
@@ -206,14 +213,15 @@ def test_grouped_cross_boundary_handoff_never_fetches():
 
 
 def test_in_tenant_default_when_no_roots():
-    assert external_classifier_for_roots(None) is None
-    assert external_classifier_for_roots([]) is None
+    assert external_classifier_for_roots(None)("tenant/svc/c.py") is True
+    assert external_classifier_for_roots([])("tenant/svc/c.py") is True
     section = compile_dormant_templates(
         [_range_row(EXTERNAL_SNIPPET, file_path="tenant/svc/c.py")],
         anchors=_anchors(),
-        is_external=None,
+        is_external=external_classifier_for_roots([]),
     )
-    assert section["templates"][0]["discriminating_fetch"] is not None
+    assert section["templates"][0]["discriminating_fetch"] is None
+    assert section["templates"][0]["handoff"] is not None
 
 
 def test_classifier_roots_mirror_validator():

@@ -26,10 +26,9 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
 # shape changes; persisted per decision for replay/evaluation.
-# v3-claim-grounded-015: adds the pinned `case_state` block (lifecycle,
-# banked counts by type, known-fact/entity counts, plan length) so the
-# stateless reasoner regains cross-turn facts structurally.
-REASONER_PROMPT_VERSION = "v3-claim-grounded-015"
+# v3-claim-grounded-019: adds the S2 dormant_templates section and its
+# deterministic budget trimming contract.
+REASONER_PROMPT_VERSION = "v3-claim-grounded-019"
 CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8
@@ -911,10 +910,9 @@ def enforce_context_budget(
 def external_classifier_for_roots(roots: Any) -> Any:
     """Build an ``is_external`` classifier over tenant source roots.
 
-    Returns None when no roots are configured (everything stays
-    in-tenant — the conservative default). Otherwise a file is external
-    when it sits outside every root, mirroring the validator's
-    source-roots rule so template boundary calls match dispatch behavior.
+    Returns a classifier that marks every file external when no roots are
+    configured, because the dispatch validator rejects all code paths in that
+    case. Otherwise a file is external when it sits outside every root.
     """
     normed: list[str] = []
     for root in roots or []:
@@ -922,7 +920,7 @@ def external_classifier_for_roots(roots: Any) -> Any:
         if text:
             normed.append(text)
     if not normed:
-        return None
+        return lambda _file_path: True
 
     def is_external(file_path: str) -> bool:
         normalized = f"/{str(file_path or '').lstrip('/')}"

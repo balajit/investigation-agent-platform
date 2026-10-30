@@ -14,7 +14,7 @@ stamped current at bank time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 QUALIFIER_VERSION = "s4q-v1"
@@ -66,6 +66,12 @@ def _attrs(item: Any) -> dict:
     return dict(attrs) if isinstance(attrs, dict) else {}
 
 
+def _qualifier_version(item: Any) -> str | None:
+    value = _attrs(item).get("s4_qualifier_version")
+    text = str(value or "").strip()
+    return text or None
+
+
 def _location(item: Any) -> tuple[str, Any, Any, str]:
     """(file_path, line_start, line_end, revision) — dicts and models alike."""
     try:
@@ -113,13 +119,11 @@ def _as_utc(value: Any) -> datetime | None:
 
 
 def _observed_at(item: Any) -> datetime | None:
-    """Row event time: observed_at first, retrieved_at as fallback."""
+    """Return the provider observation time; retrieval is not event time."""
     try:
         if isinstance(item, dict):
-            return _as_utc(item.get("observed_at")) or _as_utc(item.get("retrieved_at"))
-        return _as_utc(getattr(item, "observed_at", None)) or _as_utc(
-            getattr(item, "retrieved_at", None)
-        )
+            return _as_utc(item.get("observed_at"))
+        return _as_utc(getattr(item, "observed_at", None))
     except Exception:
         return None
 
@@ -146,7 +150,7 @@ def _source_identity(item: Any) -> str:
 
 
 def _failure_reason(item: Any) -> str:
-    reason = str((_attrs(item).get("miss_reason") or "")).strip().lower()
+    reason = str(_attrs(item).get("miss_reason") or "").strip().lower()
     return reason if reason in FAILURE_MISS_REASONS else ""
 
 
@@ -196,7 +200,7 @@ def qualify_history_row(item: Any, scope_path: str | None = None) -> Qualificati
     if scope_path:
         want = str(scope_path).replace("\\", "/").strip().strip("/")
         got = file_path.replace("\\", "/").strip()
-        if want and want not in got and not got.endswith("/" + want):
+        if want and got != want and not got.startswith(want + "/"):
             return _unqualified("history", f"row outside requested scope {scope_path}")
     return Qualification(qualified=True, layer="history", reason="commit row pinned to path+revision")
 
@@ -300,6 +304,11 @@ def qualify_item(
 ) -> Qualification:
     """Dispatch one banked row to its layer predicate (never raises)."""
     try:
+        stored_version = _qualifier_version(item)
+        if stored_version is not None and stored_version != QUALIFIER_VERSION:
+            return _unqualified(
+                "unknown", f"unsupported qualifier version {stored_version!r}"
+            )
         etype = _etype(item)
         attrs = _attrs(item)
         count = attrs.get("match_count")
@@ -397,19 +406,18 @@ def _contrast_coverage(
         if window is None:
             return False
         start, end = window
-        old_ok = new_ok = False
+        old_times: list[datetime] = []
+        new_times: list[datetime] = []
+        new_bar = end if t_anchored else start
         for item in items or []:
             ts, ok, _ = qualify_contrast_half(item)
             if not ok or ts is None:
                 continue
             if ts <= start:
-                old_ok = True
-            new_bar = end if t_anchored else start
+                old_times.append(ts)
             if ts >= new_bar:
-                new_ok = True
-            if old_ok and new_ok:
-                return True
-        return False
+                new_times.append(ts)
+        return any(old < new for old in old_times for new in new_times)
     except Exception:
         return False
 
