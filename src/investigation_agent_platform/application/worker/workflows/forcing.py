@@ -2619,9 +2619,12 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 except Exception:
                     pass
         # P6 2b-i: record this turn's focus for next turn's pivot
-        # comparison. Post-cascade read is safe: the cascade only
-        # rewrites next_action/parameters, never claims or
-        # hypotheses. Plain JSON scalars, replay-safe.
+        # comparison. Post-cascade read is deliberate: focus names the
+        # fetch the loop actually dispatched, so pivot seeds and
+        # damping anchor on collected reality, not the reasoner's
+        # proposal. Proposal drift stays visible — next turn
+        # detect_shift compares the new proposal against this
+        # dispatched surface. Plain JSON scalars, replay-safe.
         _turn_focus = None
         try:
             _turn_focus = focus_from_reason_data(

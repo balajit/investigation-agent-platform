@@ -110,9 +110,50 @@ class TestRanking:
 
     def test_junk_inputs_never_raise(self) -> None:
         assert rank_advisory_orders(None, None, 0)["ranked"] == []  # type: ignore[arg-type]
-        assert rank_advisory_orders("junk", "junk", "junk")["ranked"] == []  # type: ignore[arg-type]
+        assert rank_advisory_orders([], "junk", "junk")["ranked"] == []  # type: ignore[arg-type]
         out = rank_advisory_orders([], [{"action": "GET_CODE"}], -1)
         assert out["ranked"] == []
+
+
+class TestRankingCap:
+    def _pending(self, path: str) -> WorkOrder:
+        return WorkOrder(
+            work_order_id=uuid4(),
+            kind=WorkOrderKind.GAP_FILL,
+            action_type="GET_CODE",
+            action_parameters={"file_path": path},
+            addresses=FailureCharacter(triage_route="BUG"),
+            cost_estimate=1,
+            seed_source=f"test:{path}",
+            status=WorkOrderStatus.PENDING,
+        )
+
+    def test_mixed_pending_nonpending_at_cap(self) -> None:
+        pendings = [self._pending(f"svc/f{i}.py") for i in range(9)]
+        spent_first = self._pending("svc/g0.py").model_copy(
+            update={"status": WorkOrderStatus.CONSUMED}
+        )
+        spent_last = self._pending("svc/g1.py").model_copy(
+            update={"status": WorkOrderStatus.EXPIRED}
+        )
+        orders = [spent_first, *pendings[:8], pendings[8], spent_last]
+        first = rank_advisory_orders(orders, [], 9)
+        # Cap is 8: the 8 pendings fill it, the 9th pending overflows,
+        # and both non-pending orders skip closed without consuming
+        # budget (one before and one after the cap fills).
+        assert len(first["ranked"]) == 8
+        assert len(first["skipped"]) == 3
+        ranked_ids = {r["order_id"] for r in first["ranked"]}
+        assert set(first["skipped"]).isdisjoint(ranked_ids)
+        assert ranked_ids | set(first["skipped"]) == {
+            o.work_order_id.hex for o in orders
+        }
+        assert spent_first.work_order_id.hex in first["skipped"]
+        assert spent_last.work_order_id.hex in first["skipped"]
+        assert pendings[8].work_order_id.hex in first["skipped"]
+        # Deterministic at the cap: identical input, identical record.
+        second = rank_advisory_orders(orders, [], 9)
+        assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
 
 
 class TestSeamRanking:
@@ -146,6 +187,32 @@ class TestSeamRanking:
         for key, value in over.items():
             setattr(base, key, value)
         return base
+
+    def test_focus_tracks_dispatched_fetch_not_proposal(self) -> None:
+        # The model proposes FORMULATE (no focus); the cascade forces
+        # the smallest open gap fetch. Recorded focus must be the
+        # dispatched fetch, per the post-cascade contract in forcing.py.
+        feed = {
+            "kind": "claim_gap_feed",
+            "iteration": 2,
+            "gaps": [
+                {
+                    "gap_id": "g1",
+                    "kind": "DEFINITION",
+                    "target": {"file_path": "svc/gap.py"},
+                },
+            ],
+        }
+        state = self._base_state(
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            action_history=[feed],
+            formulated_count=1,
+        )
+        out = apply_post_reason_cascade(state)
+        assert out.reason_data.get("forced_smallest_fetch") is True
+        assert out.prev_focus is not None
+        assert out.prev_focus["surface"] == "svc/gap.py"
+        assert out.prev_focus["surface_kind"] == "file"
 
     def test_pivot_turn_ranks_seed_first(self) -> None:
         out = apply_post_reason_cascade(self._base_state())
