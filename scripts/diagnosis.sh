@@ -79,25 +79,28 @@ if [[ -z "$DB_ONLY" ]]; then
   api POST "/api/v1/investigations/$IID/start" >/dev/null \
     || { echo "error: start failed" >&2; exit 1; }
 
-  echo "-- polling (timeout ${TIMEOUT}s, terminal = COMPLETED/FAILED/CANCELLED) --"
+  echo "-- polling every 10s (timeout ${TIMEOUT}s, terminal = COMPLETED/FAILED/CANCELLED) --"
   T0="$(date +%s)"
   FINAL=""
+  LAST_STATUS=""
   while true; do
     RESP="$(api GET "/api/v1/investigations/$IID")" || { echo "error: poll failed" >&2; exit 1; }
     FINAL="$(echo "$RESP" | jq -c '.investigation // .')"
     STATUS="$(echo "$FINAL" | jq -r .status)"
     ELAPSED=$(( $(date +%s) - T0 ))
-    printf '\r  %s ... %ss' "$STATUS" "$ELAPSED"
+    if [[ "$STATUS" != "$LAST_STATUS" ]]; then
+      echo "  [$ELAPSED]s $STATUS"
+      LAST_STATUS="$STATUS"
+    fi
     case "$STATUS" in
-      COMPLETED|FAILED|CANCELLED) printf '\n'; break ;;
+      COMPLETED|FAILED|CANCELLED) break ;;
     esac
-    if (( ELAPSED > TIMEOUT )); then printf '\nTIMEOUT after %ss\n' "$TIMEOUT"; break; fi
+    if (( ELAPSED > TIMEOUT )); then echo "TIMEOUT after ${TIMEOUT}s"; break; fi
     sleep 10
   done
+  echo "settled in ${ELAPSED}s with status $STATUS"
   echo "== verdict =="
   echo "$FINAL" | jq '{id, status, phase, started_at, completed_at}'
-  echo "-- conclusion (if any) --"
-  echo "$FINAL" | jq -c '.conclusion // .conclusions // empty' 2>/dev/null | head -3
 else
   IID="$DB_ONLY"
   echo "== db-only diagnosis for $IID (tenant $TENANT) =="
@@ -183,6 +186,11 @@ iid = os.environ["IID"]
 path = sys.argv[1]
 turns = 0
 matched = 0
+# Two passes: completion lines carry the iteration number, decision
+# lines do not. Map completion timestamp -> iteration, then attribute
+# each decision to the next completion at or after its timestamp.
+completions = []
+raw = []
 with open(path, encoding="utf-8", errors="replace") as fh:
     for line in fh:
         if iid[:8] not in line:
@@ -192,16 +200,20 @@ with open(path, encoding="utf-8", errors="replace") as fh:
             d = json.loads(line)
         except Exception:
             continue
-        m = d.get("message", "")
-        e = d.get("extra", {})
+        m, e = d.get("message", ""), d.get("extra", {})
         ts = str(d.get("timestamp", ""))[11:19]
-        if "reason_activity decision" in m:
-            turns += 1
-            print(f"{ts} REASON it={e.get('iteration')} {m[:130]}")
-        elif "forcing cascade outcome" in m.lower() or "forced_" in str(e.get("forced_flags", "")):
-            print(f"{ts} CASCADE {m[:130]}")
-        elif d.get("level") in ("WARNING", "ERROR"):
-            print(f"{ts} {d.get('level')} {m[:150]}")
+        if "reason_activity completed" in m and e.get("iteration") is not None:
+            completions.append((ts, e.get("iteration")))
+            continue
+        raw.append((ts, d.get("level", ""), m))
+completions.sort()
+for ts, level, m in raw:
+    it = next((c[1] for c in completions if c[0] >= ts), "?")
+    if "reason_activity decision" in m:
+        turns += 1
+        print(f"{ts} REASON it={it} {m[:130]}")
+    elif level in ("WARNING", "ERROR"):
+        print(f"{ts} {level} {m[:150]}")
 print(f"-- {turns} reason turns in log --")
 if matched == 0:
     print("-- note: no lines matched; start-platform.sh --restart truncates tmp/*.log --")
