@@ -296,6 +296,72 @@ def _should_force_walk_stack(
         return None
 
 
+def _should_force_pivot_recollect(
+    prev_focus: dict[str, Any] | None,
+    reason_data: dict[str, Any] | None,
+    turns_remaining: int,
+    recent_targets: list[str] | None,
+) -> dict[str, Any] | None:
+    """Collection-forcing override on focus pivot (P6 2b-i, pure).
+
+    After reasoning, if the point of focus changed surfaces and the loop
+    has turns left for the recollect to pay off, force a collection fetch
+    on the new focus instead of verifying or concluding on the stale one.
+    File foci read the new file (pivots land on code); bare-symbol foci
+    resolve the symbol first. Damping: a surface collected in recent
+    turns never refires, so the rule cannot ping-pong.
+
+    Budget-blind by design (agentic layers own budget governance); the
+    only gate is liveness — turns_remaining covers the collection turn
+    plus at least one turn to use what it banks. Never raises.
+    """
+    try:
+        from investigation_agent_platform.domain.collection.focus import (
+            FocusPoint,
+            FocusShift,
+            detect_shift,
+            focus_from_reason_data,
+            pivot_can_pay_off,
+        )
+    except Exception:
+        return None
+    try:
+        if not pivot_can_pay_off(turns_remaining):
+            return None
+        prev: FocusPoint | None = None
+        if isinstance(prev_focus, dict):
+            try:
+                prev = FocusPoint.model_validate(prev_focus)
+            except Exception:
+                prev = None
+        curr = focus_from_reason_data(
+            reason_data if isinstance(reason_data, dict) else {}
+        )
+        if curr is None or detect_shift(prev, curr) != FocusShift.PIVOTED:
+            return None
+        if curr.surface in set(recent_targets or []):
+            return None
+        if curr.surface_kind == "file":
+            params: dict[str, Any] = {"file_path": curr.surface}
+            if curr.line_start is not None and curr.line_start >= 1:
+                params["start_line"] = curr.line_start
+            if curr.line_end is not None and curr.line_end >= 1:
+                params["end_line"] = curr.line_end
+            params["revision"] = "HEAD"
+            return {
+                "next_action": "GET_CODE",
+                "action_parameters": params,
+                "forced_pivot_recollect": True,
+            }
+        return {
+            "next_action": "FIND_SYMBOL",
+            "action_parameters": {"symbol_name": curr.surface, "revision": "HEAD"},
+            "forced_pivot_recollect": True,
+        }
+    except Exception:
+        return None
+
+
 def _carry_ledger_directive(verify_data: dict | None, iteration: int) -> dict | None:
     """G3 directive marker to append to action_history, or None.
 

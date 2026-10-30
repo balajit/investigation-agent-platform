@@ -570,7 +570,8 @@ class TestFastPathPredicate:
         region = src[start:end]
         overrides = [l for l in region if '_reason_data["next_action"] =' in l]
         guards = [l for l in region if "not _d6_fired" in l or "or _d6_fired" in l]
-        assert len(overrides) == 11, f"cascade override count changed: {len(overrides)}"
+        # 12th override is the P6 pivot-recollect stage (guarded like the rest).
+        assert len(overrides) == 12, f"cascade override count changed: {len(overrides)}"
         assert len(guards) == len(overrides) - 1, (
             f"D6 fast path has {len(overrides)} overrides but only "
             f"{len(guards)} downstream guards — an override can clobber "

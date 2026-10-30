@@ -68,6 +68,12 @@ with workflow.unsafe.imports_passed_through():
         verification_state,
     )
 
+    # P6 2b-i: focus-point extraction for the pivot-recollect stage —
+    # pure pydantic parsing, deterministic, replay-safe.
+    from investigation_agent_platform.domain.collection.focus import (
+        focus_from_reason_data,
+    )
+
     # D3 Phase 0 shadow definitions: pure receipt pairing + summary
     # (canonical digests only — deterministic, replay-safe). The
     # workflow never branches on the paired output.
@@ -107,6 +113,7 @@ from .forcing import (
     _should_force_formulate,
     _should_force_ledger_requery,
     _should_force_log_search,
+    _should_force_pivot_recollect,
     _should_force_replan,
     _should_force_synthesis,
     _should_force_walk_stack,
@@ -557,6 +564,10 @@ class RunInvestigationWorkflow:
         # D3: triage route computed once at iteration 0 from the complaint
         # + intake seed; guides the reasoner, never decides alone.
         triage_route = "UNKNOWN"
+        # P6 2b-i: previous turn's point of focus (plain JSON dict or
+        # None). Rebuilt every turn from reason output; replay-safe
+        # because it derives from activity results, never wall-clock.
+        _prev_focus: dict | None = None
 
         # 2. Main Investigation Loop — state authority is the workflow + checkpoint repo.
         while iteration < max_iterations and not self._is_cancelled:
@@ -727,6 +738,42 @@ class RunInvestigationWorkflow:
                 _reason_data["action_parameters"] = _absence_target["action_parameters"]
                 _reason_data["forced_absence_disconfirmation"] = True
             _absence_forced = bool(_reason_data.get("forced_absence_disconfirmation"))
+            # P6 2b-i: pivot recollect — the reasoner's point of focus
+            # moved surfaces, so go back to collection on the new focus
+            # instead of verifying or concluding on the stale one. Runs
+            # before the other gathering forces so they don't gather on
+            # the old focus; explicit-frame walk-stack below still wins
+            # (intake frames outrank everything). Skipped on
+            # defer/D6/absence turns, and the rule itself damps refires
+            # on recently collected surfaces. Budget-blind by design
+            # (agentic layers own budget); the turns-remaining gate is
+            # liveness, not budget.
+            _pivot_override = None
+            if not _is_defer and not _d6_fired and not _absence_forced:
+                try:
+                    _pivot_targets: list[str] = []
+                    for _entry in (action_history or [])[-10:]:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _entry_params = _entry.get("parameters") or {}
+                        if not isinstance(_entry_params, dict):
+                            continue
+                        _entry_file = str(_entry_params.get("file_path") or "").strip()
+                        if _entry_file:
+                            _pivot_targets.append(_entry_file)
+                except Exception:
+                    _pivot_targets = []
+                _pivot_override = _should_force_pivot_recollect(
+                    _prev_focus,
+                    _reason_data,
+                    max_iterations - iteration,
+                    _pivot_targets,
+                )
+            if _pivot_override is not None:
+                _reason_data = dict(_reason_data)
+                _reason_data["next_action"] = _pivot_override["next_action"]
+                _reason_data["action_parameters"] = _pivot_override["action_parameters"]
+                _reason_data["forced_pivot_recollect"] = True
             # D2: stack-walk forcing first — explicit intake frames outrank
             # every other gathering rule.
             _walk_params = (
@@ -1052,6 +1099,18 @@ class RunInvestigationWorkflow:
                         }
                     except Exception:
                         pass
+            # P6 2b-i: record this turn's focus for next turn's pivot
+            # comparison. Post-cascade read is safe: the cascade only
+            # rewrites next_action/parameters, never claims or
+            # hypotheses. Plain JSON scalars, replay-safe.
+            try:
+                _turn_focus = focus_from_reason_data(
+                    _reason_data if isinstance(_reason_data, dict) else {}
+                )
+                if _turn_focus is not None:
+                    _prev_focus = _turn_focus.model_dump(mode="json")
+            except Exception:
+                pass
             # Debug story: forcing cascade outcome. Compares the model's
             # pre-override proposal (_shadow_proposal) with the post-cascade
             # dispatch (_reason_data). Deterministic: both derive from
@@ -1066,6 +1125,7 @@ class RunInvestigationWorkflow:
                         "forced_floor",
                         "forced_formulate",
                         "forced_reread",
+                        "forced_pivot_recollect",
                         "forced_callsite",
                         "forced_log_search",
                         "forced_replan",
@@ -1359,6 +1419,9 @@ class RunInvestigationWorkflow:
                         "forced_reread": bool(_reason_data.get("forced_reread", False)),
                         "forced_log_search": bool(_reason_data.get("forced_log_search", False)),
                         "forced_walk_stack": bool(_reason_data.get("forced_walk_stack", False)),
+                        "forced_pivot_recollect": bool(
+                            _reason_data.get("forced_pivot_recollect", False)
+                        ),
                         "forced_replan": bool(_reason_data.get("forced_replan", False)),
                         "forced_floor": bool(_reason_data.get("forced_floor", False)),
                         "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
