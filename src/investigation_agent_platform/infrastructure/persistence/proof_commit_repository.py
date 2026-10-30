@@ -265,6 +265,7 @@ async def insert_conclusion_record(
         "proven_callers": list(conclusion.get("proven_callers") or []),
         "unresolved_callers": list(conclusion.get("unresolved_callers") or []),
         "caller_coverage": conclusion.get("caller_coverage"),
+        "eliminated_rivals": list(conclusion.get("eliminated_rivals") or []),
         "verifier_version": str(conclusion.get("verifier_version") or "v2"),
     }
     if current is None:

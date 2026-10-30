@@ -22,7 +22,9 @@ from investigation_agent_platform.domain.evidence.models import EvidenceType
 
 
 def _hyp():  # type: ignore[no-untyped-def]
-    return SimpleNamespace(id=uuid4())
+    # P3 (S6 shape branch): heuristic scoring adjudicates typed claims
+    # only; these scoring tests exercise causal machinery.
+    return SimpleNamespace(id=uuid4(), claim_kind="CAUSAL")
 
 
 def _evidence(provider: str, kind: EvidenceType, n: int):  # type: ignore[no-untyped-def]

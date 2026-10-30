@@ -22,6 +22,9 @@ def _hyp(supporting=(), status="PROPOSED"):
         status=status,
         supporting_evidence_ids=list(supporting),
         assessments=[{"x": 1}],
+        # P3 (S6 shape branch): heuristic scoring adjudicates typed
+        # claims only; these scoring tests exercise causal machinery.
+        claim_kind="CAUSAL",
     )
 
 

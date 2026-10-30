@@ -463,6 +463,9 @@ class InvestigationConclusionORM(Base):
     proven_callers: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     unresolved_callers: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     caller_coverage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # P3 (S6 rival bar): ruled-out rivals + ruling-out evidence
+    # (NULL = legacy/pre-marker row, never backfilled).
+    eliminated_rivals: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

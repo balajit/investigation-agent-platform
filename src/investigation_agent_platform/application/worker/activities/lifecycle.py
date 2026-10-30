@@ -1782,7 +1782,32 @@ async def _gate_conclusion_or_fail(
         )
     except Exception:
         _untested_rivals = []
-    _verification_limitations: list[str] = []
+    # P3 (S5/S6 rival bar): the elimination record — ruled-out rivals with
+    # their ruling-out evidence. A causal ESTABLISHED verdict requires a
+    # non-empty record; without one the verdict demotes to LIKELY (same
+    # discipline as RIVAL_UNTESTED: no named rival, no established verdict).
+    _eliminated_rivals: list = []
+    try:
+        _eliminated_rivals = _VerificationEngine.elimination_record(
+            candidate, list(hypotheses or [])
+        )
+    except Exception:
+        _eliminated_rivals = []
+    _rival_bar_failed = False
+    try:
+        _tier = str(getattr(verification, "tier", "established") or "established")
+        _vstatus = str(
+            getattr(getattr(verification, "status", ""), "value", getattr(verification, "status", ""))
+        )
+        _would_establish = (
+            _vstatus == "VERIFIED"
+            and _tier != "likely"
+            and not (location_answered or code_value_answered or doc_answered)
+        )
+        if _would_establish and not _eliminated_rivals:
+            _rival_bar_failed = True
+    except Exception:
+        _rival_bar_failed = False
     try:
         _verification_limitations = [
             f"{getattr(getattr(lim, 'code', ''), 'value', getattr(lim, 'code', ''))}: {getattr(lim, 'detail', '')}"[
@@ -1792,6 +1817,14 @@ async def _gate_conclusion_or_fail(
         ][:20]
     except Exception:
         _verification_limitations = []
+    if _rival_bar_failed:
+        try:
+            _verification_limitations.append(
+                "RIVAL_UNBEATEN: no ruled-out rival with ruling-out evidence "
+                "recorded; causal verdict publishes as likely, never established."
+            )
+        except Exception:
+            pass
     _next_check: str | None = None
     try:
         _next_check = _VerificationEngine.next_check_for(
@@ -1832,6 +1865,7 @@ async def _gate_conclusion_or_fail(
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
             if getattr(verification, "tier", "established") == "likely"
+            or _rival_bar_failed
             else (
                 ConclusionStatus.ROOT_CAUSE_ESTABLISHED
                 if verification.status == VerificationStatus.VERIFIED
@@ -1850,8 +1884,10 @@ async def _gate_conclusion_or_fail(
             str(item)[:300]
             for item in list(getattr(verification, "against_evidence", []) or [])[:20]
         ],
-        provisional=getattr(verification, "tier", "established") == "likely",
-        ranked_alternatives=_alternatives,
+            provisional=getattr(verification, "tier", "established") == "likely"
+            or _rival_bar_failed,
+            ranked_alternatives=_alternatives,
+            eliminated_rivals=list(_eliminated_rivals),
         proven_callers=_proven_callers,
         unresolved_callers=_unresolved_callers,
         caller_coverage=_caller_coverage,

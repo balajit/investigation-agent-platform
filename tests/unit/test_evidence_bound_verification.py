@@ -26,9 +26,16 @@ from investigation_agent_platform.domain.provenance.models import (
 )
 
 
-def _hyp(statement="cause is X", status=HypothesisStatus.PROPOSED):
+def _hyp(statement="cause is X", status=HypothesisStatus.PROPOSED, claim_kind=None):
+    from investigation_agent_platform.domain.hypothesis.models import (
+        AssessmentStrength,
+        AssessmentType,
+        ClaimKind,
+        HypothesisEvidenceAssessment,
+    )
+
     iid = uuid4()
-    return Hypothesis(
+    hyp = Hypothesis(
         tenant_id="tenant-a",
         investigation_id=iid,
         title=statement[:256],
@@ -36,6 +43,25 @@ def _hyp(statement="cause is X", status=HypothesisStatus.PROPOSED):
         statement=statement,
         status=status,
     )
+    if claim_kind is not None:
+        # P3 (S6 shape branch): heuristic scoring adjudicates typed
+        # claims only. The kind-only assessment carries no proof; the
+        # cited row must already be banked for the verdict to stand.
+        hyp = hyp.model_copy(
+            update={
+                "assessments": [
+                    HypothesisEvidenceAssessment(
+                        hypothesis_id=iid,
+                        evidence_id=uuid4(),
+                        assessment=AssessmentType.SUPPORTS,
+                        strength=AssessmentStrength.MODERATE,
+                        reason="kind carrier",
+                        claim_kind=ClaimKind(claim_kind),
+                    )
+                ]
+            }
+        )
+    return hyp
 
 
 def _ev(provider="prov-a", etype=EvidenceType.LOG):
@@ -890,7 +916,7 @@ def test_gate_approves_with_causal_chain_and_diverse_bound_evidence():
             )
         ]
         verification = engine.evaluate_hypothesis(
-            _hyp(), items, [], chain, RootCauseVerificationPolicy()
+            _hyp("cause is X", claim_kind="CAUSAL"), items, [], chain, RootCauseVerificationPolicy()
         )
         decision = await gate.evaluate(
             "tenant-a",
@@ -1744,6 +1770,29 @@ class TestPublishBand:
             hyp.model_copy(update={"causal_steps": ["s1"]}) if hasattr(hyp, "causal_steps") else hyp
         )
         rows = self._multi_evidence()
+        from investigation_agent_platform.domain.hypothesis.models import (
+            AssessmentStrength,
+            AssessmentType,
+            ClaimKind,
+            HypothesisEvidenceAssessment,
+        )
+
+        # P3 (S6 shape branch): heuristic scoring adjudicates typed claims
+        # only; the publish band is a causal-scoring property.
+        hyp = hyp.model_copy(
+            update={
+                "assessments": [
+                    HypothesisEvidenceAssessment(
+                        hypothesis_id=hyp.id,
+                        evidence_id=rows[0].evidence_id,
+                        assessment=AssessmentType.SUPPORTS,
+                        strength=AssessmentStrength.STRONG,
+                        reason="causal",
+                        claim_kind=ClaimKind.CAUSAL,
+                    )
+                ]
+            }
+        )
         from investigation_agent_platform.application.investigation.verification import (
             CausalRelationship,
             RootCauseVerificationPolicy,

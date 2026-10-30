@@ -548,7 +548,7 @@ class TestMigrationChainFinal:
 
     def test_chain_is_linear_ending_at_head(self) -> None:
         chain, _ = self._versions()
-        assert chain[-1] == "036_test_role_grants"
+        assert chain[-1] == "037_conclusion_eliminated_rivals"
         assert len(chain) == len(set(chain))
         assert "016_profile_v2_columns" in chain
         assert "015_batch_intake" in chain
@@ -561,7 +561,7 @@ class TestMigrationChainFinal:
 
         cfg = Config(Path(__file__).resolve().parents[2] / "alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["036_test_role_grants"]
+        assert script.get_heads() == ["037_conclusion_eliminated_rivals"]
 
     def test_every_revision_has_upgrade_and_downgrade(self) -> None:
         _, modules = self._versions()
@@ -571,7 +571,7 @@ class TestMigrationChainFinal:
 
     def test_onboarding_v01_migration_declares_exact_three_tables_and_rls(self) -> None:
         chain, modules = self._versions()
-        assert chain[-1] == "036_test_role_grants"
+        assert chain[-1] == "037_conclusion_eliminated_rivals"
         migration = modules["023_onboarding_control_store"]
         assert migration._TABLES == (
             "tenant_registry",

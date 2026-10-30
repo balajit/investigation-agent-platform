@@ -12,6 +12,7 @@ from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
 from investigation_agent_platform.domain.finding.models import (
     ConclusionStatus,
+    EliminatedRival,
     Finding,
     FindingType,
     InvestigationConclusion,
@@ -93,6 +94,11 @@ class SqlAlchemyFindingConclusionRepository:
             proven_callers=list(getattr(row, "proven_callers", None) or []),
             unresolved_callers=list(getattr(row, "unresolved_callers", None) or []),
             caller_coverage=getattr(row, "caller_coverage", None),
+            eliminated_rivals=[
+                EliminatedRival.model_validate(e)
+                for e in (getattr(row, "eliminated_rivals", None) or [])
+                if isinstance(e, dict)
+            ],
         )
 
     # -- writes ----------------------------------------------------------
@@ -271,6 +277,10 @@ class SqlAlchemyFindingConclusionRepository:
                     "proven_callers": list(getattr(conclusion, "proven_callers", []) or []),
                     "unresolved_callers": list(getattr(conclusion, "unresolved_callers", []) or []),
                     "caller_coverage": getattr(conclusion, "caller_coverage", None),
+                    "eliminated_rivals": [
+                        e.model_dump(mode="json")
+                        for e in (getattr(conclusion, "eliminated_rivals", None) or [])
+                    ],
                 }
                 if current is None:
                     await session.execute(insert(InvestigationConclusionORM).values(**values))

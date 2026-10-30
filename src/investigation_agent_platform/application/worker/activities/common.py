@@ -450,6 +450,8 @@ _KNOWN_LIMITATION_CODES = frozenset(
         "EVAPORATED_CITATION",
         # Phase 3 (claim binding): repaired-verdict marker.
         "REPAIRED_CITATION",
+        # P3 (S5/S6 rival bar): established requires a ruled-out rival.
+        "RIVAL_UNBEATEN",
     }
 )
 

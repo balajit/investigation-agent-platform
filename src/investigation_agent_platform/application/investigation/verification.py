@@ -422,6 +422,10 @@ class LimitationCode(str, Enum):
     # scoped empty history search. Additive member, same frozen-enum
     # discipline as REPAIRED_CITATION.
     HISTORY_ABSENCE_PROVED = "HISTORY_ABSENCE_PROVED"
+    # P3 (S5/S6 rival bar): the winner has no ruled-out rival with
+    # ruling-out evidence — the causal verdict publishes as likely, never
+    # established. Additive member, same frozen-enum discipline.
+    RIVAL_UNBEATEN = "RIVAL_UNBEATEN"
 
 
 class VerificationLimitation(BaseModel):
@@ -3576,6 +3580,21 @@ class VerificationEngine:
         return None
 
     @staticmethod
+    def _item_revision(item: Any) -> str:
+        location = getattr(getattr(item, "provenance", None), "source_location", None)
+        return str(getattr(location, "revision", "") or "")
+
+    @staticmethod
+    def _revision_pinned(revision: Any) -> bool:
+        """A row is pinned iff its revision names an immutable commit.
+
+        Empty, HEAD, and UNPINNED reads assert nothing (Phase 4.2) — they
+        can orient but never bind.
+        """
+        rev = str(revision or "").strip()
+        return bool(rev) and rev not in {"HEAD", "UNPINNED"}
+
+    @staticmethod
     def definition_window_proof(
         evidence_items: list[Any], target: ClaimTarget | None
     ) -> tuple[bool, str]:
@@ -3586,6 +3605,29 @@ class VerificationEngine:
                 False,
                 "no range read with recorded start/end lines (a path-only or head read is discovery)",
             )
+        # P3 (S6 binding): the claimed region must sit in a cited pinned
+        # row at the cited revision. An unpinned read (HEAD/empty) asserts
+        # nothing — it orients, never binds.
+        pinned = [
+            i
+            for i in reads
+            if VerificationEngine._revision_pinned(VerificationEngine._item_revision(i))
+        ]
+        if not pinned:
+            return (
+                False,
+                "no pinned range read (HEAD/empty revision asserts nothing)",
+            )
+        reads = pinned
+        if target is not None and target.commit_id:
+            want = str(target.commit_id).strip().casefold()
+            reads = [
+                i
+                for i in reads
+                if VerificationEngine._item_revision(i).strip().casefold() == want
+            ]
+            if not reads:
+                return (False, f"no range read at cited revision {target.commit_id}")
         if target is not None and target.file_path:
             reads = [
                 i
@@ -5422,6 +5464,50 @@ class VerificationEngine:
                         text = str(getattr(sib, "statement", "") or "").strip()
                         if text:
                             out.append(text[:500])
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def elimination_record(
+        candidate: Any, siblings: list[Any] | None
+    ) -> list["EliminatedRival"]:
+        """Ruled-out rivals with their ruling-out evidence (S5/S6 rival bar).
+
+        A REJECTED or CONTRADICTED sibling counts only with non-empty
+        refuting evidence IDs — a status without the evidence that earned
+        it proves nothing. The candidate itself is excluded. Never raises.
+        """
+        from investigation_agent_platform.domain.finding.models import EliminatedRival
+
+        out: list[EliminatedRival] = []
+        try:
+            candidate_id = getattr(candidate, "id", None)
+            for sib in siblings or []:
+                try:
+                    if candidate_id is not None and getattr(sib, "id", None) == candidate_id:
+                        continue
+                    status = str(
+                        getattr(getattr(sib, "status", ""), "value", getattr(sib, "status", ""))
+                    ).upper()
+                    if status not in ("REJECTED", "CONTRADICTED"):
+                        continue
+                    ruled_out_by = [
+                        str(e)
+                        for e in (getattr(sib, "refuting_evidence_ids", None) or [])[:20]
+                        if str(e or "").strip()
+                    ]
+                    if not ruled_out_by:
+                        continue
+                    out.append(
+                        EliminatedRival(
+                            statement=str(getattr(sib, "statement", "") or "")[:500],
+                            status=status,
+                            ruled_out_by_evidence_ids=ruled_out_by,
+                        )
+                    )
                 except Exception:
                     continue
         except Exception:
@@ -7541,6 +7627,40 @@ class VerificationEngine:
                 confidence=confidence,
             )
 
+        # P3 (S6 shape branch): an untyped claim never verifies. kind_gate
+        # is None for typed CAUSAL (causal machinery + heuristic scoring
+        # below) and for claims with no resolvable kind. The latter used to
+        # fall through to heuristic scoring and could VERIFY on uncited
+        # similarity alone — the S6 auto-pass. Placed after the
+        # kind-independent safety checks (orientation, contradictions), so
+        # those still adjudicate untyped claims; it guards entry to causal
+        # grounding and heuristic scoring only. Untyped claims route to
+        # spread (INCONCLUSIVE), never to a stop.
+        if kind_gate is None:
+            _typed_kind = getattr(hypothesis, "claim_kind", None)
+            try:
+                _typed_kind = (
+                    ClaimKind(_typed_kind) if _typed_kind is not None else None
+                )
+            except ValueError:
+                _typed_kind = None
+            if _typed_kind is None:
+                return VerificationResult(
+                    hypothesis_id=hypothesis.id,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=(
+                        "Claim has no verifiable kind (untyped and matching no "
+                        "definition/call-edge phrasing): type the claim or route "
+                        "to spread. Untyped claims never verify."
+                    ),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                )
         # Causal steps must cite banked grounding rows (code or runtime).
         # A step citing nothing, unknown IDs, or only orientation/docs is
         # unproven — INCONCLUSIVE. Relation demonstration demotes (below),

@@ -88,6 +88,17 @@ class Finding(BaseModel):
         return self
 
 
+class EliminatedRival(BaseModel):
+    """One ruled-out rival: the strongest rival considered plus the
+    evidence that ruled it out (S5/S6 rival bar)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    statement: str = Field(default="", max_length=500)
+    status: str = Field(default="", max_length=32)
+    ruled_out_by_evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 class InvestigationConclusion(BaseModel):
     """Terminal investigation report and root cause conclusion."""
 
@@ -123,6 +134,10 @@ class InvestigationConclusion(BaseModel):
     proven_callers: list[str] = Field(default_factory=list, max_length=100)
     unresolved_callers: list[str] = Field(default_factory=list, max_length=100)
     caller_coverage: str | None = Field(default=None, max_length=32)
+    # P3 (S6 rival bar): ruled-out rivals with their ruling-out evidence.
+    # A causal ESTABLISHED verdict requires a non-empty record; without one
+    # the verdict demotes to LIKELY. Empty on legacy rows (never backfilled).
+    eliminated_rivals: list["EliminatedRival"] = Field(default_factory=list, max_length=10)
     # 020: verifier provenance. None = legacy/pre-marker historical row.
     verifier_version: str | None = Field(default=None, max_length=16)
 
