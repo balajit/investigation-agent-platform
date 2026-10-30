@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +47,20 @@ with workflow.unsafe.imports_passed_through():
         focus_from_reason_data,
         pivot_can_pay_off,
     )
+    from investigation_agent_platform.domain.collection.work_orders import (
+        WORK_ORDER_VERSION_CURRENT,
+        FailureCharacter,
+        WorkOrder,
+        WorkOrderKind,
+        WorkOrderStatus,
+    )
+
+
+#: Advisory emission bounds (2b step 3): the cascade consumes at most
+#: one marker and one gap per turn; advisory emission records a bounded
+#: lookahead so the frontier has something to rank in step 4.
+MAX_ADVISORY_REQUERIES = 5
+MAX_ADVISORY_GAP_FILLS = 8
 
 
 def _reason_summary(reason_data: dict[str, Any]) -> str:
@@ -1820,6 +1836,229 @@ def _recent_collection_surfaces(
     return surfaces
 
 
+def _order_id(kind: str, action: str, params: dict[str, Any], seed_source: str) -> Any:
+    """Deterministic work-order identity (pure).
+
+    Advisory orders recompute every turn from the same history; uuid4
+    would make each recomputation a distinct order and break replay
+    determinism. uuid5 over the canonical content keeps emission
+    idempotent: same signals, same IDs, safe to deduplicate downstream.
+    Never raises.
+    """
+    try:
+        canonical = "|".join(
+            [
+                str(WORK_ORDER_VERSION_CURRENT or ""),
+                str(kind or ""),
+                str(action or ""),
+                json.dumps(dict(params or {}), sort_keys=True, default=str),
+                str(seed_source or ""),
+            ]
+        )
+    except Exception:
+        canonical = f"{WORK_ORDER_VERSION_CURRENT}|{kind}|{action}|{seed_source}"
+    try:
+        return uuid.uuid5(uuid.NAMESPACE_URL, canonical)
+    except Exception:
+        return uuid.uuid4()
+
+
+def _flat_scalar_params(params: Any) -> dict[str, Any] | None:
+    """Ledger-shaped parameters: a dict of JSON scalars only (pure).
+
+    Mirrors the shape check in _should_force_ledger_requery so advisory
+    REQUERY orders carry exactly what the cascade could dispatch.
+    Returns the params dict, or None when the shape is not dispatchable.
+    Never raises.
+    """
+    try:
+        if not isinstance(params, dict):
+            return None
+        for key, value in params.items():
+            if not isinstance(key, str):
+                return None
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                return None
+        return dict(params)
+    except Exception:
+        return None
+
+
+def orders_from_cascade_signals(
+    history: list | None,
+    pivot: dict[str, Any] | None,
+    triage_route: str | None,
+) -> list[WorkOrder]:
+    """Typed work orders from legacy signals (2b step 3, advisory, pure).
+
+    Converts what the loop already banks into the typed layer without
+    changing dispatch — candidate lifecycle stays separate from order
+    consumption (steps 4+):
+    - unconsumed, valid ledger-requery markers → REQUERY (newest first,
+      bounded; mirrors the cascade's shape checks plus the staleness
+      check, minus budget enforcement which stays a dispatch concern);
+    - the latest claim-gap feed's gaps → GAP_FILL (one per gap, bounded);
+    - a fired pivot recollect → FETCH_SEED for the new surface.
+    Deterministic IDs (content-addressed); PENDING status throughout;
+    never raises.
+    """
+    orders: list[WorkOrder] = []
+    try:
+        entries = list(history or [])
+    except Exception:
+        return orders
+    try:
+        route = str(triage_route or "").strip() or "UNKNOWN"
+    except Exception:
+        route = "UNKNOWN"
+
+    def _character(claim_kind: str = "untyped") -> FailureCharacter:
+        try:
+            kind = str(claim_kind or "").strip().upper() or "UNTYPED"
+        except Exception:
+            kind = "UNTYPED"
+        return FailureCharacter(triage_route=route[:32], claim_kind=kind[:64])
+
+    # Ledger markers → REQUERY (newest first, bounded).
+    try:
+        recorded = recorded_attempt_summaries(entries)
+    except Exception:
+        recorded = []
+    try:
+        for index in range(len(entries) - 1, -1, -1):
+            if len(orders) >= MAX_ADVISORY_REQUERIES:
+                break
+            try:
+                marker = entries[index]
+                if not isinstance(marker, dict):
+                    continue
+                if marker.get("kind") != "ledger_requery_directive":
+                    continue
+                if marker.get("consumed"):
+                    continue
+                try:
+                    if directive_consumed(marker, entries, recorded or []):
+                        continue
+                except Exception:
+                    continue
+                query = str(marker.get("query") or "").strip()
+                action_type = str(marker.get("action_type") or "").upper()
+                params = _flat_scalar_params(marker.get("action_parameters"))
+                if not query or action_type not in RETRYABLE_ACTIONS or params is None:
+                    continue
+                try:
+                    max_attempts = max(1, int(marker.get("max_attempts", 1) or 1))
+                except (TypeError, ValueError):
+                    max_attempts = 1
+                seed_source = f"ledger:{index}"
+                orders.append(
+                    WorkOrder(
+                        work_order_id=_order_id("REQUERY", action_type, params, seed_source),
+                        kind=WorkOrderKind.REQUERY,
+                        action_type=action_type,
+                        action_parameters=params,
+                        addresses=_character(),
+                        cost_estimate=1,
+                        max_attempts=max_attempts,
+                        seed_source=seed_source,
+                        status=WorkOrderStatus.PENDING,
+                    )
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Latest claim-gap feed → GAP_FILL (one per gap, bounded).
+    try:
+        feed_gaps: list[dict[str, Any]] = []
+        for evt in reversed(entries):
+            try:
+                if isinstance(evt, dict) and evt.get("kind") == "claim_gap_feed":
+                    raw = evt.get("gaps")
+                    if isinstance(raw, list):
+                        feed_gaps = [g for g in raw if isinstance(g, dict)]
+                    break
+            except Exception:
+                continue
+        for gap in feed_gaps[:MAX_ADVISORY_GAP_FILLS]:
+            try:
+                gap_kind = str(gap.get("kind") or "").strip().upper()
+                if not gap_kind:
+                    continue
+                params: dict[str, Any] = {}
+                try:
+                    target = gap.get("target")
+                    if isinstance(target, dict):
+                        for key in ("file_path", "line_start", "line_end", "revision", "commit_id"):
+                            value = target.get(key)
+                            if isinstance(value, str):
+                                if value.strip():
+                                    params[key] = value
+                            elif isinstance(value, (int, float, bool)):
+                                params[key] = value
+                    for key in ("query", "scope", "symbol_name"):
+                        value = gap.get(key)
+                        if isinstance(value, str):
+                            if value.strip():
+                                params.setdefault(key, value)
+                        elif isinstance(value, (int, float, bool)):
+                            params.setdefault(key, value)
+                except Exception:
+                    params = {}
+                params = _flat_scalar_params(params) or {}
+                if not params:
+                    continue
+                try:
+                    action_type = str((KIND_FETCH.get(gap_kind) or {}).get("action") or "GET_CODE")
+                except Exception:
+                    action_type = "GET_CODE"
+                seed_source = f"gap:{str(gap.get('gap_id') or '')[:64]}"
+                orders.append(
+                    WorkOrder(
+                        work_order_id=_order_id("GAP_FILL", action_type, params, seed_source),
+                        kind=WorkOrderKind.GAP_FILL,
+                        action_type=action_type,
+                        action_parameters=params,
+                        addresses=_character(gap_kind),
+                        cost_estimate=1,
+                        seed_source=seed_source,
+                        status=WorkOrderStatus.PENDING,
+                    )
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Fired pivot → FETCH_SEED for the new surface.
+    try:
+        pivot = pivot if isinstance(pivot, dict) else {}
+        surface = str(pivot.get("surface") or "").strip()
+        kind = str(pivot.get("surface_kind") or "").strip() or "file"
+        params = _flat_scalar_params(pivot.get("action_parameters"))
+        if surface and params is not None:
+            action_type = str(pivot.get("next_action") or "").upper() or (
+                "FIND_SYMBOL" if kind == "symbol" else "GET_CODE"
+            )
+            seed_source = f"pivot:{kind}:{surface}"[:256]
+            orders.append(
+                WorkOrder(
+                    work_order_id=_order_id("FETCH_SEED", action_type, params, seed_source),
+                    kind=WorkOrderKind.FETCH_SEED,
+                    action_type=action_type,
+                    action_parameters=params,
+                    addresses=_character(),
+                    cost_estimate=1,
+                    seed_source=seed_source,
+                    status=WorkOrderStatus.PENDING,
+                )
+            )
+    except Exception:
+        pass
+    return orders
+
+
 @dataclass
 class PostReasonCascadeState:
     """Inputs and outputs of the post-reason gathering cascade (2b seam).
@@ -1848,6 +2087,9 @@ class PostReasonCascadeState:
     investigation_id: str = ""
     ledger_marker_ref: dict | None = None
     invalid_directive: dict | None = None
+    #: Advisory work orders as JSON dicts (2b step 3): recorded only,
+    #: never dispatched by the cascade.
+    advisory_orders: list = field(default_factory=list)
 
 
 def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascadeState:
@@ -2238,6 +2480,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # comparison. Post-cascade read is safe: the cascade only
         # rewrites next_action/parameters, never claims or
         # hypotheses. Plain JSON scalars, replay-safe.
+        _turn_focus = None
         try:
             _turn_focus = focus_from_reason_data(
                 _reason_data if isinstance(_reason_data, dict) else {}
@@ -2246,6 +2489,27 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 state.prev_focus = _turn_focus.model_dump(mode="json")
         except Exception:
             pass
+        # 2b step 3: advisory work-order emission — typed orders from
+        # legacy signals, recorded only. Candidate lifecycle stays
+        # separate from order consumption: orders are PENDING and
+        # nothing here dispatches them (steps 4+ rank and consume).
+        try:
+            _pivot_surface: dict[str, Any] | None = None
+            if _pivot_override is not None and _turn_focus is not None:
+                _pivot_surface = {
+                    "surface": _turn_focus.surface,
+                    "surface_kind": _turn_focus.surface_kind,
+                    "next_action": str(_pivot_override.get("next_action") or ""),
+                    "action_parameters": _pivot_override.get("action_parameters"),
+                }
+            state.advisory_orders = [
+                order.model_dump(mode="json")
+                for order in orders_from_cascade_signals(
+                    _history, _pivot_surface, state.triage_route
+                )
+            ]
+        except Exception:
+            state.advisory_orders = []
         state.reason_data = _reason_data
         state.ledger_marker_ref = _ledger_marker_ref
         return state
