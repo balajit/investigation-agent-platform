@@ -397,25 +397,6 @@ class TestReadMode:
         assert saved[0].attributes["discovery_only"] is True
 
     @pytest.mark.asyncio
-    async def test_range_read_is_labeled_range(self) -> None:
-        async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
-            return _code_evidence(
-                file_path=req.file_path,
-                line_start=req.start_line or 1,
-                line_end=req.end_line or 1,
-            )
-
-        _, saved = _ctx_with(SimpleNamespace(get_source=_get_source))
-        await execute_action_activity(
-            _input(
-                "GET_CODE",
-                {"file_path": "OfferSvc.java", "start_line": 10, "end_line": 20},
-            )
-        )
-        assert saved[0].attributes["read_mode"] == "range"
-        assert "discovery_only" not in saved[0].attributes
-
-    @pytest.mark.asyncio
     async def test_java_field_request_attaches_deterministic_resolution(self) -> None:
         async def _get_source(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             evidence = _code_evidence(

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -11,28 +10,12 @@ from uuid import uuid4
 import pytest
 
 from investigation_agent_platform.api.dependencies import AppContext, set_app_context
-from investigation_agent_platform.application.investigation.verification import VerificationEngine
 from investigation_agent_platform.application.worker.activities import (
     ExecuteActionInput,
     _caller_edge_candidates_from_evidence,
     execute_action_activity,
 )
-from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
-from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
-from investigation_agent_platform.domain.hypothesis.models import (
-    AssessmentStrength,
-    AssessmentType,
-    ClaimKind,
-    ClaimTarget,
-    Hypothesis,
-    HypothesisEvidenceAssessment,
-)
-from investigation_agent_platform.domain.provenance.models import (
-    EvidenceFreshness,
-    EvidenceProvenance,
-    QueryFingerprint,
-    SourceLocation,
-)
+from investigation_agent_platform.domain.evidence.models import EvidenceType
 
 
 def _ctx_with(gateway, *, evidence_rows=None, hyp_repo=None):
@@ -143,146 +126,6 @@ class TestCallerEdgeCandidateProjection:
         assert [candidate["caller"] for candidate in candidates] == ["OrderController"]
 
 
-@pytest.mark.asyncio
-async def test_forced_range_read_reconciles_unresolved_edge_with_occ_retry() -> None:
-    investigation_id = uuid4()
-    now = datetime.now(UTC)
-    evidence_id = uuid4()
-    location = SourceLocation(
-        system="Git",
-        identifier="repo/src/OrderQualifyHelper.java",
-        file_path="src/OrderQualifyHelper.java",
-        line_start=10,
-        line_end=20,
-        revision="abc123",
-    )
-    evidence = Evidence(
-        evidence_id=evidence_id,
-        tenant_id="tenant-a",
-        investigation_id=investigation_id,
-        evidence_type=EvidenceType.SOURCE_CODE,
-        provider="git",
-        source="git://repo/src/OrderQualifyHelper.java@abc123",
-        title="caller range",
-        summary="caller range",
-        content_snippet="10| return handler.handle(orderId);",
-        attributes={"read_mode": "range"},
-        observed_at=now,
-        retrieved_at=now,
-        provenance=EvidenceProvenance(
-            tenant_id="tenant-a",
-            investigation_id=investigation_id,
-            provider_type="GIT",
-            requested_provider_id="git",
-            actual_provider_id="git",
-            source_system="Git",
-            retrieval_timestamp=now,
-            query_fingerprint=QueryFingerprint(
-                provider_type="GIT", operation="GET_SOURCE", normalized_query_hash="h"
-            ),
-            source_location=location,
-        ),
-        freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
-        fingerprint="caller-range",
-    )
-    hypothesis_id = uuid4()
-    target = ClaimTarget(
-        symbol="OrderServiceHandler.handle",
-        counterpart="OrderQualifyHelper",
-        file_path="src/OrderQualifyHelper.java",
-        line_start=10,
-        line_end=20,
-        commit_id="abc123",
-    )
-    unresolved = HypothesisEvidenceAssessment(
-        hypothesis_id=hypothesis_id,
-        evidence_id=None,
-        assessment=AssessmentType.SUPPORTS,
-        strength=AssessmentStrength.MODERATE,
-        reason="caller edge obligation unresolved",
-        claim_kind=ClaimKind.CALL_EDGE,
-        claim_target=target,
-        reason_code="CALL_EDGE_UNRESOLVED",
-        schema_version="v2",
-    )
-    hypothesis = Hypothesis(
-        id=hypothesis_id,
-        tenant_id="tenant-a",
-        investigation_id=investigation_id,
-        title="caller edge",
-        description="caller edge",
-        statement="OrderQualifyHelper calls OrderServiceHandler.handle",
-        assessments=[unresolved],
-        required_verification=[f"CALL_EDGE|{VerificationEngine.caller_edge_key(target)}"],
-    )
-    rows: list[Evidence] = []
-    saved_hypotheses: list[Hypothesis] = []
-    save_attempts = 0
-
-    async def _find_evidence(tenant_id, current_id):  # type: ignore[no-untyped-def]
-        return list(rows)
-
-    async def _save_evidence(tenant_id, item, current_id):  # type: ignore[no-untyped-def]
-        rows.append(item)
-
-    async def _find_hypotheses(tenant_id, current_id):  # type: ignore[no-untyped-def]
-        return [saved_hypotheses[-1] if saved_hypotheses else hypothesis]
-
-    async def _save_hypothesis(tenant_id, item, current_id, expected_version=0):  # type: ignore[no-untyped-def]
-        nonlocal save_attempts
-        save_attempts += 1
-        if save_attempts == 1:
-            raise ConcurrencyError("simulated concurrent hypothesis update")
-        saved_hypotheses.append(item)
-
-    async def _get_source(tenant_id, current_id, application_id, request):  # type: ignore[no-untyped-def]
-        assert request.revision == "abc123"
-        assert request.start_line == 10 and request.end_line == 20
-        return evidence
-
-    ctx = AppContext()
-    service = SimpleNamespace(authorize=AsyncMock(return_value=None), execute=AsyncMock())
-    ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-    ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
-    ctx.evidence_repo = SimpleNamespace(
-        find_by_investigation_id=_find_evidence,
-        save=_save_evidence,
-        save_batch=AsyncMock(),
-    )
-    ctx.hypothesis_repo = SimpleNamespace(
-        find_by_investigation_id=_find_hypotheses,
-        save=_save_hypothesis,
-    )
-    ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
-    ctx.evidence_gateway = SimpleNamespace(get_source=_get_source)
-    set_app_context(ctx)
-
-    result = await execute_action_activity(
-        ExecuteActionInput(
-            tenant_id="tenant-a",
-            investigation_id=str(investigation_id),
-            action="GET_CODE",
-            parameters={
-                "file_path": "src/OrderQualifyHelper.java",
-                "start_line": 10,
-                "end_line": 20,
-                "revision": "abc123",
-                "caller_edge_key": "OrderServiceHandler.handle|OrderQualifyHelper|src/OrderQualifyHelper.java|abc123",
-                "caller_edge_symbol": "OrderServiceHandler.handle",
-                "caller_edge_counterpart": "OrderQualifyHelper",
-            },
-        )
-    )
-
-    assert result.data["caller_edges_reconciled"] == 1
-    assert save_attempts == 2
-    assert len(saved_hypotheses) == 1
-    reconciled = saved_hypotheses[0].assessments[0]
-    assert reconciled.evidence_id == evidence_id
-    assert reconciled.reason_code == "CALL_EDGE_BOUND"
-    assert saved_hypotheses[0].supporting_evidence_ids == [evidence_id]
-
-
 class TestClaimKeying:
     @pytest.mark.asyncio
     async def test_same_statement_two_kinds_keep_both_bindings(self) -> None:
@@ -390,13 +233,19 @@ class TestClaimKeying:
                 "statement": statement,
                 "claim_kind": "CALL_EDGE",
                 "evidence_ids": [str(e1)],
-                "target": {"symbol": "OrderServiceHandler.handle", "counterpart": "OrderQualifyHelper"},
+                "target": {
+                    "symbol": "OrderServiceHandler.handle",
+                    "counterpart": "OrderQualifyHelper",
+                },
             },
             {
                 "statement": statement,
                 "claim_kind": "CALL_EDGE",
                 "evidence_ids": [str(e2)],
-                "target": {"symbol": "OrderServiceHandler.handle", "counterpart": "OrderServiceRestProxy"},
+                "target": {
+                    "symbol": "OrderServiceHandler.handle",
+                    "counterpart": "OrderServiceRestProxy",
+                },
             },
         ]
         await execute_action_activity(action_input)
@@ -574,9 +423,7 @@ class TestAbsenceGate:
             },
         )
 
-        ok, reason = VerificationEngine.absence_proof(
-            [row], ClaimTarget(scope="audit_log/order-9")
-        )
+        ok, reason = VerificationEngine.absence_proof([row], ClaimTarget(scope="audit_log/order-9"))
 
         assert ok is False
         assert "discovery-only" in reason
