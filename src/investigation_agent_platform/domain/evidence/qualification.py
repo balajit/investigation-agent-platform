@@ -298,16 +298,17 @@ def qualify_item(
     """Dispatch one banked row to its layer predicate (never raises)."""
     try:
         etype = _etype(item)
+        attrs = _attrs(item)
+        count = attrs.get("match_count")
+        if isinstance(count, int) and not isinstance(count, bool) and count == 0:
+            # Zero-match rows are proof candidates, never positive rows —
+            # regardless of layer. The proof covers its own stated scope
+            # when the caller has no question scope yet (bank time); scope-
+            # to-question matching still happens at verify time.
+            return qualify_absence_proof(item, scope_path or str(attrs.get("search_scope") or ""))
         if etype in CODE_LAYER_TYPES:
             return qualify_code_row(item)
         if etype in HISTORY_LAYER_TYPES:
-            attrs = _attrs(item)
-            count = attrs.get("match_count")
-            if isinstance(count, int) and not isinstance(count, bool) and count == 0:
-                # The proof covers its own stated scope when the caller has
-                # no question scope yet (bank time); scope-to-question
-                # matching still happens at verify time.
-                return qualify_absence_proof(item, scope_path or str(attrs.get("search_scope") or ""))
             return qualify_history_row(item, scope_path)
         if etype in RUNTIME_LAYER_TYPES:
             return qualify_runtime_row(item, window)

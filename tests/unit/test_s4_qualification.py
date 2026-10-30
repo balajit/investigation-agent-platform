@@ -88,6 +88,27 @@ class TestHistoryQualification:
         assert qual.qualified is True
         assert qual.layer == "absence-proof"
 
+    def test_zero_match_code_row_routes_to_proof(self):
+        # Execution-banked absence markers are SOURCE_CODE-typed; the
+        # zero-count routes them to the proof branch for a precise reason.
+        row = _row(
+            "SOURCE_CODE",
+            attributes={"match_count": 0, "search_scope": "svc:query=x"},
+        )
+        qual = qualify_item(row)
+        assert qual.layer == "absence-proof"
+        assert qual.qualified is False  # discovery markers never prove
+
+    def test_zero_match_without_discovery_flag_can_qualify(self):
+        row = _row(
+            "SOURCE_CODE",
+            location={"file_path": "x", "revision": "tip"},
+            attributes={"match_count": 0, "search_scope": "svc:query=x"},
+        )
+        qual = qualify_item(row, scope_path="svc:query=x")
+        assert qual.qualified is True
+        assert qual.layer == "absence-proof"
+
     def test_scope_mismatch_rejected(self):
         qual = qualify_history_row(self._history(), scope_path="src/Other.java")
         assert qual.qualified is False

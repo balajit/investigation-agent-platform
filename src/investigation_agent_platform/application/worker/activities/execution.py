@@ -1333,16 +1333,19 @@ async def execute_action_activity(
                     )[:512]
                     await evidence_repo.save(
                         tenant_id,
-                        _with_fetch_reason(
-                            _absence_proof_row(
-                                tenant_id=tenant_id,
-                                investigation_id=investigation_id,
-                                evidence_type=_EvidenceType.DATABASE_STATE,
-                                provider="state-provider",
-                                operation="query_state",
-                                scope=_state_scope,
+                        _with_s4_qualification(
+                            _with_fetch_reason(
+                                _absence_proof_row(
+                                    tenant_id=tenant_id,
+                                    investigation_id=investigation_id,
+                                    evidence_type=_EvidenceType.DATABASE_STATE,
+                                    provider="state-provider",
+                                    operation="query_state",
+                                    scope=_state_scope,
+                                ),
+                                _fetch_reason,
                             ),
-                            _fetch_reason,
+                            s4_window,
                         ),
                         investigation_id,
                     )
@@ -1910,7 +1913,11 @@ async def execute_action_activity(
                 outcome_detail[CODE_FACT_RESOLUTIONS_KEY] = envelope
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
-                await evidence_repo.save(tenant_id, evidence, investigation_id)
+                await evidence_repo.save(
+                    tenant_id,
+                    _with_s4_qualification(evidence, s4_window),
+                    investigation_id,
+                )
             outcome_detail["evidence_ids"] = [str(evidence.evidence_id)]
             # Phase 4.2: revision pin check. An unpinned read (HEAD/empty)
             # asserts nothing, so it vacuously matches; a pinned read must
@@ -2767,21 +2774,24 @@ async def execute_action_activity(
                     if _absence_scope:
                         await evidence_repo.save(
                             tenant_id,
-                            _with_fetch_reason(
-                                _absence_proof_row(
-                                    tenant_id=tenant_id,
-                                    investigation_id=investigation_id,
-                                    # History misses bank as discovery-only
-                                    # SOURCE_CODE: a COMMIT_HISTORY-typed absence
-                                    # row carries no file/revision and can never
-                                    # satisfy history_proof, inflating evidence
-                                    # counts while reading as "unstamped".
-                                    evidence_type=_EvidenceType.SOURCE_CODE,
-                                    provider="code-intelligence",
-                                    operation=action_label.lower(),
-                                    scope=_absence_scope,
+                            _with_s4_qualification(
+                                _with_fetch_reason(
+                                    _absence_proof_row(
+                                        tenant_id=tenant_id,
+                                        investigation_id=investigation_id,
+                                        # History misses bank as discovery-only
+                                        # SOURCE_CODE: a COMMIT_HISTORY-typed absence
+                                        # row carries no file/revision and can never
+                                        # satisfy history_proof, inflating evidence
+                                        # counts while reading as "unstamped".
+                                        evidence_type=_EvidenceType.SOURCE_CODE,
+                                        provider="code-intelligence",
+                                        operation=action_label.lower(),
+                                        scope=_absence_scope,
+                                    ),
+                                    _fetch_reason,
                                 ),
-                                _fetch_reason,
+                                s4_window,
                             ),
                             investigation_id,
                         )
@@ -3647,6 +3657,7 @@ async def execute_action_activity(
                             }
                         )
                         _read = _with_fetch_reason(_read, _fetch_reason)
+                        _read = _with_s4_qualification(_read, s4_window)
                         await evidence_repo.save(tenant_id, _read, investigation_id)
                         _banked_here.append(str(_read.evidence_id))
                 if _banked_here:
