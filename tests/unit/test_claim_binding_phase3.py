@@ -2005,7 +2005,7 @@ class TestNoCandidateExplicitEmptyFeed:
             verify_root_cause_activity,
         )
         from investigation_agent_platform.application.worker.workflows.forcing import (
-            _carry_claim_gap_feed,
+            _carry_gap_orders,
         )
 
         inv_id = uuid4()
@@ -2020,13 +2020,13 @@ class TestNoCandidateExplicitEmptyFeed:
         assert result.success is True
         assert result.data.get("producing_path") == "no-candidate"
         # Finding M: explicit empty feed, never a missing key — the
-        # carrier writes a tombstone (supersedes stale feeds) instead of
-        # the fault signal (None, no marker).
+        # carrier writes a tombstone (supersedes stale carriers) instead
+        # of the fault signal (None, no carrier).
         assert result.data.get("claim_gaps") == []
-        marker = _carry_claim_gap_feed(dict(result.data), 3)
-        assert marker is not None
-        assert marker["kind"] == "claim_gap_feed"
-        assert marker["gaps"] == []
+        carrier = _carry_gap_orders(dict(result.data), 3)
+        assert carrier is not None
+        assert carrier["kind"] == "work_order_feed"
+        assert carrier["orders"] == []
 
     @pytest.mark.asyncio
     async def test_no_candidate_legacy_keeps_keyless_shape(self):

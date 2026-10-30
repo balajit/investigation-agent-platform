@@ -37,12 +37,12 @@ from investigation_agent_platform.application.worker.workflows.forcing import (
     SMALLEST_FETCH_ACTIONS_BY_KIND,
     SMALLEST_FETCH_ORDER,
     _behavior_fetch_params,
-    _carry_claim_gap_feed,
+    _carry_gap_orders,
     _forced_conclude_break,
+    _pick_gap_order,
     _should_force_conclude_not_checkable,
     _smallest_fetch_already_covered,
     _smallest_fetch_dispatchable,
-    _smallest_fetch_target,
 )
 from investigation_agent_platform.domain.hypothesis.models import (
     AssessmentStrength,
@@ -195,39 +195,62 @@ class TestBuilders:
         assert params["file_path"] == "src/widgets.py"
 
 
-class TestSmallestFetchTarget:
+class TestGapOrderPick:
+    def _orders(self, gaps, turn=3):  # type: ignore[no-untyped-def]
+        carrier = _carry_gap_orders({"claim_gaps": gaps}, turn)
+        assert carrier is not None
+        return carrier["orders"]
+
     def test_fires_on_matching_open_gap(self):
-        out = _smallest_fetch_target([], 0, [_gap()], kind="DEFINITION")
+        out = _pick_gap_order(
+            self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=0
+        )
         assert out is not None
-        assert out["next_action"] == "GET_CODE"
-        assert out["gap_id"] == "DEFINITION|abc123"
-        assert out["fetch_kind"] == "DEFINITION"
-        assert set(out) == {
-            "next_action",
-            "action_parameters",
-            "gap_id",
-            "claim_ref",
-            "fetch_kind",
-        }
-        assert "claim_ref" not in out["action_parameters"]
-        assert "target_key" not in out["action_parameters"]
-        assert not any(k.startswith("_") for k in out["action_parameters"])
+        assert out.action_type == "GET_CODE"
+        assert out.gap_id == "DEFINITION|abc123"
+        assert out.addresses.claim_kind == "DEFINITION"
+        assert "claim_ref" not in dict(out.action_parameters)
+        assert "target_key" not in dict(out.action_parameters)
+        assert not any(k.startswith("_") for k in dict(out.action_parameters))
 
     def test_silent_on_kind_mismatch(self):
-        assert _smallest_fetch_target([], 0, [_gap()], kind="HISTORY") is None
+        assert (
+            _pick_gap_order(
+                self._orders([_gap()]), kind="HISTORY", history=[], forced_count=0
+            )
+            is None
+        )
 
     def test_silent_at_cap(self):
-        assert _smallest_fetch_target([], 2, [_gap()], kind="DEFINITION") is None
+        assert (
+            _pick_gap_order(
+                self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=2
+            )
+            is None
+        )
 
     def test_silent_when_covered(self):
         history = [{"forced_smallest_fetch_gap_id": "DEFINITION|abc123"}]
-        assert _smallest_fetch_target(history, 0, [_gap()], kind="DEFINITION") is None
+        assert (
+            _pick_gap_order(
+                self._orders([_gap()]), kind="DEFINITION", history=history, forced_count=0
+            )
+            is None
+        )
 
     def test_silent_on_unbuildable_gap(self):
-        assert _smallest_fetch_target([], 0, [_gap(target={})], kind="DEFINITION") is None
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _gap_order_for,
+        )
+
+        assert _gap_order_for(_gap(target={}, gap_id="DEFINITION|bad"), 3) is None
+        assert (
+            _pick_gap_order([], kind="DEFINITION", history=[], forced_count=0) is None
+        )
 
     def test_gap_without_gap_id_skipped(self):
-        assert _smallest_fetch_target([], 0, [{"kind": "DEFINITION"}], kind="DEFINITION") is None
+        carrier = _carry_gap_orders({"claim_gaps": [{"kind": "DEFINITION"}]}, 3)
+        assert carrier is None
 
     def test_malformed_sibling_does_not_suppress_open_gap(self):
         """Finding-1 pin: one malformed entry skips, never aborts the kind."""
@@ -236,50 +259,62 @@ class TestSmallestFetchTarget:
             def get(self, *args, **kwargs):
                 raise RuntimeError("boom")
 
-        out = _smallest_fetch_target(
-            [], 0, [_BadDict({"kind": "DEFINITION"}), _gap()], kind="DEFINITION"
+        orders = self._orders([_gap()])
+        out = _pick_gap_order(
+            [_BadDict({"kind": "DEFINITION"}), *orders],
+            kind="DEFINITION",
+            history=[],
+            forced_count=0,
         )
         assert out is not None
-        assert out["gap_id"] == "DEFINITION|abc123"
+        assert out.gap_id == "DEFINITION|abc123"
 
     def test_behavior_query_state_leg_dispatches(self):
-        out = _smallest_fetch_target(
-            [],
-            0,
-            [
-                _gap(
-                    kind="BEHAVIOR",
-                    gap_id="BEHAVIOR|xyz",
-                    target={"scope": "production:environment"},
-                    query="",
-                )
-            ],
+        out = _pick_gap_order(
+            self._orders(
+                [
+                    _gap(
+                        kind="BEHAVIOR",
+                        gap_id="BEHAVIOR|xyz",
+                        target={"scope": "production:environment"},
+                        query="",
+                    )
+                ]
+            ),
             kind="BEHAVIOR",
+            history=[],
+            forced_count=0,
         )
         assert out is not None
-        assert out["next_action"] == "QUERY_STATE"
-        assert "_leg" not in out["action_parameters"]
+        assert out.action_type == "QUERY_STATE"
+        assert "_leg" not in dict(out.action_parameters)
 
     def test_fixed_order_two_gaps(self):
-        gaps = [
-            _gap(kind="CAUSAL", gap_id="CAUSAL|z"),
-            _gap(kind="DEFINITION", gap_id="DEFINITION|a"),
-        ]
+        orders = self._orders(
+            [
+                _gap(kind="CAUSAL", gap_id="CAUSAL|z"),
+                _gap(kind="DEFINITION", gap_id="DEFINITION|a"),
+            ]
+        )
         first = None
+        first_kind = ""
         for kind in SMALLEST_FETCH_ORDER:
-            first = _smallest_fetch_target([], 0, gaps, kind=kind)
+            first = _pick_gap_order(orders, kind=kind, history=[], forced_count=0)
             if first:
+                first_kind = kind
                 break
-        assert first is not None and first["fetch_kind"] == "DEFINITION"
+        assert first is not None and first_kind == "DEFINITION"
 
     def test_same_kind_two_targets_independent(self):
-        gaps = [
-            _gap(kind="DEFINITION", gap_id="DEFINITION|a"),
-            _gap(kind="DEFINITION", gap_id="DEFINITION|b"),
-        ]
+        orders = self._orders(
+            [
+                _gap(kind="DEFINITION", gap_id="DEFINITION|a"),
+                _gap(kind="DEFINITION", gap_id="DEFINITION|b"),
+            ]
+        )
         history = [{"forced_smallest_fetch_gap_id": "DEFINITION|a"}]
-        out = _smallest_fetch_target(history, 0, gaps, kind="DEFINITION")
-        assert out is not None and out["gap_id"] == "DEFINITION|b"
+        out = _pick_gap_order(orders, kind="DEFINITION", history=history, forced_count=0)
+        assert out is not None and out.gap_id == "DEFINITION|b"
 
 
 class TestDispatchValidation:
@@ -432,38 +467,55 @@ def _tkey(hyp):
 
 
 class TestCarrier:
-    def test_valid_feed_carried(self):
-        out = _carry_claim_gap_feed({"claim_gaps": [_gap()]}, 3)
+    def test_valid_feed_carried_as_orders(self):
+        out = _carry_gap_orders({"claim_gaps": [_gap()]}, 3)
         assert out is not None
-        assert out["kind"] == "claim_gap_feed"
+        assert out["kind"] == "work_order_feed"
+        assert out["order_kind"] == "GAP_FILL"
         assert out["turn_issued"] == 3
-        assert len(out["gaps"]) == 1
+        assert len(out["orders"]) == 1
+        order = out["orders"][0]
+        assert order["kind"] == "GAP_FILL"
+        assert order["action_type"] == "GET_CODE"
+        assert order["gap_id"] == "DEFINITION|abc123"
+        assert order["status"] == "PENDING"
 
     def test_empty_list_is_tombstone(self):
-        out = _carry_claim_gap_feed({"claim_gaps": []}, 4)
-        assert out is not None and out["gaps"] == []
+        out = _carry_gap_orders({"claim_gaps": []}, 4)
+        assert out is not None and out["orders"] == []
 
     def test_malformed_returns_none(self):
-        assert _carry_claim_gap_feed({}, 1) is None
-        assert _carry_claim_gap_feed({"claim_gaps": "nope"}, 1) is None
-        assert _carry_claim_gap_feed({"claim_gaps": [{"kind": "DEFINITION"}]}, 1) is None
+        assert _carry_gap_orders({}, 1) is None
+        assert _carry_gap_orders({"claim_gaps": "nope"}, 1) is None
+        assert _carry_gap_orders({"claim_gaps": [{"kind": "DEFINITION"}]}, 1) is None
 
     def test_unknown_kind_dropped_with_count(self):
-        out = _carry_claim_gap_feed(
+        out = _carry_gap_orders(
             {"claim_gaps": [_gap(), {**_gap(), "kind": "CALL_EDGE", "gap_id": "CALL_EDGE|x"}]}, 1
         )
-        assert out is not None and len(out["gaps"]) == 1
+        assert out is not None and len(out["orders"]) == 1
         assert out["dropped"]["unknown_kind"] == 1
 
     def test_missing_gap_id_dropped_with_count(self):
-        out = _carry_claim_gap_feed({"claim_gaps": [_gap(), {"kind": "DEFINITION"}]}, 1)
-        assert out is not None and len(out["gaps"]) == 1
+        out = _carry_gap_orders({"claim_gaps": [_gap(), {"kind": "DEFINITION"}]}, 1)
+        assert out is not None and len(out["orders"]) == 1
         assert out["dropped"]["missing_gap_id"] == 1
 
     def test_duplicates_deduped_first_wins(self):
-        out = _carry_claim_gap_feed({"claim_gaps": [_gap(), _gap()]}, 1)
-        assert out is not None and len(out["gaps"]) == 1
+        out = _carry_gap_orders({"claim_gaps": [_gap(), _gap()]}, 1)
+        assert out is not None and len(out["orders"]) == 1
         assert out["dropped"]["duplicate_gap_id"] == 1
+
+    def test_all_unbuildable_returns_none(self):
+        out = _carry_gap_orders({"claim_gaps": [_gap(target={})]}, 1)
+        assert out is None
+
+    def test_unbuildable_sibling_dropped_with_count(self):
+        out = _carry_gap_orders(
+            {"claim_gaps": [_gap(), _gap(target={}, gap_id="DEFINITION|bad")]}, 1
+        )
+        assert out is not None and len(out["orders"]) == 1
+        assert out["dropped"]["unbuildable"] == 1
 
 
 class TestGapDedupe:

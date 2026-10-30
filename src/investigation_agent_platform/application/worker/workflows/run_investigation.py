@@ -82,7 +82,7 @@ from .forcing import (
     PostReasonCascadeState,
     _absence_disconfirmation_target,
     _callsite_target,
-    _carry_claim_gap_feed,
+    _carry_gap_orders,
     _carry_requery_order,
     _caused_by_idempotency_wedge,
     _classify_failure,
@@ -1229,16 +1229,18 @@ class RunInvestigationWorkflow:
             )
             if _requery_order is not None:
                 action_history.append(_requery_order)
-            # Phase 4 (claim binding): carry the verify-issued claim-gap
-            # feed (D2 carrier). ONE new history entry per feed — never
-            # merged into action_history[-1]. The next turn's cascade
-            # reads only the newest claim_gap_feed entry.
-            _gap_marker = _carry_claim_gap_feed(
+            # Phase 4 (claim binding): carry the verify-issued claim gaps
+            # as work orders (D2 carrier, 2b step 6). ONE new history
+            # entry per verify turn — never merged into
+            # action_history[-1]. The next turn's slot dispatches from
+            # the newest carrier's orders (never the truncated
+            # recent_actions view).
+            _gap_carrier = _carry_gap_orders(
                 verify_res.data if isinstance(verify_res.data, dict) else {},
                 iteration,
             )
-            if _gap_marker is not None:
-                action_history.append(_gap_marker)
+            if _gap_carrier is not None:
+                action_history.append(_gap_carrier)
             # D3 Phase 0 shadow receipt pairing (compute-only; the loop
             # never branches on the result). T1 observations ride the
             # additive result key; each is paired with this turn's native

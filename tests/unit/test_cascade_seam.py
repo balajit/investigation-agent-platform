@@ -227,20 +227,86 @@ class TestCompetingRules:
         assert out.reason_data.get("forced_replan") is not True
 
     def test_pivot_beats_smallest_fetch(self) -> None:
-        feed = {
-            "kind": "claim_gap_feed",
-            "iteration": 2,
-            "gaps": [
-                {
-                    "gap_id": "g1",
-                    "kind": "DEFINITION",
-                    "target": {"file_path": "svc/old.py"},
-                }
-            ],
-        }
-        state = _state(action_history=[feed])
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/old.py"},
+                    }
+                ]
+            },
+            2,
+        )
+        assert carrier is not None
+        state = _state(action_history=[carrier])
         out = apply_post_reason_cascade(state)
         assert out.reason_data["forced_pivot_recollect"] is True
+        assert out.reason_data.get("forced_smallest_fetch") is not True
+        assert out.counts.get("smallest_fetch_definition", 0) == 0
+
+    def test_carried_gap_order_dispatches_smallest_fetch(self) -> None:
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/old.py"},
+                    }
+                ]
+            },
+            2,
+        )
+        assert carrier is not None
+        state = _state(
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            prev_focus=None,
+            action_history=[carrier],
+            formulated_count=1,
+        )
+        out = apply_post_reason_cascade(state)
+        assert out.reason_data.get("forced_smallest_fetch") is True
+        assert out.reason_data["next_action"] == "GET_CODE"
+        assert out.reason_data["action_parameters"]["file_path"] == "svc/old.py"
+        assert out.reason_data["forced_smallest_fetch_gap_id"] == "g1"
+        assert out.counts.get("smallest_fetch_definition", 0) == 1
+
+    def test_empty_carrier_supersedes_older_orders(self) -> None:
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        old = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/old.py"},
+                    }
+                ]
+            },
+            1,
+        )
+        tombstone = _carry_gap_orders({"claim_gaps": []}, 2)
+        assert old is not None and tombstone is not None
+        state = _state(
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            prev_focus=None,
+            action_history=[old, tombstone],
+            formulated_count=1,
+        )
+        out = apply_post_reason_cascade(state)
         assert out.reason_data.get("forced_smallest_fetch") is not True
         assert out.counts.get("smallest_fetch_definition", 0) == 0
 

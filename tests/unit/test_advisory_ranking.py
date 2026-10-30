@@ -192,20 +192,26 @@ class TestSeamRanking:
         # The model proposes FORMULATE (no focus); the cascade forces
         # the smallest open gap fetch. Recorded focus must be the
         # dispatched fetch, per the post-cascade contract in forcing.py.
-        feed = {
-            "kind": "claim_gap_feed",
-            "iteration": 2,
-            "gaps": [
-                {
-                    "gap_id": "g1",
-                    "kind": "DEFINITION",
-                    "target": {"file_path": "svc/gap.py"},
-                },
-            ],
-        }
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/gap.py"},
+                    },
+                ]
+            },
+            2,
+        )
+        assert carrier is not None
         state = self._base_state(
             reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
-            action_history=[feed],
+            action_history=[carrier],
             formulated_count=1,
         )
         out = apply_post_reason_cascade(state)
@@ -227,18 +233,24 @@ class TestSeamRanking:
         assert out.reason_data["forced_pivot_recollect"] is True
         assert "advisory" not in json.dumps(out.reason_data)
 
-    def test_gap_turn_ranks_gap_while_order_dispatches(self) -> None:
-        feed = {
-            "kind": "claim_gap_feed",
-            "iteration": 2,
-            "gaps": [
-                {
-                    "gap_id": "g1",
-                    "kind": "DEFINITION",
-                    "target": {"file_path": "svc/gap.py"},
-                }
-            ],
-        }
+    def test_gap_carrier_turn_dispatches_without_advisory_copy(self) -> None:
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        gap_carrier = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/gap.py"},
+                    }
+                ]
+            },
+            2,
+        )
+        assert gap_carrier is not None
         carrier = {
             "kind": "work_order",
             "order_kind": "REQUERY",
@@ -268,14 +280,14 @@ class TestSeamRanking:
             reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
             prev_focus=None,
             evidence_banked_total=9,
-            action_history=[carrier, feed],
+            action_history=[carrier, gap_carrier],
             formulated_count=1,
         )
         out = apply_post_reason_cascade(state)
-        # Emission no longer emits REQUERY; the carrier dispatches from
-        # the G3 slot (order outranks smallest-fetch) exactly as before.
-        kinds = [o["kind"] for o in out.advisory_orders]
-        assert kinds == ["GAP_FILL"]
+        # The REQUERY carrier wins the G3 slot (order outranks
+        # smallest-fetch) exactly as before; the gap order waits for a
+        # turn with no requery, and emission holds neither.
+        assert out.advisory_orders == []
         assert out.reason_data.get("forced_requery") is True
         assert out.reason_data.get("forced_smallest_fetch") is not True
         assert out.consumed_order_ref is carrier

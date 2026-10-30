@@ -91,6 +91,12 @@ class WorkOrder(BaseModel):
     max_attempts: int = Field(default=1, ge=1)
     seed_source: str = Field(default="", max_length=256)
     status: WorkOrderStatus = WorkOrderStatus.PENDING
+    #: Gap identity for GAP_FILL orders (2b step 6): the claim-gap this
+    #: order collects. Coverage stamps key on gap_id, so the dispatch
+    #: slot never needs the feed entry. None for non-gap orders.
+    gap_id: str | None = Field(default=None, max_length=128)
+    #: Informational claim reference (never dispatched into params).
+    claim_ref: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def _require_replay_safe_parameters(self) -> WorkOrder:

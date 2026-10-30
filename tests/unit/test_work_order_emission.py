@@ -1,11 +1,11 @@
 # tests/unit/test_work_order_emission.py
-"""2b step 3/5: typed work orders emitted from legacy signals, advisory only.
+"""2b steps 3/5/6: typed work orders from legacy signals, advisory only.
 
-Pins the emission mapping (gap feeds → GAP_FILL, pivot → FETCH_SEED),
-determinism, bounds, and lifecycle separation (orders stay PENDING; the
-cascade dispatches unchanged). Since step 5 REQUERY orders arrive via
-carried order entries (``_carry_requery_order``) and dispatch from the
-G3 slot — emission ignores carriers and never emits REQUERY.
+Pins the emission mapping (pivot → FETCH_SEED), determinism, bounds,
+and lifecycle separation (orders stay PENDING; the cascade dispatches
+unchanged). Since steps 5-6 REQUERY and GAP_FILL orders arrive via
+carried order entries and dispatch from their slots — emission ignores
+carriers and stale marker/feed dicts.
 """
 
 import json
@@ -81,24 +81,13 @@ class TestRequeryEmission:
 
 
 class TestGapFillEmission:
-    def test_definition_gap_emits_gap_fill(self) -> None:
-        orders = orders_from_cascade_signals([_feed(_gap())], None, "BUG")
-        assert len(orders) == 1
-        order = orders[0]
-        assert order.kind.value == "GAP_FILL"
-        assert order.action_type == "GET_CODE"
-        assert order.action_parameters["file_path"] == "svc/old.py"
-        assert order.addresses.claim_kind == "DEFINITION"
-        assert order.seed_source == "gap:g1"
+    def test_feed_entries_emit_nothing_from_emission(self) -> None:
+        # Gap orders arrive via carriers and dispatch from the
+        # smallest-fetch slot; emission ignores them.
+        assert orders_from_cascade_signals([_feed(_gap())], None, "BUG") == []
 
-    def test_latest_feed_only_and_cap(self) -> None:
-        old = _feed(_gap(gap_id="old"))
-        new_gaps = [_gap(gap_id=f"g{i}") for i in range(10)]
-        orders = orders_from_cascade_signals([old, _feed(*new_gaps)], None, "BUG")
-        assert len(orders) == 8
-        assert all(o.seed_source != "gap:old" for o in orders)
-
-    def test_empty_or_paramless_gaps_emit_nothing(self) -> None:
+    def test_stale_feed_shapes_emit_nothing(self) -> None:
+        # Pre-step-6 feed dicts are dead shapes — never resurrected.
         assert orders_from_cascade_signals([_feed()], None, "BUG") == []
         assert orders_from_cascade_signals([_feed(_gap(kind=""))], None, "BUG") == []
         assert (
@@ -107,6 +96,15 @@ class TestGapFillEmission:
             )
             == []
         )
+
+    def test_carriers_emit_nothing_from_emission(self) -> None:
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders({"claim_gaps": [_gap()]}, 2)
+        assert carrier is not None
+        assert orders_from_cascade_signals([carrier], None, "BUG") == []
 
 
 class TestFetchSeedEmission:
@@ -213,22 +211,23 @@ class TestSeamIntegration:
         assert out.reason_data.get("forced_requery") is not True
         assert out.reason_data.get("forced_smallest_fetch") is not True
         kinds = sorted(o["kind"] for o in out.advisory_orders)
-        assert kinds == ["FETCH_SEED", "GAP_FILL"]
+        assert kinds == ["FETCH_SEED"]
 
-    def test_gap_only_turn_records_without_interference(self) -> None:
+    def test_gap_carrier_dispatches_without_advisory_duplicate(self) -> None:
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders({"claim_gaps": [_gap(gap_id="g7")]}, 2)
+        assert carrier is not None
         state = self._base_state(
             reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
-            prev_focus={
-                "surface": "svc/old.py",
-                "surface_kind": "file",
-                "line_start": 1,
-                "line_end": 50,
-            },
+            prev_focus=None,
             evidence_banked_total=9,
-            action_history=[_feed(_gap(gap_id="g7"))],
+            action_history=[carrier],
             formulated_count=1,
         )
         out = apply_post_reason_cascade(state)
-        # Legacy path dispatches the gap fill as before; advisory records it.
+        # The slot dispatches the carried order; emission holds no copy.
         assert out.reason_data.get("forced_smallest_fetch") is True
-        assert [o["kind"] for o in out.advisory_orders] == ["GAP_FILL"]
+        assert out.advisory_orders == []

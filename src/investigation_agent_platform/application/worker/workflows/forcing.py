@@ -64,13 +64,6 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
-#: Advisory emission bounds (2b step 3): the cascade consumes at most
-#: one gap per turn; advisory emission records a bounded lookahead so
-#: the frontier has something to rank. (Step 5 retired the marker
-#: branch — REQUERY orders arrive via carriers, not emission.)
-MAX_ADVISORY_GAP_FILLS = 8
-
-
 def _reason_summary(reason_data: dict[str, Any]) -> str:
     """One-line summary of a reason-activity decision for timeline descriptions.
 
@@ -1583,76 +1576,57 @@ def _smallest_fetch_action_for(kind: str, params: dict[str, Any]) -> str:
         return ""
 
 
-def _smallest_fetch_target(
-    action_history: list[dict[str, Any]] | None,
-    forced_count: int,
-    gaps: list[dict[str, Any]] | None,
+def _pick_gap_order(
+    orders: list[dict[str, Any]] | None,
     *,
     kind: str,
-    tenant_id: str = "",
-    investigation_id: str = "",
-) -> dict[str, Any] | None:
-    """One smallest-fetch override for a single claim kind, or None (pure).
+    history: list | None,
+    forced_count: int,
+) -> WorkOrder | None:
+    """First dispatchable GAP_FILL order of one claim kind, or None (pure).
 
-    Fires when the D2 gap feed names an open gap of this kind. ``gaps``
-    is the latest claim_gap_feed history entry's list, passed in by the
-    cascade — never read from reason_data. Bounded (max 2 per run per
-    kind). Content-free by design: gap identity + history coverage
+    Step-6 per-kind picker over a carrier's orders: kind match, gap not
+    already covered (stamps), per-kind run cap, closed kind→action
+    triple. Content-free by design: gap identity + history coverage
     decide. Never raises.
     """
     try:
         if int(forced_count or 0) >= _FORCED_SMALLEST_FETCH_DEFAULT_CAP:
             return None
-        spec = KIND_FETCH.get(str(kind or ""))
-        if not spec:
+    except Exception:
+        return None
+    try:
+        want = str(kind or "")
+        if want not in SMALLEST_FETCH_ORDER:
             return None
-        feed = [g for g in (gaps or []) if isinstance(g, dict)]
-        gap = None
-        try:
-            for entry in feed:
-                try:
-                    if str(entry.get("kind") or "") != str(kind):
-                        continue
-                    if not str(entry.get("gap_id") or ""):
-                        continue
-                    # Covered gaps fall through to the next open gap of
-                    # the same kind — a stale feed never suppresses its
-                    # siblings.
-                    if _smallest_fetch_already_covered(
-                        action_history, str(entry.get("gap_id") or "")
-                    ):
-                        continue
-                    gap = entry
-                    break
-                except Exception:
-                    # Skip the malformed sibling, never abort the kind:
-                    # one bad entry must not suppress its open siblings.
+        for raw in list(orders or []):
+            try:
+                if not isinstance(raw, dict):
                     continue
-        except Exception:
-            return None
-        if gap is None:
-            return None
-        try:
-            builder = (spec or {}).get("builder")
-            params = builder(gap) if callable(builder) else None
-        except Exception:
-            return None
-        if not params:
-            return None
-        try:
-            action = _smallest_fetch_action_for(str(kind), dict(params))
-            params = {k: v for k, v in dict(params).items() if not str(k).startswith("_")}
-        except Exception:
-            return None
-        if not action:
-            return None
-        return {
-            "next_action": action,
-            "action_parameters": dict(params),
-            "gap_id": str(gap.get("gap_id") or ""),
-            "claim_ref": str(gap.get("claim_ref") or ""),
-            "fetch_kind": str(kind),
-        }
+                try:
+                    order = WorkOrder.model_validate(raw)
+                except Exception:
+                    continue
+                if order.status != WorkOrderStatus.PENDING:
+                    continue
+                if str(order.addresses.claim_kind or "") != want:
+                    continue
+                gap_id = str(order.gap_id or "")
+                if not gap_id:
+                    continue
+                # Covered gaps fall through to the next open order of
+                # the same kind — a stale carrier never suppresses its
+                # siblings.
+                if _smallest_fetch_already_covered(history, gap_id):
+                    continue
+                if not _smallest_fetch_dispatchable(
+                    want, order.action_type, dict(order.action_parameters or {})
+                ):
+                    continue
+                return order
+            except Exception:
+                continue
+        return None
     except Exception:
         return None
 
@@ -1671,29 +1645,91 @@ def _smallest_fetch_dispatchable(kind: str, action: str, params: dict[str, Any])
         return False
 
 
-def _carry_claim_gap_feed(
+def _gap_order_for(
+    gap: dict[str, Any], turn_issued: int
+) -> WorkOrder | None:
+    """One GAP_FILL work order for a validated claim gap, or None (pure).
+
+    Resolves the gap's fetch (KIND_FETCH builder + kind action) at carry
+    time; coverage and per-kind caps stay convert-time concerns. Gap
+    identity rides the order (gap_id/claim_ref), never the params.
+    Deterministic ID per (gap_id, kind, turn). Never raises.
+    """
+    try:
+        if not isinstance(gap, dict):
+            return None
+        kind = str(gap.get("kind") or "")
+        spec = KIND_FETCH.get(kind)
+        if not spec:
+            return None
+        gap_id = str(gap.get("gap_id") or "")
+        if not gap_id:
+            return None
+        builder = spec.get("builder")
+        try:
+            params = builder(gap) if callable(builder) else None
+        except Exception:
+            return None
+        if not params:
+            return None
+        try:
+            action = _smallest_fetch_action_for(kind, dict(params))
+            params = {k: v for k, v in dict(params).items() if not str(k).startswith("_")}
+        except Exception:
+            return None
+        if not action:
+            return None
+        try:
+            claim_kind = str(kind).strip().upper() or "UNTYPED"
+        except Exception:
+            claim_kind = "UNTYPED"
+        return WorkOrder(
+            work_order_id=uuid.uuid5(
+                uuid.NAMESPACE_URL, f"gap-order|{gap_id}|{kind}|{int(turn_issued)}"
+            ),
+            kind=WorkOrderKind.GAP_FILL,
+            action_type=action,
+            action_parameters=params,
+            addresses=FailureCharacter(
+                triage_route="UNKNOWN", claim_kind=claim_kind[:64]
+            ),
+            cost_estimate=1,
+            gap_id=gap_id,
+            claim_ref=str(gap.get("claim_ref") or "") or None,
+            seed_source=f"gap:{gap_id}",
+            status=WorkOrderStatus.PENDING,
+        )
+    except Exception:
+        return None
+
+
+def _carry_gap_orders(
     verify_data: dict[str, Any] | None, iteration: int
 ) -> dict[str, Any] | None:
-    """Claim-gap feed marker to append to action_history, or None (pure).
+    """Gap order carrier to append to action_history, or None (2b step 6).
 
-    Pure carry: validates verify result data["claim_gaps"] is a list. A
-    non-empty list must contain dicts with a non-empty gap_id and a known
-    KIND_FETCH kind. An empty list returns a valid tombstone entry, which
-    supersedes older feeds. Only malformed or missing input returns None,
-    so a malformed feed never breaks the loop. Feed entries are deduped
-    by gap_id (first wins); drops are counted, not silent.
-    Workflow-safe (no wall-clock, no randomness). Never raises.
+    Replaces the ``claim_gap_feed`` marker: validates verify result
+    data["claim_gaps"] with the same rules (non-empty gap_id, known
+    KIND_FETCH kind, dedupe by gap_id with drops counted) and returns
+    ONE carrier entry whose ``orders`` payload is a GAP_FILL WorkOrder
+    per buildable gap. The smallest-fetch slot dispatches from the
+    newest carrier's orders; coverage stamps prevent refires, so no
+    in-place consumption is needed. An empty list returns a valid
+    orders-empty carrier, which supersedes older carriers (the slot
+    reads the newest carrier only). Only malformed or missing input
+    returns None. Pure — workflow-safe. Never raises.
     """
     try:
         data = verify_data if isinstance(verify_data, dict) else {}
         raw = data.get("claim_gaps")
         if not isinstance(raw, list):
             return None
-        gaps: list[dict[str, Any]] = []
+        orders: list[dict[str, Any]] = []
         seen: set[str] = set()
         dropped_unknown_kind = 0
         dropped_missing_gap_id = 0
         dropped_duplicate = 0
+        dropped_unbuildable = 0
         for entry in raw:
             try:
                 if not isinstance(entry, dict):
@@ -1710,22 +1746,29 @@ def _carry_claim_gap_feed(
                     dropped_duplicate += 1
                     continue
                 seen.add(gid)
-                gaps.append(dict(entry))
+                order = _gap_order_for(entry, int(iteration))
+                if order is None:
+                    dropped_unbuildable += 1
+                    continue
+                orders.append(order.model_dump(mode="json"))
             except Exception:
                 dropped_missing_gap_id += 1
                 continue
-        if raw and not gaps:
-            # Non-empty input but nothing valid: malformed, not a tombstone.
+        if raw and not orders:
+            # Non-empty input but nothing dispatchable: malformed, not
+            # a tombstone (mirrors the old feed carry exactly).
             return None
         return {
-            "kind": "claim_gap_feed",
+            "kind": "work_order_feed",
+            "order_kind": WorkOrderKind.GAP_FILL.value,
             "iteration": int(iteration),
             "turn_issued": int(iteration),
-            "gaps": gaps,
+            "orders": orders,
             "dropped": {
                 "unknown_kind": dropped_unknown_kind,
                 "missing_gap_id": dropped_missing_gap_id,
                 "duplicate_gap_id": dropped_duplicate,
+                "unbuildable": dropped_unbuildable,
             },
         }
     except Exception:
@@ -1927,18 +1970,16 @@ def orders_from_cascade_signals(
     Converts what the loop already banks into the typed layer without
     changing dispatch — candidate lifecycle stays separate from order
     consumption (steps 4+):
-    - the latest claim-gap feed's gaps → GAP_FILL (one per gap, bounded);
     - a fired pivot recollect → FETCH_SEED for the new surface.
     REQUERY orders are no longer emitted here: since step 5 the verify
     turn carries them directly (``_carry_requery_order``) and the G3
-    slot dispatches from the carriers. Deterministic IDs
-    (content-addressed); PENDING status throughout; never raises.
+    slot dispatches from the carriers. GAP_FILL orders are no longer
+    emitted either: since step 6 the verify turn carries them
+    (``_carry_gap_orders``) and the smallest-fetch slot dispatches from
+    the carrier. Deterministic IDs (content-addressed); PENDING status
+    throughout; never raises.
     """
     orders: list[WorkOrder] = []
-    try:
-        entries = list(history or [])
-    except Exception:
-        return orders
     try:
         route = str(triage_route or "").strip() or "UNKNOWN"
     except Exception:
@@ -1951,67 +1992,9 @@ def orders_from_cascade_signals(
             kind = "UNTYPED"
         return FailureCharacter(triage_route=route[:32], claim_kind=kind[:64])
 
-    # Latest claim-gap feed → GAP_FILL (one per gap, bounded).
-    try:
-        feed_gaps: list[dict[str, Any]] = []
-        for evt in reversed(entries):
-            try:
-                if isinstance(evt, dict) and evt.get("kind") == "claim_gap_feed":
-                    raw = evt.get("gaps")
-                    if isinstance(raw, list):
-                        feed_gaps = [g for g in raw if isinstance(g, dict)]
-                    break
-            except Exception:
-                continue
-        for gap in feed_gaps[:MAX_ADVISORY_GAP_FILLS]:
-            try:
-                gap_kind = str(gap.get("kind") or "").strip().upper()
-                if not gap_kind:
-                    continue
-                params: dict[str, Any] = {}
-                try:
-                    target = gap.get("target")
-                    if isinstance(target, dict):
-                        for key in ("file_path", "line_start", "line_end", "revision", "commit_id"):
-                            value = target.get(key)
-                            if isinstance(value, str):
-                                if value.strip():
-                                    params[key] = value
-                            elif isinstance(value, (int, float, bool)):
-                                params[key] = value
-                    for key in ("query", "scope", "symbol_name"):
-                        value = gap.get(key)
-                        if isinstance(value, str):
-                            if value.strip():
-                                params.setdefault(key, value)
-                        elif isinstance(value, (int, float, bool)):
-                            params.setdefault(key, value)
-                except Exception:
-                    params = {}
-                params = _flat_scalar_params(params) or {}
-                if not params:
-                    continue
-                try:
-                    action_type = str((KIND_FETCH.get(gap_kind) or {}).get("action") or "GET_CODE")
-                except Exception:
-                    action_type = "GET_CODE"
-                seed_source = f"gap:{str(gap.get('gap_id') or '')[:64]}"
-                orders.append(
-                    WorkOrder(
-                        work_order_id=_order_id("GAP_FILL", action_type, params, seed_source),
-                        kind=WorkOrderKind.GAP_FILL,
-                        action_type=action_type,
-                        action_parameters=params,
-                        addresses=_character(gap_kind),
-                        cost_estimate=1,
-                        seed_source=seed_source,
-                        status=WorkOrderStatus.PENDING,
-                    )
-                )
-            except Exception:
-                continue
-    except Exception:
-        pass
+    # Gap orders arrive via carriers and dispatch from the
+    # smallest-fetch slot — emission ignores them. Only the pivot
+    # signal is emitted here.
 
     # Fired pivot → FETCH_SEED for the new surface.
     try:
@@ -2498,8 +2481,10 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data["forced_replan"] = True
         # Phase 4 (claim binding): smallest-fetch slot — LAST override
         # before the story-debug/shadow capture, so no later rule can
-        # clobber it. First kind with an open gap and a dispatchable
-        # directive wins the turn.
+        # clobber it. First kind with an open order and a dispatchable
+        # directive wins the turn. Orders arrive via carriers (newest
+        # carrier only — an orders-empty carrier supersedes older ones);
+        # coverage stamps prevent refires, so no in-place consumption.
         if (
             not _is_defer
             and not _absence_forced
@@ -2514,17 +2499,19 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             and not _reason_data.get("forced_not_checkable")
             and not _reason_data.get("forced_pivot_recollect")
         ):
-            _gap_feed: list[dict[str, Any]] = []
+            _carrier_orders: list[dict[str, Any]] = []
             try:
                 for _evt in reversed(_history or []):
-                    if isinstance(_evt, dict) and _evt.get("kind") == "claim_gap_feed":
-                        _raw_gaps = _evt.get("gaps")
-                        if isinstance(_raw_gaps, list):
-                            _gap_feed = [g for g in _raw_gaps if isinstance(g, dict)]
+                    if isinstance(_evt, dict) and _evt.get("kind") == "work_order_feed":
+                        _raw_orders = _evt.get("orders")
+                        if isinstance(_raw_orders, list):
+                            _carrier_orders = [
+                                o for o in _raw_orders if isinstance(o, dict)
+                            ]
                         break
             except Exception:
-                _gap_feed = []
-            _smallest_fetch = None
+                _carrier_orders = []
+            _picked_order = None
             _fetch_kind = ""
             for _fetch_kind in SMALLEST_FETCH_ORDER:
                 try:
@@ -2538,28 +2525,17 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 except Exception:
                     continue
                 try:
-                    _smallest_fetch = _smallest_fetch_target(
-                        _history,
-                        _counter,
-                        _gap_feed,
+                    _picked_order = _pick_gap_order(
+                        _carrier_orders,
                         kind=_fetch_kind,
-                        tenant_id=state.tenant_id,
-                        investigation_id=str(state.investigation_id),
+                        history=_history,
+                        forced_count=_counter,
                     )
                 except Exception:
-                    _smallest_fetch = None
-                try:
-                    if _smallest_fetch and not _smallest_fetch_dispatchable(
-                        _fetch_kind,
-                        str((_smallest_fetch or {}).get("next_action") or ""),
-                        (_smallest_fetch or {}).get("action_parameters") or {},
-                    ):
-                        _smallest_fetch = None
-                except Exception:
-                    _smallest_fetch = None
-                if _smallest_fetch:
+                    _picked_order = None
+                if _picked_order is not None:
                     break
-            if _smallest_fetch:
+            if _picked_order is not None:
                 try:
                     if _fetch_kind == "DEFINITION":
                         _counts["smallest_fetch_definition"] = _count("smallest_fetch_definition") + 1
@@ -2574,18 +2550,22 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 except Exception:
                     pass
                 _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _smallest_fetch["next_action"]
-                _reason_data["action_parameters"] = _smallest_fetch["action_parameters"]
+                _reason_data["next_action"] = _picked_order.action_type
+                _reason_data["action_parameters"] = dict(
+                    _picked_order.action_parameters or {}
+                )
                 _reason_data["forced_smallest_fetch"] = True
                 _reason_data["forced_smallest_fetch_kind"] = _fetch_kind
-                _reason_data["forced_smallest_fetch_gap_id"] = _smallest_fetch["gap_id"]
+                _reason_data["forced_smallest_fetch_gap_id"] = str(
+                    _picked_order.gap_id or ""
+                )
                 # Workflow-only bank context (D4): identity travels
                 # beside params, never inside them.
                 try:
                     _reason_data["smallest_fetch_context"] = {
                         "kind": str(_fetch_kind),
-                        "gap_id": str(_smallest_fetch.get("gap_id") or ""),
-                        "claim_ref": str(_smallest_fetch.get("claim_ref") or ""),
+                        "gap_id": str(_picked_order.gap_id or ""),
+                        "claim_ref": str(_picked_order.claim_ref or ""),
                     }
                 except Exception:
                     pass
