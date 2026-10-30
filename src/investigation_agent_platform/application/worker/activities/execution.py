@@ -185,6 +185,45 @@ def _with_fetch_reason(item: Any, fetch_reason: str) -> Any:
         return item
 
 
+def _with_s4_qualification(item: Any, window: Any) -> Any:
+    """Stamp a banked row with its S4 qualification (pure shape, fail-open).
+
+    P2: every banked row carries s4_qualified / s4_layer / s4_reason /
+    s4_qualifier_version in attributes, so readiness is computed from
+    banked reality instead of row counts. Dict and BaseModel (frozen)
+    shapes are both tolerated; anything else passes through. Never raises.
+    """
+    try:
+        from investigation_agent_platform.domain.evidence.qualification import (
+            QUALIFIER_VERSION,
+            qualify_item,
+        )
+
+        qual = qualify_item(item, window=window)
+        stamp = {
+            "s4_qualified": bool(qual.qualified),
+            "s4_layer": str(qual.layer),
+            "s4_reason": str(qual.reason)[:256],
+            "s4_qualifier_version": str(QUALIFIER_VERSION),
+        }
+        if isinstance(item, dict):
+            attrs = dict(item.get("attributes", {}) or {})
+            attrs.update(stamp)
+            item["attributes"] = attrs
+            return item
+        try:
+            attrs = dict(getattr(item, "attributes", None) or {})
+        except Exception:
+            return item
+        attrs.update(stamp)
+        try:
+            return item.model_copy(update={"attributes": attrs})
+        except Exception:
+            return item
+    except Exception:
+        return item
+
+
 def _banked_positive(items: list) -> bool:
     """True when banking produced citable positive evidence.
 
@@ -1029,6 +1068,37 @@ async def execute_action_activity(
         # tool calls, iterations, LLM tokens, and prompt projection.
         evidence_room = max(0, limits.max_evidence_items - evidence_count)
 
+        # P2 (S4 qualification): resolve the investigation window once per
+        # execute turn, so every banked row is stamped with its readiness
+        # verdict. Fail-open to None (rows stamp "no window to pin
+        # against") — banking never breaks on anchor/profile trouble.
+        s4_window: Any = None
+        try:
+            from investigation_agent_platform.domain.investigation.models import (
+                anchors_from_metadata,
+                derive_working_window,
+            )
+
+            _s4_anchors = anchors_from_metadata(
+                getattr(investigation_obj, "metadata", None)
+                if investigation_obj is not None
+                else None
+            )
+            _s4_lookback = 3600
+            _s4_cfg = getattr(_budget_profile, "investigation", None)
+            _s4_lb = getattr(_s4_cfg, "default_time_window", None)
+            if isinstance(_s4_lb, int) and not isinstance(_s4_lb, bool) and _s4_lb > 0:
+                _s4_lookback = _s4_lb
+            from datetime import datetime as _datetime
+            from datetime import UTC as _UTC
+
+            _s4_start, _s4_end, _ = derive_working_window(
+                _s4_anchors, _datetime.now(_UTC), _s4_lookback
+            )
+            s4_window = (_s4_start, _s4_end)
+        except Exception:
+            s4_window = None
+
         def _evidence_type_name(item: Any) -> str:
             etype = getattr(item, "evidence_type", "")
             return str(getattr(etype, "value", etype) or "").upper()
@@ -1074,6 +1144,15 @@ async def execute_action_activity(
                     kept = [_with_fetch_reason(item, _fetch_reason) for item in kept]
                 except Exception:
                     pass
+            # P2 (S4 qualification): stamp every kept row with its
+            # readiness verdict at the single shared bank helper. Shape
+            # requirements are evaluated at reason time (s4_ready); the
+            # stamp records per-row field qualification. Never breaks
+            # banking.
+            try:
+                kept = [_with_s4_qualification(item, s4_window) for item in kept]
+            except Exception:
+                pass
             return kept
 
         try:

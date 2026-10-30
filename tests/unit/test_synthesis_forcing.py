@@ -653,6 +653,51 @@ def test_floor_respects_cap():
     assert _floor(forced_count=2) is None
 
 
+def test_floor_skipped_when_s4_ready():
+    # P2: qualified evidence banked — no floor gather even with zero rows.
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": True,
+        },
+        evidence_banked_total=0,
+    )
+    assert hit is None
+
+
+def test_floor_fires_when_s4_not_ready_despite_counts():
+    # P2: 5 banked rows would satisfy the legacy count floor, but none
+    # qualifies — the floor must still fire.
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": False,
+            "s4_missing": "qualified code row (4 pinned fields) or pinned history row",
+        },
+        evidence_banked_total=5,
+    )
+    assert hit is not None
+
+
+def test_floor_fires_for_non_code_shape_when_s4_not_ready():
+    # P2: the code-shaped gate is bypassed once s4 reports unreadiness.
+    hit = _floor(
+        reason_data={
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_ready": False,
+            "s4_shape": "log",
+            "s4_missing": "window-pinned runtime row or scoped absence proof",
+        },
+        triage_route="DATA",
+        description="Why is revenue down?",
+        seed={},
+    )
+    assert hit is not None
+
+
 def test_floor_keyword_fallback():
     hit = _floor(description="Checkout latency spikes at midnight", seed={}, triage_route="BUG")
     assert hit is not None

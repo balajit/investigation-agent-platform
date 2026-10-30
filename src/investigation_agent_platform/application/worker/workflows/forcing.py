@@ -920,11 +920,21 @@ def _explore_floor_target(
             return None
         if int(forced_count or 0) >= 2:
             return None
-        try:
-            if int(evidence_banked_total or 0) >= _FLOOR_MIN_EVIDENCE:
-                return None
-        except (TypeError, ValueError):
+        # P2 (S4): the reason activity reports shape-aware readiness from
+        # banked rows. Ready means qualified evidence is banked — no floor
+        # gather. Not-ready means gather until qualified (the legacy count
+        # gate is skipped: 3 unqualified rows must not satisfy the floor).
+        # Absent (legacy/undecidable) preserves the count-based floor.
+        s4 = (reason_data or {}).get("s4_ready", None)
+        if s4 is True:
             return None
+        s4_floor = s4 is False
+        if not s4_floor:
+            try:
+                if int(evidence_banked_total or 0) >= _FLOOR_MIN_EVIDENCE:
+                    return None
+            except (TypeError, ValueError):
+                return None
         seed = seed or {}
         frames = seed.get("frames") or []
         code_shaped = (
@@ -948,7 +958,7 @@ def _explore_floor_target(
                 )
             except Exception:
                 code_shaped = False
-        if not code_shaped:
+        if not code_shaped and not s4_floor:
             return None
         haystacks = [str(description or "")]
         try:

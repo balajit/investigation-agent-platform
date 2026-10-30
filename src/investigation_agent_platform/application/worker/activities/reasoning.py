@@ -428,6 +428,59 @@ def select_reasoning_evidence(items: Any, hypotheses: Any, limit: int = 200) -> 
     return sorted(chosen, key=_key)
 
 
+def _s4_readiness(
+    evidence_items: Any, investigation: Any, default_lookback_s: int = 3600
+) -> dict[str, Any]:
+    """P2 (S4): shape-aware readiness over the reasoner's evidence set.
+
+    Computes qualify-per-row plus s4_ready(shape, …) from the banked rows,
+    P1 anchors, and the question shape. Returns {} when undecidable so
+    legacy behavior (count-based floor) is preserved. Never raises.
+    """
+    try:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        from investigation_agent_platform.domain.analysis.question_shape import (
+            classify_question_shape,
+        )
+        from investigation_agent_platform.domain.evidence.qualification import (
+            QUALIFIER_VERSION,
+            qualify_item,
+            s4_ready,
+        )
+        from investigation_agent_platform.domain.investigation.models import (
+            anchors_from_metadata,
+            derive_working_window,
+        )
+
+        try:
+            lookback = int(default_lookback_s or 3600)
+        except (TypeError, ValueError):
+            lookback = 3600
+        anchors = anchors_from_metadata(getattr(investigation, "metadata", None))
+        start, end, _ = derive_working_window(anchors, _datetime.now(_UTC), lookback)
+        quals = [qualify_item(item, window=(start, end)) for item in (evidence_items or [])]
+        request = getattr(investigation, "request", None)
+        problem = str(getattr(request, "problem_description", "") or "")
+        shape = classify_question_shape(problem)
+        ready, missing, satisfied_by = s4_ready(shape, quals)
+        layers: dict[str, int] = {}
+        for qual in quals:
+            if qual.qualified:
+                layers[qual.layer] = layers.get(qual.layer, 0) + 1
+        return {
+            "s4_ready": bool(ready),
+            "s4_missing": str(missing),
+            "s4_satisfied_by": str(satisfied_by),
+            "s4_shape": str(shape),
+            "s4_qualified_layers": layers,
+            "s4_qualifier_version": str(QUALIFIER_VERSION),
+        }
+    except Exception:
+        return {}
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def reason_activity(params: ReasonInput) -> GenericActivityResult:
@@ -833,6 +886,20 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             except Exception:
                 pass
             limits = apply_effective_limits(limits, state.investigation)
+            # P2 (S4): shape-aware readiness over the reasoner's evidence
+            # set. Flows into reason_data; the floor forcing consults it
+            # instead of raw row counts. Fail-open: {} preserves legacy.
+            _s4_lookback = 3600
+            try:
+                _s4_cfg = getattr(_budget_profile, "investigation", None)
+                _s4_lb = getattr(_s4_cfg, "default_time_window", None)
+                if isinstance(_s4_lb, int) and not isinstance(_s4_lb, bool) and _s4_lb > 0:
+                    _s4_lookback = _s4_lb
+            except Exception:
+                pass
+            _s4 = _s4_readiness(
+                getattr(state, "evidence", []), state.investigation, _s4_lookback
+            )
             if cumulative_tokens >= limits.max_llm_tokens:
                 story_log(
                     logger,
@@ -977,6 +1044,14 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     "llm_usage": usage,
                     "llm_tokens": call_tokens,
                     "llm_cost": call_cost,
+                    # P2 (S4): shape-aware readiness for the floor forcing.
+                    # Absent (legacy/undecidable) preserves count-based floor.
+                    "s4_ready": _s4.get("s4_ready"),
+                    "s4_missing": _s4.get("s4_missing"),
+                    "s4_satisfied_by": _s4.get("s4_satisfied_by"),
+                    "s4_shape": _s4.get("s4_shape"),
+                    "s4_qualified_layers": _s4.get("s4_qualified_layers"),
+                    "s4_qualifier_version": _s4.get("s4_qualifier_version"),
                 },
             )
         except Exception as exc:
