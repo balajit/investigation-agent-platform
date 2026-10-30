@@ -41,4 +41,4 @@ connections/
 reports/
 # Ledger exception: this .log is a durable project record, not scratch.
 !docs/IAP_Arch_Eng_Recommendations.log
-.idea/
+.idea/*
