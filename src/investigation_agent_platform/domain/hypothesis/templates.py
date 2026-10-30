@@ -1,0 +1,280 @@
+# src/investigation_agent_platform/domain/hypothesis/templates.py
+"""S2 dormant-activation templates (DES-S2-dormant-templates v1.0).
+
+For each suspect path, S2 instantiates dormant-activation templates
+alongside mechanism hypotheses. Each template names its discriminating
+fetch at birth; every branch/guard on the path renders as an explicit,
+checkable, cost-ordered assumption priced against the spread budget.
+Templates that resolve beyond tenant repos terminate at template time as
+named-handoff candidates — never as fetches.
+
+Pure domain: no I/O, no providers. Callers (code-layer analysis, P6
+frontier) supply the classified suspect-path sites; this module only
+decides which templates activate and what each one obligates.
+"""
+
+from enum import StrEnum
+from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+#: Version pin for every template this module emits. In-flight rows keep
+#: the semantics they started with; unmarked rows resolve to current.
+TEMPLATES_VERSION_CURRENT = "templates-v1"
+
+
+class TemplateKind(StrEnum):
+    """The four dormant-activation template families (DES-S2 section 1)."""
+
+    FLAG_GATED = "FLAG_GATED"
+    DATA_GATED = "DATA_GATED"
+    CONTRACT_DRIFT = "CONTRACT_DRIFT"
+    REGIME_CROSSING = "REGIME_CROSSING"
+
+
+class SuspectSiteKind(StrEnum):
+    """Code-layer classification of one site on a suspect path."""
+
+    FLAG_GATE = "FLAG_GATE"
+    BRANCH_MATCH = "BRANCH_MATCH"
+    EXTERNAL_CALL = "EXTERNAL_CALL"
+    LOOP_POOL_RETRY = "LOOP_POOL_RETRY"
+    OTHER = "OTHER"
+
+
+class DiscriminatingFetchKind(StrEnum):
+    """The one fetch that would discriminate each template family."""
+
+    GATE_STATE_T_VS_G = "GATE_STATE_T_VS_G"
+    FIRST_SEEN_PAYLOAD_SHAPE = "FIRST_SEEN_PAYLOAD_SHAPE"
+    LIVE_RESPONSE_VS_ASSUMED_SHAPE = "LIVE_RESPONSE_VS_ASSUMED_SHAPE"
+    TREND_BREAK_AT_T = "TREND_BREAK_AT_T"
+
+
+#: Site kind -> template family. OTHER sites activate nothing.
+SITE_KIND_TO_TEMPLATE: dict[SuspectSiteKind, TemplateKind] = {
+    SuspectSiteKind.FLAG_GATE: TemplateKind.FLAG_GATED,
+    SuspectSiteKind.BRANCH_MATCH: TemplateKind.DATA_GATED,
+    SuspectSiteKind.EXTERNAL_CALL: TemplateKind.CONTRACT_DRIFT,
+    SuspectSiteKind.LOOP_POOL_RETRY: TemplateKind.REGIME_CROSSING,
+}
+
+#: Template family -> its birth discriminating fetch.
+TEMPLATE_DISCRIMINATOR: dict[TemplateKind, DiscriminatingFetchKind] = {
+    TemplateKind.FLAG_GATED: DiscriminatingFetchKind.GATE_STATE_T_VS_G,
+    TemplateKind.DATA_GATED: DiscriminatingFetchKind.FIRST_SEEN_PAYLOAD_SHAPE,
+    TemplateKind.CONTRACT_DRIFT: DiscriminatingFetchKind.LIVE_RESPONSE_VS_ASSUMED_SHAPE,
+    TemplateKind.REGIME_CROSSING: DiscriminatingFetchKind.TREND_BREAK_AT_T,
+}
+
+
+class SuspectSite(BaseModel):
+    """One classified site on a suspect path, supplied by code-layer analysis."""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_id: UUID
+    kind: SuspectSiteKind
+    file_path: str = Field(..., min_length=1, max_length=1024)
+    line: int = Field(..., ge=1)
+    detail: str = Field(default="", max_length=1024)
+    #: True when the site resolves beyond tenant repos (ADR-BOUNDARY-001).
+    cross_boundary: bool = False
+    #: Upstream identity for cross-boundary sites; required when set.
+    upstream_identity: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def _require_upstream_identity(self) -> "SuspectSite":
+        if self.cross_boundary and not self.upstream_identity:
+            raise ValueError("cross-boundary sites require upstream_identity")
+        return self
+
+
+class SuspectPath(BaseModel):
+    """One suspect path: ordered classified sites at a pinned revision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path_id: UUID = Field(default_factory=uuid4)
+    repository: str = Field(..., min_length=1, max_length=256)
+    revision: str = Field(..., min_length=1, max_length=128)
+    sites: list[SuspectSite] = Field(..., min_length=1, max_length=200)
+
+
+class DiscriminatingFetch(BaseModel):
+    """The fetch named at template birth; the cheapest observation that
+    would discriminate this template family on this path."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fetch_kind: DiscriminatingFetchKind
+    target: str = Field(..., min_length=1, max_length=1024)
+    window_note: str = Field(default="", max_length=512)
+
+
+class TemplateAssumption(BaseModel):
+    """One checkable assumption: a branch/guard expectation plus its price
+    in spread-budget units. ``check_order`` is cost order, ascending."""
+
+    model_config = ConfigDict(frozen=True)
+
+    expects: str = Field(..., min_length=1, max_length=1024)
+    check_order: int = Field(..., ge=0)
+    cost_estimate: int = Field(..., ge=0)
+
+
+class HandoffCandidate(BaseModel):
+    """A cross-boundary template terminated at template time: a named
+    handoff with upstream identity plus localizing evidence. Never a fetch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    upstream_identity: str = Field(..., min_length=1, max_length=512)
+    localizing_evidence: str = Field(..., min_length=1, max_length=2048)
+    reason: str = Field(..., min_length=1, max_length=1024)
+
+
+class DormantTemplate(BaseModel):
+    """One activated dormant template: family, birth fetch, cost-ordered
+    assumptions. Population rule: exactly one of ``discriminating_fetch``
+    (in-tenant) or ``handoff_candidate`` (cross-boundary) is set."""
+
+    model_config = ConfigDict(frozen=True)
+
+    template_id: UUID = Field(default_factory=uuid4)
+    version: str = Field(default=TEMPLATES_VERSION_CURRENT, max_length=16)
+    kind: TemplateKind
+    suspect_path_id: UUID
+    site_node_ids: list[UUID] = Field(..., min_length=1, max_length=200)
+    discriminating_fetch: DiscriminatingFetch | None = None
+    assumptions: list[TemplateAssumption] = Field(default_factory=list, max_length=50)
+    handoff_candidate: HandoffCandidate | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_outcome(self) -> "DormantTemplate":
+        if (self.discriminating_fetch is None) == (self.handoff_candidate is None):
+            raise ValueError("exactly one of discriminating_fetch / handoff_candidate is required")
+        if self.handoff_candidate is not None and self.assumptions:
+            raise ValueError("handoff candidates carry no assumptions, only localizing evidence")
+        orders = [a.check_order for a in self.assumptions]
+        if orders != sorted(orders):
+            raise ValueError("assumptions must be cost-ordered ascending")
+        return self
+
+    @property
+    def total_cost(self) -> int:
+        """Sum of assumption prices in spread-budget units (0 for handoffs)."""
+        return sum(a.cost_estimate for a in self.assumptions)
+
+    def priced_within(self, spread_budget: int) -> bool:
+        """True when the whole assumption list fits the spread budget."""
+        return self.total_cost <= spread_budget
+
+
+def instantiate_templates(path: SuspectPath) -> list[DormantTemplate]:
+    """Activate dormant templates for one suspect path.
+
+    One template per site-kind family present among in-tenant sites; each
+    names its discriminating fetch at birth with cost-ordered assumptions.
+    Cross-boundary sites group by upstream identity into handoff candidates
+    that terminate at template time — they never produce fetches.
+    """
+    templates: list[DormantTemplate] = []
+    in_tenant: dict[TemplateKind, list[SuspectSite]] = {}
+    cross_boundary: dict[str, list[SuspectSite]] = {}
+    for site in path.sites:
+        if site.cross_boundary:
+            # Validated non-empty by SuspectSite.
+            cross_boundary.setdefault(site.upstream_identity or "", []).append(site)
+            continue
+        kind = SITE_KIND_TO_TEMPLATE.get(site.kind)
+        if kind is None:
+            continue
+        in_tenant.setdefault(kind, []).append(site)
+    for kind, sites in in_tenant.items():
+        fetch_kind = TEMPLATE_DISCRIMINATOR[kind]
+        target = "; ".join(f"{s.file_path}:{s.line}" + (f" ({s.detail})" if s.detail else "") for s in sites)
+        assumptions = _assumptions_for(kind, sites)
+        templates.append(
+            DormantTemplate(
+                kind=kind,
+                suspect_path_id=path.path_id,
+                site_node_ids=[s.node_id for s in sites],
+                discriminating_fetch=DiscriminatingFetch(
+                    fetch_kind=fetch_kind,
+                    target=target,
+                    window_note="gate/payload/trend discriminator spans onset T and last-good G",
+                ),
+                assumptions=assumptions,
+            )
+        )
+    for upstream, sites in cross_boundary.items():
+        kind = _dominant_kind(sites)
+        if kind is None:
+            # All-OTHER group: no template family applies, so nothing
+            # activates — same rule as in-tenant OTHER sites.
+            continue
+        localizing = "; ".join(
+            f"{s.file_path}:{s.line}" + (f" ({s.detail})" if s.detail else "") for s in sites
+        )
+        templates.append(
+            DormantTemplate(
+                kind=kind,
+                suspect_path_id=path.path_id,
+                site_node_ids=[s.node_id for s in sites],
+                handoff_candidate=HandoffCandidate(
+                    upstream_identity=upstream,
+                    localizing_evidence=localizing,
+                    reason=(
+                        "template resolves beyond tenant repos; terminates at "
+                        "template time per ADR-BOUNDARY-001, never fetched"
+                    ),
+                ),
+            )
+        )
+    return templates
+
+
+def _assumptions_for(kind: TemplateKind, sites: list[SuspectSite]) -> list[TemplateAssumption]:
+    """Render every branch/guard as an explicit checkable assumption,
+    cheapest check first. Costs are relative spread-budget units."""
+    if kind == TemplateKind.FLAG_GATED:
+        raw = [
+            ("flag gate controls the suspect path (expects gate readable at T)", 1),
+            ("gate state at T differs from gate state at last-good G", 2),
+            ("no second gate downstream re-decides the path", 3),
+        ]
+    elif kind == TemplateKind.DATA_GATED:
+        raw = [
+            ("branch/match site enumerates all live payload shapes", 1),
+            ("first-seen payload shape per branch is recorded", 2),
+            ("unseen shape at T explains the path taken", 3),
+        ]
+    elif kind == TemplateKind.CONTRACT_DRIFT:
+        raw = [
+            ("upstream response shape still matches the code's assumption", 2),
+            ("assumed shape is pinned to a recorded upstream version", 1),
+            ("drift began between last-good G and onset T", 3),
+        ]
+    else:  # REGIME_CROSSING
+        raw = [
+            ("loop/pool/retry site is bounded under normal regime", 1),
+            ("metric trend breaks aligned with onset T", 2),
+            ("no concurrent regime change explains the break", 4),
+        ]
+    ordered = sorted(raw, key=lambda item: item[1])
+    return [
+        TemplateAssumption(expects=text, check_order=i, cost_estimate=cost)
+        for i, (text, cost) in enumerate(ordered)
+    ]
+
+
+def _dominant_kind(sites: list[SuspectSite]) -> TemplateKind | None:
+    """Family label for a cross-boundary group: first classifiable site
+    wins; None when no site carries template semantics. The label is
+    descriptive only — the outcome is always a handoff."""
+    for site in sites:
+        kind = SITE_KIND_TO_TEMPLATE.get(site.kind)
+        if kind is not None:
+            return kind
+    return None
