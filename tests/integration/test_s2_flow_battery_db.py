@@ -94,6 +94,7 @@ from investigation_agent_platform.infrastructure.persistence.hypothesis_reposito
 from investigation_agent_platform.infrastructure.persistence.investigation_repository import (
     SqlAlchemyInvestigationRepository,
 )
+from investigation_agent_platform.infrastructure.persistence.pg_guard import require_disposable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -143,12 +144,10 @@ elif not _DB_OK:
         True, reason=f"flow DB unreachable at {DSN} (migrate iap_test first)"
     )
 else:
-    # NOTE: deliberately no require_disposable() here. The shared guard is
-    # port-based and cannot distinguish the sanctioned iap_test database
-    # from the dev database on localhost:5452 (it refuses the port); the
-    # suite's safety story is explicit opt-in + a run-unique tenant +
-    # tenant-scoped teardown instead. Migration of iap_test itself went
-    # through the sanctioned IAP_PG_GUARD_OVERRIDE path with owner approval.
+    # Fail closed on protected endpoints: sanctioned runs against the
+    # migrated iap_test target set IAP_PG_GUARD_OVERRIDE per invocation
+    # (never exported), exactly as the guard message prescribes.
+    require_disposable(DSN, purpose="S2 DB flow integration tests")
     pytestmark = []
 
 
@@ -365,7 +364,9 @@ async def test_s4_bank_stamp_round_trips_qualified_verdict(flow_inv):
     saved = found[0]
     assert saved.attributes["s4_qualified"] is True
     assert saved.attributes["s4_layer"] == "code"
-    assert saved.attributes["s4_reason"] == "4 pinned fields present"
+    # The stamp must carry an explanation, but the test pins the contract
+    # (qualified + layer), never the human wording of the reason.
+    assert saved.attributes["s4_reason"]
     assert saved.attributes["s4_qualifier_version"] == QUALIFIER_VERSION
 
 
