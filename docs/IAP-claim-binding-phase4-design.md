@@ -1,5 +1,7 @@
 # Design: Claim binding Phase 4 — smallest-fetch forcing + NOT_CHECKABLE denominator
 
+> Supersession (2026-10-30, 2b step 6): the feed-marker mechanism (`claim_gap_feed` entries, `_carry_claim_gap_feed`, `_smallest_fetch_target`) is retired. The verify turn now carries GAP_FILL work orders per claim gap (`_carry_gap_orders`, order identity in `gap_id`/`claim_ref`) and the slot dispatches the first uncovered, dispatchable order per `SMALLEST_FETCH_ORDER` (`_pick_gap_order`) reading only the newest carrier — tombstone suppression, per-kind caps, coverage stamps, and builder-resolved actions are unchanged. Body retained as the build record.
+
 ## Context
 
 Phases 1–3 built per-claim retrieval-to-proof binding: authoritative per-`(kind, target)` partitions with demotion (Phase 1), per-claim stored queries with query-only linkage (Phase 2), and misattribution repair behind the `cbv3` sub-gate (Phase 3). Two motion items were deferred in every phase design as Phase 4:

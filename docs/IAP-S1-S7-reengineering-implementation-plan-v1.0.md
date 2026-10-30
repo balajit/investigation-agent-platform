@@ -78,7 +78,7 @@ Chunk acceptance (per `DES-measurement` §4): record current-code-shape battery 
 - Depends on P1 (budget), P3 (failure character → spread dimensions), P5 (template seeds).
 - Frontier entity (new — today `frontier` is only a loop-local BFS variable in four places): best-first over (service, file, commit, span, config) with VOI scoring, spread keyed to S6 failure character, three-exit stopping (budget/fixpoint/diminishing-returns/confidence-with-corroboration), depth/TTL caps.
 - Replaces the forcing cascade in `run_investigation.py:683-1023` (`workflows/forcing.py` helpers retire as frontier subsumes each override).
-- Work orders: reasoner output becomes verdicts-with-citations or hypothesis-plus-discriminating-fetch seeds back into the frontier (replaces today's `action_history` marker handoffs `_carry_ledger_directive` / `_carry_claim_gap_feed` with typed entities).
+- Work orders: reasoner output becomes verdicts-with-citations or hypothesis-plus-discriminating-fetch seeds back into the frontier (replaces today's `action_history` marker handoffs `_carry_ledger_directive` / `_carry_claim_gap_feed` with typed entities). Done in 2b steps 5–6 (loop-l1-reread session, merged to `iap-s1s7-reengineering-v1.0`): carried REQUERY/GAP_FILL orders dispatch from their slots; markers and feeds retired; live battery 5 PASS / 1 FAIL with no stage worse than baseline.
 - P9 hook: `BLOCKED_ON_TELEMETRY`/`WAITING`/`DEFERRED` + backoff/heartbeat/resume land here (Phase A already logs ERROR + typed errors).
 - Battery movement: G1 bound-or-priced-handoff rate; forcing-pile deletion must not regress targeted stages.
 

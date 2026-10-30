@@ -1,6 +1,7 @@
 # Design: Proof-Kernel G3 Retrieval Closure v1.0
 
 > Status: as-built contract. Owner APPROVED this design and separately authorized G3 implementation (2026-10-25; see recommendations log); Steps 1–7 are implemented and the first live battery sample has run (traceability G3 row). The G3 gate remains PARTIAL pending a measurable live sample and explicit owner sign-off — no numeric result closes it alone. It does not close G4, authorize production behavior changes, or permit repair-by-assumption.
+> Supersession (2026-10-30, 2b step 5): the directive-marker mechanism in §Convert (`ledger_requery_directive` dicts, `_carry_ledger_directive`, `_should_force_ledger_requery`, `mark_consumed: invalid-directive`) is retired. The verify turn now carries PENDING REQUERY work orders (`_carry_requery_order`) and the cascade dispatches the newest unconsumed carrier (`_should_force_order_requery`) with unchanged attempt-budget matching and history stamps. The attempt ledger, `directive_consumed`, `RETRYABLE_ACTIONS`, and stamp shapes below are unchanged — only the carrier changed. Body retained as the build record.
 > Scope: per-claim retrieval binding, bounded re-retrieval directives, provider-total exposure, and a benefit battery with a pass bar. Everything is diagnostics-first: no verdict, tier, status, or confidence change may be caused by ledger data.
 
 ## Context
