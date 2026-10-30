@@ -74,13 +74,21 @@ class TestFocusExtraction:
         assert focus.line_start is None
         assert focus.line_end is None
 
-    def test_any_action_with_file_path_yields_file_focus(self) -> None:
+    def test_search_code_with_file_path_yields_file_focus(self) -> None:
         focus = focus_from_reason_data(
             {"next_action": "SEARCH_CODE", "action_parameters": {"file_path": "svc/b.py"}}
         )
         assert focus is not None
         assert focus.surface == "svc/b.py"
         assert focus.surface_kind == "file"
+
+    def test_non_fetch_action_yields_no_focus(self) -> None:
+        assert (
+            focus_from_reason_data(
+                {"next_action": "CONCLUDE", "action_parameters": {"file_path": "svc/b.py"}}
+            )
+            is None
+        )
 
 
 class TestShiftDetection:
@@ -101,6 +109,11 @@ class TestShiftDetection:
         prev = FocusPoint.model_validate(_prev())
         curr = FocusPoint.model_validate(_prev(line_end=20))
         assert detect_shift(prev, curr) is FocusShift.REFINED
+
+    def test_kind_change_is_pivot(self) -> None:
+        prev = FocusPoint.model_validate(_prev(surface="normalize", surface_kind="file"))
+        curr = FocusPoint(surface="normalize", surface_kind="symbol")
+        assert detect_shift(prev, curr) is FocusShift.PIVOTED
 
 
 class TestLivenessGate:
@@ -153,9 +166,19 @@ class TestPivotForcing:
     def test_recent_surface_damps_refire(self) -> None:
         assert (
             _should_force_pivot_recollect(
-                _prev(), _reason(file_path="tenant/svc/new.py"), 10, ["tenant/svc/new.py"]
+                _prev(), _reason(file_path="tenant/svc/new.py"), 10, ["file:tenant/svc/new.py"]
             )
             is None
+        )
+
+    def test_unqualified_entry_does_not_damp(self) -> None:
+        # Callers must pass kind-qualified surfaces (see
+        # _recent_collection_surfaces); a bare path never matches.
+        assert (
+            _should_force_pivot_recollect(
+                _prev(), _reason(file_path="tenant/svc/new.py"), 10, ["tenant/svc/new.py"]
+            )
+            is not None
         )
 
     def test_refined_does_not_force(self) -> None:

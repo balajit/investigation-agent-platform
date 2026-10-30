@@ -549,7 +549,8 @@ class TestFastPathPredicate:
         guarded by _d6_fired, so a later rule cannot clobber the forced
         CONCLUDE while the flag stays set. Counts are structural: adding
         a cascade override without the guard breaks the ratio and forces
-        a conscious update here."""
+        a conscious update here. The cascade lives in
+        forcing.apply_post_reason_cascade (2b seam)."""
         import pathlib
 
         src = (
@@ -560,23 +561,83 @@ class TestFastPathPredicate:
                 / "application"
                 / "worker"
                 / "workflows"
-                / "run_investigation.py"
+                / "forcing.py"
             )
             .read_text()
             .splitlines()
         )
-        start = next(i for i, l in enumerate(src) if "opinion-only fast path" in l)
-        end = next(i for i, l in enumerate(src) if "smallest-fetch slot" in l)
-        region = src[start:end]
+        start = next(i for i, l in enumerate(src) if "def apply_post_reason_cascade" in l)
+        region = src[start:]
         overrides = [l for l in region if '_reason_data["next_action"] =' in l]
-        guards = [l for l in region if "not _d6_fired" in l or "or _d6_fired" in l]
-        # 12th override is the P6 pivot-recollect stage (guarded like the rest).
-        assert len(overrides) == 12, f"cascade override count changed: {len(overrides)}"
-        assert len(guards) == len(overrides) - 1, (
-            f"D6 fast path has {len(overrides)} overrides but only "
-            f"{len(guards)} downstream guards — an override can clobber "
-            "the forced CONCLUDE"
+        guards = [l for l in region if "not _d6_fired" in l]
+        assert len(overrides) == 11, f"cascade override count changed: {len(overrides)}"
+        # 9 rules carry the direct pin; walk-stack suppresses via its
+        # ternary and the smallest-fetch slot via the forced_not_checkable
+        # flag set by the D6 block itself — both asserted below.
+        assert len(guards) == 9, f"D6 guard count changed: {len(guards)}"
+        walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
+        ledger_at = next(i for i, l in enumerate(region) if "G3: ledger-requery forcing" in l)
+        walk_block = region[walk_at:ledger_at]
+        assert any("or _d6_fired" in l for l in walk_block), (
+            "walk-stack must keep its D6 suppression"
         )
+        fetch_at = next(i for i, l in enumerate(region) if "smallest-fetch slot" in l)
+        fetch_block = region[fetch_at:]
+        assert any('not _reason_data.get("forced_not_checkable")' in l for l in fetch_block), (
+            "smallest-fetch must keep its D6 suppression via forced_not_checkable"
+        )
+
+    def test_pivot_precedence_guards(self):
+        """2b step-1 pin: every gathering rule that can fire on the same
+        turn as a pivot recollect must stand down once
+        forced_pivot_recollect is set — otherwise the cascade gathers on
+        the stale focus the pivot just left. Walk-stack is the intended
+        exception (explicit intake frames outrank everything). Counts are
+        structural: ledger, formulate, synthesis, call-site, log search,
+        replan, smallest-fetch."""
+        import pathlib
+
+        src = (
+            (
+                pathlib.Path(__file__).resolve().parents[2]
+                / "src"
+                / "investigation_agent_platform"
+                / "application"
+                / "worker"
+                / "workflows"
+                / "forcing.py"
+            )
+            .read_text()
+            .splitlines()
+        )
+        start = next(i for i, l in enumerate(src) if "def apply_post_reason_cascade" in l)
+        region = src[start:]
+        pivot_guards = [l for l in region if 'not _reason_data.get("forced_pivot_recollect")' in l]
+        assert len(pivot_guards) == 7, (
+            f"pivot guard count changed: {len(pivot_guards)}"
+        )
+        walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
+        ledger_at = next(i for i, l in enumerate(region) if "G3: ledger-requery forcing" in l)
+        walk_block = region[walk_at:ledger_at]
+        assert not any("forced_pivot_recollect" in l for l in walk_block), (
+            "walk-stack must keep winning over pivot (intake frames first)"
+        )
+
+    def test_pivot_disjoint_from_floor_and_reread(self):
+        """2b step-1 pin: floor and re-read need no pivot guard because
+        their triggers are disjoint from the pivot's by construction —
+        they fire only on committal/VERIFY proposals while a pivot needs
+        a fetch proposal (see PIVOT_FILE_ACTIONS)."""
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _FLOOR_TERMINAL_ACTIONS,
+        )
+        from investigation_agent_platform.domain.collection.focus import (
+            PIVOT_FILE_ACTIONS,
+        )
+
+        assert not (set(PIVOT_FILE_ACTIONS) & set(_FLOOR_TERMINAL_ACTIONS))
+        assert "FIND_SYMBOL" not in set(_FLOOR_TERMINAL_ACTIONS)
+        assert "VERIFY_HYPOTHESIS" not in set(PIVOT_FILE_ACTIONS)
 
 
 class TestNotCheckableTaxonomy:

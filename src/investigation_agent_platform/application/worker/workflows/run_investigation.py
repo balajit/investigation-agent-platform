@@ -68,12 +68,6 @@ with workflow.unsafe.imports_passed_through():
         verification_state,
     )
 
-    # P6 2b-i: focus-point extraction for the pivot-recollect stage —
-    # pure pydantic parsing, deterministic, replay-safe.
-    from investigation_agent_platform.domain.collection.focus import (
-        focus_from_reason_data,
-    )
-
     # D3 Phase 0 shadow definitions: pure receipt pairing + summary
     # (canonical digests only — deterministic, replay-safe). The
     # workflow never branches on the paired output.
@@ -83,18 +77,9 @@ with workflow.unsafe.imports_passed_through():
         summarize_shadow_definitions,
     )
 
-with workflow.unsafe.imports_passed_through():
-    # G3: ledger directive helpers — pure, deterministic, replay-safe
-    # (hashlib/re only at call time; no I/O, no clock, no process-local
-    # ledger reads). Imported passed-through like the shadow helpers
-    # because the application layer is not import-safe in the sandbox.
-    from investigation_agent_platform.application.evidence.retrieval_ledger import (
-        recorded_attempt_summaries,
-    )
-
 
 from .forcing import (
-    SMALLEST_FETCH_ORDER,
+    PostReasonCascadeState,
     _absence_disconfirmation_target,
     _callsite_target,
     _carry_claim_gap_feed,
@@ -111,14 +96,9 @@ from .forcing import (
     _resolve_max_iterations,
     _should_force_conclude_not_checkable,
     _should_force_formulate,
-    _should_force_ledger_requery,
-    _should_force_log_search,
-    _should_force_pivot_recollect,
-    _should_force_replan,
     _should_force_synthesis,
     _should_force_walk_stack,
-    _smallest_fetch_dispatchable,
-    _smallest_fetch_target,
+    apply_post_reason_cascade,
 )
 
 
@@ -738,379 +718,80 @@ class RunInvestigationWorkflow:
                 _reason_data["action_parameters"] = _absence_target["action_parameters"]
                 _reason_data["forced_absence_disconfirmation"] = True
             _absence_forced = bool(_reason_data.get("forced_absence_disconfirmation"))
-            # P6 2b-i: pivot recollect — the reasoner's point of focus
-            # moved surfaces, so go back to collection on the new focus
-            # instead of verifying or concluding on the stale one. Runs
-            # before the other gathering forces so they don't gather on
-            # the old focus; explicit-frame walk-stack below still wins
-            # (intake frames outrank everything). Skipped on
-            # defer/D6/absence turns, and the rule itself damps refires
-            # on recently collected surfaces. Budget-blind by design
-            # (agentic layers own budget); the turns-remaining gate is
-            # liveness, not budget.
-            _pivot_override = None
-            if not _is_defer and not _d6_fired and not _absence_forced:
-                try:
-                    _pivot_targets: list[str] = []
-                    for _entry in (action_history or [])[-10:]:
-                        if not isinstance(_entry, dict):
-                            continue
-                        _entry_params = _entry.get("parameters") or {}
-                        if not isinstance(_entry_params, dict):
-                            continue
-                        _entry_file = str(_entry_params.get("file_path") or "").strip()
-                        if _entry_file:
-                            _pivot_targets.append(_entry_file)
-                except Exception:
-                    _pivot_targets = []
-                _pivot_override = _should_force_pivot_recollect(
-                    _prev_focus,
-                    _reason_data,
-                    max_iterations - iteration,
-                    _pivot_targets,
-                )
-            if _pivot_override is not None:
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _pivot_override["next_action"]
-                _reason_data["action_parameters"] = _pivot_override["action_parameters"]
-                _reason_data["forced_pivot_recollect"] = True
-            # D2: stack-walk forcing first — explicit intake frames outrank
-            # every other gathering rule.
-            _walk_params = (
-                None
-                if _is_defer or _absence_forced or _d6_fired
-                else _should_force_walk_stack(
-                    knowledge_seed, _reason_data, action_history, forced_walk_stack_count
-                )
-            )
-            if _walk_params:
-                forced_walk_stack_count += 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "WALK_STACK"
-                _reason_data["action_parameters"] = _walk_params
-                _reason_data["forced_walk_stack"] = True
-            # G3: ledger-requery forcing — a bounded re-retrieval for an
-            # unsatisfied claim outranks the remaining gathering rules
-            # but never stack-walk (evaluated only when no walk-stack
-            # force fired this cascade). Same-turn summaries ride from
-            # history entries via recorded_attempt_summaries, which
-            # carries each entry's top-level attempt_id into the attempt
-            # dict — without that stamp, a summary and its persisted
-            # marker count as two attempts and the budget exhausts early.
-            _ledger_marker_ref: dict | None = None
-            # G3 precedence: a fired stack-walk suppresses ledger
-            # evaluation — the ledger never overwrites it.
-            if not _reason_data.get("forced_walk_stack") and not _d6_fired:
-                _recorded_summaries = recorded_attempt_summaries(action_history or []) or []
-                _ledger_override = _should_force_ledger_requery(action_history, _recorded_summaries)
-                if _ledger_override is not None and _ledger_override.get("mark_consumed"):
-                    _mark_idx = _ledger_override.get("marker_index")
-                    try:
-                        _mark_entry = (action_history or [])[_mark_idx]
-                        if isinstance(_mark_entry, dict):
-                            _mark_entry["consumed"] = True
-                            _ledger_marker_ref = None
-                    except (TypeError, IndexError, KeyError):
-                        pass
-                    if _ledger_override.get("mark_consumed") == "invalid-directive":
-                        workflow.logger.warning(
-                            "ledger directive refused (malformed); marker consumed-as-invalid",
-                            extra={
-                                "tenant_id": tenant_id,
-                                "investigation_id": inv_id,
-                                "event": "workflow ledger directive refused",
-                                "comp": COMP_WFLW,
-                                "func": "RunInvestigationWorkflow._run_inner",
-                                "stage": "force",
-                                "step": "requery",
-                                "outcome": OUTCOME_SKIPPED,
-                                "reason": "invalid-directive",
-                            },
-                        )
-                    _ledger_override = None
-                if _ledger_override is not None:
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = _ledger_override["action_type"]
-                    _reason_data["action_parameters"] = _ledger_override["action_parameters"]
-                    _reason_data["forced_requery"] = True
-                    try:
-                        _ledger_marker_ref = (action_history or [])[
-                            _ledger_override["marker_index"]
-                        ]
-                    except (TypeError, IndexError, KeyError):
-                        _ledger_marker_ref = None
-                    if not isinstance(_ledger_marker_ref, dict):
-                        _ledger_marker_ref = None
-            # Evidence floor — a committal proposal (formulate/verify/
-            # conclude) on fewer than 3 banked rows for a code-shaped
-            # incident gathers first instead of committing to a thin
-            # theory. Skipped once explicit frames already forced.
-            # Union of both lines' guards: skip floor forcing on defer turns
-            # and once absence-forcing fired (L2-D3-fix), and once walk-stack
-            # or requery forcing already fired (g4-closure).
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _d6_fired
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_requery")
-            ):
-                _floor = _explore_floor_target(
-                    _reason_data,
-                    evidence_banked_total,
-                    triage_route,
-                    input_data.description,
-                    knowledge_seed,
-                    forced_floor_count,
-                )
-                if _floor:
-                    forced_floor_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = _floor["next_action"]
-                    _reason_data["action_parameters"] = _floor["action_parameters"]
-                    _reason_data["forced_floor"] = True
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _d6_fired
-                and _should_force_formulate(
-                    iteration,
-                    formulated_count,
-                    _reason_data.get("hypotheses_evaluated"),
-                    evidence_banked_total,
-                    forced_formulate_count,
-                )
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_requery")
-            ):
-                forced_formulate_count += 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
-                _reason_data["forced_formulate"] = True
-            # T2-4: synthesis forcing — rich multi-action corpus with
-            # nothing committed gets FORMULATE (same override as G8).
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _d6_fired
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_requery")
-            ):
-                if _should_force_synthesis(
-                    action_history,
-                    evidence_banked_total,
-                    formulated_count,
-                    forced_synthesis_count,
-                    _reason_data,
-                ):
-                    forced_synthesis_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
-                    _reason_data["forced_formulate"] = True
-            # P0-2: re-read forcing — definition claim heading to VERIFY
-            # without a range-read gets the read first (G3 floor would
-            # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _d6_fired
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_requery")
-            ):
-                _reread_path = _reread_target(_reason_data, action_history, forced_reread_count)
-                if _reread_path:
-                    forced_reread_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = "GET_CODE"
-                    _reason_data["action_parameters"] = {"file_path": _reread_path}
-                    _reason_data["forced_reread"] = True
-            # Call-site forcing — a CALL_EDGE claim naming an unread caller
-            # file reads it before the loop can conclude on a graph summary
-            # alone. Skipped when an earlier read-forcing rule already fired.
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _d6_fired
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_reread")
-                and not _reason_data.get("forced_requery")
-            ):
-                _callsite = _callsite_target(
-                    _reason_data,
-                    action_history,
-                    forced_callsite_count,
+            # 2b seam: the post-reason gathering cascade is pure and lives
+            # in forcing.apply_post_reason_cascade (unit-tested); the
+            # workflow supplies activity results and counters, then writes
+            # the outputs back. Pre-cascade defer/D6/absence outcomes above
+            # are cascade inputs; explicit-frame walk-stack still wins.
+            _cascade_state = apply_post_reason_cascade(
+                PostReasonCascadeState(
+                    reason_data=_reason_data,
+                    action_history=action_history or [],
+                    evidence_banked_total=evidence_banked_total,
+                    triage_route=triage_route,
+                    description=input_data.description,
+                    knowledge_seed=knowledge_seed,
+                    max_iterations=max_iterations,
+                    iteration=iteration,
+                    prev_focus=_prev_focus,
+                    is_defer=bool(_is_defer),
+                    d6_fired=bool(_d6_fired),
+                    absence_forced=bool(_absence_forced),
+                    counts={
+                        "walk_stack": forced_walk_stack_count,
+                        "floor": forced_floor_count,
+                        "formulate": forced_formulate_count,
+                        "synthesis": forced_synthesis_count,
+                        "reread": forced_reread_count,
+                        "callsite": forced_callsite_count,
+                        "log_search": forced_log_search_count,
+                        "replan": forced_replan_count,
+                        "smallest_fetch_definition": forced_smallest_fetch_definition_count,
+                        "smallest_fetch_history": forced_smallest_fetch_history_count,
+                        "smallest_fetch_behavior": forced_smallest_fetch_behavior_count,
+                        "smallest_fetch_absence": forced_smallest_fetch_absence_count,
+                        "smallest_fetch_causal": forced_smallest_fetch_causal_count,
+                    },
+                    formulated_count=formulated_count,
                     tenant_id=tenant_id,
                     investigation_id=str(inv_id),
                 )
-                if _callsite:
-                    forced_callsite_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = _callsite["next_action"]
-                    _reason_data["action_parameters"] = _callsite["action_parameters"]
-                    _reason_data["forced_callsite"] = True
-            # B-4: log-first forcing — service-error complaints gather logs
-            # before code/state. Skipped when G8/G3/D2 already forced.
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_reread")
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _d6_fired
-                and not _reason_data.get("forced_callsite")
-                and not _reason_data.get("forced_requery")
-            ):
-                _log_params = _should_force_log_search(
-                    input_data.description,
-                    _reason_data,
-                    action_history,
-                    forced_log_search_count,
-                )
-                if _log_params:
-                    forced_log_search_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = "SEARCH_LOGS"
-                    _reason_data["action_parameters"] = _log_params
-                    _reason_data["forced_log_search"] = True
-            # E3: replan trigger last — two enriched empties on one surface
-            # plus same proposal redirects to the alternative family.
-            # Skipped when any earlier rule already forced.
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_reread")
-                and not _reason_data.get("forced_log_search")
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _d6_fired
-                and not _reason_data.get("forced_callsite")
-                and not _reason_data.get("forced_requery")
-            ):
-                _replan = _should_force_replan(
-                    input_data.description,
-                    _reason_data,
-                    action_history,
-                    forced_replan_count,
-                )
-                if _replan:
-                    forced_replan_count += 1
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = _replan["next_action"]
-                    _reason_data["action_parameters"] = _replan["action_parameters"]
-                    _reason_data["forced_replan"] = True
-            # Phase 4 (claim binding): smallest-fetch slot — LAST override
-            # before the story-debug/shadow capture, so no later rule can
-            # clobber it. First kind with an open gap and a dispatchable
-            # directive wins the turn.
-            if (
-                not _is_defer
-                and not _absence_forced
-                and not _reason_data.get("forced_formulate")
-                and not _reason_data.get("forced_reread")
-                and not _reason_data.get("forced_walk_stack")
-                and not _reason_data.get("forced_floor")
-                and not _reason_data.get("forced_callsite")
-                and not _reason_data.get("forced_requery")
-                and not _reason_data.get("forced_log_search")
-                and not _reason_data.get("forced_replan")
-                and not _reason_data.get("forced_not_checkable")
-            ):
-                _gap_feed: list[dict[str, Any]] = []
-                try:
-                    for _evt in reversed(action_history or []):
-                        if isinstance(_evt, dict) and _evt.get("kind") == "claim_gap_feed":
-                            _raw_gaps = _evt.get("gaps")
-                            if isinstance(_raw_gaps, list):
-                                _gap_feed = [g for g in _raw_gaps if isinstance(g, dict)]
-                            break
-                except Exception:
-                    _gap_feed = []
-                _smallest_fetch = None
-                _fetch_kind = ""
-                for _fetch_kind in SMALLEST_FETCH_ORDER:
-                    try:
-                        _counter = {
-                            "DEFINITION": forced_smallest_fetch_definition_count,
-                            "HISTORY": forced_smallest_fetch_history_count,
-                            "BEHAVIOR": forced_smallest_fetch_behavior_count,
-                            "ABSENCE": forced_smallest_fetch_absence_count,
-                            "CAUSAL": forced_smallest_fetch_causal_count,
-                        }[_fetch_kind]
-                    except Exception:
-                        continue
-                    try:
-                        _smallest_fetch = _smallest_fetch_target(
-                            action_history,
-                            _counter,
-                            _gap_feed,
-                            kind=_fetch_kind,
-                            tenant_id=tenant_id,
-                            investigation_id=str(inv_id),
-                        )
-                    except Exception:
-                        _smallest_fetch = None
-                    try:
-                        if _smallest_fetch and not _smallest_fetch_dispatchable(
-                            _fetch_kind,
-                            str((_smallest_fetch or {}).get("next_action") or ""),
-                            (_smallest_fetch or {}).get("action_parameters") or {},
-                        ):
-                            _smallest_fetch = None
-                    except Exception:
-                        _smallest_fetch = None
-                    if _smallest_fetch:
-                        break
-                if _smallest_fetch:
-                    try:
-                        if _fetch_kind == "DEFINITION":
-                            forced_smallest_fetch_definition_count += 1
-                        elif _fetch_kind == "HISTORY":
-                            forced_smallest_fetch_history_count += 1
-                        elif _fetch_kind == "BEHAVIOR":
-                            forced_smallest_fetch_behavior_count += 1
-                        elif _fetch_kind == "ABSENCE":
-                            forced_smallest_fetch_absence_count += 1
-                        else:
-                            forced_smallest_fetch_causal_count += 1
-                    except Exception:
-                        pass
-                    _reason_data = dict(_reason_data)
-                    _reason_data["next_action"] = _smallest_fetch["next_action"]
-                    _reason_data["action_parameters"] = _smallest_fetch["action_parameters"]
-                    _reason_data["forced_smallest_fetch"] = True
-                    _reason_data["forced_smallest_fetch_kind"] = _fetch_kind
-                    _reason_data["forced_smallest_fetch_gap_id"] = _smallest_fetch["gap_id"]
-                    # Workflow-only bank context (D4): identity travels
-                    # beside params, never inside them.
-                    try:
-                        _reason_data["smallest_fetch_context"] = {
-                            "kind": str(_fetch_kind),
-                            "gap_id": str(_smallest_fetch.get("gap_id") or ""),
-                            "claim_ref": str(_smallest_fetch.get("claim_ref") or ""),
-                        }
-                    except Exception:
-                        pass
-            # P6 2b-i: record this turn's focus for next turn's pivot
-            # comparison. Post-cascade read is safe: the cascade only
-            # rewrites next_action/parameters, never claims or
-            # hypotheses. Plain JSON scalars, replay-safe.
+            )
+            _reason_data = dict(_cascade_state.reason_data or {})
+            _prev_focus = _cascade_state.prev_focus
+            _ledger_marker_ref = _cascade_state.ledger_marker_ref
             try:
-                _turn_focus = focus_from_reason_data(
-                    _reason_data if isinstance(_reason_data, dict) else {}
-                )
-                if _turn_focus is not None:
-                    _prev_focus = _turn_focus.model_dump(mode="json")
-            except Exception:
+                _cc = _cascade_state.counts if isinstance(_cascade_state.counts, dict) else {}
+                forced_walk_stack_count = int(_cc.get("walk_stack", 0) or 0)
+                forced_floor_count = int(_cc.get("floor", 0) or 0)
+                forced_formulate_count = int(_cc.get("formulate", 0) or 0)
+                forced_synthesis_count = int(_cc.get("synthesis", 0) or 0)
+                forced_reread_count = int(_cc.get("reread", 0) or 0)
+                forced_callsite_count = int(_cc.get("callsite", 0) or 0)
+                forced_log_search_count = int(_cc.get("log_search", 0) or 0)
+                forced_replan_count = int(_cc.get("replan", 0) or 0)
+                forced_smallest_fetch_definition_count = int(_cc.get("smallest_fetch_definition", 0) or 0)
+                forced_smallest_fetch_history_count = int(_cc.get("smallest_fetch_history", 0) or 0)
+                forced_smallest_fetch_behavior_count = int(_cc.get("smallest_fetch_behavior", 0) or 0)
+                forced_smallest_fetch_absence_count = int(_cc.get("smallest_fetch_absence", 0) or 0)
+                forced_smallest_fetch_causal_count = int(_cc.get("smallest_fetch_causal", 0) or 0)
+            except (TypeError, ValueError):
                 pass
+            if _cascade_state.invalid_directive is not None:
+                workflow.logger.warning(
+                    "ledger directive refused (malformed); marker consumed-as-invalid",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "investigation_id": inv_id,
+                        "event": "workflow ledger directive refused",
+                        "comp": COMP_WFLW,
+                        "func": "RunInvestigationWorkflow._run_inner",
+                        "stage": "force",
+                        "step": "requery",
+                        "outcome": OUTCOME_SKIPPED,
+                        "reason": "invalid-directive",
+                    },
+                )
             # Debug story: forcing cascade outcome. Compares the model's
             # pre-override proposal (_shadow_proposal) with the post-cascade
             # dispatch (_reason_data). Deterministic: both derive from

@@ -20,11 +20,18 @@ from pydantic import BaseModel, Field
 
 
 class FocusShift(StrEnum):
-    """Movement between two consecutive points of focus."""
+    """Movement between two points of focus."""
 
     PIVOTED = "PIVOTED"
     REFINED = "REFINED"
     NONE = "NONE"
+
+
+#: Actions whose parameters carry a pivotable file surface. Disjoint by
+#: construction from the committal actions (FORMULATE/VERIFY/CONCLUDE)
+#: that the floor and re-read rules trigger on — a pivot can never
+#: compete with those two rules, so they carry no pivot guard.
+PIVOT_FILE_ACTIONS = frozenset({"GET_CODE", "GET_SOURCE", "SEARCH_CODE", "WALK_STACK"})
 
 
 class FocusPoint(BaseModel):
@@ -73,27 +80,13 @@ def focus_from_reason_data(reason_data: dict[str, Any] | None) -> FocusPoint | N
         symbol = _clean_str(params.get("symbol_name"))
         if action == "FIND_SYMBOL" and symbol:
             return FocusPoint(surface=symbol, surface_kind="symbol")
-        if file_path and action in (
-            "GET_CODE",
-            "GET_SOURCE",
-            "SEARCH_CODE",
-            "WALK_STACK",
-        ):
+        if file_path and action in PIVOT_FILE_ACTIONS:
             return FocusPoint(
                 surface=file_path,
                 surface_kind="file",
                 line_start=_clean_line(params.get("start_line")),
                 line_end=_clean_line(params.get("end_line")),
             )
-        if file_path:
-            return FocusPoint(
-                surface=file_path,
-                surface_kind="file",
-                line_start=_clean_line(params.get("start_line")),
-                line_end=_clean_line(params.get("end_line")),
-            )
-        if symbol:
-            return FocusPoint(surface=symbol, surface_kind="symbol")
         return None
     except Exception:
         return None
@@ -105,14 +98,17 @@ def detect_shift(
     """Name the movement from prev focus to curr focus.
 
     No previous focus means nothing to pivot from (NONE, not PIVOTED —
-    the first focus must not hijack the model's opening action). A
-    changed surface is a pivot; the same surface with a changed window
-    is a refinement; identical surfaces are no shift. Never raises.
+    the first focus must not hijack the model's opening action). Identity
+    is (kind, surface): a file focus and a symbol focus on the same token
+    need different fetches (GET_CODE vs FIND_SYMBOL), so a kind change is
+    a pivot, never a refinement. A changed surface is a pivot; the same
+    surface with a changed window is a refinement; identical surfaces are
+    no shift. Never raises.
     """
     try:
         if curr is None or prev is None:
             return FocusShift.NONE
-        if curr.surface != prev.surface:
+        if (curr.surface_kind, curr.surface) != (prev.surface_kind, prev.surface):
             return FocusShift.PIVOTED
         if (curr.line_start, curr.line_end) != (prev.line_start, prev.line_end):
             return FocusShift.REFINED
