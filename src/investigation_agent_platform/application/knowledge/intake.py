@@ -24,8 +24,10 @@ from investigation_agent_platform.domain.investigation.models import (
     ActorType,
     Investigation,
     InvestigationContext,
+    InvestigationLimits,
     InvestigationRequest,
     InvestigationStatus,
+    stamp_anchors,
 )
 from investigation_agent_platform.domain.knowledge.fingerprint import build_code_issue_fingerprint
 from investigation_agent_platform.domain.knowledge.models import InvestigationSession
@@ -319,6 +321,9 @@ class ErrorIntakeService:
                 requested_by=requested_by,
                 fingerprint=fingerprint,
                 intake_seed=intake_seed,
+                spread_budget=await self._resolve_spread_budget(
+                    tenant_id=tenant_id, application_id=application_id
+                ),
             )
         else:
             investigation = await self._maybe_reopen(tenant_id, target)
@@ -378,6 +383,33 @@ class ErrorIntakeService:
             raise RepositoryScopeError(application_id, candidates)
         return explicit
 
+    async def _resolve_spread_budget(self, *, tenant_id: str, application_id: str) -> int:
+        """P1 (S1 anchors): profile-overlaid spread budget for error intake.
+
+        Same envelope the execution path applies (overlay_evidence_budget),
+        so the stamped budget matches the effective one. Fail-open to the
+        default envelope: intake must never break on profile trouble.
+        """
+        from investigation_agent_platform.domain.investigation.models import (
+            InvestigationLimits,
+        )
+
+        try:
+            if self.profile_repo is None:
+                return InvestigationLimits().max_tool_calls
+            profile = await self.profile_repo.get_by_application_id(
+                tenant_id, application_id
+            )
+            from investigation_agent_platform.application.worker.activities.common import (
+                overlay_evidence_budget,
+            )
+
+            return int(
+                overlay_evidence_budget(InvestigationLimits(), profile).max_tool_calls
+            )
+        except Exception:
+            return InvestigationLimits().max_tool_calls
+
     async def _create_investigation(
         self,
         *,
@@ -388,6 +420,7 @@ class ErrorIntakeService:
         requested_by: str,
         fingerprint: str,
         intake_seed: dict[str, Any] | None = None,
+        spread_budget: int | None = None,
     ) -> Investigation:
         now = self.clock.utcnow()
         request = InvestigationRequest(
@@ -410,6 +443,14 @@ class ErrorIntakeService:
         )
 
         metadata["claim_binding_version"] = CLAIM_BINDING_CBV1
+        # P1 (S1 anchors): error intake carries no onset/last-good signal,
+        # so both bounds stamp explicit-unknown (never assumed-now); the
+        # spread budget is the profile-overlaid envelope when resolvable
+        # (passed in), else the default envelope — never a silent zero.
+        _budget = spread_budget
+        if not isinstance(_budget, int) or isinstance(_budget, bool) or _budget < 1:
+            _budget = InvestigationLimits().max_tool_calls
+        metadata["anchors"] = stamp_anchors(None, now, _budget).model_dump(mode="json")
         if seed:
             metadata["intake_seed"] = seed
         # Phase 0.5: target identity lives on the investigation, not only

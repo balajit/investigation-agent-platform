@@ -1,7 +1,7 @@
 # src/investigation_agent_platform/domain/investigation/models.py
 """Investigation aggregate root, actions, limits, and runtime state models."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -349,6 +349,131 @@ class InvestigationLimits(BaseModel):
     max_source_files: int = Field(default=20, ge=1)
     max_database_rows: int = Field(default=100, ge=1)
     max_log_query_window_minutes: int = Field(default=60, ge=1)
+
+
+ANCHORS_VERSION = "anchors-v1"
+
+#: Request-parameter keys carrying caller-supplied anchor bounds (ISO-8601).
+ONSET_T_PARAM = "onset_t"
+LAST_GOOD_G_PARAM = "last_good_g"
+
+
+class InvestigationAnchors(BaseModel):
+    """S1 intake anchors (DES-intake-anchors v1.0), version-pinned.
+
+    Every investigation records onset T and last-known-good G, or explicit
+    unknown (None + given=False — never a silent default: the absent bound
+    is marked assumed downstream instead of being invented). spread_budget
+    prices widening fetches against the per-investigation tool-call
+    envelope. Recorded on the investigation metadata at creation; semantics
+    changes ride anchors_version, never environment switches.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    anchors_version: str = Field(default=ANCHORS_VERSION, max_length=32)
+    onset_t: datetime | None = None
+    last_good_g: datetime | None = None
+    onset_given: bool = False
+    last_good_given: bool = False
+    spread_budget: int = Field(default=50, ge=0)
+
+
+def _parse_anchor_bound(value: Any, name: str) -> datetime | None:
+    """Parse an optional ISO-8601 bound; None stays explicit-unknown.
+
+    Fail-closed on explicit garbage: a present-but-unparseable value
+    raises instead of silently degrading to unknown.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, datetime):
+        # Normalize naive datetimes to UTC: window derivation compares
+        # bounds against each other and against (aware) now, and mixing
+        # naive with aware raises TypeError. ISO strings take the same
+        # path below, so both input shapes behave identically.
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"anchor bound {name!r} is not ISO-8601: {text[:64]!r}")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    raise ValueError(f"anchor bound {name!r} must be ISO-8601 text, got {type(value).__name__}")
+
+
+def stamp_anchors(
+    parameters: dict[str, Any] | None,
+    now: datetime,
+    spread_budget: int,
+) -> InvestigationAnchors:
+    """Build S1 anchors from caller-supplied parameters (or explicit unknown).
+
+    Reads ONSET_T_PARAM/LAST_GOOD_G_PARAM; absent keys mean explicit
+    unknown, never assumed-now. The record shows which bounds were given
+    via onset_given/last_good_given.
+    """
+    params = parameters or {}
+    onset_raw = params.get(ONSET_T_PARAM)
+    g_raw = params.get(LAST_GOOD_G_PARAM)
+    onset = _parse_anchor_bound(onset_raw, ONSET_T_PARAM)
+    last_good = _parse_anchor_bound(g_raw, LAST_GOOD_G_PARAM)
+    _ = now
+    return InvestigationAnchors(
+        onset_t=onset,
+        last_good_g=last_good,
+        onset_given=onset_raw is not None
+        and (not isinstance(onset_raw, str) or bool(onset_raw.strip())),
+        last_good_given=g_raw is not None
+        and (not isinstance(g_raw, str) or bool(g_raw.strip())),
+        spread_budget=spread_budget,
+    )
+
+
+def anchors_from_metadata(metadata: dict[str, Any] | None) -> InvestigationAnchors:
+    """Read anchors back; unmarked (pre-P1) rows resolve to explicit-unknown
+    with the default envelope budget — current semantics for old rows."""
+    raw = (metadata or {}).get("anchors")
+    if not isinstance(raw, dict):
+        return InvestigationAnchors()
+    try:
+        return InvestigationAnchors.model_validate(raw)
+    except Exception:
+        return InvestigationAnchors()
+
+
+def derive_working_window(
+    anchors: InvestigationAnchors,
+    now: datetime,
+    default_lookback_s: int,
+) -> tuple[datetime, datetime, tuple[str, ...]]:
+    """Working window [G, T] per DES-intake-anchors §2.
+
+    Returns (start, end, assumed) where assumed names bounds that were
+    not given ("onset", "last_good"). Unknown T anchors the end at now;
+    unknown G anchors the start at end − lookback.
+    """
+    assumed: list[str] = []
+    end = anchors.onset_t
+    if end is None:
+        end = now
+        assumed.append("onset")
+    elif not anchors.onset_given:
+        assumed.append("onset")
+    start = anchors.last_good_g
+    if start is None:
+        start = end - timedelta(seconds=default_lookback_s)
+        assumed.append("last_good")
+    elif not anchors.last_good_given:
+        assumed.append("last_good")
+    if start > end:
+        start = end
+    return start, end, tuple(assumed)
 
 
 class InvestigationResult(BaseModel):

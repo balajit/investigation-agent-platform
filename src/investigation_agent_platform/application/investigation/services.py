@@ -25,6 +25,7 @@ from investigation_agent_platform.domain.investigation.models import (
     InvestigationLimits,
     InvestigationRequest,
     InvestigationStatus,
+    stamp_anchors,
 )
 from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.timeline.models import TimelineEvent
@@ -63,6 +64,25 @@ def _create_extra(investigation: Any) -> dict[str, Any]:
         return extra
     except Exception:
         return {}
+
+
+def _spread_budget(profile: Any) -> int:
+    """P1 (S1 anchors): spread budget from the effective tool-call envelope.
+
+    Reuses overlay_evidence_budget — the same function the dispatch path
+    applies — so the recorded budget matches the effective envelope by
+    construction (a profile max_tool_calls the runtime would ignore, e.g.
+    0 or non-int, is ignored here too). Never raises: falls back to the
+    default envelope when the profile is absent or misshapen.
+    """
+    try:
+        from investigation_agent_platform.application.worker.activities.common import (
+            overlay_evidence_budget,
+        )
+
+        return int(overlay_evidence_budget(InvestigationLimits(), profile).max_tool_calls)
+    except Exception:
+        return InvestigationLimits().max_tool_calls
 
 
 def _authorize_extra(decision: Any) -> dict[str, Any]:
@@ -243,6 +263,13 @@ class CreateInvestigationService:
                 "profile_version": profile.version,
                 "disposition": disposition.to_metadata(),
                 "claim_binding_version": "cbv1",
+                # P1 (S1 anchors): onset T / last-good G (or explicit unknown)
+                # plus the spread budget drawn from the effective tool-call
+                # envelope (InvestigationLimits default overlaid by the profile
+                # evidence_budget, mirroring overlay_evidence_budget).
+                "anchors": stamp_anchors(
+                    getattr(request, "parameters", None), now, _spread_budget(profile)
+                ).model_dump(mode="json"),
             },
         )
 
