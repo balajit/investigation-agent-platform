@@ -202,9 +202,7 @@ class TestGapOrderPick:
         return carrier["orders"]
 
     def test_fires_on_matching_open_gap(self):
-        out = _pick_gap_order(
-            self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=0
-        )
+        out = _pick_gap_order(self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=0)
         assert out is not None
         assert out.action_type == "GET_CODE"
         assert out.gap_id == "DEFINITION|abc123"
@@ -215,17 +213,13 @@ class TestGapOrderPick:
 
     def test_silent_on_kind_mismatch(self):
         assert (
-            _pick_gap_order(
-                self._orders([_gap()]), kind="HISTORY", history=[], forced_count=0
-            )
+            _pick_gap_order(self._orders([_gap()]), kind="HISTORY", history=[], forced_count=0)
             is None
         )
 
     def test_silent_at_cap(self):
         assert (
-            _pick_gap_order(
-                self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=2
-            )
+            _pick_gap_order(self._orders([_gap()]), kind="DEFINITION", history=[], forced_count=2)
             is None
         )
 
@@ -244,9 +238,7 @@ class TestGapOrderPick:
         )
 
         assert _gap_order_for(_gap(target={}, gap_id="DEFINITION|bad"), 3) is None
-        assert (
-            _pick_gap_order([], kind="DEFINITION", history=[], forced_count=0) is None
-        )
+        assert _pick_gap_order([], kind="DEFINITION", history=[], forced_count=0) is None
 
     def test_gap_without_gap_id_skipped(self):
         carrier = _carry_gap_orders({"claim_gaps": [{"kind": "DEFINITION"}]}, 3)
@@ -665,9 +657,7 @@ class TestFastPathPredicate:
         start = next(i for i, l in enumerate(src) if "def apply_post_reason_cascade" in l)
         region = src[start:]
         pivot_guards = [l for l in region if 'not _reason_data.get("forced_pivot_recollect")' in l]
-        assert len(pivot_guards) == 7, (
-            f"pivot guard count changed: {len(pivot_guards)}"
-        )
+        assert len(pivot_guards) == 7, f"pivot guard count changed: {len(pivot_guards)}"
         walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
         ledger_at = next(i for i, l in enumerate(region) if "G3: order-driven requery forcing" in l)
         walk_block = region[walk_at:ledger_at]

@@ -164,7 +164,10 @@ class TestCompetingRules:
             },
         }
         state = _state(
-            reason_data={"next_action": "GET_CODE", "action_parameters": {"file_path": "svc/old.py"}},
+            reason_data={
+                "next_action": "GET_CODE",
+                "action_parameters": {"file_path": "svc/old.py"},
+            },
             prev_focus=None,
             action_history=[carrier],
         )
@@ -405,9 +408,7 @@ class TestDeterminism:
         turn1 = apply_post_reason_cascade(_state())
         assert turn1.reason_data["forced_pivot_recollect"] is True
         # Same proposal next turn: no movement, no refire.
-        turn2 = apply_post_reason_cascade(
-            _state(prev_focus=turn1.prev_focus, iteration=4)
-        )
+        turn2 = apply_post_reason_cascade(_state(prev_focus=turn1.prev_focus, iteration=4))
         assert turn2.reason_data.get("forced_pivot_recollect") is not True
         # New surface on turn 3: fires again, damped only per surface.
         turn3 = apply_post_reason_cascade(

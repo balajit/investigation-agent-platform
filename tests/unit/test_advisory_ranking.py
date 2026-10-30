@@ -50,12 +50,8 @@ def _history_get(path, start=None, end=None, evidenced=1):  # type: ignore[no-un
 class TestRanking:
     def test_novel_file_outranks_collected_file(self) -> None:
         history = [_history_get("svc/old.py")]
-        new_order = _order(
-            action_parameters={"file_path": "svc/new.py"}, seed_source="test:new"
-        )
-        old_order = _order(
-            action_parameters={"file_path": "svc/old.py"}, seed_source="test:old"
-        )
+        new_order = _order(action_parameters={"file_path": "svc/new.py"}, seed_source="test:new")
+        old_order = _order(action_parameters={"file_path": "svc/old.py"}, seed_source="test:old")
         ranking = rank_advisory_orders([old_order, new_order], history, 5)
         assert ranking["evidence_state"] == "ROWS_WITHOUT_MATCH"
         assert [r["file_path"] for r in ranking["ranked"]] == ["svc/new.py", "svc/old.py"]
@@ -145,9 +141,7 @@ class TestRankingCap:
         assert len(first["skipped"]) == 3
         ranked_ids = {r["order_id"] for r in first["ranked"]}
         assert set(first["skipped"]).isdisjoint(ranked_ids)
-        assert ranked_ids | set(first["skipped"]) == {
-            o.work_order_id.hex for o in orders
-        }
+        assert ranked_ids | set(first["skipped"]) == {o.work_order_id.hex for o in orders}
         assert spent_first.work_order_id.hex in first["skipped"]
         assert spent_last.work_order_id.hex in first["skipped"]
         assert pendings[8].work_order_id.hex in first["skipped"]

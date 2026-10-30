@@ -40,8 +40,7 @@ def _main_loop() -> tuple[ast.While, dict[int, ast.AST]]:
     run_fn = next(
         node
         for node in cls.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "_run_inner"
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_run_inner"
     )
     parents: dict[int, ast.AST] = {}
     for node in ast.walk(run_fn):

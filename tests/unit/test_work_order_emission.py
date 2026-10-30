@@ -91,9 +91,7 @@ class TestGapFillEmission:
         assert orders_from_cascade_signals([_feed()], None, "BUG") == []
         assert orders_from_cascade_signals([_feed(_gap(kind=""))], None, "BUG") == []
         assert (
-            orders_from_cascade_signals(
-                [_feed(_gap(target={}, query="", scope=""))], None, "BUG"
-            )
+            orders_from_cascade_signals([_feed(_gap(target={}, query="", scope=""))], None, "BUG")
             == []
         )
 

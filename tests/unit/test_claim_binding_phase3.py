@@ -1869,8 +1869,7 @@ class TestConcludeNotCheckableEarlySkip:
         assert conclusion.handoff.version == "handoff-v1"
         assert "blocked provider fetch" in (conclusion.next_check or "")
         assert any(
-            "blocked provider fetch" in step
-            for step in (conclusion.recommended_next_steps or [])
+            "blocked provider fetch" in step for step in (conclusion.recommended_next_steps or [])
         )
 
 

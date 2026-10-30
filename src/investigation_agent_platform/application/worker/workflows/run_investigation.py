@@ -770,9 +770,13 @@ class RunInvestigationWorkflow:
                 forced_callsite_count = int(_cc.get("callsite", 0) or 0)
                 forced_log_search_count = int(_cc.get("log_search", 0) or 0)
                 forced_replan_count = int(_cc.get("replan", 0) or 0)
-                forced_smallest_fetch_definition_count = int(_cc.get("smallest_fetch_definition", 0) or 0)
+                forced_smallest_fetch_definition_count = int(
+                    _cc.get("smallest_fetch_definition", 0) or 0
+                )
                 forced_smallest_fetch_history_count = int(_cc.get("smallest_fetch_history", 0) or 0)
-                forced_smallest_fetch_behavior_count = int(_cc.get("smallest_fetch_behavior", 0) or 0)
+                forced_smallest_fetch_behavior_count = int(
+                    _cc.get("smallest_fetch_behavior", 0) or 0
+                )
                 forced_smallest_fetch_absence_count = int(_cc.get("smallest_fetch_absence", 0) or 0)
                 forced_smallest_fetch_causal_count = int(_cc.get("smallest_fetch_causal", 0) or 0)
             except (TypeError, ValueError):

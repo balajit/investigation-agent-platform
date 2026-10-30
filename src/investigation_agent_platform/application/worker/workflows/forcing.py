@@ -352,9 +352,7 @@ def _should_force_pivot_recollect(
                 prev = FocusPoint.model_validate(prev_focus)
             except Exception:
                 prev = None
-        curr = focus_from_reason_data(
-            reason_data if isinstance(reason_data, dict) else {}
-        )
+        curr = focus_from_reason_data(reason_data if isinstance(reason_data, dict) else {})
         if curr is None or detect_shift(prev, curr) != FocusShift.PIVOTED:
             return None
         recent = {str(r or "") for r in (recent_targets or []) if str(r or "")}
@@ -381,7 +379,9 @@ def _should_force_pivot_recollect(
         return None
 
 
-def _carry_requery_order(verify_data: dict | None, iteration: int) -> dict | None:
+def _carry_requery_order(
+    verify_data: dict[str, Any] | None, iteration: int
+) -> dict[str, Any] | None:
     """G3 order carrier to append to action_history, or None (2b step 5).
 
     Replaces the ``ledger_requery_directive`` marker dict: validates the
@@ -455,9 +455,9 @@ def _carry_requery_order(verify_data: dict | None, iteration: int) -> dict | Non
 
 
 def _should_force_order_requery(
-    action_history: list | None,
-    recorded_summaries: list | None,
-) -> dict | None:
+    action_history: list[Any] | None,
+    recorded_summaries: list[Any] | None,
+) -> dict[str, Any] | None:
     """G3 order forcing decision (2b step 5: dispatch from carriers).
 
     Replaces ``_should_force_ledger_requery``: returns the typed
@@ -1580,7 +1580,7 @@ def _pick_gap_order(
     orders: list[dict[str, Any]] | None,
     *,
     kind: str,
-    history: list | None,
+    history: list[Any] | None,
     forced_count: int,
 ) -> WorkOrder | None:
     """First dispatchable GAP_FILL order of one claim kind, or None (pure).
@@ -1645,9 +1645,7 @@ def _smallest_fetch_dispatchable(kind: str, action: str, params: dict[str, Any])
         return False
 
 
-def _gap_order_for(
-    gap: dict[str, Any], turn_issued: int
-) -> WorkOrder | None:
+def _gap_order_for(gap: dict[str, Any], turn_issued: int) -> WorkOrder | None:
     """One GAP_FILL work order for a validated claim gap, or None (pure).
 
     Resolves the gap's fetch (KIND_FETCH builder + kind action) at carry
@@ -1690,9 +1688,7 @@ def _gap_order_for(
             kind=WorkOrderKind.GAP_FILL,
             action_type=action,
             action_parameters=params,
-            addresses=FailureCharacter(
-                triage_route="UNKNOWN", claim_kind=claim_kind[:64]
-            ),
+            addresses=FailureCharacter(triage_route="UNKNOWN", claim_kind=claim_kind[:64]),
             cost_estimate=1,
             gap_id=gap_id,
             claim_ref=str(gap.get("claim_ref") or "") or None,
@@ -1703,9 +1699,7 @@ def _gap_order_for(
         return None
 
 
-def _carry_gap_orders(
-    verify_data: dict[str, Any] | None, iteration: int
-) -> dict[str, Any] | None:
+def _carry_gap_orders(verify_data: dict[str, Any] | None, iteration: int) -> dict[str, Any] | None:
     """Gap order carrier to append to action_history, or None (2b step 6).
 
     Replaces the ``claim_gap_feed`` marker: validates verify result
@@ -1878,9 +1872,7 @@ def _should_force_conclude_not_checkable(
         return False
 
 
-def _recent_collection_surfaces(
-    action_history: list | None, limit: int = 10
-) -> list[str]:
+def _recent_collection_surfaces(action_history: list | None, limit: int = 10) -> list[str]:
     """Kind-qualified surfaces collected in recent turns (pure).
 
     File reads contribute ``file:<path>`` (from action parameters
@@ -1961,7 +1953,7 @@ def _flat_scalar_params(params: Any) -> dict[str, Any] | None:
 
 
 def orders_from_cascade_signals(
-    history: list | None,
+    history: list[Any] | None,
     pivot: dict[str, Any] | None,
     triage_route: str | None,
 ) -> list[WorkOrder]:
@@ -2026,7 +2018,7 @@ def orders_from_cascade_signals(
 
 def rank_advisory_orders(
     orders: list[WorkOrder] | None,
-    history: list | None,
+    history: list[Any] | None,
     banked_total: int,
 ) -> dict[str, Any]:
     """Rank advisory work orders best-first without dispatching (2b step 4, pure).
@@ -2113,9 +2105,7 @@ def rank_advisory_orders(
                     max_seeds=remaining,
                     candidate_ids=pinned,
                 )
-                skipped.extend(
-                    [s.hex if hasattr(s, "hex") else str(s) for s in order_skipped]
-                )
+                skipped.extend([s.hex if hasattr(s, "hex") else str(s) for s in order_skipped])
                 remaining -= len(seeds)
                 for seed in seeds:
                     order_of[seed.candidate_id.hex] = order.work_order_id.hex
@@ -2293,9 +2283,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data["action_parameters"] = _order_override["action_parameters"]
                 _reason_data["forced_requery"] = True
                 try:
-                    _consumed_order_ref = (_history or [])[
-                        _order_override["order_index"]
-                    ]
+                    _consumed_order_ref = (_history or [])[_order_override["order_index"]]
                 except (TypeError, IndexError, KeyError):
                     _consumed_order_ref = None
                 if not isinstance(_consumed_order_ref, dict):
@@ -2505,9 +2493,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                     if isinstance(_evt, dict) and _evt.get("kind") == "work_order_feed":
                         _raw_orders = _evt.get("orders")
                         if isinstance(_raw_orders, list):
-                            _carrier_orders = [
-                                o for o in _raw_orders if isinstance(o, dict)
-                            ]
+                            _carrier_orders = [o for o in _raw_orders if isinstance(o, dict)]
                         break
             except Exception:
                 _carrier_orders = []
@@ -2538,7 +2524,9 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             if _picked_order is not None:
                 try:
                     if _fetch_kind == "DEFINITION":
-                        _counts["smallest_fetch_definition"] = _count("smallest_fetch_definition") + 1
+                        _counts["smallest_fetch_definition"] = (
+                            _count("smallest_fetch_definition") + 1
+                        )
                     elif _fetch_kind == "HISTORY":
                         _counts["smallest_fetch_history"] = _count("smallest_fetch_history") + 1
                     elif _fetch_kind == "BEHAVIOR":
@@ -2551,14 +2539,10 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                     pass
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _picked_order.action_type
-                _reason_data["action_parameters"] = dict(
-                    _picked_order.action_parameters or {}
-                )
+                _reason_data["action_parameters"] = dict(_picked_order.action_parameters or {})
                 _reason_data["forced_smallest_fetch"] = True
                 _reason_data["forced_smallest_fetch_kind"] = _fetch_kind
-                _reason_data["forced_smallest_fetch_gap_id"] = str(
-                    _picked_order.gap_id or ""
-                )
+                _reason_data["forced_smallest_fetch_gap_id"] = str(_picked_order.gap_id or "")
                 # Workflow-only bank context (D4): identity travels
                 # beside params, never inside them.
                 try:

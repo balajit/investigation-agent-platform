@@ -181,11 +181,7 @@ def work_orders_to_seeds(
                 pinned_id = None
             seeded.append(
                 FrontierCandidate(
-                    **(
-                        {"candidate_id": pinned_id}
-                        if pinned_id is not None
-                        else {}
-                    ),
+                    **({"candidate_id": pinned_id} if pinned_id is not None else {}),
                     file_path=identity["file_path"],
                     span=identity["span"],
                     commit=identity["commit"],
