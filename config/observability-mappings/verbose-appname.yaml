@@ -1,0 +1,64 @@
+# config/observability-mappings/verbose-appname.yaml
+# Example field contract for a verbose log family keyed by application name
+# (Part 10 slot-in). Shape template only: service identity is a top-level
+# application-name keyword, severity is derived from a boolean error flag.
+# Copy and retarget index_patterns (and the tenant scope) per deployment;
+# tenant-specific values live in operator scope, never here.
+source_id: verbose-appname
+index_patterns:
+  - "logz-verbose-example-es-*"
+tenant_scope:
+  # Selection by deployment-specific index pattern provides isolation.
+  strategy: index_pattern
+timestamp:
+  candidates: ["@timestamp"]
+  value_type: date_iso
+message:
+  candidates: ["message"]
+  value_type: text
+service:
+  candidates: ["appName", "Service"]
+  value_type: keyword
+severity:
+  strategy: error_flag
+  error_field: error
+identifiers:
+  trace_id:
+    candidates: ["traceId", "trackingId"]
+    value_type: keyword
+  transaction_key:
+    candidates: ["Tracking", "messageId"]
+    value_type: keyword
+code_location: null
+sql_statement: null
+sort:
+  field: "@timestamp"
+  order: desc
+  format: epoch_millis
+  unmapped_type: long
+top_level_allowlist:
+  - "@timestamp"
+  - message
+  - appName
+  - Service
+  - serviceOperationName
+  - Action
+  - Tracking
+  - trackingId
+  - traceId
+  - messageId
+  - httpMethod
+  - responseStatusCode
+  - responseStatusMessage
+  - requestDuration
+  - requestStartTimestampText
+  - requestEndTimestampText
+  - error
+  - appHost
+  - appInstanceName
+  - eventTime
+  - callType
+  - messageType
+  - SourceKey
+  - data_from
+  - system

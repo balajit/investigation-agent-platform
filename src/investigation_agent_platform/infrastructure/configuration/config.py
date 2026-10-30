@@ -339,8 +339,13 @@ class EvidenceConfig(BaseModel):
     # interrogation goes through MCP gateways, including self-triage.
     direct_state_providers: bool = Field(default=False)
     # Directory of ObservabilitySourceMapping YAML documents (Part 10).
-    # Missing directory = generic-ECS fallback only, never a stub mapping.
+    # Missing directory = generic-ECS-only fallback, never a stub mapping.
     mapping_profiles_path: str = Field(default="config/observability-mappings", min_length=1)
+    # Directory of per-tenant telemetry endpoint declarations
+    # (DES-tenant-telemetry-config): <dir>/<tenant_id>/telemetry.conf.
+    # Empty = no per-tenant endpoints; the global deployment (above)
+    # serves every tenant. A present-but-malformed file aborts boot.
+    tenant_telemetry_dir: str = Field(default="", max_length=1024)
 
 
 class McpConfig(BaseModel):
@@ -516,6 +521,7 @@ def _evidence_config_from_env() -> EvidenceConfig:
         mapping_profiles_path=os.environ.get(
             "IAP_MAPPING_PROFILES_PATH", "config/observability-mappings"
         ),
+        tenant_telemetry_dir=os.environ.get("IAP_TENANT_TELEMETRY_DIR", ""),
         postgres_mcp_config=os.environ.get(
             "IAP_POSTGRES_MCP_CONFIG", "config/postgres-mcp-servers.yaml"
         ),

@@ -471,6 +471,53 @@ def cmd_generate_profile(args: argparse.Namespace, transport: Transport | None) 
     return 1 if failed else 0
 
 
+def cmd_verify_telemetry(args: argparse.Namespace, transport: Transport | None) -> int:
+    """Verify a tenant's telemetry routing live, offline (no API server needed).
+
+    Loads ``<telemetry-dir>/<tenant>/telemetry.conf`` and runs the platform
+    verification flow against the declared deployments: routed search,
+    attribution, pattern use, service filtering, fail-closed paths, and
+    fetch-by-stored-index. Human lines by default, JSON array with --json.
+    """
+    import asyncio
+
+    from investigation_agent_platform.application.onboarding.telemetry_verification import (
+        DEFAULT_MAPPING_PROFILES_PATH,
+        verify_tenant_telemetry_from_dir,
+    )
+    from investigation_agent_platform.domain.common.exceptions import (
+        PlatformConfigurationError,
+    )
+
+    try:
+        results = asyncio.run(
+            verify_tenant_telemetry_from_dir(
+                telemetry_dir=args.telemetry_dir,
+                tenant_id=args.tenant,
+                home_service=args.home_service,
+                mapping_source_id=args.mapping_source_id,
+                mapping_profiles_path=args.mapping_profiles_path
+                if args.mapping_profiles_path is not None
+                else (DEFAULT_MAPPING_PROFILES_PATH if args.mapping_source_id else None),
+            )
+        )
+    except PlatformConfigurationError as exc:
+        print(f"error: {exc}")
+        return 2
+    except Exception as exc:  # noqa: BLE001 — probe tool: loud message, no traceback
+        print(f"error: verification failed: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        for r in results:
+            line = f"[{'PASS' if r.passed else 'FAIL'}] {r.name}"
+            if r.detail:
+                line += f" — {r.detail}"
+            print(line)
+    return 0 if all(r.passed for r in results) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="onboard", description="IAP tenant onboarding thin client"
@@ -563,6 +610,19 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--db-uri", default="", help="DB URI (or IAP_DATABASE_URI)")
     generate.add_argument("--dry-run", action="store_true")
     generate.set_defaults(func=cmd_generate_profile)
+    verify = sub.add_parser(
+        "verify-telemetry",
+        help="Verify tenant telemetry routing live from a telemetry dir, offline",
+    )
+    verify.add_argument("--telemetry-dir", required=True,
+                        help="dir holding <tenant>/telemetry.conf (operator scope)")
+    verify.add_argument("--home-service", required=True,
+                        help="homed service to probe (must be homed on one endpoint)")
+    verify.add_argument("--mapping-source-id", default=None,
+                        help="observability mapping to verify field attribution with")
+    verify.add_argument("--mapping-profiles-path", default=None,
+                        help="mapping profiles dir (default: platform config dir)")
+    verify.set_defaults(func=cmd_verify_telemetry)
     return parser
 
 

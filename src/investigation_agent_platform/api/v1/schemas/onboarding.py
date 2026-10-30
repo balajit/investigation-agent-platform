@@ -183,3 +183,29 @@ class CoverageReportRead(BaseModel):
     generation: int
     report_content_hash: str
     report: dict[str, Any]
+
+
+class TelemetryVerifyRequest(BaseModel):
+    """Inline telemetry endpoint declarations to verify live (no filesystem)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    home_service: str = Field(min_length=1, max_length=128)
+    endpoints: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+    mapping_source_id: str | None = Field(default=None, max_length=128)
+
+
+class TelemetryCheckItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class TelemetryVerifyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    passed: bool
+    checks: list[TelemetryCheckItem]

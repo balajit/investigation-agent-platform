@@ -47,6 +47,9 @@ from investigation_agent_platform.api.v1.schemas.onboarding import (
     ReadinessReceipt,
     RetryReceipt,
     RetryRequest,
+    TelemetryCheckItem,
+    TelemetryVerifyRequest,
+    TelemetryVerifyResponse,
 )
 from investigation_agent_platform.application.onboarding.adapters import ProbeEvidence
 from investigation_agent_platform.application.onboarding.intake import (
@@ -315,6 +318,35 @@ async def list_capabilities(
     except ServiceError as exc:
         raise _service_error(exc) from exc
     return CapabilityListRead(tenant_id=tenant_id, tier=tier, capabilities=capabilities)
+
+
+@router.post(
+    "/tenants/{tenant_id}/onboarding/telemetry:verify",
+    response_model=TelemetryVerifyResponse,
+    responses=COMMON_ERROR_RESPONSES,
+)
+async def verify_telemetry(
+    tenant_id: Annotated[str, Path(min_length=1, max_length=64)],
+    body: TelemetryVerifyRequest,
+    authenticated_tenant_id: str = Depends(require_tenant),
+) -> TelemetryVerifyResponse:
+    """Verify inline telemetry endpoint declarations live (no filesystem)."""
+    _require_tenant_scope(tenant_id, authenticated_tenant_id)
+    try:
+        result = await _call(
+            "verify_telemetry",
+            tenant_id=tenant_id,
+            home_service=body.home_service,
+            endpoints=body.endpoints,
+            mapping_source_id=body.mapping_source_id,
+        )
+    except ServiceError as exc:
+        raise _service_error(exc) from exc
+    return TelemetryVerifyResponse(
+        tenant_id=result["tenant_id"],
+        passed=result["passed"],
+        checks=[TelemetryCheckItem(**c) for c in result["checks"]],
+    )
 
 
 @router.post(

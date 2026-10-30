@@ -441,3 +441,55 @@ class OnboardingService:
             }
             for entry in V01_CATALOG.entries
         ]
+
+    async def verify_telemetry(
+        self,
+        tenant_id: str,
+        home_service: str,
+        endpoints: list[dict[str, Any]],
+        mapping_source_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Verify inline telemetry endpoint declarations live (no filesystem).
+
+        The online-service counterpart of the ``verify-telemetry`` CLI: the
+        caller submits endpoint declarations in the request body, the same
+        platform flow proves them against the declared deployments, and the
+        structured results return. Declaration validation failures map to
+        stable 400 codes; provider I/O failures surface per-check (the run
+        reports FAIL lines, it does not raise) except router-build errors,
+        which are operator configuration bugs and raise.
+        """
+        from investigation_agent_platform.application.onboarding.telemetry_verification import (
+            DEFAULT_MAPPING_PROFILES_PATH,
+            verify_tenant_telemetry,
+        )
+        from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
+            TelemetryEndpoint,
+            TenantTelemetryConfig,
+        )
+
+        if not endpoints:
+            raise ServiceError("EMPTY_TELEMETRY_DECLARATION", 400, "endpoints must not be empty")
+        try:
+            config = TenantTelemetryConfig(
+                tenant_id=tenant_id,
+                endpoints=tuple(TelemetryEndpoint(**e) for e in endpoints),
+            )
+        except ValueError as exc:
+            raise ServiceError(
+                "INVALID_TELEMETRY_DECLARATION", 400, f"invalid telemetry declaration: {exc}"
+            ) from exc
+        results = await verify_tenant_telemetry(
+            configs={tenant_id: config},
+            tenant_id=tenant_id,
+            home_service=home_service,
+            mapping_source_id=mapping_source_id,
+            mapping_profiles_path=(
+                DEFAULT_MAPPING_PROFILES_PATH if mapping_source_id else None
+            ),
+        )
+        return {
+            "tenant_id": tenant_id,
+            "passed": all(r.passed for r in results),
+            "checks": [r.to_dict() for r in results],
+        }

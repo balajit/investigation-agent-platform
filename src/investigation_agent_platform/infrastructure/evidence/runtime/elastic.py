@@ -31,6 +31,7 @@ from investigation_agent_platform.domain.common.exceptions import (
     EvidenceNotFoundException,
     ExecutionError,
     PlatformConfigurationError,
+    ProviderNotConfiguredError,
     ProviderTimeoutException,
     ProviderUnavailableException,
 )
@@ -50,6 +51,10 @@ from investigation_agent_platform.infrastructure.configuration.mapping_registry 
 from investigation_agent_platform.infrastructure.evidence.runtime.cursor import (
     CURSOR_VERSION,
     ElasticCursorCodec,
+)
+from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
+    TenantTelemetryRouter,
+    endpoint_index_allowed,
 )
 from investigation_agent_platform.infrastructure.evidence.runtime.projection import (
     ElasticEvidenceProjector,
@@ -170,12 +175,13 @@ class AsyncElasticAdapter:
 
     def __init__(
         self,
-        client: AsyncElasticsearch,
+        client: AsyncElasticsearch | None,
         settings: ElasticAdapterSettings,
         provider_id: str = "elastic-primary",
         request_timeout: int = 30,
         profile: ApplicationProfile | None = None,
         mapping_registry: MappingProfileRegistry | None = None,
+        tenant_router: TenantTelemetryRouter | None = None,
     ) -> None:
         if not settings.cursor_signing_key:
             raise PlatformConfigurationError(
@@ -186,6 +192,12 @@ class AsyncElasticAdapter:
                 "Incoherent Elastic timeouts: the provider query timeout "
                 f"({settings.query_timeout_seconds:g}s) must be below the request "
                 f"boundary ({request_timeout}s)."
+            )
+        if client is None and tenant_router is None:
+            raise PlatformConfigurationError(
+                "Elastic adapter requires a global client or a tenant "
+                "telemetry router; refusing to construct a provider that "
+                "can serve nothing."
             )
         self._client = client
         self._settings = settings
@@ -211,6 +223,76 @@ class AsyncElasticAdapter:
         # Part 10: field-mapping resolution. None means generic-ECS-only
         # mode (pre-Part-10 behavior); named mappings require a registry.
         self._mapping_registry = mapping_registry
+        # Tenant telemetry routing (DES-tenant-telemetry-config). None means
+        # the pre-tenant single-deployment behavior: every request uses the
+        # global client and the mapping-derived index pattern. A router
+        # diverts tenants with configured endpoints to their home endpoint's
+        # connection, index pattern, and timeout — selector, mappings, and
+        # profile authorization are untouched.
+        self._tenant_router = tenant_router
+
+    def _identity_names(
+        self, profile: ApplicationProfile | None, request: RuntimeEvidenceRequest
+    ) -> list[str]:
+        """Service identity for tenant-endpoint homing.
+
+        Primary key is the investigated application (``profile.id``, which is
+        the gateway's ``application_id``); the profile's declared service
+        names act as aliases. Without a profile (no repo / no construction
+        profile) the request's service filter is the only identity signal.
+        """
+        names: list[str] = []
+        if profile is not None:
+            app_id = getattr(profile, "id", None)
+            if app_id:
+                names.append(app_id)
+            for service in getattr(profile, "services", None) or []:
+                service_name = getattr(service, "name", None)
+                if service_name:
+                    names.append(service_name)
+        else:
+            names.extend(request.services)
+        return names
+
+    def _resolve_connection(
+        self,
+        tenant_id: str,
+        profile: ApplicationProfile | None,
+        request: RuntimeEvidenceRequest,
+        mapping: ObservabilitySourceMapping,
+    ) -> tuple[Any, str, float, str | None]:
+        """Resolve (client, index pattern, timeout, endpoint name) for one request.
+
+        Returns ``endpoint_name=None`` for the global path. Tenant-routed
+        requests use the home endpoint's attested index pattern instead of
+        the mapping-derived one (the mapping still governs the field
+        contract and ceilings); the field contract for tenant-specific
+        layouts arrives with mapping profiles from layout discovery.
+        """
+        router = self._tenant_router
+        if router is None or not router.has_tenant(tenant_id):
+            if self._client is None:
+                logger.error(
+                    "Elastic request for tenant without telemetry config "
+                    "but no global deployment exists",
+                    extra={"tenant_id": tenant_id},
+                )
+                raise ProviderNotConfiguredError(
+                    f"No Elasticsearch deployment serves tenant '{tenant_id}'"
+                )
+            return (
+                self._client,
+                resolve_index_pattern(mapping, tenant_id, request.environment),
+                float(self._request_timeout),
+                None,
+            )
+        resolved = router.resolve(tenant_id, self._identity_names(profile, request))
+        return (
+            resolved.client,
+            resolved.index_pattern,
+            resolved.request_timeout,
+            resolved.endpoint_name,
+        )
 
     def _resolve_mapping(self, source_id: str | None) -> ObservabilitySourceMapping:
         """Resolve a stamped mapping id; fail closed before any provider I/O."""
@@ -270,12 +352,28 @@ class AsyncElasticAdapter:
         body: dict[str, Any],
         tenant_id: str,
         correlation_id: str | None,
+        client: Any | None = None,
+        request_timeout: float | None = None,
+        endpoint_name: str | None = None,
     ) -> Any:
-        """Execute one bounded provider search with typed error mapping."""
+        """Execute one bounded provider search with typed error mapping.
+
+        Tenant-routed calls pass their home endpoint's client, timeout, and
+        name; the global path uses the construction-time client/boundary.
+        Required-evidence failures log at ERROR with the tenant, endpoint,
+        and error code — never credentials — so a dead tenant deployment
+        is unmistakable in server logs.
+        """
+        active_client = client if client is not None else self._client
+        if active_client is None:
+            raise ProviderNotConfiguredError(
+                f"No Elasticsearch deployment serves tenant '{tenant_id}'"
+            )
+        boundary = float(request_timeout) if request_timeout is not None else float(self._request_timeout)
         try:
             response = await asyncio.wait_for(
-                self._client.search(index=index, body=body),
-                timeout=float(self._request_timeout),
+                active_client.search(index=index, body=body),
+                timeout=boundary,
             )
             # The async client returns an ObjectApiResponse wrapper, not a
             # plain dict — unwrap at the provider boundary so downstream
@@ -288,7 +386,8 @@ class AsyncElasticAdapter:
             raise
         except TimeoutError as exc:
             raise ProviderTimeoutException(
-                f"Elasticsearch query timed out after {self._request_timeout}s"
+                f"Elasticsearch query timed out after {boundary:g}s"
+                + (f" on tenant endpoint '{endpoint_name}'" if endpoint_name else "")
             ) from exc
         except Exception as exc:
             mapped = _map_provider_exception(exc)
@@ -298,6 +397,7 @@ class AsyncElasticAdapter:
                 extra={
                     "context": {
                         "tenant_id": tenant_id,
+                        "endpoint": endpoint_name,
                         "correlation_id": correlation_id,
                         "error_code": mapped.error_code,
                     }
@@ -345,17 +445,49 @@ class AsyncElasticAdapter:
             ):
                 raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
             index, document_id = self._provider_ref_from_mapping(mapping_row)
-            if mapping.legacy_index_synthesis:
-                if not index.startswith(f"logs-{tenant_id}-"):
+            router = self._tenant_router
+            if router is not None and router.has_tenant(tenant_id):
+                # Fetch path carries no service identity (no profile/request),
+                # so the stored index itself selects the home endpoint: it
+                # must fall under exactly one endpoint's attested pattern.
+                # No match (or an ambiguous overlap) fails closed rather
+                # than fetching from an unrelated deployment.
+                candidates = [
+                    handle
+                    for handle in router.endpoints_for_tenant(tenant_id)
+                    if endpoint_index_allowed(index, handle.index_pattern)
+                ]
+                if len(candidates) != 1:
+                    logger.error(
+                        "Tenant telemetry fetch resolves to no unique endpoint",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "candidates": sorted(h.endpoint_name for h in candidates),
+                        },
+                    )
                     raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
-            elif not any(fnmatch.fnmatchcase(index, pattern) for pattern in mapping.index_patterns):
-                raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
+                handle = candidates[0]
+                fetch_client: Any = handle.client
+                fetch_timeout = handle.request_timeout
+                fetch_endpoint: str | None = handle.endpoint_name
+            else:
+                if mapping.legacy_index_synthesis:
+                    if not index.startswith(f"logs-{tenant_id}-"):
+                        raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
+                elif not any(fnmatch.fnmatchcase(index, pattern) for pattern in mapping.index_patterns):
+                    raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
+                fetch_client = None
+                fetch_timeout = None
+                fetch_endpoint = None
 
             response = await self._provider_search(
                 index=index,
                 body={"query": {"ids": {"values": [document_id]}}, "size": 1},
                 tenant_id=tenant_id,
                 correlation_id=correlation_id,
+                client=fetch_client,
+                request_timeout=fetch_timeout,
+                endpoint_name=fetch_endpoint,
             )
             hits, _ = self._extract_hits(response)
             if not hits:
@@ -403,11 +535,13 @@ class AsyncElasticAdapter:
 
             # Derive application context from profile provider if available; fallback to tenant-scoped pattern
             mapping = self._resolve_mapping(request.mapping_source_id)
+            client, index_pattern, request_timeout, endpoint_name = self._resolve_connection(
+                tenant_id, profile, request, mapping
+            )
             normalized = normalize_request(
                 tenant_id, investigation_id, request, self._ceilings, mapping
             )
             query_fingerprint = normalized.fingerprint()
-            index_pattern = resolve_index_pattern(mapping, tenant_id, request.environment)
 
             search_after: list[Any] | None = None
             if request.cursor is not None:
@@ -427,6 +561,9 @@ class AsyncElasticAdapter:
                 body=query_body,
                 tenant_id=tenant_id,
                 correlation_id=correlation_id,
+                client=client,
+                request_timeout=request_timeout,
+                endpoint_name=endpoint_name,
             )
             hits, total = self._extract_hits(response)
 
@@ -506,5 +643,9 @@ class AsyncElasticAdapter:
                     "partial_result": bool(record_errors),
                     "errors": record_errors,
                     "tokens_consumed": 0,
+                    # Home endpoint that served this page (None = global
+                    # deployment). Lets operators attribute results — and
+                    # failures — to the deployment that produced them.
+                    "endpoint": endpoint_name,
                 },
             )

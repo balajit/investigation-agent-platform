@@ -1,0 +1,87 @@
+# =============================================================================
+# SAMPLE — tenant telemetry endpoints (<telemetry_dir>/<tenant>/telemetry.conf)
+# Copy this file to <telemetry_dir>/<tenant>/telemetry.conf (exact filename;
+# the loader never reads *.sample/*.example) and fill in the real values.
+# Verify with: scripts/verify_telemetry.sh --telemetry-dir <dir> --tenant <id>
+# =============================================================================
+# HOW TO FILL IN THE REAL VALUES (run from a host that reaches the cluster):
+#
+# 1. Base URL — the cluster's HTTPS endpoint (no credentials in the URL):
+#      curl -s -m 5 '<BASE_URL>/'   # expect cluster_name + version JSON
+#
+# 2. Index pattern — list what actually holds this tenant's service logs:
+#      curl -s -m 10 '<BASE_URL>/_cat/indices/logs-*?h=index,docs.count&s=index'
+#    Prefer the DATA STREAM names (logs-<ns>-<dataset>-...), plus their
+#    backing indices (.ds-logs-<ns>-<dataset>-*) as a comma list, e.g.:
+#      pattern = logs-<ns>-*, .ds-logs-<ns>-*
+#    (Search hits carry the backing .ds-* index; without it GET-fetch
+#    fails closed — do not omit the .ds-* segment.)
+#
+# 3. Services — confirm which services actually log to this deployment:
+#      curl -s -m 10 -H 'Content-Type: application/json' '<BASE_URL>/logs-*/_search?size=0' \
+#        -d '{"aggs":{"svc":{"terms":{"field":"service.name","size":50}}}}'
+#    Every service named below must log here. A service with NO data on this
+#    deployment must be REMOVED from every services list (or homed on the
+#    endpoint that does hold it) — a homed-but-empty service returns empty
+#    evidence with no error, which hides the mis-homing.
+#
+# 4. Auth — KEEP EXACTLY ONE group per endpoint, delete the rest:
+#    a. API key (strongest, preferred when available).
+#    b. OAuth client-credentials (IdP-issued bearer, auto-refreshed).
+#    c. Basic user+password. For the password EITHER write it plaintext
+#       (this file is owner-read-only: chmod 600) OR encrypt it:
+#         python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#         # export IAP_ES_FERNET_KEY='<key>'   (env only — never in this file)
+#         python3 -c "from cryptography.fernet import Fernet; print(Fernet(b'<key>').encrypt(b'<password>').decode())"
+#       then use:  password = fernet:<token>
+#    d. Nothing (only for clusters without security — never production).
+#    When several kinds are set the winner is api_key > oauth > bearer >
+#    basic and the winner is logged by name at boot.
+#
+# 5. Alternatively skip this file: set per-endpoint env vars instead —
+#    IAP_ES_<TENANT>_<NAME>_{URL,USER,PASSWORD,API_KEY,BEARER_TOKEN,
+#    VERIFY_CERTS,CA_CERTS,OAUTH_TOKEN_URL,OAUTH_CLIENT_ID,
+#    OAUTH_CLIENT_SECRET,OAUTH_SCOPE,TIMEOUT,PATTERN}
+#    (endpoint NAME + services still come from this file).
+#
+# 6. Reachability sanity before the live run:
+#      curl -s -m 10 -u '<user>:<password>' '<BASE_URL>/logs-*/_search?size=1'
+#    Expect HTTP 200 with a hit. Any 401/403 = wrong credentials (the live
+#    run will fail LOUD — that is the designed behavior, fix creds here).
+# =============================================================================
+
+[primary-es]
+# --- connection (FILL IN) ---
+url = https://REPLACE-WITH-REAL-ELASTIC-URL:9200
+timeout = 30
+# --- data location (FILL IN after step 2) ---
+pattern = REPLACE-WITH-REAL-PATTERN, .ds-REPLACE-WITH-REAL-PATTERN
+# --- service homing (ADJUST after step 3) ---
+services = REPLACE-WITH-SERVICE-1, REPLACE-WITH-SERVICE-2
+managed_by = manual
+
+# --- auth: KEEP EXACTLY ONE of the following groups, delete the rest ---
+# a. API key (preferred):
+# api_key = REPLACE-WITH-ENCODED-API-KEY
+#
+# b. OAuth client-credentials:
+# oauth_token_url = https://REPLACE-WITH-IDP/oauth/token
+# oauth_client_id = REPLACE-WITH-CLIENT-ID
+# oauth_client_secret = REPLACE-WITH-SECRET-OR-fernet:TOKEN
+# oauth_scope = telemetry.read
+#
+# c. Basic: password EITHER plaintext (this file is owner-read-only:
+#    chmod 600) OR a fernet: envelope in one of two forms —
+#      password = fernet:<token>            # key from IAP_ES_FERNET_KEY env (real secrecy)
+#      password = fernet:<cipher>:<token>   # two-part in-field form: cipher travels
+#                                           # with the ciphertext (plaintext stays out of
+#                                           # the file, but file readers can decrypt —
+#                                           # access-control-level, not real secrecy)
+#    A bare `cipher = ...` line is rejected (unknown key): fold cipher +
+#    ciphertext into the two-part password form and delete the cipher line.
+# user = REPLACE-WITH-SERVICE-ACCOUNT
+# password = REPLACE-WITH-PASSWORD-OR-fernet:TOKEN-OR-fernet:CIPHER:TOKEN
+#
+# d. TLS (uncomment for private CAs / test clusters only):
+# verify_certs = true
+# ca_certs = /path/to/ca-bundle.pem

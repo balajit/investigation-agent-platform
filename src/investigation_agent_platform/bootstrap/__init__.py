@@ -492,7 +492,35 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             extra={"source_ids": sorted(mapping_registry.source_ids)},
         )
         selector = EvidenceProviderSelector()
-        if config.evidence.elasticsearch_url:
+        from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
+            build_tenant_router,
+            load_tenant_telemetry_configs,
+        )
+
+        # Per-tenant telemetry endpoints (DES-tenant-telemetry-config):
+        # malformed files abort boot — a half-configured evidence layer
+        # must never serve. Empty dir = no tenant endpoints; the global
+        # deployment below serves every tenant.
+        tenant_configs = load_tenant_telemetry_configs(
+            config.evidence.tenant_telemetry_dir
+        )
+        tenant_router = None
+        if tenant_configs:
+            from investigation_agent_platform.infrastructure.evidence.runtime.elastic import (
+                ElasticAdapterSettings as TenantElasticAdapterSettings,
+            )
+            from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
+                build_tenant_client as _build_tenant_client,
+            )
+
+            tenant_router = build_tenant_router(
+                tenant_configs,
+                _build_tenant_client,
+                query_timeout_seconds=TenantElasticAdapterSettings.from_evidence_config(
+                    config.evidence
+                ).query_timeout_seconds,
+            )
+        if config.evidence.elasticsearch_url or tenant_router is not None:
             from elasticsearch import AsyncElasticsearch
 
             from investigation_agent_platform.infrastructure.evidence.runtime.elastic import (
@@ -506,16 +534,40 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     client=AsyncElasticsearch(
                         config.evidence.elasticsearch_url,
                         request_timeout=config.evidence.elastic_request_timeout,
-                    ),
+                    )
+                    if config.evidence.elasticsearch_url
+                    else None,
                     settings=ElasticAdapterSettings.from_evidence_config(config.evidence),
                     provider_id="elastic-primary",
                     request_timeout=config.evidence.elastic_request_timeout,
                     mapping_registry=mapping_registry,
+                    tenant_router=tenant_router,
                 ),
-                # Default route: one shared Elastic deployment serves all
-                # tenant/app/env contexts (per-request scoping in the adapter).
+                # Default route: the global deployment serves all
+                # tenant/app/env contexts without tenant telemetry
+                # (per-request scoping in the adapter).
                 default=True,
             )
+            if tenant_router is not None:
+                logger.info(
+                    "Tenant telemetry routing attached to elastic-primary",
+                    extra={
+                        "tenants": sorted(tenant_configs),
+                        "endpoints": sorted(
+                            endpoint.name
+                            for tenant_config in tenant_configs.values()
+                            for endpoint in tenant_config.endpoints
+                        ),
+                        # Selected auth kind per endpoint (names only — the
+                        # precedence api_key > bearer > basic is resolved at
+                        # load, so operators can see what won.
+                        "auth": {
+                            endpoint.name: endpoint.auth_kind()
+                            for tenant_config in tenant_configs.values()
+                            for endpoint in tenant_config.endpoints
+                        },
+                    },
+                )
         else:
             logger.info("Elastic provider unconfigured; key elastic-primary stays unregistered")
         # Generic file-log runtime provider: serves file_log datasources for
@@ -543,7 +595,8 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     ),
                     provider_id="file-log",
                 ),
-                default=not bool(config.evidence.elasticsearch_url),
+                default=not bool(config.evidence.elasticsearch_url)
+                and tenant_router is None,
             )
             logger.info("File-log provider registered", extra={"roots": file_roots})
         else:

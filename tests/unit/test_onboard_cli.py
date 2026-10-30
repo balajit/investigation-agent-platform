@@ -320,3 +320,35 @@ def test_cleanup_plan_and_approve(capsys: Any) -> None:
     )
     assert code == 0
     assert ":approve" in approver.calls[0]["url"]
+
+
+def test_verify_telemetry_missing_dir_fails(tmp_path: Any, capsys: Any) -> None:
+    code = main(
+        ["--tenant", "tenant-a", "verify-telemetry", "--telemetry-dir", str(tmp_path / "nope"), "--home-service", "svc-a"]
+    )
+    assert code == 1
+    assert "[FAIL] config loads" in capsys.readouterr().out
+
+
+def test_verify_telemetry_missing_dir_json(tmp_path: Any, capsys: Any) -> None:
+    code = main(
+        ["--tenant", "tenant-a", "--json", "verify-telemetry",
+         "--telemetry-dir", str(tmp_path / "nope"), "--home-service", "svc-a"]
+    )
+    assert code == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body[0]["name"] == "config loads" and body[0]["passed"] is False
+
+
+def test_verify_telemetry_malformed_file_errors(tmp_path: Any, capsys: Any) -> None:
+    tenant_dir = tmp_path / "tenant-a"
+    tenant_dir.mkdir()
+    (tenant_dir / "telemetry.conf").write_text(
+        "[one]\nurl = https://a.example.com\nservices = svc\n\n"
+        "[two]\nurl = https://b.example.com\nservices = svc\n"
+    )
+    code = main(
+        ["--tenant", "tenant-a", "verify-telemetry", "--telemetry-dir", str(tmp_path), "--home-service", "svc-a"]
+    )
+    assert code == 2
+    assert "exactly one endpoint" in capsys.readouterr().out
