@@ -11,8 +11,19 @@ named-handoff candidates — never as fetches.
 Pure domain: no I/O, no providers. Callers (code-layer analysis, P6
 frontier) supply the classified suspect-path sites; this module only
 decides which templates activate and what each one obligates.
+
+``classify_banked_sites`` is the conservative entry point over banked
+evidence rows: it admits only pinned SOURCE_CODE range reads and maps a
+small explicit table of range-read syntax onto site kinds. Anything
+ambiguous stays OTHER and activates nothing — site kinds are never
+inferred from free-form model prose. Tree-sitter live-checkout scans
+are deliberately not an input: ``find_symbol`` accepts a revision
+argument but resolves against the live checkout, so its rows cannot
+prove pinned source identity.
 """
 
+import re
+from collections.abc import Callable
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -322,3 +333,235 @@ def _dominant_kind(sites: list[SuspectSite]) -> TemplateKind | None:
         if kind is not None:
             return kind
     return None
+
+
+def _dominant_kind(sites: list[SuspectSite]) -> TemplateKind | None:
+    """Family label for a cross-boundary group: first classifiable site
+    wins; None when no site carries template semantics. The label is
+    descriptive only — the outcome is always a handoff."""
+    for site in sites:
+        kind = SITE_KIND_TO_TEMPLATE.get(site.kind)
+        if kind is not None:
+            return kind
+    return None
+
+
+#: Revisions that never identify immutable source. Mirrors the SuspectPath
+#: fail-closed set; the classifier additionally excludes the empty string.
+UNPINNED_REVISIONS = frozenset({"", "HEAD", "UNPINNED"})
+
+#: Per-row site cap: one site per matching line per kind keeps large
+#: windows bounded; overflow sheds deterministically (line, kind order).
+_MAX_SITES_PER_ROW = 16
+
+#: Explicit range-read syntax table: (site kind, pattern). Checked in
+#: order against de-numbered snippet lines; a row may match several kinds
+#: and yields one site per match. Anything unmatched stays OTHER.
+_SITE_SYNTAX: tuple[tuple[SuspectSiteKind, "re.Pattern[str]"], ...] = (
+    (
+        SuspectSiteKind.FLAG_GATE,
+        re.compile(
+            r"\bif\b[^\n]*(flag|feature_flag|is_enabled|toggle|experiment|"
+            r"kill[\s_-]?switch|rollout|\bff_)|\b(isEnabled|is_feature_enabled|"
+            r"getFlag|isFlagOn)\s*\(",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        SuspectSiteKind.BRANCH_MATCH,
+        re.compile(
+            r"\bswitch\s*\(|\bmatch\s+\w+|^\s*case\s+|\belse\s+if\b|\belsif\b|"
+            r"\bwhen\b[^\n]*->",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    (
+        SuspectSiteKind.EXTERNAL_CALL,
+        re.compile(
+            r"https?://[^\s\"']+|\b(requests\s*\.\s*(get|post|put|delete)|"
+            r"fetch\s*\(|axios\s*\.|httpClient|restTemplate|webClient|urllib|"
+            r"\bgrpc\b|soapClient)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        SuspectSiteKind.LOOP_POOL_RETRY,
+        re.compile(
+            r"\bfor\s*\(|\bwhile\s*\(|\bfor\s+\w+\s+in\b|retry|backoff|"
+            r"\bpool\b|executor|ThreadPool|Semaphore|throttle|rate[\s_-]?limit",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_NUMBERED_LINE = re.compile(r"^\s*(\d+)\|\s?(.*)$")
+_URL_HOST = re.compile(r"https?://([^/\s\"']+)")
+_GIT_SOURCE = re.compile(r"^git://([^/]+)/")
+
+
+def _row_attrs(row: object) -> dict[str, object]:
+    attrs = getattr(row, "attributes", None)
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _row_evidence_type(row: object) -> str:
+    etype = getattr(row, "evidence_type", "")
+    return str(getattr(etype, "value", etype) or "")
+
+
+def _row_location(row: object) -> tuple[str, int | None, str]:
+    """Return (file_path, line_start, revision) from row provenance."""
+    prov = getattr(row, "provenance", None)
+    location = getattr(prov, "source_location", None)
+    file_path = str(getattr(location, "file_path", "") or "")
+    line_start = getattr(location, "line_start", None)
+    try:
+        line = int(line_start) if line_start is not None else None
+    except (TypeError, ValueError):
+        line = None
+    revision = str(getattr(location, "revision", "") or "")
+    return file_path, (line if line is not None and line >= 1 else None), revision
+
+
+def _is_range_row(attrs: dict[str, object], snippet: str) -> bool:
+    """True for pinned range reads; path-only/discovery rows are excluded.
+
+    Mirrors the read-mode rule in the context compiler: an explicit
+    ``range`` declaration wins; ``path_only``/``discovery_only`` markers
+    fail the row; otherwise the legacy numbered-lines shape decides.
+    """
+    declared = str(attrs.get("read_mode", "") or "")
+    if declared == "range":
+        return True
+    if declared == "path_only" or bool(attrs.get("discovery_only")):
+        return False
+    first = snippet.splitlines()[0] if snippet else ""
+    head = first.split("|", 1)[0].strip()
+    return bool(head) and head.isdigit()
+
+
+def _code_lines(snippet: str) -> tuple[list[tuple[int | None, str]], int | None]:
+    """De-numbered snippet lines with their numbers, plus the first
+    numbered line, if any."""
+    lines: list[tuple[int | None, str]] = []
+    first_numbered: int | None = None
+    for raw in snippet.splitlines():
+        match = _NUMBERED_LINE.match(raw)
+        if match is not None:
+            try:
+                number: int | None = int(match.group(1))
+            except ValueError:
+                number = None
+            if number is not None and first_numbered is None:
+                first_numbered = number
+            lines.append((number, match.group(2)))
+        else:
+            lines.append((None, raw))
+    return lines, first_numbered
+
+
+def _row_repository(row: object) -> str:
+    """Repository identity for path grouping: the ``git://repo/`` source
+    prefix when present, else the provenance system, else explicit unknown."""
+    source = str(getattr(row, "source", "") or "")
+    match = _GIT_SOURCE.match(source)
+    if match is not None:
+        return match.group(1)[:256]
+    system = getattr(getattr(row, "provenance", None), "source_system", "")
+    text = str(system or "").strip()
+    return (text[:256] if text else "unknown-repo")
+
+
+def _upstream_identity(snippet: str, file_path: str) -> str:
+    """Deterministic upstream name for cross-boundary sites: the first URL
+    host literal in the snippet when one is present, else the top-level
+    directory of the path. Coarse by design; the handoff carries the
+    localizing evidence, not a verified endpoint."""
+    match = _URL_HOST.search(snippet)
+    if match is not None:
+        return match.group(1)[:512]
+    top = file_path.strip().lstrip("/").split("/", 1)[0]
+    return (top[:512] if top else file_path[:512])
+
+
+def classify_banked_sites(
+    rows: list[object],
+    *,
+    is_external: Callable[[str], bool] | None = None,
+) -> list[SuspectPath]:
+    """Classify banked rows into suspect paths (conservative, never raises).
+
+    Admits only SOURCE_CODE rows that are pinned range reads with a
+    determinable line: path-only/discovery rows, unpinned revisions, and
+    rows without snippet syntax matches are skipped, never guessed.
+    Sites group by (repository, revision, file), ordered by line; one
+    SuspectPath per file. ``is_external`` marks files outside tenant
+    repos as cross-boundary; when omitted everything stays in-tenant.
+    """
+    groups: dict[tuple[str, str, str], list[SuspectSite]] = {}
+    for row in rows or []:
+        if _row_evidence_type(row) != "SOURCE_CODE":
+            continue
+        attrs = _row_attrs(row)
+        snippet = str(getattr(row, "content_snippet", "") or "")
+        if not snippet.strip() or not _is_range_row(attrs, snippet):
+            continue
+        file_path, line_start, revision = _row_location(row)
+        if (
+            not file_path
+            or len(file_path) > 1024
+            or ".." in file_path
+            or "\x00" in file_path
+            or revision in UNPINNED_REVISIONS
+        ):
+            continue
+        lines, first_numbered = _code_lines(snippet)
+        line = line_start if line_start is not None else first_numbered
+        if line is None:
+            continue
+        text = "\n".join(body for _, body in lines)
+        if not text.strip():
+            continue
+        external = bool(is_external(file_path)) if is_external is not None else False
+        repository = _row_repository(row)
+        candidates: list[tuple[int, str, SuspectSiteKind, str]] = []
+        for kind, pattern in _SITE_SYNTAX:
+            for lineno, body in lines:
+                if not pattern.search(body):
+                    continue
+                hit_text = body.strip()
+                site_line = lineno if lineno is not None else line
+                if site_line is None:
+                    site_line = first_numbered
+                if site_line is None:
+                    continue
+                detail = f"matched {kind.value.lower()} syntax: {hit_text[:200]}"
+                candidates.append((site_line, kind.value, kind, detail))
+        # Deterministic and bounded: line order, then kind order.
+        candidates.sort(key=lambda c: (c[0], c[1]))
+        for site_line, _, kind, detail in candidates[:_MAX_SITES_PER_ROW]:
+            try:
+                site = SuspectSite(
+                    node_id=uuid4(),
+                    kind=kind,
+                    file_path=file_path,
+                    line=site_line,
+                    detail=detail,
+                    cross_boundary=external,
+                    upstream_identity=(
+                        _upstream_identity(snippet, file_path) if external else None
+                    ),
+                )
+            except ValueError:
+                continue
+            groups.setdefault((repository, revision, file_path), []).append(site)
+    paths: list[SuspectPath] = []
+    for (repository, revision, _file), sites in groups.items():
+        ordered = sorted(sites, key=lambda s: (s.line, s.kind.value))
+        try:
+            paths.append(
+                SuspectPath(repository=repository, revision=revision, sites=ordered)
+            )
+        except ValueError:
+            continue
+    return paths

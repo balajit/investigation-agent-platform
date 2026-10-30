@@ -344,6 +344,11 @@ Every claim carries a claim_kind and its OWN evidence_ids — rival claims must 
         CLAIM_QUERY_INSTRUCTION,
     ),
     (
+        "dormant-templates",
+        """compiled_context.dormant_templates carries S2 hypothesis seeds instantiated from pinned banked range reads (templates-v1). Each entry names one discriminating_fetch — the single cheapest next observation for that template family — plus checkable assumptions priced against the spread budget, with the investigation's onset/last-good anchors alongside. Templates are proposals, not evidence: never cite a template, fetch target, or assumption as an evidence_id; citations resolve to banked evidence rows only, and a discriminating fetch is not yet performed — use it to choose your next gathering action, then cite the row it banks.
+Entries with a handoff block (cross-boundary) carry no fetch target and must never become provider actions: do not emit GET_CODE, SEARCH_CODE, FIND_SYMBOL, FIND_CALL_GRAPH, PROBE_API, or any other capability against the handoff's upstream_identity or localizing paths. Those resolve beyond tenant repos; the source-roots check rejects such paths at dispatch, so attempting them wastes the turn — record the handoff and move on.""",
+    ),
+    (
         "code-reading",
         """Use GET_CODE for an exact path. Set "parameters": {"file_path": "<repo-relative source path from the problem_description or a confirmed search hit>", "start_line": <1-indexed>, "end_line": <inclusive>, "revision": "<pinned revision or HEAD>"} — never empty, never absolute, no '..' segments. Supply start_line/end_line whenever a frame line, symbol line, or next_window is known; a path-only read is discovery and cannot support a definition claim.
 When no exact path is known, use SEARCH_CODE with "parameters": {"query": "<symbol, route, or phrase from the complaint>"} first — it returns candidate locations; then GET_CODE the confirmed path.
@@ -955,9 +960,25 @@ class ReasoningCoordinator(InvestigationReasoner):
         from investigation_agent_platform.application.investigation.context_compiler import (
             REASONER_PROMPT_VERSION,
             compile_reasoning_context,
+            external_classifier_for_roots,
         )
 
-        compiled_context = compile_reasoning_context(state)
+        # S2 templates: tenant source roots for cross-boundary marking.
+        # Fail-open: a profile-store failure leaves roots empty, so every
+        # site stays in-tenant (conservative default, never a handoff).
+        profile_roots: list[str] = []
+        try:
+            if self._profile_repo is not None:
+                _profile = await self._profile_repo.get_by_application_id(
+                    tenant_id, state.investigation.application_id
+                )
+                if _profile is not None:
+                    profile_roots = list(_profile.all_source_roots() or [])
+        except Exception:
+            profile_roots = []
+        compiled_context = compile_reasoning_context(
+            state, is_external=external_classifier_for_roots(profile_roots)
+        )
         # Phase 4.2: packet disposition for the budget dashboard. Included
         # vs truncated vs dropped partitions the visible excerpts; dropped
         # counts input rows that never became excerpts.

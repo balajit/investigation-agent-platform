@@ -16,6 +16,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.hypothesis.templates import (
+    TEMPLATES_VERSION_CURRENT,
+    classify_banked_sites,
+    instantiate_templates,
+)
+from investigation_agent_platform.domain.investigation.models import anchors_from_metadata
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 # Versioned prompt/context contract. Bumped whenever the compiled section
@@ -38,6 +44,9 @@ MAX_HYPOTHESES = 10
 MAX_TIMELINE_EVENTS = 8
 MAX_PENDING_QUESTIONS = 10
 MAX_FINDINGS = 5
+# S2 dormant templates (chunk 2): hard cap on rendered templates; the
+# budget enforcer may trim further from the end with a dropped count.
+MAX_DORMANT_TEMPLATES = 8
 
 
 # Context-window shrink: global token ceiling for the compiled context so
@@ -828,6 +837,7 @@ def enforce_context_budget(
                 "pending_questions",
                 "findings",
                 "evidence_excerpts",
+                "dormant_templates",
             )
         )
 
@@ -883,9 +893,148 @@ def enforce_context_budget(
             section.pop(0)
             purged[counter] += 1
         ctx[key] = section
+    templates_block = ctx.get("dormant_templates") or {}
+    templates = templates_block.get("templates") or []
+    dropped_templates = 0
+    while _total() > ceiling and templates:
+        templates.pop()
+        dropped_templates += 1
+    if dropped_templates:
+        templates_block = {**templates_block, "templates": templates}
+        ctx["dormant_templates"] = templates_block
+    purged["templates_dropped"] = dropped_templates
     ctx["purged"] = purged
     ctx["estimated_tokens"] = _total()
     return ctx
+
+
+def external_classifier_for_roots(roots: Any) -> Any:
+    """Build an ``is_external`` classifier over tenant source roots.
+
+    Returns None when no roots are configured (everything stays
+    in-tenant — the conservative default). Otherwise a file is external
+    when it sits outside every root, mirroring the validator's
+    source-roots rule so template boundary calls match dispatch behavior.
+    """
+    normed: list[str] = []
+    for root in roots or []:
+        text = str(root or "").strip().strip("/")
+        if text:
+            normed.append(text)
+    if not normed:
+        return None
+
+    def is_external(file_path: str) -> bool:
+        normalized = f"/{str(file_path or '').lstrip('/')}"
+        for root in normed:
+            root_norm = f"/{root}"
+            if normalized == root_norm or normalized.startswith(f"{root_norm}/"):
+                return False
+        return True
+
+    return is_external
+
+
+@traced("reason", require_scope=False)
+def compile_dormant_templates(
+    evidence: list[Any],
+    *,
+    anchors: Any | None = None,
+    is_external: Any | None = None,
+) -> dict[str, Any]:
+    """Render S2 dormant templates as a model-facing section (chunk 2).
+
+    Classifies pinned banked range reads into suspect paths, instantiates
+    templates-v1, and renders each with its discriminating fetch (or
+    cross-boundary handoff), cost-ordered assumptions, and budget pricing
+    against the P1 spread budget. Capped at MAX_DORMANT_TEMPLATES;
+    the budget enforcer may trim further.
+    """
+    spread_budget = 50
+    onset_t: str | None = None
+    last_good_g: str | None = None
+    onset_given = False
+    last_good_given = False
+    try:
+        spread_budget = int(getattr(anchors, "spread_budget", 50) or 0)
+    except (TypeError, ValueError):
+        spread_budget = 50
+    try:
+        raw_onset = getattr(anchors, "onset_t", None)
+        onset_t = raw_onset.isoformat() if raw_onset is not None else None
+        raw_g = getattr(anchors, "last_good_g", None)
+        last_good_g = raw_g.isoformat() if raw_g is not None else None
+        onset_given = bool(getattr(anchors, "onset_given", False))
+        last_good_given = bool(getattr(anchors, "last_good_given", False))
+    except Exception:
+        pass
+    rendered: list[dict[str, Any]] = []
+    try:
+        paths = classify_banked_sites(list(evidence or []), is_external=is_external)
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            templates = instantiate_templates(path)
+        except Exception:
+            continue
+        sites_by_id = {s.node_id: s for s in path.sites}
+        for template in templates:
+            first_site = next(
+                (sites_by_id[nid] for nid in template.site_node_ids if nid in sites_by_id),
+                None,
+            )
+            fetch = template.discriminating_fetch
+            handoff = template.handoff_candidate
+            rendered.append(
+                {
+                    "kind": template.kind.value,
+                    "template_version": template.version,
+                    "suspect_path": {
+                        "repository": path.repository,
+                        "revision": path.revision,
+                        "file": first_site.file_path if first_site is not None else "",
+                    },
+                    "discriminating_fetch": (
+                        {"fetch_kind": fetch.fetch_kind.value, "target": fetch.target}
+                        if fetch is not None
+                        else None
+                    ),
+                    "assumptions": [
+                        {
+                            "expects": a.expects,
+                            "check_order": a.check_order,
+                            "cost_estimate": a.cost_estimate,
+                        }
+                        for a in template.assumptions
+                    ],
+                    "handoff": (
+                        {
+                            "upstream_identity": handoff.upstream_identity,
+                            "localizing_evidence": handoff.localizing_evidence,
+                        }
+                        if handoff is not None
+                        else None
+                    ),
+                    "total_cost": template.total_cost,
+                    "priced_within_budget": template.priced_within(spread_budget),
+                }
+            )
+            if len(rendered) >= MAX_DORMANT_TEMPLATES:
+                break
+        if len(rendered) >= MAX_DORMANT_TEMPLATES:
+            break
+    return {
+        "templates_version": TEMPLATES_VERSION_CURRENT,
+        "anchors": {
+            "onset_t": onset_t or "unknown",
+            "last_good_g": last_good_g or "unknown",
+            "onset_given": onset_given,
+            "last_good_given": last_good_given,
+            "spread_budget": spread_budget,
+        },
+        "templates": rendered,
+    }
 
 
 @traced("reason", require_scope=False)
@@ -914,8 +1063,13 @@ def compile_case_state(state: Any, evidence: list[Any]) -> dict[str, Any]:
     }
 
 
-def compile_reasoning_context(state: Any) -> dict[str, Any]:
-    """Assemble the P0-1 context sections from hydrated investigation state."""
+def compile_reasoning_context(state: Any, is_external: Any | None = None) -> dict[str, Any]:
+    """Assemble the P0-1 context sections from hydrated investigation state.
+
+    ``is_external`` optionally marks banked code files outside tenant
+    source roots as cross-boundary for S2 template instantiation; when
+    omitted every site stays in-tenant (conservative default).
+    """
     problem = str(
         getattr(
             getattr(getattr(state, "investigation", None), "request", None),
@@ -938,6 +1092,15 @@ def compile_reasoning_context(state: Any) -> dict[str, Any]:
     )
     bound = _bound_evidence_ids(hypotheses)
     excerpts = compile_evidence_excerpts(evidence, bound, grouping)
+    try:
+        anchors = anchors_from_metadata(
+            getattr(getattr(state, "investigation", None), "metadata", None)
+        )
+    except Exception:
+        anchors = None
+    dormant_templates = compile_dormant_templates(
+        evidence, anchors=anchors, is_external=is_external
+    )
     tier_counts: dict[int, int] = {}
     grouped = 0
     for excerpt in excerpts:
@@ -967,6 +1130,7 @@ def compile_reasoning_context(state: Any) -> dict[str, Any]:
             "pending_questions": [
                 str(q)[:300] for q in (_get(state, "pending_questions", []) or [])
             ][:MAX_PENDING_QUESTIONS],
+            "dormant_templates": dormant_templates,
             "findings": [
                 {
                     "title": str(_get(f, "title", "") or "")[:200],
