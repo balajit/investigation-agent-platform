@@ -283,7 +283,9 @@ class CreateInvestigationService:
             except Exception as exc:
                 logger.warning(
                     "Disposition links skipped; investigation stands",
-                    extra={"context": {"investigation_id": str(investigation.id), "error": str(exc)}},
+                    extra={
+                        "context": {"investigation_id": str(investigation.id), "error": str(exc)}
+                    },
                 )
         if self.telemetry:
             self.telemetry.record_metric(
@@ -331,7 +333,11 @@ class CreateInvestigationService:
                     target_id=investigation_node(other_id),
                     type=RELATES_TO,
                     confidence=0.5,
-                    metadata={"reason": "similar-past-investigation cluster", "provenance_evidence_id": "", "written_by": "disposition"},
+                    metadata={
+                        "reason": "similar-past-investigation cluster",
+                        "provenance_evidence_id": "",
+                        "written_by": "disposition",
+                    },
                 )
             )
         await repo.record_edges(tenant_id, investigation.id, investigation.application_id, edges)
@@ -703,7 +709,9 @@ class ReprocessInvestigationService:
                 retryable=False,
                 http_status_code=404,
             )
-        status = original.status.value if hasattr(original.status, "value") else str(original.status)
+        status = (
+            original.status.value if hasattr(original.status, "value") else str(original.status)
+        )
         is_terminal = status in TERMINAL_STATUSES
         if not is_terminal and mode == ReprocessMode.RESTART_CONTINUE:
             raise InvalidInvestigationStateException(
@@ -807,7 +815,11 @@ class ReprocessInvestigationService:
                     if isinstance(budget, dict):
                         for field in _SCALABLE_LIMIT_FIELDS + ("max_llm_tokens",):
                             value = budget.get(field)
-                            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                            if (
+                                isinstance(value, int)
+                                and not isinstance(value, bool)
+                                and value >= 1
+                            ):
                                 base[field] = value
         return apply_budget_multiplier(base, multiplier)
 
@@ -816,9 +828,7 @@ class ReprocessInvestigationService:
         if self.checkpoint_repo is None:
             return 0
         try:
-            checkpoint = await self.checkpoint_repo.get_latest_checkpoint(
-                tenant_id, original.id
-            )
+            checkpoint = await self.checkpoint_repo.get_latest_checkpoint(tenant_id, original.id)
         except Exception:
             return 0
         if not isinstance(checkpoint, dict):
@@ -867,9 +877,7 @@ class ReprocessInvestigationService:
             self.evidence_repo, "find_by_investigation_id"
         ):
             try:
-                rows = await self.evidence_repo.find_by_investigation_id(
-                    tenant_id, original.id
-                )
+                rows = await self.evidence_repo.find_by_investigation_id(tenant_id, original.id)
             except Exception:
                 rows = []
             copies = []
@@ -906,9 +914,7 @@ class ReprocessInvestigationService:
                     continue
             if copies and hasattr(self.evidence_repo, "save_batch"):
                 try:
-                    await self.evidence_repo.save_batch(
-                        tenant_id, copies, new_investigation.id
-                    )
+                    await self.evidence_repo.save_batch(tenant_id, copies, new_investigation.id)
                 except Exception:
                     pass
 
@@ -916,9 +922,7 @@ class ReprocessInvestigationService:
             self.hypothesis_repo, "find_by_investigation_id"
         ):
             try:
-                hyps = await self.hypothesis_repo.find_by_investigation_id(
-                    tenant_id, original.id
-                )
+                hyps = await self.hypothesis_repo.find_by_investigation_id(tenant_id, original.id)
             except Exception:
                 hyps = []
             for hyp in hyps or []:

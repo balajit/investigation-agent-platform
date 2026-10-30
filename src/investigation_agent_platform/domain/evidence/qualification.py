@@ -49,7 +49,11 @@ def _is_int(value: Any) -> bool:
 
 def _etype(item: Any) -> str:
     try:
-        etype = item.get("evidence_type") if isinstance(item, dict) else getattr(item, "evidence_type", "")
+        etype = (
+            item.get("evidence_type")
+            if isinstance(item, dict)
+            else getattr(item, "evidence_type", "")
+        )
     except Exception:
         return ""
     try:
@@ -60,7 +64,9 @@ def _etype(item: Any) -> str:
 
 def _attrs(item: Any) -> dict:
     try:
-        attrs = item.get("attributes") if isinstance(item, dict) else getattr(item, "attributes", None)
+        attrs = (
+            item.get("attributes") if isinstance(item, dict) else getattr(item, "attributes", None)
+        )
     except Exception:
         return {}
     return dict(attrs) if isinstance(attrs, dict) else {}
@@ -76,7 +82,7 @@ def _location(item: Any) -> tuple[str, Any, Any, str]:
     """(file_path, line_start, line_end, revision) — dicts and models alike."""
     try:
         if isinstance(item, dict):
-            prov = (item.get("provenance") or {})
+            prov = item.get("provenance") or {}
             loc = prov.get("source_location", {}) if isinstance(prov, dict) else {}
             if isinstance(loc, dict):
                 return (
@@ -202,7 +208,9 @@ def qualify_history_row(item: Any, scope_path: str | None = None) -> Qualificati
         got = file_path.replace("\\", "/").strip()
         if want and got != want and not got.startswith(want + "/"):
             return _unqualified("history", f"row outside requested scope {scope_path}")
-    return Qualification(qualified=True, layer="history", reason="commit row pinned to path+revision")
+    return Qualification(
+        qualified=True, layer="history", reason="commit row pinned to path+revision"
+    )
 
 
 def _scope_covers(proof_scope: str, scope: str) -> bool:
@@ -265,7 +273,9 @@ def qualify_runtime_row(
         return _unqualified("runtime", "no event timestamp to pin")
     if observed < start or observed > end:
         return _unqualified("runtime", "event outside investigation window")
-    return Qualification(qualified=True, layer="runtime", reason="window-pinned with source identity")
+    return Qualification(
+        qualified=True, layer="runtime", reason="window-pinned with source identity"
+    )
 
 
 def qualify_state_row(item: Any) -> Qualification:
@@ -306,9 +316,7 @@ def qualify_item(
     try:
         stored_version = _qualifier_version(item)
         if stored_version is not None and stored_version != QUALIFIER_VERSION:
-            return _unqualified(
-                "unknown", f"unsupported qualifier version {stored_version!r}"
-            )
+            return _unqualified("unknown", f"unsupported qualifier version {stored_version!r}")
         etype = _etype(item)
         attrs = _attrs(item)
         count = attrs.get("match_count")

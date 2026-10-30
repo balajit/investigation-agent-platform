@@ -31,7 +31,9 @@ pytestmark = pytest.mark.skipif(
 def _reachable() -> bool:
     parsed = urlparse(PG_URL)
     try:
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 5432), timeout=1):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 5432), timeout=1
+        ):
             return True
     except OSError:
         return False
@@ -101,12 +103,14 @@ def filing_roles():  # type: ignore[no-untyped-def]
         with admin.begin() as conn:
             for name, role in roles.items():
                 conn.exec_driver_sql(
-                    f'CREATE ROLE "{role}" LOGIN PASSWORD \'{passwords[name]}\' '
+                    f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{passwords[name]}' "
                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                 )
                 conn.exec_driver_sql(f'GRANT "{role}" TO CURRENT_USER')
             conn.exec_driver_sql(f'CREATE SCHEMA "{schema}" AUTHORIZATION CURRENT_USER')
-            conn.exec_driver_sql(f'GRANT USAGE ON SCHEMA "{schema}" TO "{roles["worker"]}", "{roles["app"]}", "{roles["migrator"]}"')
+            conn.exec_driver_sql(
+                f'GRANT USAGE ON SCHEMA "{schema}" TO "{roles["worker"]}", "{roles["app"]}", "{roles["migrator"]}"'
+            )
             conn.exec_driver_sql(f'GRANT CREATE ON SCHEMA "{schema}" TO "{roles["migrator"]}"')
         for name, role in roles.items():
             engines[name] = create_engine(_url(role, passwords[name]))
@@ -185,7 +189,9 @@ def _create_schema(admin: Any, schema: str, roles: dict[str, str]) -> None:
         conn.exec_driver_sql(f'GRANT SELECT, INSERT ON onboarding_coverage_reports TO "{worker}"')
         conn.exec_driver_sql(f'GRANT SELECT ON onboarding_coverage_reports TO "{app}"')
         conn.exec_driver_sql(f'GRANT SELECT ON onboarding_coverage_filing_audits TO "{app}"')
-        conn.exec_driver_sql(f'GRANT INSERT, SELECT ON onboarding_coverage_filing_audits TO "{migrator}"')
+        conn.exec_driver_sql(
+            f'GRANT INSERT, SELECT ON onboarding_coverage_filing_audits TO "{migrator}"'
+        )
         conn.exec_driver_sql(
             f'CREATE FUNCTION "{schema}".record_onboarding_coverage_filing(p_tenant_id text,p_request_id uuid,'
             "p_revision integer,p_generation integer,p_fencing_token integer,p_report_content_hash text) "
@@ -232,13 +238,16 @@ def test_worker_filing_is_tenant_scoped_and_audited(filing_roles) -> None:  # ty
             (str(report_id), str(request_id)),
         )
         conn.exec_driver_sql(
-            f'SELECT "{schema}".record_onboarding_coverage_filing(%s,%s,1,1,12,\'content\')',
+            f"SELECT \"{schema}\".record_onboarding_coverage_filing(%s,%s,1,1,12,'content')",
             ("tenant-a", str(request_id)),
         )
     with worker.begin() as conn:
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-b',true)")
-        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_coverage_reports").scalar_one() == 0
+        assert (
+            conn.exec_driver_sql("SELECT count(*) FROM onboarding_coverage_reports").scalar_one()
+            == 0
+        )
     with engines["app"].begin() as conn:
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
@@ -283,7 +292,9 @@ async def test_repository_idempotent_refile_records_one_audit(filing_roles) -> N
     )
     try:
         request_id = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-        repo = SqlAlchemyOnboardingCoverageRepository(async_sessionmaker(engine, expire_on_commit=False))
+        repo = SqlAlchemyOnboardingCoverageRepository(
+            async_sessionmaker(engine, expire_on_commit=False)
+        )
         outputs: list[Mapping[str, Any]] = [
             {
                 "content_hash": "a" * 64,

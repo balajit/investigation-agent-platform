@@ -58,9 +58,7 @@ class TestCrossLayerScoring:
         items = _evidence("FILE_LOG", EvidenceType.LOG, 4) + _evidence(
             "POSTGRES", EvidenceType.DATABASE_STATE, 4
         )
-        result = engine.evaluate_hypothesis(
-            _hyp(), items, [], [], RootCauseVerificationPolicy()
-        )
+        result = engine.evaluate_hypothesis(_hyp(), items, [], [], RootCauseVerificationPolicy())
         assert result.status == VerificationStatus.VERIFIED
 
     def test_policy_opt_out_restores_leniency(self) -> None:

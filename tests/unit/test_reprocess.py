@@ -89,9 +89,7 @@ class _ProfileRepo:
             version=3,
             environment="test",
             status=SimpleNamespace(value="ACTIVE"),
-            investigation=SimpleNamespace(
-                default_time_window=3600, evidence_budget=budget or {}
-            ),
+            investigation=SimpleNamespace(default_time_window=3600, evidence_budget=budget or {}),
         )
 
     async def get_by_application_id(self, tenant_id, app_id):
@@ -197,12 +195,21 @@ def _seed_completed(repos, status=InvestigationStatus.COMPLETED):
 
 def test_multiplier_math_and_clamps():
     out = apply_budget_multiplier(
-        {"max_iterations": 20, "max_tool_calls": 120, "max_evidence_items": 60,
-         "max_llm_tokens": 100000, "junk": "x"},
+        {
+            "max_iterations": 20,
+            "max_tool_calls": 120,
+            "max_evidence_items": 60,
+            "max_llm_tokens": 100000,
+            "junk": "x",
+        },
         5,
     )
-    assert out == {"max_iterations": 100, "max_tool_calls": 600,
-                   "max_evidence_items": 300, "max_llm_tokens": 500000}
+    assert out == {
+        "max_iterations": 100,
+        "max_tool_calls": 600,
+        "max_evidence_items": 300,
+        "max_llm_tokens": 500000,
+    }
     assert "junk" not in out
     out = apply_budget_multiplier({"max_iterations": 20, "max_llm_tokens": 900000}, 10)
     assert out["max_iterations"] == MAX_RUN_ITERATIONS == 100
@@ -266,9 +273,7 @@ def test_continue_copies_artifacts_with_remap_and_demotion():
     ev1 = _evidence(orig.id, summary="a")
     ev2 = _evidence(orig.id, summary="b")
     ev_repo.rows.extend([ev1, ev2])
-    hyp = _hypothesis(
-        orig.id, status=HypothesisStatus.VERIFIED, supporting=[ev1.evidence_id]
-    )
+    hyp = _hypothesis(orig.id, status=HypothesisStatus.VERIFIED, supporting=[ev1.evidence_id])
     hyp_repo.rows.append(hyp)
     new = run(_service(repos).execute("n-a", orig.id, "RESTART_CONTINUE"))
     copied_ev = [e for e in ev_repo.rows if e.investigation_id == new.id]
@@ -405,9 +410,7 @@ class TestReprocessWire:
         ctx.temporal_client.start_workflow = AsyncMock()
         import sys as _sys
 
-        router_mod = _sys.modules[
-            "investigation_agent_platform.api.v1.routers.investigations"
-        ]
+        router_mod = _sys.modules["investigation_agent_platform.api.v1.routers.investigations"]
         monkeypatch.setattr(router_mod, "isWorkerVisibleStore", lambda repo: True)
         orig_id = self._create(client, problem="unique wire problem fresh").json()["id"]
         resp = client.post(
@@ -442,7 +445,8 @@ def test_continue_prunes_dangling_supporting_refs():
     ev_repo.rows.append(ev1)
     purged = uuid4()
     hyp = _hypothesis(
-        orig.id, status=HypothesisStatus.UNDER_INVESTIGATION,
+        orig.id,
+        status=HypothesisStatus.UNDER_INVESTIGATION,
         supporting=[ev1.evidence_id, purged],
     )
     hyp_repo.rows.append(hyp)

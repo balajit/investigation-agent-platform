@@ -106,25 +106,17 @@ def _run_case(case):
             ev, case["symbol"], function_scope=case["function_scope"]
         )
     if resolver == "class":
-        return resolve_python_class_attr_fact(
-            ev, case["symbol"], class_scope=case["class_scope"]
-        )
+        return resolve_python_class_attr_fact(ev, case["symbol"], class_scope=case["class_scope"])
     if resolver == "framework":
-        return resolve_python_framework_fact(
-            ev, case["symbol"], class_scope=case["class_scope"]
-        )
+        return resolve_python_framework_fact(ev, case["symbol"], class_scope=case["class_scope"])
     if resolver == "import":
         return resolve_python_import_fact(ev, case["symbol"])
     if resolver == "mro":
         return resolve_python_mro_fact(ev, case["class_scope"])
     if resolver == "owner":
-        return resolve_python_method_owner_fact(
-            ev, case["symbol"], class_scope=case["class_scope"]
-        )
+        return resolve_python_method_owner_fact(ev, case["symbol"], class_scope=case["class_scope"])
     if resolver == "control":
-        return resolve_python_control_fact(
-            ev, case["symbol"], branch_hint=case.get("branch_hint")
-        )
+        return resolve_python_control_fact(ev, case["symbol"], branch_hint=case.get("branch_hint"))
     if resolver == "writes":
         return resolve_python_write_sites_fact(
             ev, case["symbol"], class_scope=case.get("class_scope")

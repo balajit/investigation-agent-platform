@@ -66,9 +66,7 @@ def upgrade() -> None:
             ),
             sa.PrimaryKeyConstraint("id"),
         )
-        op.create_index(
-            "idx_contradiction_tenant", "investigation_contradictions", ["tenant_id"]
-        )
+        op.create_index("idx_contradiction_tenant", "investigation_contradictions", ["tenant_id"])
         op.create_index(
             "idx_contradiction_tenant_inv",
             "investigation_contradictions",

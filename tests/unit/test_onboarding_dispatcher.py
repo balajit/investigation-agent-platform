@@ -91,11 +91,7 @@ class FakeDispatchRepo:
         return row
 
     def _claim_row(self, worker_id: str) -> dict[str, Any] | None:
-        due = [
-            row
-            for row in self.dispatches.values()
-            if row["state"] in ("PENDING", "RETRYABLE")
-        ]
+        due = [row for row in self.dispatches.values() if row["state"] in ("PENDING", "RETRYABLE")]
         if not due:
             return None
         due.sort(key=lambda row: str(row["id"]))
@@ -129,9 +125,7 @@ class FakeDispatchRepo:
     async def read_request(
         self, claim: ClaimedOnboardingDispatch, **kwargs: Any
     ) -> dict[str, Any] | None:
-        return self.requests.get(
-            (claim.tenant_id, claim.request_id, claim.revision)
-        )
+        return self.requests.get((claim.tenant_id, claim.request_id, claim.revision))
 
     async def read_request_state(
         self, tenant_id: str, request_id: UUID, revision: int
@@ -139,9 +133,7 @@ class FakeDispatchRepo:
         row = self.requests.get((tenant_id, request_id, revision))
         return row["state"] if row is not None else None
 
-    async def adopt_run_id(
-        self, tenant_id: str, dispatch_id: UUID, run_id: str
-    ) -> bool:
+    async def adopt_run_id(self, tenant_id: str, dispatch_id: UUID, run_id: str) -> bool:
         row = self.dispatches.get(dispatch_id)
         if row is None or row["tenant_id"] != tenant_id:
             return False
@@ -158,9 +150,7 @@ class FakeDispatchRepo:
         row["state_version"] += 1
         return True
 
-    async def read_dispatch(
-        self, tenant_id: str, dispatch_id: UUID
-    ) -> dict[str, Any] | None:
+    async def read_dispatch(self, tenant_id: str, dispatch_id: UUID) -> dict[str, Any] | None:
         row = self.dispatches.get(dispatch_id)
         if row is None or row["tenant_id"] != tenant_id:
             return None
@@ -238,11 +228,8 @@ class FakeDispatchRepo:
         return None
 
     async def list_by_state(self, state: str, limit: int = 25) -> list[dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.dispatches.values()
-            if row["state"] == state
-        ][:limit]
+        return [dict(row) for row in self.dispatches.values() if row["state"] == state][:limit]
+
 
 class FakeStarter:
     def __init__(self) -> None:
@@ -293,9 +280,7 @@ def _receipt(
 def _dispatcher(
     repo: FakeDispatchRepo, starter: FakeStarter, lookup: FakeLookup, **kwargs: Any
 ) -> OnboardingDispatcher:
-    return OnboardingDispatcher(
-        dispatch_repository=repo, starter=starter, lookup=lookup, **kwargs
-    )
+    return OnboardingDispatcher(dispatch_repository=repo, starter=starter, lookup=lookup, **kwargs)
 
 
 def _setup() -> tuple[FakeDispatchRepo, FakeStarter, FakeLookup, dict[str, Any]]:
@@ -395,9 +380,7 @@ async def test_duplicate_start_calls_starter_once() -> None:
 
 async def test_canceled_request_never_starts() -> None:
     repo, starter, lookup, ctx = _setup()
-    repo.requests[
-        ("tenant-a", ctx["request"]["request_id"], 1)
-    ]["state"] = "CANCELED"
+    repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] = "CANCELED"
     result = await _dispatcher(repo, starter, lookup).dispatch_once(worker_id="w1")
     assert result.outcome == DispatchOutcome.TERMINAL
     assert starter.calls == []
@@ -457,12 +440,8 @@ async def test_reconcile_leaves_healthy_accepted_alone() -> None:
 async def test_cancel_requested_without_canceler_defers_running_work() -> None:
     repo, starter, lookup, ctx = _setup()
     ctx["dispatch"]["state"] = "ACCEPTED"
-    repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] = (
-        "CANCEL_REQUESTED"
-    )
-    lookup.by_workflow[ctx["dispatch"]["workflow_id"]] = _receipt(
-        ctx["dispatch"]["workflow_id"]
-    )
+    repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] = "CANCEL_REQUESTED"
+    lookup.by_workflow[ctx["dispatch"]["workflow_id"]] = _receipt(ctx["dispatch"]["workflow_id"])
     report = await _dispatcher(repo, starter, lookup).reconcile_once(worker_id="w1")
     assert report.deferred_cancel == 1
     assert ctx["dispatch"]["state"] == "ACCEPTED"
@@ -477,17 +456,13 @@ async def test_cancel_requested_with_missing_workflow_completes_cancel() -> None
 
     repo, starter, lookup, ctx = _setup()
     ctx["dispatch"]["state"] = "ACCEPTED"
-    repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] = (
-        "CANCEL_REQUESTED"
-    )
+    repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] = "CANCEL_REQUESTED"
     report = await _dispatcher(repo, starter, lookup).reconcile_once(
         worker_id="w1", canceler=FakeCanceler()
     )
     assert report.canceled == 1
     assert ctx["dispatch"]["state"] == "TERMINAL"
-    assert repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] == (
-        "CANCELED"
-    )
+    assert repo.requests[("tenant-a", ctx["request"]["request_id"], 1)]["state"] == ("CANCELED")
     assert canceled == []
 
 
@@ -495,7 +470,9 @@ async def test_stale_fencing_token_refuses_write() -> None:
     repo, starter, lookup, ctx = _setup()
     original_accept = repo.record_workflow_accepted
 
-    async def stale_once(tenant_id: str, dispatch_id: UUID, fencing_token: int, run_id: str) -> bool:
+    async def stale_once(
+        tenant_id: str, dispatch_id: UUID, fencing_token: int, run_id: str
+    ) -> bool:
         assert fencing_token == ctx["dispatch"]["lease_fencing_token"]
         return False
 

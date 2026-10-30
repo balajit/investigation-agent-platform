@@ -16,17 +16,31 @@ from investigation_agent_platform.domain.investigation.chat import (
 class CreateSessionBody(BaseModel):
     """POST /chat/sessions request body (input model; response is ChatSessionResponse)."""
 
-    investigation_id: UUID | None = Field(default=None, description="Investigation to attach the session to")
-    application_id: str | None = Field(default=None, max_length=128, description="Application profile scope for the session")
-    classification: str = Field(default="INTERNAL", max_length=32, description="Data classification gate for model routing")
-    allowed_provider: str = Field(default="openai", max_length=32, description="Permitted LLM provider for this session")
-    authorization_reference: str = Field(default="", max_length=256, description="Authorization ticket reference for elevated data classes")
+    investigation_id: UUID | None = Field(
+        default=None, description="Investigation to attach the session to"
+    )
+    application_id: str | None = Field(
+        default=None, max_length=128, description="Application profile scope for the session"
+    )
+    classification: str = Field(
+        default="INTERNAL", max_length=32, description="Data classification gate for model routing"
+    )
+    allowed_provider: str = Field(
+        default="openai", max_length=32, description="Permitted LLM provider for this session"
+    )
+    authorization_reference: str = Field(
+        default="",
+        max_length=256,
+        description="Authorization ticket reference for elevated data classes",
+    )
 
 
 class PostMessageBody(BaseModel):
     """POST /chat/sessions/{session_id}/messages request body (streams SSE)."""
 
-    content: str = Field(..., min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS, description="User message content")
+    content: str = Field(
+        ..., min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS, description="User message content"
+    )
 
 
 class ChatSessionResponse(BaseModel):

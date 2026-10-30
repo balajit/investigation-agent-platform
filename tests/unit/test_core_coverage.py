@@ -1604,8 +1604,7 @@ class TestReasoningCoordinator:
         )
         coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
         history = [
-            {"iteration": i, "action": "SEARCH_LOGS", "prompt": "must-not-leak"}
-            for i in range(12)
+            {"iteration": i, "action": "SEARCH_LOGS", "prompt": "must-not-leak"} for i in range(12)
         ]
         await coord.reason("tenant-a", self._make_state(), recent_actions=history)
         req = gateway.complete.call_args[0][1]

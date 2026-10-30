@@ -690,7 +690,9 @@ def _decide(
             else certificate_context_id
         ),
         expected_context_id=(
-            str(cert.get("context_id") or "") if expected_context_id is _UNSET else expected_context_id
+            str(cert.get("context_id") or "")
+            if expected_context_id is _UNSET
+            else expected_context_id
         ),
         reconciliation_adjudicated=reconciliation_adjudicated,
         policy_eligible=policy_eligible,
@@ -872,9 +874,7 @@ def test_e2e_decision_stale_context_denies() -> None:
     bundle = _definition_bundle()
     _assert_pins(case, bundle["hashes"])
     _assert_checker_row("test_e2e_definition_valid_commit", bundle)
-    decision, reason = _decide(
-        bundle["cert"], bundle["outcome"], expected_context_id=WRONG_CONTEXT
-    )
+    decision, reason = _decide(bundle["cert"], bundle["outcome"], expected_context_id=WRONG_CONTEXT)
     _assert_decision_row(case, decision, reason)
     with __import__("pytest").raises(ValueError, match="STALE_CONTEXT"):
         build_commit(
@@ -1094,7 +1094,9 @@ def test_no_production_consumer_of_g4_decision() -> None:
     root = Path(__file__).resolve().parents[2]
     src_root = root / "src"
     assert src_root.is_dir(), f"searched-root missing: {src_root}"
-    decision_api = re.compile(r"\bdecide_publication\b|\bbuild_commit\b|\bdecide_guarded_promotion\b")
+    decision_api = re.compile(
+        r"\bdecide_publication\b|\bbuild_commit\b|\bdecide_guarded_promotion\b"
+    )
     harness_ref = re.compile(r"test_proof_kernel_g4_component4_integration")
     harness_literal = re.compile(r"component4_integration|g4_component4")
     allowlisted = (
@@ -1139,7 +1141,9 @@ def test_no_production_consumer_of_g4_decision() -> None:
                 if path != grandfathered and path not in allowlisted:
                     violations.append(f"P1 decision-API ref {rel}:{lineno}: {line.strip()}")
                 elif "decide_publication" in line or "build_commit" in line:
-                    violations.append(f"P1 demoted-API ref in allowlist {rel}:{lineno}: {line.strip()}")
+                    violations.append(
+                        f"P1 demoted-API ref in allowlist {rel}:{lineno}: {line.strip()}"
+                    )
             if harness_ref.search(line):
                 violations.append(f"P2 harness-module ref {rel}:{lineno}: {line.strip()}")
             if harness_literal.search(line):
@@ -1211,9 +1215,7 @@ def test_k11_direct_definition_revision_mismatch() -> None:
 
 
 def test_k11_direct_call_edge_revision_mismatch() -> None:
-    bundle = _certified_bundle(
-        "call_edge/v1", [_call_edge_record()], _call_edge_proposition(), {}
-    )
+    bundle = _certified_bundle("call_edge/v1", [_call_edge_record()], _call_edge_proposition(), {})
     semantic = _SEMANTICS["call_edge/v1"]
     ok_outcome, _ = semantic(
         bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"]

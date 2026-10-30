@@ -122,9 +122,7 @@ class TestInvestigationsGolden:
     def test_conclusion_null_pinned(self, _restore_context: None) -> None:
         _, client = _client()
         inv_id = _create(client).json()["id"]
-        body = client.get(
-            f"/api/v1/investigations/{inv_id}/conclusion", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv_id}/conclusion", headers=HEADERS).json()
         # conclusion:null must be PRESENT (not dropped by exclusion settings).
         assert body == {
             "investigation_id": inv_id,
@@ -136,9 +134,7 @@ class TestInvestigationsGolden:
     def test_findings_empty_shape(self, _restore_context: None) -> None:
         _, client = _client()
         inv_id = _create(client).json()["id"]
-        body = client.get(
-            f"/api/v1/investigations/{inv_id}/findings", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv_id}/findings", headers=HEADERS).json()
         assert body == {"items": [], "total": 0, "offset": 0, "limit": 50}
 
     def test_start_without_temporal_503_envelope(self, _restore_context: None) -> None:
@@ -242,9 +238,7 @@ class TestConclusionFailure:
 
         assert _failure_code_for("budget_exceeded", False) == "BUDGET_EXCEEDED"
         assert _failure_code_for("input_expired", False) == "INPUT_EXPIRED"
-        assert (
-            _failure_code_for("verification_failed_or_limit_reached", False) == "UNVERIFIED"
-        )
+        assert _failure_code_for("verification_failed_or_limit_reached", False) == "UNVERIFIED"
         assert _failure_code_for("", False) == "UNKNOWN"
         assert _failure_code_for("whatever", False) == "UNKNOWN"
         assert _failure_code_for("", True) == "CONCLUSION_DENIED"
@@ -254,9 +248,7 @@ class TestConclusionFailure:
         inv = self._failed_inv(
             ctx, {"failure": {"code": "UNVERIFIED", "reason": "", "failed_at": "t"}}
         )
-        body = client.get(
-            f"/api/v1/investigations/{inv.id}/conclusion", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv.id}/conclusion", headers=HEADERS).json()
         assert body["status"] == "FAILED"
         assert body["conclusion"] is None
         assert body["failure"] == {"code": "UNVERIFIED", "reason": "", "failed_at": "t"}
@@ -264,9 +256,7 @@ class TestConclusionFailure:
     def test_conclusion_failure_null_when_absent(self, _restore_context: None) -> None:
         ctx, client = _client()
         inv = self._failed_inv(ctx, {})
-        body = client.get(
-            f"/api/v1/investigations/{inv.id}/conclusion", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv.id}/conclusion", headers=HEADERS).json()
         assert body["failure"] is None
 
 
@@ -292,9 +282,7 @@ class TestEvidenceHypothesesTimelineWire:
     def test_evidence_empty_no_pagination_keys(self, _restore_context: None) -> None:
         _, client = _client()
         inv_id = _create(client).json()["id"]
-        body = client.get(
-            f"/api/v1/investigations/{inv_id}/evidence", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv_id}/evidence", headers=HEADERS).json()
         # No offset/limit keys on this route (unlike hypotheses/timeline).
         assert body == {"items": [], "total": 0}
 
@@ -323,17 +311,13 @@ class TestEvidenceHypothesesTimelineWire:
     def test_hypotheses_empty_shape(self, _restore_context: None) -> None:
         _, client = _client()
         inv_id = _create(client).json()["id"]
-        body = client.get(
-            f"/api/v1/investigations/{inv_id}/hypotheses", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv_id}/hypotheses", headers=HEADERS).json()
         assert body == {"items": [], "total": 0, "offset": 0, "limit": 50}
 
     def test_timeline_empty_shape(self, _restore_context: None) -> None:
         _, client = _client()
         inv_id = _create(client).json()["id"]
-        body = client.get(
-            f"/api/v1/investigations/{inv_id}/timeline", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/investigations/{inv_id}/timeline", headers=HEADERS).json()
         assert body == {"items": [], "total": 0, "offset": 0, "limit": 100}
 
 
@@ -400,9 +384,7 @@ class TestDispatchBudget:
             status=SimpleNamespace(value="ACTIVE"),
             investigation=SimpleNamespace(evidence_budget={"max_iterations": 20}),
         )
-        ctx.profile_repo = SimpleNamespace(
-            list_revisions=AsyncMock(return_value=[profile])
-        )
+        ctx.profile_repo = SimpleNamespace(list_revisions=AsyncMock(return_value=[profile]))
         ctx.temporal_client = MagicMock()
         ctx.temporal_client.start_workflow = AsyncMock(return_value=None)
         set_app_context(ctx)
@@ -511,15 +493,11 @@ class TestListFilters:
         ctx, client = _client()
         failed = self._seed(ctx, InvestigationStatus.FAILED)
         done = self._seed(ctx, InvestigationStatus.COMPLETED)
-        body = client.get(
-            "/api/v1/investigations?status=FAILED", headers=HEADERS
-        ).json()
+        body = client.get("/api/v1/investigations?status=FAILED", headers=HEADERS).json()
         ids = [i["investigation_id"] for i in body["items"]]
         assert str(failed.id) in ids
         assert str(done.id) not in ids
-        body = client.get(
-            "/api/v1/investigations?status=failed,completed", headers=HEADERS
-        ).json()
+        body = client.get("/api/v1/investigations?status=failed,completed", headers=HEADERS).json()
         ids = [i["investigation_id"] for i in body["items"]]
         assert str(failed.id) in ids
         assert str(done.id) in ids
@@ -620,9 +598,7 @@ class TestStartGates:
             version=1,
         )
         _asyncio.run(ctx.investigation_repo.create("tenant-a", inv))
-        resp = client.post(
-            f"/api/v1/investigations/{inv.id}/start", headers=HEADERS
-        )
+        resp = client.post(f"/api/v1/investigations/{inv.id}/start", headers=HEADERS)
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "INVESTIGATION_NOT_STARTABLE"
 
@@ -677,9 +653,7 @@ class TestStartGates:
         fake_client.start_workflow = AsyncMock(return_value=None)
         ctx.temporal_client = fake_client
         try:
-            resp = client.post(
-                f"/api/v1/investigations/{inv.id}/start", headers=HEADERS
-            )
+            resp = client.post(f"/api/v1/investigations/{inv.id}/start", headers=HEADERS)
             assert resp.status_code == 202
             stored = _asyncio.run(ctx.investigation_repo.get_by_id("tenant-a", inv.id))
             assert stored.status == InvestigationStatus.RUNNING

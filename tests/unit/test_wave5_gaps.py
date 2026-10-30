@@ -66,9 +66,7 @@ async def test_mcp_tool_failure_logs_exception_with_top_level_ids(
     with caplog.at_level(
         logging.WARNING, logger="investigation_agent_platform.mcp.tools.evidence_detail"
     ):
-        output = await get_evidence_core(
-            services=services, scope=scope, evidence_id=uuid4()
-        )
+        output = await get_evidence_core(services=services, scope=scope, evidence_id=uuid4())
     assert isinstance(output, McpErrorEnvelope)
     assert output.error.code == McpErrorCode.EVIDENCE_NOT_FOUND
     failures = [r for r in caplog.records if "failed" in r.getMessage()]
@@ -117,6 +115,7 @@ def test_no_router_local_body_classes() -> None:
         for match in re.findall(r"^class (\w*Body)\b", path.read_text(), re.MULTILINE)
     ]
     assert offenders == [], f"router-local body classes remain: {offenders}"
+
 
 def test_moved_bodies_importable_from_schemas_and_routers() -> None:
     # NOTE: `api.v1.routers/__init__` rebinds submodule names to APIRouter
@@ -319,9 +318,7 @@ def test_stdio_explicit_actor_is_quiet(
     with caplog.at_level(logging.WARNING, logger="investigation_agent_platform.mcp.context"):
         context = stdio_context_from_env("tenant-a", str(uuid4()), "op-1")
     assert context.actor_id == "op-1"
-    assert "mcp.stdio.default_actor" not in [
-        getattr(r, "event", "") for r in caplog.records
-    ]
+    assert "mcp.stdio.default_actor" not in [getattr(r, "event", "") for r in caplog.records]
 
 
 # --- TO_DO-030: OtherTenantSessionView redaction ------------------------------

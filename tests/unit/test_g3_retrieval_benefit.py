@@ -28,10 +28,14 @@ from investigation_agent_platform.application.investigation.verification import 
 
 
 def _binding(*, unknown: list[str]) -> ClaimRetrievalBinding:
-    return ClaimRetrievalBinding(claim_key="k|CAUSAL", claim_ref="abcdef0123456789", unknown=list(unknown))
+    return ClaimRetrievalBinding(
+        claim_key="k|CAUSAL", claim_ref="abcdef0123456789", unknown=list(unknown)
+    )
 
 
-def _ledger(*, query: str = "SampleOrderFilter", scope: str | None = "repo@HEAD:/:query=q") -> ClaimRetrievalLedger:
+def _ledger(
+    *, query: str = "SampleOrderFilter", scope: str | None = "repo@HEAD:/:query=q"
+) -> ClaimRetrievalLedger:
     return ClaimRetrievalLedger(claim_key="k|CAUSAL", search_query=query, scope=scope)
 
 
@@ -43,7 +47,12 @@ def test_unknown_citations_require_zero_persisted_attempts() -> None:
     binding = _binding(unknown=["ev-1"])
     assert (
         re_retrieval_directive(
-            binding, _ledger(), None, [], "SEARCH_CODE", {"path_prefix": "/"},
+            binding,
+            _ledger(),
+            None,
+            [],
+            "SEARCH_CODE",
+            {"path_prefix": "/"},
         )
         is not None
     )
@@ -65,7 +74,12 @@ def test_budget_uses_durable_count() -> None:
     recorded = _recorded("SampleOrderFilter", "repo@HEAD:/:query=q", WP_A3_DEFAULT_MAX_ATTEMPTS)
     assert (
         re_retrieval_directive(
-            binding, _ledger(), "SEARCH_FAILED", recorded, "SEARCH_CODE", {"path_prefix": "/"},
+            binding,
+            _ledger(),
+            "SEARCH_FAILED",
+            recorded,
+            "SEARCH_CODE",
+            {"path_prefix": "/"},
         )
         is None
     )
@@ -86,21 +100,33 @@ def test_directive_requires_recorded_attempts() -> None:
     binding = _binding(unknown=["ev-1"])
     with pytest.raises(TypeError):
         re_retrieval_directive(  # type: ignore[call-arg]
-            binding, _ledger(), None, "SEARCH_CODE", {"path_prefix": "/"},
+            binding,
+            _ledger(),
+            None,
+            "SEARCH_CODE",
+            {"path_prefix": "/"},
         )
 
 
 def test_directive_scope_is_normalized() -> None:
     binding = _binding(unknown=["ev-1"])
     directive = re_retrieval_directive(
-        binding, _ledger(scope="  repo@HEAD:/:query=q  "), None, [],
-        "SEARCH_CODE", {"path_prefix": "/"},
+        binding,
+        _ledger(scope="  repo@HEAD:/:query=q  "),
+        None,
+        [],
+        "SEARCH_CODE",
+        {"path_prefix": "/"},
     )
     assert directive is not None
     assert directive["scope"] == "repo@HEAD:/:query=q"
     none_scope = re_retrieval_directive(
-        binding, _ledger(query="q", scope=None), None, [],
-        "SEARCH_CODE", {"path_prefix": "/"},
+        binding,
+        _ledger(query="q", scope=None),
+        None,
+        [],
+        "SEARCH_CODE",
+        {"path_prefix": "/"},
     )
     assert none_scope is not None
     assert none_scope["scope"] == ""
@@ -109,9 +135,12 @@ def test_directive_scope_is_normalized() -> None:
 def test_directive_carries_durable_index() -> None:
     binding = _binding(unknown=[])
     directive = re_retrieval_directive(
-        binding, _ledger(), "SEARCH_FAILED",
+        binding,
+        _ledger(),
+        "SEARCH_FAILED",
         _recorded("SampleOrderFilter", "repo@HEAD:/:query=q", 2),
-        "SEARCH_CODE", {"path_prefix": "/"},
+        "SEARCH_CODE",
+        {"path_prefix": "/"},
     )
     assert directive is not None
     assert directive["attempt_index"] == 2
@@ -224,16 +253,12 @@ async def test_retrieval_marker_carries_action_execution_id() -> None:
         execute=AsyncMock(return_value=None),
     )
     ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-    ctx.action_repo = SimpleNamespace(
-        count_by_investigation=AsyncMock(return_value=0)
-    )
+    ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
     ctx.evidence_repo = SimpleNamespace(
         find_by_investigation_id=AsyncMock(return_value=[]),
         save_batch=AsyncMock(return_value=None),
     )
-    ctx.profile_repo = SimpleNamespace(
-        get_by_application_id=AsyncMock(return_value=None)
-    )
+    ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
     ctx.evidence_gateway = SimpleNamespace(
         search_runtime_evidence=AsyncMock(
             return_value=SimpleNamespace(items=[SimpleNamespace(id="row-1")])
@@ -260,8 +285,7 @@ async def test_retrieval_marker_carries_action_execution_id() -> None:
     ]
     assert len(markers) == 1
     assert (
-        markers[0].attributes["action_execution_id"]
-        == result.data["action_outcome"]["action_id"]
+        markers[0].attributes["action_execution_id"] == result.data["action_outcome"]["action_id"]
     )
 
 
@@ -457,9 +481,7 @@ def test_order_carry_rejects_malformed_directive() -> None:
     assert _carry_requery_order({"ledger_requery": "prose"}, 1) is None
     assert (
         _carry_requery_order(
-            _directive_result(
-                action_parameters={"path_prefix": {"nested": "no-scalars"}}
-            ),
+            _directive_result(action_parameters={"path_prefix": {"nested": "no-scalars"}}),
             1,
         )
         is None
@@ -478,9 +500,7 @@ def test_order_scope_normalization() -> None:
     )
 
     assert _carry_requery_order(_directive_result(scope=None), 0)["scope"] == ""
-    assert (
-        _carry_requery_order(_directive_result(scope="  s  "), 0)["scope"] == "s"
-    )
+    assert _carry_requery_order(_directive_result(scope="  s  "), 0)["scope"] == "s"
 
 
 def _verify_harness(
@@ -783,16 +803,16 @@ def _hyp(*, statement: str = "Cache causes outage", cited: list[str]) -> SimpleN
         statement=statement,
         supporting_evidence_ids=list(cited),
         refuting_evidence_ids=[],
-        assessments=[
-            SimpleNamespace(claim_kind=None, claim_target={}, cited_ids=list(cited))
-        ],
+        assessments=[SimpleNamespace(claim_kind=None, claim_target={}, cited_ids=list(cited))],
         causal_steps=[],
     )
 
 
 def _supported(corroborating: list[str]) -> SimpleNamespace:
     return SimpleNamespace(
-        status="SUPPORTED", tier="established", limitations=[],
+        status="SUPPORTED",
+        tier="established",
+        limitations=[],
         corroborating_evidence_ids=list(corroborating),
     )
 
@@ -811,11 +831,13 @@ def test_bindings_returned_without_other_diagnostics() -> None:
 
 def test_select_fails_closed_without_attempt_history() -> None:
     hyp = _hyp(statement="lookup Foo", cited=["ghost"])
-    recent = [{
-        "action": "SEARCH_CODE",
-        "parameters": {"path_prefix": "/"},
-        "retrieval_attempt": {"search_query": "lookup Foo", "scope": None},
-    }]
+    recent = [
+        {
+            "action": "SEARCH_CODE",
+            "parameters": {"path_prefix": "/"},
+            "retrieval_attempt": {"search_query": "lookup Foo", "scope": None},
+        }
+    ]
     assert select_ledger_requery(hyp, [], None, recent) is None
     assert select_ledger_requery(hyp, [], [], recent) is not None
 
@@ -858,12 +880,8 @@ def test_distinct_claims_split_by_kind_and_target() -> None:
         supporting_evidence_ids=[],
         refuting_evidence_ids=[],
         assessments=[
-            SimpleNamespace(
-                claim_kind="CAUSAL", claim_target={"symbol": "A"}, cited_ids=["a1"]
-            ),
-            SimpleNamespace(
-                claim_kind="CAUSAL", claim_target={"symbol": "B"}, cited_ids=["b1"]
-            ),
+            SimpleNamespace(claim_kind="CAUSAL", claim_target={"symbol": "A"}, cited_ids=["a1"]),
+            SimpleNamespace(claim_kind="CAUSAL", claim_target={"symbol": "B"}, cited_ids=["b1"]),
             SimpleNamespace(
                 claim_kind="COUNTERPART",
                 claim_target={"symbol": "A"},
@@ -881,10 +899,7 @@ def test_distinct_claims_split_by_kind_and_target() -> None:
     assert diag is not None
     assert len(diag.claim_bindings) == 3
     assert len(diag.claim_ledgers) == 3
-    paired = {
-        (b.claim_key, b.target_ref)
-        for b in diag.claim_bindings
-    } == {
+    paired = {(b.claim_key, b.target_ref) for b in diag.claim_bindings} == {
         (str(m.claim_key), str(m.target_ref)) for m in diag.claim_ledgers
     }
     assert paired
@@ -951,9 +966,7 @@ def test_unscoped_empty_supports_nothing() -> None:
         claim_target=None,
         cited_ids=["ghost"],
         bank_ids=set(),
-        attempts=[
-            ([], {"search_query": "S", "scope": None, "outcome": "UNSCOPED_EMPTY"})
-        ],
+        attempts=[([], {"search_query": "S", "scope": None, "outcome": "UNSCOPED_EMPTY"})],
     )
     assert binding.claim_local == []
     assert binding.bank_fallback == []
@@ -1019,7 +1032,9 @@ def _foo_hyp() -> SimpleNamespace:
         refuting_evidence_ids=[],
         assessments=[
             SimpleNamespace(
-                claim_kind=None, claim_target={"symbol": "Foo"}, cited_ids=["evX"],
+                claim_kind=None,
+                claim_target={"symbol": "Foo"},
+                cited_ids=["evX"],
             )
         ],
         causal_steps=[],
@@ -1028,8 +1043,10 @@ def _foo_hyp() -> SimpleNamespace:
 
 def test_bounded_search_requires_prior_truncation() -> None:
     prior_truncated = [
-        (["r1"], {"search_query": "Foo", "scope": None, "outcome": "ROWS_RETURNED",
-                   "truncated_rows": 2}),
+        (
+            ["r1"],
+            {"search_query": "Foo", "scope": None, "outcome": "ROWS_RETURNED", "truncated_rows": 2},
+        ),
         (["r2"], {"search_query": "Foo", "scope": None, "outcome": "SCOPED_EMPTY"}),
     ]
     diag = collect_verification_diagnostics(_foo_hyp(), [], _supported([]), prior_truncated)
@@ -1040,8 +1057,10 @@ def test_bounded_search_requires_prior_truncation() -> None:
 def test_bounded_search_rejects_self_only_truncation() -> None:
     self_truncated = [
         (["r1"], {"search_query": "Foo", "scope": None, "outcome": "SCOPED_EMPTY"}),
-        (["r2"], {"search_query": "Foo", "scope": None, "outcome": "SCOPED_EMPTY",
-                   "truncated_rows": 3}),
+        (
+            ["r2"],
+            {"search_query": "Foo", "scope": None, "outcome": "SCOPED_EMPTY", "truncated_rows": 3},
+        ),
     ]
     diag = collect_verification_diagnostics(_foo_hyp(), [], _supported([]), self_truncated)
     assert diag is not None
@@ -1051,6 +1070,7 @@ def test_bounded_search_rejects_self_only_truncation() -> None:
 # ---------------------------------------------------------------------------
 # Battery metrics over persisted VERIFY_EVALUATION rows (hermetic, no DB).
 # ---------------------------------------------------------------------------
+
 
 def _battery_module():
     import importlib.util
@@ -1319,7 +1339,9 @@ def test_battery_missing_obligation_without_signal_unexplained() -> None:
             )
         ]
     }
-    report = mod.compute_report(cohort, attempts, evals, {inv: {"row-1": "2026-10-20T10:00:30+00:00"}}, [])
+    report = mod.compute_report(
+        cohort, attempts, evals, {inv: {"row-1": "2026-10-20T10:00:30+00:00"}}, []
+    )
     assert report["attribution"]["events"] == 1
     assert report["attribution"]["attributed"] == 0
     assert report["attribution"]["unexplained"] == 1
@@ -1332,11 +1354,17 @@ def test_battery_per_action_coverage_pairs_join_key() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["r"], "exec-1",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["r"],
+                "exec-1",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["r"], None,
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["r"],
+                None,
                 "2026-10-20T10:01:00+00:00",
             ),
         ]
@@ -1356,11 +1384,17 @@ def test_battery_recovery_requires_changed_binding() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["row-9"], f"{inv}-exec-rows",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["row-9"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
         ]
@@ -1369,18 +1403,22 @@ def test_battery_recovery_requires_changed_binding() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
         ]
     }
-    report = mod.compute_report(cohort, attempts, evals, {inv: {"row-9": "2026-10-20T10:02:30+00:00"}}, [])
+    report = mod.compute_report(
+        cohort, attempts, evals, {inv: {"row-9": "2026-10-20T10:02:30+00:00"}}, []
+    )
     assert report["recovery"]["chains"] == 0
     assert report["branch_recovery"] is False
 
@@ -1393,11 +1431,17 @@ def test_battery_recovery_requires_durable_rows() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["row-evap"], f"{inv}-exec-rows",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["row-evap"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
         ]
@@ -1405,12 +1449,14 @@ def test_battery_recovery_requires_durable_rows() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, ["row-evap"], [])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
@@ -1490,7 +1536,10 @@ def test_battery_truncation_flags_from_persisted_bindings() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SCOPED_EMPTY", [], f"{inv}-exec",
+                "SampleOrderFilter",
+                "SCOPED_EMPTY",
+                [],
+                f"{inv}-exec",
                 "2026-10-20T10:00:00+00:00",
             )
         ]
@@ -1499,7 +1548,8 @@ def test_battery_truncation_flags_from_persisted_bindings() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"], bounded=True)],
                 [_battery_ledger(key, "SampleOrderFilter")],
             )
@@ -1538,7 +1588,10 @@ def test_battery_later_attempt_cannot_explain_earlier_eval() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec",
                 "2026-10-20T10:05:00+00:00",
             )
         ]
@@ -1546,7 +1599,8 @@ def test_battery_later_attempt_cannot_explain_earlier_eval() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             )
@@ -1570,7 +1624,10 @@ def test_battery_overlap_link_requires_banked_intersection() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", ["unrelated-row"], f"{inv}-exec",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                ["unrelated-row"],
+                f"{inv}-exec",
                 "2026-10-20T10:00:00+00:00",
             )
         ]
@@ -1578,7 +1635,8 @@ def test_battery_overlap_link_requires_banked_intersection() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter", link_source="id_overlap")],
             )
@@ -1598,7 +1656,10 @@ def test_battery_overlap_link_attributes_on_intersection() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", ["ghost"], f"{inv}-exec",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                ["ghost"],
+                f"{inv}-exec",
                 "2026-10-20T10:00:00+00:00",
             )
         ]
@@ -1606,7 +1667,8 @@ def test_battery_overlap_link_attributes_on_intersection() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter", link_source="id_overlap")],
             )
@@ -1631,11 +1693,17 @@ def test_battery_target_distinct_claims_stay_separate() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SymbolA", "SEARCH_FAILED", [], f"{inv}-exec-a",
+                "SymbolA",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-a",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SymbolB", "ROWS_RETURNED", ["row-b"], f"{inv}-exec-b",
+                "SymbolB",
+                "ROWS_RETURNED",
+                ["row-b"],
+                f"{inv}-exec-b",
                 "2026-10-20T10:00:30+00:00",
             ),
         ]
@@ -1643,7 +1711,8 @@ def test_battery_target_distinct_claims_stay_separate() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [
                     _battery_binding(key, [], ["ghost-a"], target="aaa"),
                     _battery_binding(key, ["row-b"], [], target="bbb"),
@@ -1675,11 +1744,17 @@ def test_battery_recovery_keys_include_target() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SymbolA", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SymbolA",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SymbolA", "ROWS_RETURNED", ["row-a"], f"{inv}-exec-rows",
+                "SymbolA",
+                "ROWS_RETURNED",
+                ["row-a"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
         ]
@@ -1687,12 +1762,14 @@ def test_battery_recovery_keys_include_target() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost-a"], target="aaa")],
                 [_battery_ledger(key, "SymbolA", target="aaa")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, ["row-a"], [], target="aaa")],
                 [_battery_ledger(key, "SymbolA", target="aaa")],
             ),
@@ -1718,11 +1795,17 @@ def test_battery_recovery_via_bank_timestamp_without_listed_row() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["other-1"], f"{inv}-exec-rows",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["other-1"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
         ]
@@ -1730,12 +1813,14 @@ def test_battery_recovery_via_bank_timestamp_without_listed_row() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, ["row-cap"], [])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
@@ -1764,19 +1849,30 @@ def test_battery_recovery_timestamp_vetoed_by_other_key_banking() -> None:
     mod = _battery_module()
     key = "claim-veto"
     inv = "inv-veto"
-    cohort = {inv: {"eligible_action_ids": [f"{inv}-exec-fail", f"{inv}-exec-rows", f"{inv}-exec-other"]}}
+    cohort = {
+        inv: {"eligible_action_ids": [f"{inv}-exec-fail", f"{inv}-exec-rows", f"{inv}-exec-other"]}
+    }
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["other-1"], f"{inv}-exec-rows",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["other-1"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
             _battery_attempt_rec(
-                "OtherQuery", "ROWS_RETURNED", ["other-2"], f"{inv}-exec-other",
+                "OtherQuery",
+                "ROWS_RETURNED",
+                ["other-2"],
+                f"{inv}-exec-other",
                 "2026-10-20T10:02:15+00:00",
             ),
         ]
@@ -1784,12 +1880,14 @@ def test_battery_recovery_timestamp_vetoed_by_other_key_banking() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, ["row-cap"], [])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
@@ -1816,11 +1914,17 @@ def test_battery_recovery_rejects_predated_bank_row() -> None:
     attempts = {
         inv: [
             _battery_attempt_rec(
-                "SampleOrderFilter", "SEARCH_FAILED", [], f"{inv}-exec-fail",
+                "SampleOrderFilter",
+                "SEARCH_FAILED",
+                [],
+                f"{inv}-exec-fail",
                 "2026-10-20T10:00:00+00:00",
             ),
             _battery_attempt_rec(
-                "SampleOrderFilter", "ROWS_RETURNED", ["other-1"], f"{inv}-exec-rows",
+                "SampleOrderFilter",
+                "ROWS_RETURNED",
+                ["other-1"],
+                f"{inv}-exec-rows",
                 "2026-10-20T10:02:00+00:00",
             ),
         ]
@@ -1828,12 +1932,14 @@ def test_battery_recovery_rejects_predated_bank_row() -> None:
     evals = {
         inv: [
             _battery_eval(
-                "2026-10-20T10:01:00+00:00", 1,
+                "2026-10-20T10:01:00+00:00",
+                1,
                 [_battery_binding(key, [], ["ghost"])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
             _battery_eval(
-                "2026-10-20T10:03:00+00:00", 2,
+                "2026-10-20T10:03:00+00:00",
+                2,
                 [_battery_binding(key, ["row-old"], [])],
                 [_battery_ledger(key, "SampleOrderFilter")],
             ),
@@ -1890,9 +1996,7 @@ async def test_verify_activity_emits_marker_without_diagnostics() -> None:
             )
         )
     assert result.success is True
-    eval_events = [
-        e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION
-    ]
+    eval_events = [e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION]
     assert len(eval_events) == 1
     assert eval_events[0].attributes["turn"] == 5
     assert eval_events[0].attributes["bindings"] == []
@@ -1926,9 +2030,7 @@ def test_build_verify_evaluation_attributes_round_trip() -> None:
             )
         ],
         claim_ledgers=[
-            ClaimRetrievalLedger(
-                claim_key="k|CAUSAL", search_query="SampleOrderFilter", scope=None
-            )
+            ClaimRetrievalLedger(claim_key="k|CAUSAL", search_query="SampleOrderFilter", scope=None)
         ],
         missing_obligations=[],
     )
@@ -1982,9 +2084,7 @@ async def test_verify_activity_appends_evaluation_event() -> None:
         )
     )
     assert result.success is True
-    eval_events = [
-        e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION
-    ]
+    eval_events = [e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION]
     assert len(eval_events) == 1
     attrs = eval_events[0].attributes
     assert attrs["turn"] == 3
@@ -2027,14 +2127,13 @@ async def test_verify_activity_legacy_emits_no_evaluation_event() -> None:
         )
     )
     assert result.success is True
-    assert not [
-        e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION
-    ]
+    assert not [e for e in appended if e.event_type == TimelineEventType.VERIFY_EVALUATION]
 
 
 # ---------------------------------------------------------------------------
 # Battery hardening: exit codes, attestation, strengthened recovery.
 # ---------------------------------------------------------------------------
+
 
 class _FakeMappingsResult:
     def __init__(self, rows: list[dict]):
@@ -2061,21 +2160,17 @@ class _FakeAttestSession:
         raise AssertionError(f"unexpected attestation query: {sql[:80]}")
 
 
-def _attest_ok_rows(policy_qual: str = "((tenant_id = current_setting('app.tenant_id'::text, true)))") -> dict[str, list[dict]]:
+def _attest_ok_rows(
+    policy_qual: str = "((tenant_id = current_setting('app.tenant_id'::text, true)))",
+) -> dict[str, list[dict]]:
     # Keyed on the catalog view the battery actually queries: FORCE status
     # lives in pg_class (pg_tables has no forcerowsecurity column), so the
     # "pg_class" marker below pins the corrected query — the old pg_tables
     # query would fail to match this stub, exactly as it failed live.
     return {
-        "pg_class": [
-            {"schemaname": "public", "rowsecurity": True, "forcerowsecurity": True}
-        ],
-        "information_schema": [
-            {"data_type": "character varying", "character_maximum_length": 64}
-        ],
-        "pg_policies": [
-            {"policyname": "tenant_isolation", "cmd": "ALL", "qual": policy_qual}
-        ],
+        "pg_class": [{"schemaname": "public", "rowsecurity": True, "forcerowsecurity": True}],
+        "information_schema": [{"data_type": "character varying", "character_maximum_length": 64}],
+        "pg_policies": [{"policyname": "tenant_isolation", "cmd": "ALL", "qual": policy_qual}],
     }
 
 
@@ -2120,9 +2215,7 @@ async def test_battery_attestation_rejects_ambiguous_schema() -> None:
 async def test_battery_attestation_rejects_unforced_rls() -> None:
     mod = _battery_module()
     rows = _attest_ok_rows()
-    rows["pg_class"] = [
-        {"schemaname": "public", "rowsecurity": True, "forcerowsecurity": False}
-    ]
+    rows["pg_class"] = [{"schemaname": "public", "rowsecurity": True, "forcerowsecurity": False}]
     try:
         await mod._attest_schema(_FakeAttestSession(rows), "timeline_events")
     except mod._BatteryUnreadable as exc:
@@ -2155,5 +2248,3 @@ def test_battery_main_exit_codes() -> None:
 
     with mock.patch.object(mod, "run_battery", side_effect=_boom):
         assert mod.main(["--tenant", "t1"]) == 2
-
-

@@ -357,8 +357,13 @@ class TestSharedDriverPooling:
         reader = CogneeAttributionReader(enabled=True, dataset_salt="salt", neo4j_driver=fake)
         out = _asyncio.run(
             reader.resolve_source_location(
-                "tenant-a", "app", __import__("uuid").uuid4(), "acme--pay", "f" * 40,
-                "src/payments.py", 20,
+                "tenant-a",
+                "app",
+                __import__("uuid").uuid4(),
+                "acme--pay",
+                "f" * 40,
+                "src/payments.py",
+                20,
             )
         )
         assert len(fake.calls) == 1

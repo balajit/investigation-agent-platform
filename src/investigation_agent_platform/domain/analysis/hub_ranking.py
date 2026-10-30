@@ -45,8 +45,16 @@ def score_tables(tables: list[TableStats]) -> list[HubScore]:
             base *= 0.5
         if dormant:
             base = -1.0
-        scored.append(HubScore(name=t.name, score=round(base, 4), fan_in=fan_in,
-                               fan_out=fan_out, num_rows=rows, dormant=dormant))
+        scored.append(
+            HubScore(
+                name=t.name,
+                score=round(base, 4),
+                fan_in=fan_in,
+                fan_out=fan_out,
+                num_rows=rows,
+                dormant=dormant,
+            )
+        )
     scored.sort(key=lambda h: (-h.score, h.name))
     return scored
 
@@ -76,6 +84,7 @@ _GENERIC_STOPLIST = frozenset({"util", "helper", "config", "constants", "base", 
 
 def rank_classes(classes: list[ClassStats]) -> RankedClasses:
     """Split-output ranker. Enums/zero-signal types go to vocabulary; the rest ranked to hubs; community map always built."""
+
     def _signal(c: ClassStats) -> float:
         s = float(c.import_fan_in) + 2.0 * float(c.hits_authority)
         if c.entity_package:

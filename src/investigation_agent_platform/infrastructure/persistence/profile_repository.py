@@ -90,9 +90,7 @@ class SqlAlchemyApplicationProfileRepository:
             )
             return [self._from_orm(row) for row in result.all()]
 
-    async def list(
-        self, tenant_id: str, status: str | None = None
-    ) -> list[ApplicationProfile]:
+    async def list(self, tenant_id: str, status: str | None = None) -> list[ApplicationProfile]:
         """Latest revision per application id, tenant-scoped, optional status filter."""
         async with rls_session(self._session_factory, tenant_id) as session:
             filters = [ApplicationProfileORM.tenant_id == tenant_id]

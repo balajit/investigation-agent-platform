@@ -128,6 +128,7 @@ def test_pinned_labels_resolve_to_their_row_version() -> None:
 
 # --- T3: routing regression evidence at the engine boundary ---
 
+
 def _harness(inv_metadata: Any, fail_get: bool = False, row_missing: bool = False):
     from investigation_agent_platform.api.dependencies import AppContext, set_app_context
 
@@ -234,25 +235,32 @@ async def test_unmarked_row_uses_unified_current_behavior(monkeypatch: Any) -> N
     from investigation_agent_platform.api.dependencies import get_app_context
 
     ctx = get_app_context()
-    ctx.evidence_repo = SimpleNamespace(
-        find_by_investigation_id=AsyncMock(return_value=list(rows))
-    )
+    ctx.evidence_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=list(rows)))
     ctx.hypothesis_repo = SimpleNamespace(
         find_by_investigation_id=AsyncMock(return_value=[h1, h2]),
         save=AsyncMock(),
     )
     calls: list[dict[str, Any]] = []
 
-    def _spy(self: Any, hypothesis: Any, evidence_items: Any, contradictions: Any,
-             causal_chain: Any, policy: Any, sibling_hypotheses: Any = None,
-             observer: Any = None) -> Any:
-        calls.append({
-            "hypothesis": hypothesis,
-            "evidence_items": list(evidence_items or []),
-            "contradictions": list(contradictions or []),
-            "causal_chain": list(causal_chain or []),
-            "siblings": list(sibling_hypotheses or []),
-        })
+    def _spy(
+        self: Any,
+        hypothesis: Any,
+        evidence_items: Any,
+        contradictions: Any,
+        causal_chain: Any,
+        policy: Any,
+        sibling_hypotheses: Any = None,
+        observer: Any = None,
+    ) -> Any:
+        calls.append(
+            {
+                "hypothesis": hypothesis,
+                "evidence_items": list(evidence_items or []),
+                "contradictions": list(contradictions or []),
+                "causal_chain": list(causal_chain or []),
+                "siblings": list(sibling_hypotheses or []),
+            }
+        )
         return _spy_result(hypothesis.id)
 
     monkeypatch.setattr(VerificationEngine, "evaluate_hypothesis", _spy)
@@ -283,20 +291,30 @@ async def test_unmarked_row_evaluates_ranked_candidate_bound_subset(monkeypatch:
     from investigation_agent_platform.api.dependencies import get_app_context
 
     ctx = get_app_context()
-    ctx.evidence_repo = SimpleNamespace(
-        find_by_investigation_id=AsyncMock(return_value=list(rows))
-    )
+    ctx.evidence_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=list(rows)))
     ctx.hypothesis_repo = SimpleNamespace(
         find_by_investigation_id=AsyncMock(return_value=[h1, h2]),
         save=AsyncMock(),
     )
     calls: list[dict[str, Any]] = []
 
-    def _spy(self: Any, hypothesis: Any, evidence_items: Any, contradictions: Any,
-             causal_chain: Any, policy: Any, sibling_hypotheses: Any = None,
-             observer: Any = None) -> Any:
-        calls.append({"hypothesis": hypothesis, "evidence_items": list(evidence_items or []),
-                      "siblings": list(sibling_hypotheses or [])})
+    def _spy(
+        self: Any,
+        hypothesis: Any,
+        evidence_items: Any,
+        contradictions: Any,
+        causal_chain: Any,
+        policy: Any,
+        sibling_hypotheses: Any = None,
+        observer: Any = None,
+    ) -> Any:
+        calls.append(
+            {
+                "hypothesis": hypothesis,
+                "evidence_items": list(evidence_items or []),
+                "siblings": list(sibling_hypotheses or []),
+            }
+        )
         return _spy_result(hypothesis.id)
 
     monkeypatch.setattr(VerificationEngine, "evaluate_hypothesis", _spy)
@@ -306,9 +324,7 @@ async def test_unmarked_row_evaluates_ranked_candidate_bound_subset(monkeypatch:
     assert result.success is True
     assert len(calls) == 1
     assert calls[0]["hypothesis"].id == h2.id
-    assert {e.evidence_id for e in calls[0]["evidence_items"]} == {
-        h2.supporting_evidence_ids[0]
-    }
+    assert {e.evidence_id for e in calls[0]["evidence_items"]} == {h2.supporting_evidence_ids[0]}
     assert [h.id for h in calls[0]["siblings"]] == [h1.id]
 
 
@@ -325,9 +341,7 @@ async def test_verify_uses_unified_behavior_without_version_metadata(monkeypatch
 
     _harness({})
     ctx = get_app_context()
-    ctx.evidence_repo = SimpleNamespace(
-        find_by_investigation_id=AsyncMock(return_value=list(rows))
-    )
+    ctx.evidence_repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=list(rows)))
     ctx.hypothesis_repo = SimpleNamespace(
         find_by_investigation_id=AsyncMock(return_value=[h1]),
         save=AsyncMock(),

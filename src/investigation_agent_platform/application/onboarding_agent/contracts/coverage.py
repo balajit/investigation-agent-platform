@@ -55,9 +55,7 @@ class Claim(BaseModel):
     def _require_probe_when_not_verified(self) -> Claim:
         if self.confidence in (Confidence.PROJECTED, Confidence.SPECULATIVE):
             if not self.confirming_probe:
-                raise ValueError(
-                    f"{self.confidence.value} claims must name a confirming probe"
-                )
+                raise ValueError(f"{self.confidence.value} claims must name a confirming probe")
         return self
 
 
@@ -114,8 +112,7 @@ class Remediation(BaseModel):
         for token in self.command_argv:
             if SHELL_METACHAR_RE.search(token):
                 raise ValueError(
-                    "command_argv must be data, not shell text: "
-                    f"metacharacter in {token!r}"
+                    f"command_argv must be data, not shell text: metacharacter in {token!r}"
                 )
         return self
 

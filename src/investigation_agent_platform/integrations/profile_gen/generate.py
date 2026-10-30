@@ -57,9 +57,7 @@ def clone_repo(clone_url: str, branch: str = "") -> Path:
         if branch:
             kwargs["checkout_branch"] = branch
         if token:
-            kwargs["callbacks"] = pygit2.RemoteCallbacks(
-                credentials=pygit2.UserPass("git", token)
-            )
+            kwargs["callbacks"] = pygit2.RemoteCallbacks(credentials=pygit2.UserPass("git", token))
         try:
             pygit2.clone_repository(clone_url, str(target), **kwargs)
         except Exception as branch_exc:
@@ -102,9 +100,7 @@ def list_files(root: Path) -> list[str]:
         return []
 
 
-def parse_checkout(
-    root: Path, files: list[str], generator: Any | None = None
-) -> dict[str, Any]:
+def parse_checkout(root: Path, files: list[str], generator: Any | None = None) -> dict[str, Any]:
     """Parse controllers/DTOs/clients/configs from a checkout (I/O + pure).
 
     Returns {controllers, validations, feign_clients, rest_calls,
@@ -171,7 +167,9 @@ def parse_checkout(
                     else:
                         validation_entries = parse_dto_validations(text)
                     for entry in validation_entries:
-                        validations.append({**entry, "file": rel} if isinstance(entry, dict) else entry)
+                        validations.append(
+                            {**entry, "file": rel} if isinstance(entry, dict) else entry
+                        )
                     client_info = _call("clients", text) or {}
                     for feign_entry in client_info.get("feign", []) or []:
                         if isinstance(feign_entry, dict):
@@ -222,9 +220,17 @@ def parse_checkout(
 
 
 _EXT_LANGUAGE = {
-    ".py": "python", ".java": "java", ".js": "javascript", ".ts": "typescript",
-    ".tsx": "typescript", ".go": "go", ".rs": "rust", ".rb": "ruby",
-    ".c": "c", ".cpp": "cpp", ".cs": "csharp",
+    ".py": "python",
+    ".java": "java",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".cs": "csharp",
 }
 
 
@@ -236,7 +242,9 @@ def dominant_language(files: list[str]) -> str | None:
         counts: Counter[str] = Counter()
         for raw in files or []:
             try:
-                suffix = "." + str(raw or "").rsplit(".", 1)[-1].lower() if "." in str(raw or "") else ""
+                suffix = (
+                    "." + str(raw or "").rsplit(".", 1)[-1].lower() if "." in str(raw or "") else ""
+                )
                 language = _EXT_LANGUAGE.get(suffix, "")
                 if language:
                     counts[language] += 1

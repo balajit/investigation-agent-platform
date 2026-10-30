@@ -53,9 +53,7 @@ class SqlAlchemyHypothesisRepository:
             assessments_json=[
                 assessment.model_dump(mode="json") for assessment in hypothesis.assessments
             ],
-            causal_steps_json=[
-                step.model_dump(mode="json") for step in hypothesis.causal_steps
-            ],
+            causal_steps_json=[step.model_dump(mode="json") for step in hypothesis.causal_steps],
             created_at=hypothesis.created_at,
             updated_at=hypothesis.updated_at,
         )
@@ -86,12 +84,8 @@ class SqlAlchemyHypothesisRepository:
             updated_at=row.updated_at,
             title=row.title,
             description=row.description,
-            supporting_evidence_ids=[
-                UUID(s) for s in (row.supporting_evidence_ids or []) if s
-            ],
-            refuting_evidence_ids=[
-                UUID(s) for s in (row.refuting_evidence_ids or []) if s
-            ],
+            supporting_evidence_ids=[UUID(s) for s in (row.supporting_evidence_ids or []) if s],
+            refuting_evidence_ids=[UUID(s) for s in (row.refuting_evidence_ids or []) if s],
             required_verification=row.required_verification or [],
             causal_steps=causal_steps,
             version=int(getattr(row, "version", 1) or 1),

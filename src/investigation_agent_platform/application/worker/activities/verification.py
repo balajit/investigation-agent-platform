@@ -595,7 +595,9 @@ async def verify_root_cause_activity(
             if _nc_early:
                 code_value_result = None
             else:
-                code_value_result = engine.validate_code_value_claim(candidate, bound, contradictions)
+                code_value_result = engine.validate_code_value_claim(
+                    candidate, bound, contradictions
+                )
             code_value_claim = (
                 VerificationEngine.claims_field_value(
                     str(getattr(candidate, "statement", "") or "")
@@ -822,6 +824,7 @@ async def verify_root_cause_activity(
                 and not state_answered
                 and not code_value_claim
             ):
+
                 def _resolve_evidence_key(raw: Any) -> Any:
                     if raw in evidence_by_id:
                         return raw
@@ -837,9 +840,9 @@ async def verify_root_cause_activity(
                     return None
 
                 causal_chain = []
-                for s in (getattr(candidate, "causal_steps", []) or []):
+                for s in getattr(candidate, "causal_steps", []) or []:
                     resolved_ids = []
-                    for raw_eid in (s.evidence_ids or []):
+                    for raw_eid in s.evidence_ids or []:
                         matched_key = _resolve_evidence_key(raw_eid)
                         if matched_key is not None:
                             resolved_ids.append(matched_key)
@@ -860,8 +863,7 @@ async def verify_root_cause_activity(
                 verifier_version == VERIFIER_VERSION_CURRENT
                 and VerificationEngine.resolve_claim_kind(
                     candidate,
-                    strict=engine.claim_binding_version
-                    in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+                    strict=engine.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
                 )
                 == ClaimKind.CALL_EDGE
             ):

@@ -114,22 +114,16 @@ class TestEvidenceRoom:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(side_effect=lambda t, i, v: saved.extend(i)),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
 
         async def _state(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             seen.append(req.limit)
-            return SimpleNamespace(
-                items=[SimpleNamespace(id=i) for i in range(50)][: req.limit]
-            )
+            return SimpleNamespace(items=[SimpleNamespace(id=i) for i in range(50)][: req.limit])
 
         ctx.evidence_gateway = SimpleNamespace(get_application_state=_state)
         set_app_context(ctx)
@@ -184,9 +178,7 @@ class TestBudgetAssignment:
         )
 
         profile = SimpleNamespace(
-            investigation=SimpleNamespace(
-                evidence_budget={"max_hypotheses": 7}, max_hypotheses=3
-            )
+            investigation=SimpleNamespace(evidence_budget={"max_hypotheses": 7}, max_hypotheses=3)
         )
         assert overlay_evidence_budget(InvestigationLimits(), profile).max_hypotheses == 7
 
@@ -211,16 +203,12 @@ class TestBudgetAssignment:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
         ctx.hypothesis_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=existing),
             save=AsyncMock(side_effect=lambda t, h, i, v: saved.append(h)),
@@ -253,21 +241,15 @@ class TestBudgetAssignment:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(return_value=None),
             save=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
         ctx.evidence_gateway = SimpleNamespace(
-            search_code=AsyncMock(
-                return_value=SimpleNamespace(items=[], provider_metadata={})
-            )
+            search_code=AsyncMock(return_value=SimpleNamespace(items=[], provider_metadata={}))
         )
         ctx.hypothesis_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
@@ -300,16 +282,12 @@ class TestBudgetAssignment:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
 
         async def _missing(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             raise ProviderNotConfiguredError("No code provider configured for tenant context 't:a'")
@@ -408,16 +386,12 @@ class TestProviderNotConfigured:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
 
         async def _never(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             gateway_called.append(req)
@@ -449,16 +423,12 @@ class TestProviderNotConfigured:
             execute=AsyncMock(return_value=None),
         )
         ctx.execute_action_service = lambda: service  # type: ignore[method-assign]
-        ctx.action_repo = SimpleNamespace(
-            count_by_investigation=AsyncMock(return_value=0)
-        )
+        ctx.action_repo = SimpleNamespace(count_by_investigation=AsyncMock(return_value=0))
         ctx.evidence_repo = SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]),
             save_batch=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
 
         async def _miss(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             raise CodePathNotFoundError("Path not found in o/r@main: nope.py")
@@ -515,7 +485,9 @@ class TestTokenLedger:
         )
 
         full = SimpleNamespace(
-            metadata={"llm_usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost_usd": 0.02}}
+            metadata={
+                "llm_usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost_usd": 0.02}
+            }
         )
         assert _decision_llm_usage(full) == {
             "prompt_tokens": 100,
@@ -578,7 +550,9 @@ class TestTokenLedger:
             application_id="a",
             tenant_id="tenant-a",
             request=InvestigationRequest(
-                application_id="a", problem_description="p", session_id="s",
+                application_id="a",
+                problem_description="p",
+                session_id="s",
                 requested_by="t",
             ),
             context=InvestigationContext(
@@ -595,7 +569,9 @@ class TestTokenLedger:
             conclusion_readiness=0.1,
             observations=[],
             hypotheses_evaluated=[],
-            metadata={"llm_usage": {"prompt_tokens": 900000, "completion_tokens": 200000, "cost_usd": 1.0}},
+            metadata={
+                "llm_usage": {"prompt_tokens": 900000, "completion_tokens": 200000, "cost_usd": 1.0}
+            },
         )
         ctx.reasoning_coordinator = SimpleNamespace(
             reason=lambda *a, **k: _await(decision),
@@ -635,7 +611,9 @@ class TestTokenLedger:
             application_id="a",
             tenant_id="tenant-a",
             request=InvestigationRequest(
-                application_id="a", problem_description="p", session_id="s",
+                application_id="a",
+                problem_description="p",
+                session_id="s",
                 requested_by="t",
             ),
             context=InvestigationContext(

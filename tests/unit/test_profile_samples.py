@@ -41,9 +41,7 @@ def test_shipped_profiles_load_and_validate() -> None:
         assert profile.tenant_id, f"{path.name}: empty tenant_id"
         assert profile.environment, f"{path.name}: empty environment"
         assert profile.services, f"{path.name}: no services"
-        assert profile.investigation.enabled_evidence_types, (
-            f"{path.name}: no enabledEvidenceTypes"
-        )
+        assert profile.investigation.enabled_evidence_types, f"{path.name}: no enabledEvidenceTypes"
 
 
 def test_shipped_profiles_have_unique_identity() -> None:

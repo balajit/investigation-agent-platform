@@ -111,8 +111,12 @@ def test_activity_projects(monkeypatch, tmp_path):
         AsyncMock(
             return_value=(
                 SimpleNamespace(
-                    source_files=[], ast_nodes=[], calls=[], references=[],
-                    database_accesses=[], diagnostics=[],
+                    source_files=[],
+                    ast_nodes=[],
+                    calls=[],
+                    references=[],
+                    database_accesses=[],
+                    diagnostics=[],
                 ),
                 False,
             )
@@ -136,8 +140,11 @@ def test_activity_projects(monkeypatch, tmp_path):
     out = _run(
         project_topology_activity(
             ProjectTopologyInput(
-                tenant_id="t", repository_id="acme--pay", revision="abc123",
-                checkout="acme--pay", changed_files=["a.py"],
+                tenant_id="t",
+                repository_id="acme--pay",
+                revision="abc123",
+                checkout="acme--pay",
+                changed_files=["a.py"],
             )
         )
     )
@@ -196,7 +203,11 @@ def test_webhook_ignores_non_push(monkeypatch):
     resp = client.post(
         "/api/v1/integrations/github/tenant-a/webhook",
         content=body,
-        headers={**_headers(), "X-Hub-Signature-256": _sign("s3cret", body), "X-GitHub-Event": "ping"},
+        headers={
+            **_headers(),
+            "X-Hub-Signature-256": _sign("s3cret", body),
+            "X-GitHub-Event": "ping",
+        },
     )
     assert resp.status_code == 202
     assert resp.json()["status"] == "ignored"
@@ -209,7 +220,11 @@ def test_webhook_skips_branch_deletion(monkeypatch):
     resp = client.post(
         "/api/v1/integrations/github/tenant-a/webhook",
         content=body,
-        headers={**_headers(), "X-Hub-Signature-256": _sign("s3cret", body), "X-GitHub-Event": "push"},
+        headers={
+            **_headers(),
+            "X-Hub-Signature-256": _sign("s3cret", body),
+            "X-GitHub-Event": "push",
+        },
     )
     assert resp.status_code == 202
     assert resp.json()["status"] == "skipped"
@@ -224,7 +239,11 @@ def test_webhook_dispatches_push(monkeypatch):
     resp = client.post(
         "/api/v1/integrations/github/tenant-a/webhook",
         content=body,
-        headers={**_headers(), "X-Hub-Signature-256": _sign("s3cret", body), "X-GitHub-Event": "push"},
+        headers={
+            **_headers(),
+            "X-Hub-Signature-256": _sign("s3cret", body),
+            "X-GitHub-Event": "push",
+        },
     )
     assert resp.status_code == 202, resp.text
     data = resp.json()
@@ -242,7 +261,11 @@ def test_webhook_tenant_mismatch(monkeypatch):
     resp = client.post(
         "/api/v1/integrations/github/other-tenant/webhook",
         content=body,
-        headers={**_headers("tenant-a"), "X-Hub-Signature-256": _sign("s3cret", body), "X-GitHub-Event": "push"},
+        headers={
+            **_headers("tenant-a"),
+            "X-Hub-Signature-256": _sign("s3cret", body),
+            "X-GitHub-Event": "push",
+        },
     )
     assert resp.status_code == 403
 

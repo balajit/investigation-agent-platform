@@ -88,9 +88,7 @@ def test_a301ece4_replay_log_state_only_never_verifies():
     hyp = _hyp("read path drops versions", supporting=())
     # Empty bound set short-circuits before the engine in production; at the
     # engine level, an empty bound list cannot reach threshold either.
-    result = engine.evaluate_hypothesis(
-        hyp, [], [], [], RootCauseVerificationPolicy()
-    )
+    result = engine.evaluate_hypothesis(hyp, [], [], [], RootCauseVerificationPolicy())
     assert result.status == VerificationStatus.INCONCLUSIVE
 
 
@@ -127,9 +125,7 @@ def test_supported_hypothesis_with_causal_chain_verifies():
             evidence_ids=[e.evidence_id for e in items],
         )
     ]
-    result = engine.evaluate_hypothesis(
-        hyp, items, [], chain, RootCauseVerificationPolicy()
-    )
+    result = engine.evaluate_hypothesis(hyp, items, [], chain, RootCauseVerificationPolicy())
     assert result.status == VerificationStatus.VERIFIED
 
 

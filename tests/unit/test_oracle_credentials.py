@@ -37,9 +37,15 @@ class TestEnvNameParity:
         for path, dotted_field in cases.items():
             db, _, field = dotted_field.partition("/")
             expected = SecretStoreSecretResolver.fallback_env_name(path)
-            assert _dotted_to_env(db, field) == expected == (
-                "IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_"
-                + {"user_name": "USER_NAME", "password": "PASSWORD", "jdbcUrl": "JDBC_URL"}[field]
+            assert (
+                _dotted_to_env(db, field)
+                == expected
+                == (
+                    "IAP_SECRET_ORACLE_SAMPLE_ORDERS_PROD_"
+                    + {"user_name": "USER_NAME", "password": "PASSWORD", "jdbcUrl": "JDBC_URL"}[
+                        field
+                    ]
+                )
             )
 
 
@@ -173,19 +179,27 @@ class TestResolveMcpCatalog:
     def test_bare_name_resolves_with_connect_tool(self) -> None:
         from investigation_agent_platform.domain.profile.models import Datasource
 
-        reg = self._registry({
-            "sampledb": {
-                "command": "docker", "args": ["run"],
-                "connection": "SAMPLEDB-conn",
-                "allowed_tools": ["connect", "sql_run"],
-                "query_tool": "sql_run",
-                "connection_tool": "connect",
-                "connection_arg": "connection_name",
+        reg = self._registry(
+            {
+                "sampledb": {
+                    "command": "docker",
+                    "args": ["run"],
+                    "connection": "SAMPLEDB-conn",
+                    "allowed_tools": ["connect", "sql_run"],
+                    "query_tool": "sql_run",
+                    "connection_tool": "connect",
+                    "connection_arg": "connection_name",
+                }
             }
-        })
+        )
         ds = Datasource(
-            id="sample-orders", name="SampleDB", kind="oracle", role="state",
-            mcp_server="sampledb", read_only=True, tenants=["n-a"],
+            id="sample-orders",
+            name="SampleDB",
+            kind="oracle",
+            role="state",
+            mcp_server="sampledb",
+            read_only=True,
+            tenants=["n-a"],
         )
         adapter = reg.resolve_mcp("n-a", MagicMock(), ds)
         assert adapter is not None
@@ -198,8 +212,12 @@ class TestResolveMcpCatalog:
 
         reg = self._registry({"sampledb": {"command": "docker"}})
         ds = Datasource(
-            id="x", name="X", kind="oracle", role="state",
-            mcp_server="oracle-mcp-sampledb", read_only=True,
+            id="x",
+            name="X",
+            kind="oracle",
+            role="state",
+            mcp_server="oracle-mcp-sampledb",
+            read_only=True,
         )
         assert reg.resolve_mcp("n-a", MagicMock(), ds) is None
 
@@ -208,9 +226,7 @@ class TestSchemaName:
     def test_accepted_and_normalized(self) -> None:
         from investigation_agent_platform.domain.profile.models import Datasource
 
-        ds = Datasource(
-            id="e", name="E", kind="oracle", role="state", schema_name="sample_owner"
-        )
+        ds = Datasource(id="e", name="E", kind="oracle", role="state", schema_name="sample_owner")
         assert ds.schema_name == "sample_owner"
         ds2 = Datasource(id="e", name="E", kind="oracle", role="state", schema_name="")
         assert ds2.schema_name is None
@@ -220,7 +236,7 @@ class TestSchemaName:
 
         from investigation_agent_platform.domain.profile.models import Datasource
 
-        for bad in ("x\"; DROP TABLE t; --", "a b", "1abc", "s;chema", "x" * 200):
+        for bad in ('x"; DROP TABLE t; --', "a b", "1abc", "s;chema", "x" * 200):
             with pytest.raises(ValidationError):
                 Datasource(id="e", name="E", kind="oracle", role="state", schema_name=bad)
 
@@ -250,13 +266,20 @@ class TestDialectRouting:
             McpEvidenceAdapter,
         )
 
-        assert McpEvidenceAdapter(
-            server_params={"command": "x", "args": []}, allowed_tools=["q"]
-        ).dialect is None
-        assert McpEvidenceAdapter(
-            server_params={"command": "x", "args": []},
-            allowed_tools=["q"], dialect="Oracle",
-        ).dialect == "oracle"
+        assert (
+            McpEvidenceAdapter(
+                server_params={"command": "x", "args": []}, allowed_tools=["q"]
+            ).dialect
+            is None
+        )
+        assert (
+            McpEvidenceAdapter(
+                server_params={"command": "x", "args": []},
+                allowed_tools=["q"],
+                dialect="Oracle",
+            ).dialect
+            == "oracle"
+        )
 
     def test_query_dialect_from_template_namespace(self) -> None:
         from unittest.mock import MagicMock

@@ -455,9 +455,7 @@ class TestReasonSummary:
                 "observations": ["o1", "o2"],
             }
         )
-        assert summary == (
-            "reason: action=SEARCH_LOGS readiness=0.0 hypotheses=0 observations=2"
-        )
+        assert summary == ("reason: action=SEARCH_LOGS readiness=0.0 hypotheses=0 observations=2")
 
     def test_missing_keys_degrade_to_placeholders(self) -> None:
         from investigation_agent_platform.application.worker.workflows import (
@@ -1019,7 +1017,9 @@ class TestPhaseTracksTransitions:
             application_id="a",
             tenant_id="t",
             request=InvestigationRequest(
-                application_id="a", problem_description="p", session_id="s",
+                application_id="a",
+                problem_description="p",
+                session_id="s",
                 requested_by="t",
             ),
             context=InvestigationContext(
@@ -1039,8 +1039,6 @@ class TestPhaseTracksTransitions:
 
         inv = self._inv()
         assert inv.phase == "CREATED"
-        moved, _ = inv.transition_to(
-            InvestigationStatus.INVESTIGATING, ActorType.SYSTEM, "go"
-        )
+        moved, _ = inv.transition_to(InvestigationStatus.INVESTIGATING, ActorType.SYSTEM, "go")
         assert moved.phase == "INVESTIGATING"
         assert moved.status.value == moved.phase

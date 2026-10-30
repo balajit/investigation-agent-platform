@@ -166,6 +166,7 @@ def test_d1_g05_flag_on_changes_no_kernel_verdict(monkeypatch: pytest.MonkeyPatc
             reconciliation_adjudicated=True,
             policy_eligible=True,
         )
+
     prop = {"canon_version": "canon/v1", "predicate": "p", "quantifier": "UNIVERSAL"}
     snap = PlannerSnapshot(evidence_banked_total=2)
     req = "VALID"

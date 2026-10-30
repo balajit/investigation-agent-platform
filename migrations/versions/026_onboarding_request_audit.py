@@ -45,7 +45,12 @@ def upgrade() -> None:
             sa.Column("action", sa.String(16), nullable=False),
             sa.Column("content_hash", sa.String(64), nullable=False),
             sa.Column("idempotency_key", sa.String(256), nullable=False),
-            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.func.now(),
+            ),
             sa.ForeignKeyConstraint(
                 ["tenant_id", "request_id", "revision"],
                 [
@@ -56,12 +61,16 @@ def upgrade() -> None:
                 ondelete="RESTRICT",
                 name="fk_onboarding_request_audit_revision",
             ),
+            sa.CheckConstraint("action IN ('CREATE')", name="ck_onboarding_request_audit_action"),
             sa.CheckConstraint(
-                "action IN ('CREATE')", name="ck_onboarding_request_audit_action"
+                "revision >= 1", name="ck_onboarding_request_audit_revision_positive"
             ),
-            sa.CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
-            sa.CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
-            sa.CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),
+            sa.CheckConstraint(
+                "length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"
+            ),
+            sa.CheckConstraint(
+                "length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"
+            ),
         )
         op.create_index(
             "ix_onboarding_request_audit_revision",

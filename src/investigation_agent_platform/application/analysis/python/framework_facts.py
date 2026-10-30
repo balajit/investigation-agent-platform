@@ -146,9 +146,15 @@ def resolve_python_framework_fact(
             continue
         if _p.node_text(named[0], source_bytes).strip() != symbol:
             continue
-        value_node = named[-1] if len(named) > 1 and any(
-            not c.is_named and _p.node_text(c, source_bytes).strip() == "=" for c in node.children
-        ) else None
+        value_node = (
+            named[-1]
+            if len(named) > 1
+            and any(
+                not c.is_named and _p.node_text(c, source_bytes).strip() == "="
+                for c in node.children
+            )
+            else None
+        )
         if value_node is None or value_node == named[0]:
             continue
         # `ClassVar` is a plain class constant, not a dataclass field;
@@ -184,7 +190,13 @@ def resolve_python_framework_fact(
                     structured_fact={"framework_factory": True},
                     source_evidence_ids=evidence_ids,
                     declaration_location=loc_of(node),
-                    assumptions=(*version_assumptions, "factory_not_executed", "validator_may_transform") if has_validator else (*version_assumptions, "factory_not_executed"),
+                    assumptions=(
+                        *version_assumptions,
+                        "factory_not_executed",
+                        "validator_may_transform",
+                    )
+                    if has_validator
+                    else (*version_assumptions, "factory_not_executed"),
                     parser_version=_p.parser_version(),
                 )
             if "Field(" in call_text or "field(" in call_text:
@@ -199,7 +211,11 @@ def resolve_python_framework_fact(
                             _named = [c for c in arg.children if c.is_named]
                             if len(_named) >= 2:
                                 kw, val = _named[0], _named[-1]
-                        if kw is not None and _p.node_text(kw, source_bytes).strip() == "default" and val is not None:
+                        if (
+                            kw is not None
+                            and _p.node_text(kw, source_bytes).strip() == "default"
+                            and val is not None
+                        ):
                             evaluated, limitation = _expr.evaluate(val, source_bytes)
                             if limitation is not None or evaluated is None:
                                 return CodeFactResolutionV2(
@@ -236,7 +252,9 @@ def resolve_python_framework_fact(
                                 resolved_value=_expr.format_value(evaluated),
                                 source_evidence_ids=evidence_ids,
                                 declaration_location=loc_of(node),
-                                assumptions=(*version_assumptions, "validator_may_transform") if has_validator else version_assumptions,
+                                assumptions=(*version_assumptions, "validator_may_transform")
+                                if has_validator
+                                else version_assumptions,
                                 parser_version=_p.parser_version(),
                             )
                 return CodeFactResolutionV2(
@@ -266,7 +284,9 @@ def resolve_python_framework_fact(
                 declaring_type=class_scope,
                 field_name=symbol,
                 subject_identity=f"{class_scope}.{symbol}",
-                value_semantics=CodeValueSemantics.FRAMEWORK_DEFAULT if (is_dataclass or "Field" in call_text) else CodeValueSemantics.EXPLICIT_INITIALIZER,
+                value_semantics=CodeValueSemantics.FRAMEWORK_DEFAULT
+                if (is_dataclass or "Field" in call_text)
+                else CodeValueSemantics.EXPLICIT_INITIALIZER,
                 language_version=version_label,
                 analysis_method="tree-sitter-range-v1",
                 raw_initializer=raw,
@@ -276,7 +296,11 @@ def resolve_python_framework_fact(
                 parser_version=_p.parser_version(),
             )
         # Plain default in a dataclass/pydantic class: framework default semantics.
-        if is_dataclass or "BaseModel" in _p.node_text(cls, source_bytes)[:2000] or "Field" in cls_text:
+        if (
+            is_dataclass
+            or "BaseModel" in _p.node_text(cls, source_bytes)[:2000]
+            or "Field" in cls_text
+        ):
             evaluated, limitation = _expr.evaluate(value_node, source_bytes)
             if limitation is not None or evaluated is None:
                 return CodeFactResolutionV2(
@@ -313,7 +337,9 @@ def resolve_python_framework_fact(
                 resolved_value=_expr.format_value(evaluated),
                 source_evidence_ids=evidence_ids,
                 declaration_location=loc_of(node),
-                assumptions=(*version_assumptions, "validator_may_transform") if has_validator else version_assumptions,
+                assumptions=(*version_assumptions, "validator_may_transform")
+                if has_validator
+                else version_assumptions,
                 parser_version=_p.parser_version(),
             )
         return unresolved("not_a_framework_field")

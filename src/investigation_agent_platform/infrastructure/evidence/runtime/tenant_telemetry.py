@@ -74,10 +74,19 @@ logger = logging.getLogger(__name__)
 TELEMETRY_FILE_NAME = "telemetry.conf"
 ENV_PREFIX = "IAP_ES_"
 ENV_OVERRIDABLE_FIELDS = (
-    "URL", "USER", "PASSWORD", "API_KEY", "BEARER_TOKEN",
-    "VERIFY_CERTS", "CA_CERTS",
-    "OAUTH_TOKEN_URL", "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_SCOPE",
-    "TIMEOUT", "PATTERN",
+    "URL",
+    "USER",
+    "PASSWORD",
+    "API_KEY",
+    "BEARER_TOKEN",
+    "VERIFY_CERTS",
+    "CA_CERTS",
+    "OAUTH_TOKEN_URL",
+    "OAUTH_CLIENT_ID",
+    "OAUTH_CLIENT_SECRET",
+    "OAUTH_SCOPE",
+    "TIMEOUT",
+    "PATTERN",
 )
 
 # OAuth client-credentials: access tokens are cached for the validity
@@ -123,7 +132,9 @@ def _check_fernet_part(*, source: str, field_name: str, part_name: str, part: st
             f"{source}: {field_name} fernet: {part_name} is {len(part)} characters; "
             "check for a pasted file or multi-line value."
         )
-    bad = sorted(set(part) - set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="))
+    bad = sorted(
+        set(part) - set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+    )
     if bad:
         raise PlatformConfigurationError(
             f"{source}: {field_name} fernet: {part_name} contains characters "
@@ -149,11 +160,9 @@ def decrypt_secret_value(*, field_name: str, value: str, source: str) -> str:
     """
     if not value.startswith(FERNET_PREFIX):
         return value
-    rest = value[len(FERNET_PREFIX):]
+    rest = value[len(FERNET_PREFIX) :]
     if not rest:
-        raise PlatformConfigurationError(
-            f"{source}: {field_name} has an empty fernet: envelope."
-        )
+        raise PlatformConfigurationError(f"{source}: {field_name} has an empty fernet: envelope.")
     if ":" in rest:
         # Two-part in-field form: fernet:<cipher>:<token>. Fernet keys and
         # tokens are base64url (never contain ':'), so the first colon is
@@ -194,6 +203,7 @@ def decrypt_secret_value(*, field_name: str, value: str, source: str) -> str:
             f"{source}: {field_name} fernet: envelope decrypted to an empty secret."
         )
     return secret
+
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
@@ -341,7 +351,10 @@ class OAuthTokenProvider:
                 response = await client.post(
                     self._settings.token_url,
                     data=form,
-                    auth=(self._settings.client_id, self._settings.client_secret.get_secret_value()),
+                    auth=(
+                        self._settings.client_id,
+                        self._settings.client_secret.get_secret_value(),
+                    ),
                 )
         except Exception as exc:
             logger.error(
@@ -354,9 +367,7 @@ class OAuthTokenProvider:
                     }
                 },
             )
-            raise ProviderUnavailableException(
-                "Telemetry token endpoint is unreachable."
-            ) from exc
+            raise ProviderUnavailableException("Telemetry token endpoint is unreachable.") from exc
         if response.status_code in (400, 401, 403):
             logger.error(
                 "Tenant telemetry token request rejected",
@@ -420,6 +431,8 @@ class OAuthBearerClient:
 
     async def close(self) -> None:
         await self._client.close()
+
+
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_INDEX_PATTERN = "logs-*"
 MANAGED_MANUAL = "manual"
@@ -478,9 +491,7 @@ class TelemetryEndpoint(BaseModel):
     def validate_url(cls, v: str) -> str:
         parsed = urlparse(v)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            raise ValueError(
-                f"telemetry endpoint url must be an absolute http(s) URL, got {v!r}."
-            )
+            raise ValueError(f"telemetry endpoint url must be an absolute http(s) URL, got {v!r}.")
         if parsed.username or parsed.password:
             raise ValueError(
                 "telemetry endpoint url must not embed credentials; "
@@ -539,9 +550,7 @@ class TelemetryEndpoint(BaseModel):
             return None
         path = Path(v.strip()).expanduser()
         if not path.is_file():
-            raise ValueError(
-                f"ca_certs path does not exist or is not a file: {v!r}."
-            )
+            raise ValueError(f"ca_certs path does not exist or is not a file: {v!r}.")
         return str(path)
 
     @model_validator(mode="after")
@@ -658,9 +667,7 @@ class TenantTelemetryConfig(BaseModel):
 
     @field_validator("endpoints")
     @classmethod
-    def validate_homing(
-        cls, v: tuple[TelemetryEndpoint, ...]
-    ) -> tuple[TelemetryEndpoint, ...]:
+    def validate_homing(cls, v: tuple[TelemetryEndpoint, ...]) -> tuple[TelemetryEndpoint, ...]:
         names = [endpoint.name for endpoint in v]
         if len(set(names)) != len(names):
             raise ValueError("telemetry endpoint names must be unique per tenant.")
@@ -737,15 +744,12 @@ def _endpoint_from_section(
     merged = _apply_env_overrides(
         tenant_id=tenant_id, raw=raw, endpoint_name=section, source=source
     )
-    services = tuple(
-        part.strip() for part in merged.get("services", "").split(",") if part.strip()
-    )
+    services = tuple(part.strip() for part in merged.get("services", "").split(",") if part.strip())
     try:
         timeout = int(merged.get("timeout", str(DEFAULT_TIMEOUT_SECONDS)))
     except ValueError:
         raise PlatformConfigurationError(
-            f"{source}: endpoint {section!r} has a non-integer timeout "
-            f"{merged.get('timeout')!r}."
+            f"{source}: endpoint {section!r} has a non-integer timeout {merged.get('timeout')!r}."
         ) from None
     try:
         verify_raw = merged.get("verify_certs", "true").strip().lower()
@@ -807,7 +811,9 @@ def _endpoint_from_section(
         ) from exc
 
 
-def load_tenant_telemetry_configs(telemetry_dir: str | os.PathLike[str] | None) -> dict[str, TenantTelemetryConfig]:
+def load_tenant_telemetry_configs(
+    telemetry_dir: str | os.PathLike[str] | None,
+) -> dict[str, TenantTelemetryConfig]:
     """Load every ``<dir>/<tenant>/telemetry.conf``; fail closed on malformation.
 
     Empty/unset dir (or a dir with no tenant files) means no tenant
@@ -841,9 +847,7 @@ def load_tenant_telemetry_configs(telemetry_dir: str | os.PathLike[str] | None) 
                 f"{source}: cannot parse telemetry.conf: {exc}"
             ) from exc
         if not parser.sections():
-            raise PlatformConfigurationError(
-                f"{source}: telemetry.conf defines no endpoints."
-            )
+            raise PlatformConfigurationError(f"{source}: telemetry.conf defines no endpoints.")
         endpoints: list[TelemetryEndpoint] = []
         for section in parser.sections():
             if not NAME_PATTERN.match(section):
@@ -889,7 +893,7 @@ def _reject_unknown_env_overrides(*, tenant_id: str, config: TenantTelemetryConf
     for var in os.environ:
         if not var.startswith(prefix):
             continue
-        remainder = var[len(prefix):]
+        remainder = var[len(prefix) :]
         # Endpoint names may themselves contain underscores (normalized
         # from '-' or native '_'), while field suffixes never do — split
         # at the last underscore so `GHOST_ES_URL` reads as endpoint
@@ -921,7 +925,11 @@ def merge_managed_defaults(
     """
     if existing is not None and existing.tenant_id != tenant_id:
         raise PlatformConfigurationError("tenant mismatch in managed-defaults merge.")
-    manual = {e.name: e for e in (existing.endpoints if existing else ()) if e.managed_by == MANAGED_MANUAL}
+    manual = {
+        e.name: e
+        for e in (existing.endpoints if existing else ())
+        if e.managed_by == MANAGED_MANUAL
+    }
     refreshed: dict[str, TelemetryEndpoint] = {}
     for default in defaults:
         if default.name in manual:
@@ -963,9 +971,7 @@ class TenantTelemetryRouter:
     """
 
     def __init__(self, resolved: Mapping[str, Mapping[str, ResolvedTenantEndpoint]]) -> None:
-        self._by_tenant_service = {
-            tenant: dict(services) for tenant, services in resolved.items()
-        }
+        self._by_tenant_service = {tenant: dict(services) for tenant, services in resolved.items()}
 
     def has_tenant(self, tenant_id: str) -> bool:
         return tenant_id in self._by_tenant_service
@@ -977,18 +983,14 @@ class TenantTelemetryRouter:
             seen.setdefault(handle.endpoint_name, handle)
         return list(seen.values())
 
-    def resolve(
-        self, tenant_id: str, identity_names: Iterable[str]
-    ) -> ResolvedTenantEndpoint:
+    def resolve(self, tenant_id: str, identity_names: Iterable[str]) -> ResolvedTenantEndpoint:
         names = [name for name in identity_names if name]
         if tenant_id not in self._by_tenant_service:
             raise ProviderNotConfiguredError(
                 f"No telemetry endpoints configured for tenant '{tenant_id}'"
             )
         homed = self._by_tenant_service[tenant_id]
-        matches = {
-            homed[name].endpoint_name: homed[name] for name in names if name in homed
-        }
+        matches = {homed[name].endpoint_name: homed[name] for name in names if name in homed}
         if not matches:
             logger.error(
                 "Tenant telemetry request names no homed service",

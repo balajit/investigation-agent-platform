@@ -4,6 +4,7 @@ Pure move: every name previously defined in ``worker/activities.py`` now
 lives in a submodule; this package re-exports the full namespace so all
 existing import sites keep working unchanged.
 """
+
 from __future__ import annotations
 
 # ruff: noqa: F401  # re-export shim

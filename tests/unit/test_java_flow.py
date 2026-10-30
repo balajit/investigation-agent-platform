@@ -143,8 +143,7 @@ def test_catch_existence_never_claims_execution():
     kinds = [p["kind"] for p in result.structured_fact["paths"]]
     assert "possible_catch_path" in kinds
     assert "possible_cleanup_path" in kinds
-    catch = next(p for p in result.structured_fact["paths"]
-                 if p["kind"] == "possible_catch_path")
+    catch = next(p for p in result.structured_fact["paths"] if p["kind"] == "possible_catch_path")
     assert "does not establish execution" in catch["note"]
     _no_execution_wording(result)
 
@@ -162,8 +161,9 @@ def test_finally_is_possible_cleanup_not_outcome():
         "}"
     )
     result = resolve_java_control_flow(evidence, "load")
-    cleanup = next(p for p in result.structured_fact["paths"]
-                   if p["kind"] == "possible_cleanup_path")
+    cleanup = next(
+        p for p in result.structured_fact["paths"] if p["kind"] == "possible_cleanup_path"
+    )
     assert "may run as cleanup" in cleanup["detail"]
     assert "outcome is not proven" in cleanup["note"]
 
@@ -180,8 +180,7 @@ def test_try_with_resources_close_is_possible_not_observed():
     )
     result = resolve_java_control_flow(evidence, "load")
     assert result.status == CodeFactStatus.RESOLVED
-    assert any(p["kind"] == "possible_cleanup_path"
-               for p in result.structured_fact["paths"])
+    assert any(p["kind"] == "possible_cleanup_path" for p in result.structured_fact["paths"])
     _no_execution_wording(result)
 
 
@@ -200,8 +199,7 @@ def test_throw_wrapping_named_not_proven():
     result = resolve_java_possible_effect(evidence, "load")
     assert result.status == CodeFactStatus.RESOLVED
     assert result.fact_category == JavaFactCategory.POSSIBLE_EFFECT_FACT
-    thrown = next(e for e in result.structured_fact["effects"]
-                  if e["kind"] == "possible_exception")
+    thrown = next(e for e in result.structured_fact["effects"] if e["kind"] == "possible_exception")
     assert "named, not proven" in thrown["note"]
     _no_execution_wording(result)
 
@@ -321,8 +319,9 @@ def test_record_resolves_with_known_level():
     result = resolve_java_type_fact(evidence, "Point", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
     assert result.fact_category == JavaFactCategory.LANGUAGE_SEMANTIC_FACT
-    record = next(f for f in result.structured_fact["features"]
-                  if f["kind"] == "record_declaration")
+    record = next(
+        f for f in result.structured_fact["features"] if f["kind"] == "record_declaration"
+    )
     assert "'x'" in record["detail"] and "'int'" in record["detail"]
     _no_execution_wording(result)
 
@@ -349,16 +348,14 @@ def test_sealed_permits_in_window_resolves():
     )
     result = resolve_java_type_fact(evidence, "Shape", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    sealed = next(f for f in result.structured_fact["features"]
-                  if f["kind"] == "sealed_hierarchy")
+    sealed = next(f for f in result.structured_fact["features"] if f["kind"] == "sealed_hierarchy")
     assert "Circle" in sealed["detail"] and "Square" in sealed["detail"]
     _no_execution_wording(result)
 
 
 def test_sealed_permits_outside_window_abstains():
     evidence = _source_evidence(
-        "sealed interface Shape permits Circle, Remote {}\n"
-        "final class Circle implements Shape {}"
+        "sealed interface Shape permits Circle, Remote {}\nfinal class Circle implements Shape {}"
     )
     result = resolve_java_type_fact(evidence, "Shape", language_version=17)
     assert result.status == CodeFactStatus.PARTIAL
@@ -366,16 +363,12 @@ def test_sealed_permits_outside_window_abstains():
 
 
 def test_generic_declaration_resolves_erasure_insensitive():
-    evidence = _source_evidence(
-        "class Box<T> {\n"
-        "  T value;\n"
-        "  T get() { return value; }\n"
-        "}"
-    )
+    evidence = _source_evidence("class Box<T> {\n  T value;\n  T get() { return value; }\n}")
     result = resolve_java_type_fact(evidence, "Box", language_version=11)
     assert result.status == CodeFactStatus.RESOLVED
-    generic = next(f for f in result.structured_fact["features"]
-                   if f["kind"] == "generic_declaration")
+    generic = next(
+        f for f in result.structured_fact["features"] if f["kind"] == "generic_declaration"
+    )
     assert "'T'" in generic["detail"] or '"T"' in generic["detail"] or "T" in generic["detail"]
     _no_execution_wording(result)
 
@@ -397,7 +390,7 @@ def test_lambda_in_window_captures_resolve():
     evidence = _source_evidence(
         "class Widget {\n"
         "  void run(String prefix) {\n"
-        "    String suffix = \"!\";\n"
+        '    String suffix = "!";\n'
         "    Runnable task = () -> System.out.println(prefix + suffix);\n"
         "    task.run();\n"
         "  }\n"
@@ -405,8 +398,7 @@ def test_lambda_in_window_captures_resolve():
     )
     result = resolve_java_type_fact(evidence, "run", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    shape = next(f for f in result.structured_fact["features"]
-                 if f["kind"] == "lambda_shape")
+    shape = next(f for f in result.structured_fact["features"] if f["kind"] == "lambda_shape")
     assert "prefix" in shape["detail"] and "suffix" in shape["detail"]
     _no_execution_wording(result)
 
@@ -450,8 +442,9 @@ def test_method_reference_to_in_window_target_resolves():
     )
     result = resolve_java_type_fact(evidence, "run", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    shape = next(f for f in result.structured_fact["features"]
-                 if f["kind"] == "method_reference_shape")
+    shape = next(
+        f for f in result.structured_fact["features"] if f["kind"] == "method_reference_shape"
+    )
     assert "this::handle" in shape["detail"]
     _no_execution_wording(result)
 
@@ -474,16 +467,17 @@ def test_switch_expression_arms_resolve():
         "class Widget {\n"
         "  String label(int g) {\n"
         "    return switch (g) {\n"
-        "      case 1 -> \"one\";\n"
-        "      default -> \"other\";\n"
+        '      case 1 -> "one";\n'
+        '      default -> "other";\n'
         "    };\n"
         "  }\n"
         "}"
     )
     result = resolve_java_type_fact(evidence, "label", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    switch = next(f for f in result.structured_fact["features"]
-                  if f["kind"] == "switch_expression_shape")
+    switch = next(
+        f for f in result.structured_fact["features"] if f["kind"] == "switch_expression_shape"
+    )
     assert len(switch["arms"]) == 2
     _no_execution_wording(result)
 
@@ -493,8 +487,8 @@ def test_switch_expression_unknown_level_abstains():
         "class Widget {\n"
         "  String label(int g) {\n"
         "    return switch (g) {\n"
-        "      case 1 -> \"one\";\n"
-        "      default -> \"other\";\n"
+        '      case 1 -> "one";\n'
+        '      default -> "other";\n'
         "    };\n"
         "  }\n"
         "}"
@@ -509,9 +503,9 @@ def test_pattern_target_outside_window_abstains():
         "class Widget {\n"
         "  String describe(Object o) {\n"
         "    if (o instanceof Point p) {\n"
-        "      return \"point\";\n"
+        '      return "point";\n'
         "    }\n"
-        "    return \"other\";\n"
+        '    return "other";\n'
         "  }\n"
         "}"
     )
@@ -526,16 +520,15 @@ def test_pattern_target_in_window_resolves():
         "class Widget {\n"
         "  String describe(Object o) {\n"
         "    if (o instanceof Point p) {\n"
-        "      return \"point\";\n"
+        '      return "point";\n'
         "    }\n"
-        "    return \"other\";\n"
+        '    return "other";\n'
         "  }\n"
         "}"
     )
     result = resolve_java_type_fact(evidence, "describe", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    assert any(f["kind"] == "pattern_matching_shape"
-               for f in result.structured_fact["features"])
+    assert any(f["kind"] == "pattern_matching_shape" for f in result.structured_fact["features"])
     _no_execution_wording(result)
 
 
@@ -549,14 +542,12 @@ def test_compact_constructor_recorded_as_declared():
     )
     result = resolve_java_type_fact(evidence, "Range", language_version=17)
     assert result.status == CodeFactStatus.RESOLVED
-    assert any(f["kind"] == "compact_constructor"
-               for f in result.structured_fact["features"])
+    assert any(f["kind"] == "compact_constructor" for f in result.structured_fact["features"])
     _no_execution_wording(result)
 
 
 def test_feature_hint_miss_abstains():
     evidence = _source_evidence("record Point(int x, int y) {}", start=10)
-    result = resolve_java_type_fact(evidence, "Point", language_version=17,
-                                    feature_hint="lambda")
+    result = resolve_java_type_fact(evidence, "Point", language_version=17, feature_hint="lambda")
     assert result.status == CodeFactStatus.UNRESOLVED
     assert "feature_hint_not_found" in result.limitation_codes

@@ -50,9 +50,7 @@ class SqlAlchemyLogExemplarRepository:
             created_at=row.created_at,
         )
 
-    async def save_batch(
-        self, tenant_id: str, exemplars: list[LogExemplar]
-    ) -> int:
+    async def save_batch(self, tenant_id: str, exemplars: list[LogExemplar]) -> int:
         """Insert exemplars idempotently (by id); returns inserted count."""
         if not exemplars:
             return 0

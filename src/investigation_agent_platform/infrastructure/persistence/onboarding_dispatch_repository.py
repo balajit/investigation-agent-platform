@@ -393,9 +393,7 @@ class SqlAlchemyOnboardingDispatchRepository:
             {"tenant_id": tenant_id},
         )
 
-    async def read_dispatch(
-        self, tenant_id: str, dispatch_id: Any
-    ) -> dict[str, Any] | None:
+    async def read_dispatch(self, tenant_id: str, dispatch_id: Any) -> dict[str, Any] | None:
         """Read one dispatch row, tenant-scoped. No state change."""
         async with self._session_factory() as session:
             await self._set_tenant_context(session, tenant_id)
@@ -525,9 +523,7 @@ class SqlAlchemyOnboardingDispatchRepository:
         if not error_code:
             raise ValueError("error_code must be non-empty")
         states = (
-            "AND state IN ("
-            + ", ".join(f"'{state}'" for state in (only_from or ()))
-            + ")"
+            "AND state IN (" + ", ".join(f"'{state}'" for state in (only_from or ())) + ")"
             if only_from
             else ""
         )
@@ -556,9 +552,7 @@ class SqlAlchemyOnboardingDispatchRepository:
                 )
                 return result.first() is not None
 
-    async def list_by_state(
-        self, state: str, limit: int = 25
-    ) -> list[dict[str, Any]]:
+    async def list_by_state(self, state: str, limit: int = 25) -> list[dict[str, Any]]:
         """Fleet-wide scan of dispatches in one state (reconciler use).
 
         No tenant context is set: the runtime dispatch policy is fleet-scoped
@@ -581,9 +575,7 @@ class SqlAlchemyOnboardingDispatchRepository:
             )
             return [dict(row) for row in result.mappings().all()]
 
-    async def adopt_run_id(
-        self, tenant_id: str, dispatch_id: Any, run_id: str
-    ) -> bool:
+    async def adopt_run_id(self, tenant_id: str, dispatch_id: Any, run_id: str) -> bool:
         """Adopt a reconciled run id for an ACCEPTED dispatch.
 
         Projection-drift repair only: the reconciler verified via describe
@@ -681,9 +673,7 @@ class SqlAlchemyOnboardingDispatchRepository:
             row = result.mappings().first()
             return dict(row) if row is not None else None
 
-    async def request_cancellation(
-        self, tenant_id: str, request_id: Any, revision: int
-    ) -> bool:
+    async def request_cancellation(self, tenant_id: str, request_id: Any, revision: int) -> bool:
         """Move QUEUED to CANCEL_REQUESTED. Idempotent on repeats.
 
         The workflow heartbeat routes CANCEL_REQUESTED to the cancel path;

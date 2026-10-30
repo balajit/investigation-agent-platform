@@ -69,9 +69,7 @@ def _versions_suffix(report: CoverageReport, question: CoverageQuestion) -> str:
     return f" (analyzer {report.analyzer_version}{model})"
 
 
-def _unknown_answer(
-    report: CoverageReport, question: CoverageQuestion
-) -> CitedAnswer:
+def _unknown_answer(report: CoverageReport, question: CoverageQuestion) -> CitedAnswer:
     return CitedAnswer(
         question=question,
         status="unknown",
@@ -88,21 +86,15 @@ def _unknown_answer(
     )
 
 
-def _limitations_answer(
-    report: CoverageReport, question: CoverageQuestion
-) -> CitedAnswer:
+def _limitations_answer(report: CoverageReport, question: CoverageQuestion) -> CitedAnswer:
     return CitedAnswer(
         question=question,
         status="answered",
-        summary=(
-            "Coverage limitations: " + " | ".join(report.limitations)
-        ),
+        summary=("Coverage limitations: " + " | ".join(report.limitations)),
     )
 
 
-def _match(
-    report: CoverageReport, subject: str
-) -> tuple[ServiceVerdict | None, int | None]:
+def _match(report: CoverageReport, subject: str) -> tuple[ServiceVerdict | None, int | None]:
     """Return (verdict, disposition index or None for a service-level match)."""
     want = _normalize(subject)
     for verdict in report.verdicts:
@@ -115,9 +107,7 @@ def _match(
     return None, None
 
 
-def answer_coverage_question(
-    report: CoverageReport, question: CoverageQuestion
-) -> CitedAnswer:
+def answer_coverage_question(report: CoverageReport, question: CoverageQuestion) -> CitedAnswer:
     """Answer one structured question strictly from the supplied report."""
     if question.kind == QuestionKind.LIMITATIONS:
         return _limitations_answer(report, question)
@@ -131,11 +121,7 @@ def answer_coverage_question(
 
     if disposition_index is not None:
         disposition = verdict.dispositions[disposition_index]
-        reasons = (
-            "; ".join(disposition.reasons)
-            if disposition.reasons
-            else "no reasons recorded"
-        )
+        reasons = "; ".join(disposition.reasons) if disposition.reasons else "no reasons recorded"
         if question.kind == QuestionKind.WHY:
             return CitedAnswer(
                 question=question,
@@ -154,21 +140,17 @@ def answer_coverage_question(
             return CitedAnswer(
                 question=question,
                 status="answered",
-                summary=_pointers_summary(
-                    disposition.capability, verdict.service, citations
-                ),
+                summary=_pointers_summary(disposition.capability, verdict.service, citations),
                 matched_service=verdict.service,
                 matched_disposition=disposition,
                 citations=citations,
             )
-        return _change_answer(
-            report, question, verdict, disposition.capability, citations, suffix
-        )
+        return _change_answer(report, question, verdict, disposition.capability, citations, suffix)
 
-    pairs = ", ".join(
-        f"{item.capability}={item.disposition}"
-        for item in verdict.dispositions
-    ) or "no dispositions recorded"
+    pairs = (
+        ", ".join(f"{item.capability}={item.disposition}" for item in verdict.dispositions)
+        or "no dispositions recorded"
+    )
     if question.kind == QuestionKind.WHY:
         return CitedAnswer(
             question=question,
@@ -186,15 +168,11 @@ def answer_coverage_question(
         return CitedAnswer(
             question=question,
             status="answered",
-            summary=_pointers_summary(
-                verdict.service, verdict.service, citations
-            ),
+            summary=_pointers_summary(verdict.service, verdict.service, citations),
             matched_service=verdict.service,
             citations=citations,
         )
-    return _change_answer(
-        report, question, verdict, verdict.service, citations, suffix
-    )
+    return _change_answer(report, question, verdict, verdict.service, citations, suffix)
 
 
 def _first_probe_or_none(verdict: ServiceVerdict) -> str | None:
@@ -202,22 +180,11 @@ def _first_probe_or_none(verdict: ServiceVerdict) -> str | None:
     return probes[0] if probes else None
 
 
-def _pointers_summary(
-    subject: str, service: str, citations: list[EvidencePointer]
-) -> str:
+def _pointers_summary(subject: str, service: str, citations: list[EvidencePointer]) -> str:
     if not citations:
-        return (
-            f"Evidence for {subject} in service {service}: "
-            "no evidence pointers recorded."
-        )
-    paths = "; ".join(
-        f"{pointer.output_hash[:12]}:{pointer.field_path}"
-        for pointer in citations
-    )
-    return (
-        f"Evidence for {subject} in service {service} "
-        f"({len(citations)} pointer(s)): {paths}."
-    )
+        return f"Evidence for {subject} in service {service}: no evidence pointers recorded."
+    paths = "; ".join(f"{pointer.output_hash[:12]}:{pointer.field_path}" for pointer in citations)
+    return f"Evidence for {subject} in service {service} ({len(citations)} pointer(s)): {paths}."
 
 
 def _change_answer(

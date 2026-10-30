@@ -161,7 +161,9 @@ def test_values_never_logged(caplog) -> None:
         _FakeOpener([_FakeResponse(200, body)]),
         allowed_property_patterns=("feature.*",),
     )
-    with caplog.at_level(logging.INFO, logger="investigation_agent_platform.integrations.spring_config.client"):
+    with caplog.at_level(
+        logging.INFO, logger="investigation_agent_platform.integrations.spring_config.client"
+    ):
         client.fetch("shop", "prod")
     assert "VALUE-9f8e7d6c" not in caplog.text
 

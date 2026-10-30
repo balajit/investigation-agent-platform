@@ -116,13 +116,9 @@ def _historical_caller_edge(
 ) -> tuple[bool, str]:
     """Comparator for pre-remediation caller proof: file-local, not exact-bound."""
     assessment = next(
-        item
-        for item in hypothesis.assessments
-        if item.claim_kind == ClaimKind.CALL_EDGE
+        item for item in hypothesis.assessments if item.claim_kind == ClaimKind.CALL_EDGE
     )
-    cited = next(
-        item for item in evidence_items if item.evidence_id == assessment.evidence_id
-    )
+    cited = next(item for item in evidence_items if item.evidence_id == assessment.evidence_id)
     rows = [cited]
     target = assessment.claim_target
     if target is not None:

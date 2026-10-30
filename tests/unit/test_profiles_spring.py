@@ -173,9 +173,7 @@ class TestRefreshAndDrift:
         revs = client.get("/api/v1/profiles/shop-app/revisions", headers=HEADERS).json()
         assert revs["total"] == 1  # no write happened
 
-    def test_refresh_without_binding_rejected(
-        self, _restore_context: None, _stub_fetch
-    ) -> None:
+    def test_refresh_without_binding_rejected(self, _restore_context: None, _stub_fetch) -> None:
         _, client = _client()
         resp = client.post("/api/v1/profiles/example-app:refresh-from-spring", headers=HEADERS)
         assert resp.status_code == 422

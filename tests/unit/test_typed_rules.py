@@ -104,7 +104,9 @@ def test_definition_rejects_presence_and_symbol_free_windows() -> None:
     outcome, _ = apply_rule(rule, {"symbol": "OrderService"}, [])
     assert outcome == RuleOutcome.MISSING_PREMISE
     outcome, _ = apply_rule(
-        rule, {"symbol": "OrderService"}, [_range("OrderService", "class X:"), _range("OrderService", "class Y:")]
+        rule,
+        {"symbol": "OrderService"},
+        [_range("OrderService", "class X:"), _range("OrderService", "class Y:")],
     )
     assert outcome == RuleOutcome.MISSING_PREMISE
 
@@ -128,15 +130,11 @@ def test_call_edge_rejects_relabel_forgery_k1() -> None:
         "call_text": "AuthFilter.check(); OrderService.create()",
         "file_path": "svc.py",
     }
-    outcome, reason = apply_rule(
-        rule, {"caller": "AuthFilter", "callee": "OrderService"}, [forged]
-    )
+    outcome, reason = apply_rule(rule, {"caller": "AuthFilter", "callee": "OrderService"}, [forged])
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
     comment = dict(forged)
     comment["premise_type"] = "COMMENT"
-    outcome, _ = apply_rule(
-        rule, {"caller": "AuthFilter", "callee": "OrderService"}, [comment]
-    )
+    outcome, _ = apply_rule(rule, {"caller": "AuthFilter", "callee": "OrderService"}, [comment])
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
 
 
@@ -146,9 +144,7 @@ def test_call_edge_rejects_unbound_or_unshown_edges() -> None:
     assert outcome == RuleOutcome.MISSING_PREMISE
     outcome, _ = apply_rule(rule, {"caller": "A"}, [_callsite("A", "B", "A(); B()")])
     assert outcome == RuleOutcome.MISSING_PREMISE
-    outcome, _ = apply_rule(
-        rule, {"caller": "A", "callee": "B"}, [_callsite("A", "C", "A(); C()")]
-    )
+    outcome, _ = apply_rule(rule, {"caller": "A", "callee": "B"}, [_callsite("A", "C", "A(); C()")])
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
@@ -159,9 +155,7 @@ def test_heuristic_rules_never_discharge() -> None:
         input_types=["RANGE_READ_FACT"],
         soundness=Soundness.HEURISTIC,
     )
-    outcome, _ = apply_rule(
-        heuristic, {"symbol": "S"}, [_range("S", "class S:")]
-    )
+    outcome, _ = apply_rule(heuristic, {"symbol": "S"}, [_range("S", "class S:")])
     assert outcome == RuleOutcome.UNSUPPORTED_CONSTRUCT
 
 
@@ -186,7 +180,5 @@ def test_contract_digest_detects_validator_change() -> None:
 
 def test_unknown_validator_binding_fails_closed() -> None:
     rule = get_rule("definition/v1").model_copy(update={"validator": "elsewhere:other"})
-    outcome, _ = apply_rule(
-        rule, {"symbol": "S"}, [_range("S", "class S:")]
-    )
+    outcome, _ = apply_rule(rule, {"symbol": "S"}, [_range("S", "class S:")])
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE

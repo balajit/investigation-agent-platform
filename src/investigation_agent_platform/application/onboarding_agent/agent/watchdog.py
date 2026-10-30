@@ -54,8 +54,10 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     confidence=Confidence.VERIFIED,
                     evidence=["stages is empty"],
                     distinguishing_tests=[
-                        ("resupply the snapshot with the full stage history, "
-                        "stuck bounds, and failure counters")
+                        (
+                            "resupply the snapshot with the full stage history, "
+                            "stuck bounds, and failure counters"
+                        )
                     ],
                 )
             ],
@@ -80,17 +82,16 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     confidence=Confidence.VERIFIED,
                     evidence=[f"stages newer than now: {', '.join(skewed)}"],
                     distinguishing_tests=[
-                        ("resupply the snapshot with consistent, timezone-aware "
-                        "timestamps from a single clock")
+                        (
+                            "resupply the snapshot with consistent, timezone-aware "
+                            "timestamps from a single clock"
+                        )
                     ],
                 )
             ],
         )
 
-    if all(
-        observation.stage != snapshot.current_stage
-        for observation in snapshot.stages
-    ):
+    if all(observation.stage != snapshot.current_stage for observation in snapshot.stages):
         return Diagnosis(
             **coords,
             causes=[
@@ -101,13 +102,13 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     confidence=Confidence.VERIFIED,
                     evidence=[
                         "history stages: "
-                        + ", ".join(
-                            observation.stage for observation in snapshot.stages
-                        )
+                        + ", ".join(observation.stage for observation in snapshot.stages)
                     ],
                     distinguishing_tests=[
-                        ("resupply the snapshot with the full stage history "
-                        "including the current stage")
+                        (
+                            "resupply the snapshot with the full stage history "
+                            "including the current stage"
+                        )
                     ],
                 )
             ],
@@ -136,10 +137,14 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     f"lease fencing token {token}",
                 ],
                 distinguishing_tests=[
-                    ("inspect liveness of the worker holding the lease for "
-                    f"stage {observation.stage!r}"),
-                    ("compare the fencing token across consecutive snapshots "
-                    "to separate a stalled holder from a lost lease"),
+                    (
+                        "inspect liveness of the worker holding the lease for "
+                        f"stage {observation.stage!r}"
+                    ),
+                    (
+                        "compare the fencing token across consecutive snapshots "
+                        "to separate a stalled holder from a lost lease"
+                    ),
                 ],
             )
         )
@@ -154,10 +159,8 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     f"lease fencing token {token}",
                 ],
                 distinguishing_tests=[
-                    ("check worker process liveness and recent heartbeats for "
-                    "the lease holder"),
-                    ("look for a STALE_FENCE audit event superseding "
-                    f"token {token}"),
+                    ("check worker process liveness and recent heartbeats for the lease holder"),
+                    (f"look for a STALE_FENCE audit event superseding token {token}"),
                 ],
             )
         )
@@ -174,10 +177,14 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     else f"{snapshot.consecutive_failures} consecutive failures",
                 ],
                 distinguishing_tests=[
-                    (f"compare against historical durations for stage "
-                    f"{observation.stage!r} before changing the bound"),
-                    ("confirm the lease holder is progressing (token "
-                    "advancing) rather than stalled"),
+                    (
+                        f"compare against historical durations for stage "
+                        f"{observation.stage!r} before changing the bound"
+                    ),
+                    (
+                        "confirm the lease holder is progressing (token "
+                        "advancing) rather than stalled"
+                    ),
                 ],
             )
         )
@@ -190,19 +197,19 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                 "poison input or deterministic fault, not transient noise",
                 confidence=Confidence.PROJECTED,
                 evidence=[
-                    (f"consecutive_failures "
-                    f"{snapshot.consecutive_failures} >= threshold "
-                    f"{REPEATED_FAILURE_THRESHOLD}")
+                    (
+                        f"consecutive_failures "
+                        f"{snapshot.consecutive_failures} >= threshold "
+                        f"{REPEATED_FAILURE_THRESHOLD}"
+                    )
                 ]
-                + (
-                    [f"workflow notes: {'; '.join(snapshot.notes)}"]
-                    if snapshot.notes
-                    else []
-                ),
+                + ([f"workflow notes: {'; '.join(snapshot.notes)}"] if snapshot.notes else []),
                 distinguishing_tests=[
                     "inspect the failure notes for a repeating error signature",
-                    ("replay the failing step against a minimal input to "
-                    "separate input faults from environment faults"),
+                    (
+                        "replay the failing step against a minimal input to "
+                        "separate input faults from environment faults"
+                    ),
                 ],
             )
         )
@@ -230,8 +237,7 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                     ),
                 ],
                 distinguishing_tests=[
-                    ("define stuck bounds for the unbounded stages, then "
-                    "re-run diagnosis"),
+                    ("define stuck bounds for the unbounded stages, then re-run diagnosis"),
                 ],
             )
         )
@@ -244,12 +250,13 @@ def diagnose(snapshot: WatchdogSnapshot) -> Diagnosis:
                 confidence=Confidence.VERIFIED,
                 evidence=[
                     f"current stage {snapshot.current_stage!r} within its bound",
-                    (f"consecutive failures {snapshot.consecutive_failures} "
-                    f"below threshold {REPEATED_FAILURE_THRESHOLD}"),
+                    (
+                        f"consecutive failures {snapshot.consecutive_failures} "
+                        f"below threshold {REPEATED_FAILURE_THRESHOLD}"
+                    ),
                 ],
                 distinguishing_tests=[
-                    ("re-run diagnosis on the next snapshot to confirm "
-                    "continued progress")
+                    ("re-run diagnosis on the next snapshot to confirm continued progress")
                 ],
             )
         )

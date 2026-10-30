@@ -83,19 +83,19 @@ def test_build_orientation_takes_symbols_from_authority_only() -> None:
 
 
 def test_orientation_marker_detection() -> None:
-    assert is_orientation_traced_evidence(
-        SimpleNamespace(attributes={FUZZY_ORIENTATION_ATTR: True})
-    ) is True
-    assert is_orientation_traced_evidence(
-        SimpleNamespace(attributes={FUZZY_ORIENTATION_ATTR: False})
-    ) is False
+    assert (
+        is_orientation_traced_evidence(SimpleNamespace(attributes={FUZZY_ORIENTATION_ATTR: True}))
+        is True
+    )
+    assert (
+        is_orientation_traced_evidence(SimpleNamespace(attributes={FUZZY_ORIENTATION_ATTR: False}))
+        is False
+    )
     assert is_orientation_traced_evidence(SimpleNamespace(attributes={})) is False
     assert is_orientation_traced_evidence(SimpleNamespace()) is False
     assert is_orientation_traced_evidence(object()) is False
     # Documentation rows stay citable for doc answers: only the marker counts.
-    assert is_orientation_traced_evidence(
-        SimpleNamespace(attributes={"source": "refdoc"})
-    ) is False
+    assert is_orientation_traced_evidence(SimpleNamespace(attributes={"source": "refdoc"})) is False
 
 
 def test_fuzzy_orientation_block_serialization() -> None:
@@ -110,9 +110,7 @@ def test_fuzzy_orientation_block_serialization() -> None:
     assert block["suggested_symbols"] == ["svc::Handler::charge"]
     assert block["steering_note"] == "read the handler"
     assert "evidence_ids" not in block
-    from_dict = fuzzy_orientation_block(
-        {"miss": "AMBIGUOUS_SYMBOL", "suggested_symbols": ["a", 1]}
-    )
+    from_dict = fuzzy_orientation_block({"miss": "AMBIGUOUS_SYMBOL", "suggested_symbols": ["a", 1]})
     assert from_dict is not None
     assert from_dict["unverified"] is True
     assert from_dict["suggested_symbols"] == ["a", "1"]
@@ -182,9 +180,7 @@ def _chain(*evidence_ids: uuid.UUID) -> list[CausalRelationship]:
 def test_orientation_only_claim_never_verifies() -> None:
     engine = VerificationEngine()
     marker = _ev(EvidenceType.LOG, orientation_traced=True)
-    hypothesis = _hyp().model_copy(
-        update={"supporting_evidence_ids": [marker.evidence_id]}
-    )
+    hypothesis = _hyp().model_copy(update={"supporting_evidence_ids": [marker.evidence_id]})
     result = engine.evaluate_hypothesis(
         hypothesis,
         [marker],
@@ -225,9 +221,7 @@ def test_grounding_row_beside_orientation_passes_the_gate() -> None:
 
 
 def test_unknown_ids_alone_are_not_orientation_only() -> None:
-    supported, _ = VerificationEngine.cites_only_orientation(
-        _hyp(), [_ev()], _chain(uuid.uuid4())
-    )
+    supported, _ = VerificationEngine.cites_only_orientation(_hyp(), [_ev()], _chain(uuid.uuid4()))
     assert supported is False
 
 
@@ -248,9 +242,7 @@ def test_step_citing_only_orientation_marker_is_ungrounded() -> None:
 
 def test_step_citing_unmarked_row_still_grounds() -> None:
     row = _ev(EvidenceType.LOG)
-    grounded, _ = VerificationEngine.causal_step_grounding(
-        _chain(row.evidence_id), [row]
-    )
+    grounded, _ = VerificationEngine.causal_step_grounding(_chain(row.evidence_id), [row])
     assert grounded is True
 
 
@@ -311,11 +303,7 @@ def _prompt_for(problem: str, fuzzy_orientation: object) -> dict:
         )
     )
     coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
-    _asyncio.run(
-        coord.reason(
-            "tenant-a", _state(problem), fuzzy_orientation=fuzzy_orientation
-        )
-    )
+    _asyncio.run(coord.reason("tenant-a", _state(problem), fuzzy_orientation=fuzzy_orientation))
     call = gateway.complete.call_args
     request = call.kwargs.get("request") if call.kwargs else None
     if request is None and call.args:

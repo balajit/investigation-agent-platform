@@ -75,9 +75,7 @@ class TestSamplingPolicy:
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parents[2]
-        text = (
-            repo_root / "docker" / "otel-collector" / "config.yaml"
-        ).read_text(encoding="utf-8")
+        text = (repo_root / "docker" / "otel-collector" / "config.yaml").read_text(encoding="utf-8")
         assert "otlp/tempo" in text
         assert "tail_sampling" in text
         assert "errors-always" in text

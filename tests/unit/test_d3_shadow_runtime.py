@@ -111,7 +111,9 @@ def _obs(**over):
         evaluate_definition_shadow,
     )
 
-    base = evaluate_definition_shadow(_bundle(), _table(), _registry(), {"shadow_flag": True, "authority_flag": False})
+    base = evaluate_definition_shadow(
+        _bundle(), _table(), _registry(), {"shadow_flag": True, "authority_flag": False}
+    )
     d = base.model_dump(mode="json")
     d.update(over)
     return d
@@ -147,11 +149,15 @@ def test_d3p_a2_identity_is_present_and_joined() -> None:
     assert obs["verifier_version"] == "v2"
     assert obs["protocol_id"] == PROTOCOL_ID
     assert obs["amendment_id"] == AMENDMENT_ID
-    envelope = build_correlation_envelope(obs, 1, 0, {"status": "INCONCLUSIVE", "producing_path": "verify"}, IDENT)
+    envelope = build_correlation_envelope(
+        obs, 1, 0, {"status": "INCONCLUSIVE", "producing_path": "verify"}, IDENT
+    )
     assert envelope["protocol_id"] == PROTOCOL_ID
     assert envelope["amendment_id"] == AMENDMENT_ID
     assert audit_envelope_join(envelope) == "ok"
-    assert audit_envelope_join({**envelope, "amendment_id": "DEC-other"}) == "void:amendment-mismatch"
+    assert (
+        audit_envelope_join({**envelope, "amendment_id": "DEC-other"}) == "void:amendment-mismatch"
+    )
 
 
 def test_d3p_mode_shadow_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,19 +212,38 @@ def test_d3p_f08_authority_forced_still_no_consumer(monkeypatch: pytest.MonkeyPa
 
 def test_d3p_f01_flag_off_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IAP_SHADOW_TYPED_DEFINITIONS", raising=False)
-    assert run_shadow_turn(
-        candidate=_candidate(), bound=[], refuting_ids=[], triage_route="",
-        verifier_version="v2", investigation_id="i", hypothesis_id="h",
-        application_id="a", input_set="BOUND_FULL", table=_table(), registry=_registry(),
-    ) is None
+    assert (
+        run_shadow_turn(
+            candidate=_candidate(),
+            bound=[],
+            refuting_ids=[],
+            triage_route="",
+            verifier_version="v2",
+            investigation_id="i",
+            hypothesis_id="h",
+            application_id="a",
+            input_set="BOUND_FULL",
+            table=_table(),
+            registry=_registry(),
+        )
+        is None
+    )
 
 
 def test_d3p_run_shadow_turn_failure_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IAP_SHADOW_TYPED_DEFINITIONS", "1")
     out = run_shadow_turn(
-        candidate=None, bound=None, refuting_ids=[], triage_route="",  # type: ignore[arg-type]
-        verifier_version="v2", investigation_id="i", hypothesis_id="h",
-        application_id="a", input_set="BOUND_FULL", table=_table(), registry=_registry(),
+        candidate=None,
+        bound=None,
+        refuting_ids=[],
+        triage_route="",  # type: ignore[arg-type]
+        verifier_version="v2",
+        investigation_id="i",
+        hypothesis_id="h",
+        application_id="a",
+        input_set="BOUND_FULL",
+        table=_table(),
+        registry=_registry(),
     )
     assert out is not None and out.get("capture_error") is True
 
@@ -327,8 +352,15 @@ def test_d3p_n26_prefix_retention_with_running_counts() -> None:
     assert health["trace_truncated"] is True
     assert health["malformed_dropped"] == 0
     assert set(projected[0].keys()) <= {
-        "observation_id", "bundle_digest", "outcome", "reason_code", "iteration",
-        "input_set", "producing_path", "native_status", "flag_config",
+        "observation_id",
+        "bundle_digest",
+        "outcome",
+        "reason_code",
+        "iteration",
+        "input_set",
+        "producing_path",
+        "native_status",
+        "flag_config",
     }
 
 
@@ -352,9 +384,17 @@ def test_d3p_n15_failure_preserves_native_inputs_untouched(monkeypatch: pytest.M
     bound = [_row(), _row(eid="ev-002")]
     before_c, before_b = copy.deepcopy(cand), copy.deepcopy(bound)
     out = run_shadow_turn(
-        candidate=cand, bound=bound, refuting_ids=["r1"], triage_route="",
-        verifier_version="v2", investigation_id="i", hypothesis_id="h",
-        application_id="a", input_set="BOUND_FULL", table="not-a-table", registry=_registry(),  # type: ignore[arg-type]
+        candidate=cand,
+        bound=bound,
+        refuting_ids=["r1"],
+        triage_route="",
+        verifier_version="v2",
+        investigation_id="i",
+        hypothesis_id="h",
+        application_id="a",
+        input_set="BOUND_FULL",
+        table="not-a-table",
+        registry=_registry(),  # type: ignore[arg-type]
     )
     assert out is not None and out.get("capture_error") is True
     assert cand == before_c and bound == before_b
@@ -377,22 +417,33 @@ def test_d3p_n17_derive_carries_definition_keys() -> None:
     from investigation_agent_platform.application.worker.activities import _derive_loop_telemetry
 
     env = build_correlation_envelope(
-        _obs(), 1, 0,
+        _obs(),
+        1,
+        0,
         {"verified": False, "status": "INCONCLUSIVE", "producing_path": "general"},
         IDENT,
     )
     passed = {
         "shadow_definition_summary": {
-            "turns": 1, "admissible": 0, "abstained": 1, "unavailable": 0,
-            "capture_errors": 0, "mirror_notes": 3, "dropped_count": 0, "duplicate_count": 0,
-            "telemetry_omissions": 0, "rogue": 999,
+            "turns": 1,
+            "admissible": 0,
+            "abstained": 1,
+            "unavailable": 0,
+            "capture_errors": 0,
+            "mirror_notes": 3,
+            "dropped_count": 0,
+            "duplicate_count": 0,
+            "telemetry_omissions": 0,
+            "rogue": 999,
             "by_input_set": {"BOUND_FULL": 1, "EVIL": "x", 42: 1},
             "by_reason": {"unbound-repository": 1, "rogue": "y"},
         },
         "definition_shadow_trace": [env, "not-a-dict", {**env, "iteration": True}],
         "loop_telemetry": {"x": 1},
     }
-    out = _derive_loop_telemetry(passed, {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0}, 0)
+    out = _derive_loop_telemetry(
+        passed, {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0}, 0
+    )
     assert out is not None
     assert out["shadow_definition_summary"]["abstained"] == 1
     assert out["shadow_definition_summary"]["mirror_notes"] == 3
@@ -414,10 +465,17 @@ def test_d3p_n21_empty_trace_stamps_no_shadow_keys() -> None:
     out = _derive_loop_telemetry(
         {
             "shadow_definition_summary": {
-                "turns": 0, "admissible": 0, "abstained": 0, "unavailable": 0,
-                "capture_errors": 0, "mirror_notes": 0, "dropped_count": 0,
-                "duplicate_count": 0, "telemetry_omissions": 0,
-                "by_input_set": {}, "by_reason": {},
+                "turns": 0,
+                "admissible": 0,
+                "abstained": 0,
+                "unavailable": 0,
+                "capture_errors": 0,
+                "mirror_notes": 0,
+                "dropped_count": 0,
+                "duplicate_count": 0,
+                "telemetry_omissions": 0,
+                "by_input_set": {},
+                "by_reason": {},
             },
             "definition_shadow_trace": [],
         },
@@ -433,9 +491,17 @@ def test_d3p_conclude_gate_input_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """T3: the conclude-time path records CONCLUDE_GATE observations."""
     monkeypatch.setenv("IAP_SHADOW_TYPED_DEFINITIONS", "1")
     obs = run_shadow_turn(
-        candidate=_candidate(), bound=[_row()], refuting_ids=[], triage_route="",
-        verifier_version="v2", investigation_id="i", hypothesis_id="h",
-        application_id="a", input_set="CONCLUDE_GATE", table=_table(), registry=_registry(),
+        candidate=_candidate(),
+        bound=[_row()],
+        refuting_ids=[],
+        triage_route="",
+        verifier_version="v2",
+        investigation_id="i",
+        hypothesis_id="h",
+        application_id="a",
+        input_set="CONCLUDE_GATE",
+        table=_table(),
+        registry=_registry(),
     )
     assert obs is not None
     assert obs.get("input_set") == "CONCLUDE_GATE"
@@ -444,10 +510,17 @@ def test_d3p_conclude_gate_input_set(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_d3p_oversized_input_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IAP_SHADOW_TYPED_DEFINITIONS", "1")
     out = run_shadow_turn(
-        candidate=_candidate(), bound=[_row(snippet="x" * (1024 * 1024 + 1))],
-        refuting_ids=[], triage_route="", verifier_version="v2", investigation_id="i",
-        hypothesis_id="h", application_id="a", input_set="BOUND_FULL",
-        table=_table(), registry=_registry(),
+        candidate=_candidate(),
+        bound=[_row(snippet="x" * (1024 * 1024 + 1))],
+        refuting_ids=[],
+        triage_route="",
+        verifier_version="v2",
+        investigation_id="i",
+        hypothesis_id="h",
+        application_id="a",
+        input_set="BOUND_FULL",
+        table=_table(),
+        registry=_registry(),
     )
     assert out is not None and out.get("capture_error") is True
 
@@ -621,12 +694,27 @@ def test_d3p_summarize_mirror_notes_are_coverage_not_capture_errors() -> None:
 
     summary = summarize_shadow_definitions(
         [
-            {"tap": "T2a", "input_set": "CITED_LOCATION", "kind": "DEFINITION",
-             "ok": True, "reason": ""},
-            {"tap": "T2b", "input_set": "BOUND_FULL", "kind": "DEFINITION",
-             "ok": False, "reason": "definition-backstop-no-range-read"},
-            {"tap": "T3", "input_set": "CONCLUDE_GATE", "kind": "DEFINITION",
-             "ok": True, "reason": ""},
+            {
+                "tap": "T2a",
+                "input_set": "CITED_LOCATION",
+                "kind": "DEFINITION",
+                "ok": True,
+                "reason": "",
+            },
+            {
+                "tap": "T2b",
+                "input_set": "BOUND_FULL",
+                "kind": "DEFINITION",
+                "ok": False,
+                "reason": "definition-backstop-no-range-read",
+            },
+            {
+                "tap": "T3",
+                "input_set": "CONCLUDE_GATE",
+                "kind": "DEFINITION",
+                "ok": True,
+                "reason": "",
+            },
             {"bogus": True},
         ]
     )

@@ -68,7 +68,10 @@ class TestFocusExtraction:
 
     def test_line_normalization(self) -> None:
         focus = focus_from_reason_data(
-            {"next_action": "GET_CODE", "action_parameters": {"file_path": "a.py", "start_line": 0, "end_line": "x"}}
+            {
+                "next_action": "GET_CODE",
+                "action_parameters": {"file_path": "a.py", "start_line": 0, "end_line": "x"},
+            }
         )
         assert focus is not None
         assert focus.line_start is None
@@ -130,7 +133,10 @@ class TestLivenessGate:
 
 class TestPivotForcing:
     def test_first_turn_never_forces(self) -> None:
-        assert _should_force_pivot_recollect(None, _reason(file_path="tenant/svc/a.py"), 10, []) is None
+        assert (
+            _should_force_pivot_recollect(None, _reason(file_path="tenant/svc/a.py"), 10, [])
+            is None
+        )
 
     def test_no_override_without_shift(self) -> None:
         reason = _reason(file_path="tenant/svc/a.py", start_line=1, end_line=50)

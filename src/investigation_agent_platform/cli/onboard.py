@@ -614,14 +614,26 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-telemetry",
         help="Verify tenant telemetry routing live from a telemetry dir, offline",
     )
-    verify.add_argument("--telemetry-dir", required=True,
-                        help="dir holding <tenant>/telemetry.conf (operator scope)")
-    verify.add_argument("--home-service", required=True,
-                        help="homed service to probe (must be homed on one endpoint)")
-    verify.add_argument("--mapping-source-id", default=None,
-                        help="observability mapping to verify field attribution with")
-    verify.add_argument("--mapping-profiles-path", default=None,
-                        help="mapping profiles dir (default: platform config dir)")
+    verify.add_argument(
+        "--telemetry-dir",
+        required=True,
+        help="dir holding <tenant>/telemetry.conf (operator scope)",
+    )
+    verify.add_argument(
+        "--home-service",
+        required=True,
+        help="homed service to probe (must be homed on one endpoint)",
+    )
+    verify.add_argument(
+        "--mapping-source-id",
+        default=None,
+        help="observability mapping to verify field attribution with",
+    )
+    verify.add_argument(
+        "--mapping-profiles-path",
+        default=None,
+        help="mapping profiles dir (default: platform config dir)",
+    )
     verify.set_defaults(func=cmd_verify_telemetry)
     return parser
 

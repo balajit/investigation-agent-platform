@@ -75,7 +75,9 @@ class TestOpenBaoStore:
                 address="https://bao.local:8200", token=SecretStr("test-token")
             )
         )
-        store._client = httpx.AsyncClient(base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler))
+        store._client = httpx.AsyncClient(
+            base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler)
+        )
         try:
             assert await store.get("db/prod") is None
         finally:
@@ -101,7 +103,9 @@ class TestOpenBaoStore:
                 address="https://bao.local:8200", token=SecretStr("test-token")
             )
         )
-        store._client = httpx.AsyncClient(base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler))
+        store._client = httpx.AsyncClient(
+            base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler)
+        )
         try:
             assert await store.get("db/prod") == "postgresql+asyncpg://u:p@h/db"
         finally:
@@ -125,7 +129,9 @@ class TestOpenBaoStore:
                 address="https://bao.local:8200", token=SecretStr("test-token")
             )
         )
-        store._client = httpx.AsyncClient(base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler))
+        store._client = httpx.AsyncClient(
+            base_url="https://bao.local:8200", transport=httpx.MockTransport(_handler)
+        )
         try:
             with pytest.raises(SecretStoreError):
                 await store.get("db/prod")
@@ -173,9 +179,7 @@ class TestStoreBackedResolver:
             return "postgresql+asyncpg://vault:u@h/db" if path == "db/prod" else None
 
         resolver = SecretStoreSecretResolver(store_get=_fake_store, environment="test")
-        assert await resolver.resolve("secret://db/prod") == (
-            "postgresql+asyncpg://vault:u@h/db"
-        )
+        assert await resolver.resolve("secret://db/prod") == ("postgresql+asyncpg://vault:u@h/db")
 
     @pytest.mark.asyncio
     async def test_production_without_backend_fails_closed(self) -> None:
@@ -193,9 +197,7 @@ class TestLayeredConfig:
         (tmp_path / ".env").write_text("IAP_LAYER_TEST_A=from-file\n", encoding="utf-8")
         monkeypatch.delenv("IAP_LAYER_TEST_A", raising=False)
         monkeypatch.setenv("IAP_LAYER_TEST_B", "runtime")
-        (tmp_path / ".env.development").write_text(
-            "IAP_LAYER_TEST_B=from-file\n", encoding="utf-8"
-        )
+        (tmp_path / ".env.development").write_text("IAP_LAYER_TEST_B=from-file\n", encoding="utf-8")
         monkeypatch.setenv("IAP_ENVIRONMENT", "development")
         report = apply_layered_config(project_root=tmp_path)
         import os
@@ -211,10 +213,7 @@ class TestLayeredConfig:
 
         (tmp_path / "config").mkdir()
         (tmp_path / "config" / "application.yaml").write_text(
-            "platform:\n"
-            "  name: yaml-app\n"
-            "investigation:\n"
-            "  max_tool_calls: 42\n",
+            "platform:\n  name: yaml-app\ninvestigation:\n  max_tool_calls: 42\n",
             encoding="utf-8",
         )
         monkeypatch.delenv("IAP_APP_ID", raising=False)

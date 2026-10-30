@@ -158,9 +158,7 @@ class TestSqlAlchemyCas:
         )
 
         session = _session_with()
-        session.flush = AsyncMock(
-            side_effect=IntegrityError("INSERT", {}, Exception("dup"))
-        )
+        session.flush = AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("dup")))
         with patch(f"{APP}.hypothesis_repository.rls_session", return_value=_cm(session)):
             repo = SqlAlchemyHypothesisRepository(db_session_factory=MagicMock())
             with pytest.raises(ConcurrencyError):

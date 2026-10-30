@@ -57,9 +57,7 @@ class TestStampAnchors:
         assert anchors.onset_t is not None and anchors.onset_t.tzinfo is not None
 
     def test_naive_datetime_objects_normalized_to_utc(self):
-        anchors = stamp_anchors(
-            {"onset_t": datetime(2026, 10, 30, 10, 0, 0)}, _now(), 50
-        )
+        anchors = stamp_anchors({"onset_t": datetime(2026, 10, 30, 10, 0, 0)}, _now(), 50)
         assert anchors.onset_t == datetime(2026, 10, 30, 10, tzinfo=UTC)
         assert anchors.onset_given is True
 
@@ -312,6 +310,7 @@ class TestSpreadBudget:
         )
 
         for bad in (0, -3, None, "12"):
+
             class _Cfg:
                 evidence_budget = {"max_tool_calls": bad}
 

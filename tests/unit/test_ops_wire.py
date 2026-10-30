@@ -55,9 +55,7 @@ class TestJobsWire:
 
     def test_unknown_job_404_envelope(self, _restore_context: None) -> None:
         _, client = _client()
-        resp = client.get(
-            "/api/v1/jobs/00000000-0000-0000-0000-000000000000", headers=HEADERS
-        )
+        resp = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000", headers=HEADERS)
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "JOB_NOT_FOUND"
 
@@ -71,9 +69,7 @@ class TestClustersWire:
 
     def test_unknown_cluster_404_envelope(self, _restore_context: None) -> None:
         _, client = _client()
-        resp = client.get(
-            "/api/v1/clusters/00000000-0000-0000-0000-000000000000", headers=HEADERS
-        )
+        resp = client.get("/api/v1/clusters/00000000-0000-0000-0000-000000000000", headers=HEADERS)
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "CLUSTER_NOT_FOUND"
 

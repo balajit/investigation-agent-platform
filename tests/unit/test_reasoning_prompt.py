@@ -112,6 +112,7 @@ def test_definition_hypothesis_requires_get_code_first():
     assert "MUST be followed by GET_CODE of the" in prompt
     assert "search matches alone never verify a definition" in prompt
 
+
 def test_cite_range_read_not_search_match():
     prompt = _system_prompt_for("where is something defined")
     assert "cite the range-read evidence ID" in prompt

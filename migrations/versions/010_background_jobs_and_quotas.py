@@ -140,11 +140,7 @@ def _constraint_exists(table: str, name: str) -> bool:
         # Offline (--sql) mode cannot inspect; assume the constraint exists
         # so the DROP is emitted and SQL scripts stay complete.
         return True
-    names = (
-        {c["name"] for c in fks}
-        | {c["name"] for c in uniques}
-        | {c["name"] for c in checks}
-    )
+    names = {c["name"] for c in fks} | {c["name"] for c in uniques} | {c["name"] for c in checks}
     return name in names
 
 

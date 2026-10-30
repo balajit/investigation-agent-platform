@@ -35,6 +35,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 logger = logging.getLogger("iap.application")
 
+
 def _intake_extra(result: Any) -> dict[str, Any]:
     """Merge flag + session number (never the fingerprint value)."""
     try:
@@ -97,10 +98,7 @@ def build_intake_seed(
                         if frame.get(key) is not None
                     }
                 else:
-                    entry = {
-                        key: getattr(frame, key, None)
-                        for key in ("file", "line", "function")
-                    }
+                    entry = {key: getattr(frame, key, None) for key in ("file", "line", "function")}
                     entry = {k: v for k, v in entry.items() if v is not None}
                 if entry:
                     parsed_frames.append(
@@ -138,9 +136,9 @@ def _silent_symbol(error_class: str, problem_description: str) -> str:
     try:
         import hashlib as _hashlib
 
-        digest = _hashlib.sha256(
-            (problem_description or error_class or "").encode()
-        ).hexdigest()[:16]
+        digest = _hashlib.sha256((problem_description or error_class or "").encode()).hexdigest()[
+            :16
+        ]
         return f"silent:{digest}"
     except Exception:
         return "silent:unknown"
@@ -188,8 +186,7 @@ def resolve_repository_scope(profile: Any) -> tuple[str, list[str]]:
     try:
         services = list(getattr(profile, "services", None) or [])
         repo_ids = {
-            str(getattr(service, "repository_id", "") or "").strip()
-            for service in services
+            str(getattr(service, "repository_id", "") or "").strip() for service in services
         }
         repo_ids.discard("")
         if len(repo_ids) == 1:
@@ -281,7 +278,8 @@ class ErrorIntakeService:
             error_class=error_class,
             repository=(repository or "").strip() or "UNPINNED",
             revision=(revision_value or "").strip() or "UNPINNED",
-            failing_symbol=(failing_symbol or "").strip() or _silent_symbol(error_class, problem_description),
+            failing_symbol=(failing_symbol or "").strip()
+            or _silent_symbol(error_class, problem_description),
             caller_symbol=caller_symbol,
             top_frame_file=top_frame_file,
         )
@@ -369,9 +367,7 @@ class ErrorIntakeService:
         if self.profile_repo is None:
             return explicit
         try:
-            profile = await self.profile_repo.get_by_application_id(
-                tenant_id, application_id
-            )
+            profile = await self.profile_repo.get_by_application_id(tenant_id, application_id)
         except Exception:
             return explicit
         if profile is None:
@@ -397,16 +393,12 @@ class ErrorIntakeService:
         try:
             if self.profile_repo is None:
                 return InvestigationLimits().max_tool_calls
-            profile = await self.profile_repo.get_by_application_id(
-                tenant_id, application_id
-            )
+            profile = await self.profile_repo.get_by_application_id(tenant_id, application_id)
             from investigation_agent_platform.application.worker.activities.common import (
                 overlay_evidence_budget,
             )
 
-            return int(
-                overlay_evidence_budget(InvestigationLimits(), profile).max_tool_calls
-            )
+            return int(overlay_evidence_budget(InvestigationLimits(), profile).max_tool_calls)
         except Exception:
             return InvestigationLimits().max_tool_calls
 

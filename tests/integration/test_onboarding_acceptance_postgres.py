@@ -35,7 +35,9 @@ def _url(username: str | None = None, password: str | None = None):  # type: ign
 def acceptance_roles():  # type: ignore[no-untyped-def]
     parsed = urlparse(PG_URL)
     try:
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 5432), timeout=1):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 5432), timeout=1
+        ):
             pass
     except OSError:
         pytest.skip("IAP onboarding PostgreSQL test server is unreachable")
@@ -52,7 +54,7 @@ def acceptance_roles():  # type: ignore[no-untyped-def]
         with admin.begin() as conn:
             for name, role in roles.items():
                 conn.exec_driver_sql(
-                    f'CREATE ROLE "{role}" LOGIN PASSWORD \'{passwords[name]}\' '
+                    f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{passwords[name]}' "
                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                 )
                 conn.exec_driver_sql(f'GRANT "{role}" TO CURRENT_USER')
@@ -177,8 +179,7 @@ def test_acceptance_transaction_commits_all_or_nothing(acceptance_roles) -> None
         assert updated.state_version == 2
         job_id = updated.job_id
         conn.exec_driver_sql(
-            "INSERT INTO background_jobs (id,tenant_id) VALUES "
-            f"('{job_id}','tenant-a')"
+            f"INSERT INTO background_jobs (id,tenant_id) VALUES ('{job_id}','tenant-a')"
         )
         dispatch_id = str(uuid.uuid4())
         conn.exec_driver_sql(
@@ -191,9 +192,7 @@ def test_acceptance_transaction_commits_all_or_nothing(acceptance_roles) -> None
             f'SELECT "{schema}".record_onboarding_request_audit('
             f"'tenant-a','{request_id}',1,'sub-a','ACCEPT','" + "c" * 64 + "','acc-key-1')"
         )
-        assert conn.exec_driver_sql(
-            "SELECT count(*) FROM onboarding_dispatches"
-        ).scalar_one() == 1
+        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_dispatches").scalar_one() == 1
         assert (
             conn.exec_driver_sql(
                 "SELECT count(*) FROM onboarding_request_audits WHERE action='ACCEPT'"
@@ -212,7 +211,9 @@ def test_worker_cancel_transition_allowed_and_cross_tenant_denied(acceptance_rol
         conn.exec_driver_sql(
             "INSERT INTO onboarding_requests (id,tenant_id,request_id,revision,idempotency_key,"
             "content_hash,state,state_version,actor_id) VALUES "
-            f"(gen_random_uuid(),'tenant-a','{request_id}',1,'cancel-key-1','" + "d" * 64 + "','QUEUED',1,'sub-a')"
+            f"(gen_random_uuid(),'tenant-a','{request_id}',1,'cancel-key-1','"
+            + "d" * 64
+            + "','QUEUED',1,'sub-a')"
         )
 
     with admin.begin() as conn:

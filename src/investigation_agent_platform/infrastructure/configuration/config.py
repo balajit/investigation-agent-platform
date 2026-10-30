@@ -250,19 +250,39 @@ class StoryLoggingConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    message_template: str = Field(
-        default="[{comp}] {func} · {stage}/{step} · {outcome}")
+    message_template: str = Field(default="[{comp}] {func} · {stage}/{step} · {outcome}")
     field_order: list[str] = Field(
-        default=["comp", "func", "stage", "step", "outcome", "elapsed_ms",
-                 "inputs", "outputs", "error", "error_type",
-                 "tenant_id", "investigation_id", "event"])
+        default=[
+            "comp",
+            "func",
+            "stage",
+            "step",
+            "outcome",
+            "elapsed_ms",
+            "inputs",
+            "outputs",
+            "error",
+            "error_type",
+            "tenant_id",
+            "investigation_id",
+            "event",
+        ]
+    )
     caps: StoryCaps = Field(default_factory=StoryCaps)
-    component_levels: dict[str, str] = Field(default_factory=lambda: {
-        "API": "INFO", "TMP-WRKR": "INFO", "ACTVTY": "INFO", "WFLW": "INFO",
-        "SVC": "INFO", "DOMAIN": "INFO", "REPO": "DEBUG", "PROV": "DEBUG",
-        "TOOL": "INFO"})
-    stage_ceiling: dict[str, str] = Field(
-        default_factory=lambda: {"persist": "DEBUG"})
+    component_levels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "API": "INFO",
+            "TMP-WRKR": "INFO",
+            "ACTVTY": "INFO",
+            "WFLW": "INFO",
+            "SVC": "INFO",
+            "DOMAIN": "INFO",
+            "REPO": "DEBUG",
+            "PROV": "DEBUG",
+            "TOOL": "INFO",
+        }
+    )
+    stage_ceiling: dict[str, str] = Field(default_factory=lambda: {"persist": "DEBUG"})
     extra_redacted_keys: list[str] = Field(default_factory=list)
 
 
@@ -525,9 +545,7 @@ def _evidence_config_from_env() -> EvidenceConfig:
         postgres_mcp_config=os.environ.get(
             "IAP_POSTGRES_MCP_CONFIG", "config/postgres-mcp-servers.yaml"
         ),
-        direct_state_providers=os.environ.get(
-            "IAP_DIRECT_STATE_PROVIDERS", "false"
-        ).lower()
+        direct_state_providers=os.environ.get("IAP_DIRECT_STATE_PROVIDERS", "false").lower()
         == "true",
     )
 
@@ -840,14 +858,10 @@ def load_application_config_from_yaml(
                 database=DatabaseConfig(
                     connection_uri=SecretStr(db_uri),
                     pool_size=int(
-                        os.environ.get(
-                            "IAP_DB_POOL_SIZE", str(persistence.connection_pool_size)
-                        )
+                        os.environ.get("IAP_DB_POOL_SIZE", str(persistence.connection_pool_size))
                     ),
                     max_overflow=int(
-                        os.environ.get(
-                            "IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow)
-                        )
+                        os.environ.get("IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow))
                     ),
                 ),
                 llm=_llm_config_from_env(
@@ -859,9 +873,7 @@ def load_application_config_from_yaml(
                 ),
                 budget=BudgetConfig(
                     max_tool_calls=int(
-                        os.environ.get(
-                            "IAP_MAX_TOOL_CALLS", str(investigation.max_tool_calls)
-                        )
+                        os.environ.get("IAP_MAX_TOOL_CALLS", str(investigation.max_tool_calls))
                     ),
                     max_reasoning_calls=int(
                         os.environ.get(

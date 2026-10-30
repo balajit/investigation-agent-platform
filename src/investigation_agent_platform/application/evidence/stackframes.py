@@ -11,12 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_PYTHON_FRAME_RE = re.compile(
-    r'^\s*File "([^"]+)", line (\d+), in (\S+)\s*$'
-)
-_JAVA_FRAME_RE = re.compile(
-    r"^\s*at\s+([\w.$]+)\(([^():]*)(?::(\d+))?\)\s*$"
-)
+_PYTHON_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line (\d+), in (\S+)\s*$')
+_JAVA_FRAME_RE = re.compile(r"^\s*at\s+([\w.$]+)\(([^():]*)(?::(\d+))?\)\s*$")
 _JAVA_CAUSED_BY_RE = re.compile(r"^\s*Caused by:\s*(\S+)(?::\s*(.*))?\s*$")
 _EXCEPTION_HEAD_RES = (
     re.compile(r"^Traceback \(most recent call last\):\s*$"),
@@ -37,9 +33,7 @@ def parse_python_traceback(text: str) -> list[dict[str, Any]]:
                 lineno_int = int(lineno)
             except (TypeError, ValueError):
                 continue
-            frames.append(
-                {"file": filename.strip(), "line": lineno_int, "function": func.strip()}
-            )
+            frames.append({"file": filename.strip(), "line": lineno_int, "function": func.strip()})
         return [f for f in frames if f.get("file")]
     except Exception:
         return []

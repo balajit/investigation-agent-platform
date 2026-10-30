@@ -35,9 +35,7 @@ from investigation_agent_platform.domain.proof.manifest import (
     build_manifest,
 )
 
-SCHEMA = json.loads(
-    (Path("tests/fixtures/proof_kernel") / "cert_schema_v2.json").read_text()
-)
+SCHEMA = json.loads((Path("tests/fixtures/proof_kernel") / "cert_schema_v2.json").read_text())
 
 
 def _h(text: str) -> str:
@@ -97,7 +95,13 @@ def _impl_digest() -> str:
     return RULE_REGISTRY["definition/v1"].implementation_digest
 
 
-def _request(cert: dict[str, Any], proposition: dict[str, Any], manifest: Any, artifacts: dict[str, Any], **over: Any) -> CheckRequest:
+def _request(
+    cert: dict[str, Any],
+    proposition: dict[str, Any],
+    manifest: Any,
+    artifacts: dict[str, Any],
+    **over: Any,
+) -> CheckRequest:
     base: dict[str, Any] = {
         "certificate": cert,
         "proposition": proposition,
@@ -161,7 +165,12 @@ def test_k10_missing_or_mismatched_artifact_unavailable() -> None:
     cert = certify(inputs, [premise], {"row-1": artifact})
     req = _request(cert, inputs.proposition, inputs.manifest, {})
     assert check_certificate(req)[0] == CheckerOutcome.PREMISE_UNAVAILABLE
-    req = _request(cert, inputs.proposition, inputs.manifest, {"row-1": {"file_path": "svc.py", "symbol": "OrderService", "text": "tampered bytes"}})
+    req = _request(
+        cert,
+        inputs.proposition,
+        inputs.manifest,
+        {"row-1": {"file_path": "svc.py", "symbol": "OrderService", "text": "tampered bytes"}},
+    )
     assert check_certificate(req)[0] == CheckerOutcome.PREMISE_UNAVAILABLE
 
 

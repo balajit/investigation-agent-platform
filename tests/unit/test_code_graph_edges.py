@@ -78,41 +78,50 @@ def test_valid_graph_passes():
 def test_unknown_caller_fails_closed():
     caller = _symbol("caller")
     with pytest.raises(ValueError, match="unknown caller"):
-        _graph(nodes={caller.node_id: caller}, edges=[
-            CallGraphEdge(
-                caller_node_id=uuid4(),
-                call_site_file="src/service.py",
-                call_site_line=1,
-            )
-        ])
+        _graph(
+            nodes={caller.node_id: caller},
+            edges=[
+                CallGraphEdge(
+                    caller_node_id=uuid4(),
+                    call_site_file="src/service.py",
+                    call_site_line=1,
+                )
+            ],
+        )
 
 
 def test_unknown_callee_fails_closed():
     caller = _symbol("caller")
     with pytest.raises(ValueError, match="unknown callee"):
-        _graph(nodes={caller.node_id: caller}, edges=[
-            CallGraphEdge(
-                caller_node_id=caller.node_id,
-                callee_node_id=uuid4(),
-                call_site_file="src/service.py",
-                call_site_line=1,
-                resolution_status=CallResolutionStatus.RESOLVED,
-            )
-        ])
+        _graph(
+            nodes={caller.node_id: caller},
+            edges=[
+                CallGraphEdge(
+                    caller_node_id=caller.node_id,
+                    callee_node_id=uuid4(),
+                    call_site_file="src/service.py",
+                    call_site_line=1,
+                    resolution_status=CallResolutionStatus.RESOLVED,
+                )
+            ],
+        )
 
 
 def test_external_callee_exempt():
     caller = _symbol("caller")
-    graph = _graph(nodes={caller.node_id: caller}, edges=[
-        CallGraphEdge(
-            caller_node_id=caller.node_id,
-            callee_node_id=uuid4(),
-            callee_qualified_name="external.Lib.run",
-            call_site_file="src/service.py",
-            call_site_line=3,
-            resolution_status=CallResolutionStatus.EXTERNAL,
-        )
-    ])
+    graph = _graph(
+        nodes={caller.node_id: caller},
+        edges=[
+            CallGraphEdge(
+                caller_node_id=caller.node_id,
+                callee_node_id=uuid4(),
+                callee_qualified_name="external.Lib.run",
+                call_site_file="src/service.py",
+                call_site_line=3,
+                resolution_status=CallResolutionStatus.EXTERNAL,
+            )
+        ],
+    )
     assert graph.edges[0].resolution_status == CallResolutionStatus.EXTERNAL
 
 
@@ -265,15 +274,14 @@ def test_sensitive_snippet_guard_unchanged():
     # logic directly to prove it still rejects sensitive snippets.
     from types import SimpleNamespace
 
-    assert (
-        "sanitized/redacted"
-        in inspect.getsource(DatabaseOperation.validate_sensitive_snippet)
-    )
+    assert "sanitized/redacted" in inspect.getsource(DatabaseOperation.validate_sensitive_snippet)
     sensitive = SimpleNamespace(data={"is_classified_sensitive": True})
     with pytest.raises(ValueError, match="sanitized/redacted"):
         DatabaseOperation.validate_sensitive_snippet("SELECT * FROM orders", sensitive)
     assert (
-        DatabaseOperation.validate_sensitive_snippet("SELECT * FROM orders", SimpleNamespace(data={}))
+        DatabaseOperation.validate_sensitive_snippet(
+            "SELECT * FROM orders", SimpleNamespace(data={})
+        )
         == "SELECT * FROM orders"
     )
     ok = DatabaseOperation(

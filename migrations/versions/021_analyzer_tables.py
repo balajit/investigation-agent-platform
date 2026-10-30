@@ -23,7 +23,9 @@ def _base_columns():
         sa.Column("sha", sa.String(128), nullable=False),
         sa.Column("path", sa.Text(), nullable=False),
         sa.Column("content_hash", sa.String(80), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     ]
 
 
@@ -61,8 +63,15 @@ def upgrade() -> None:
             sa.Column("name", sa.String(512), nullable=False),
             sa.Column("kind", sa.String(64), nullable=False, server_default="unknown"),
             sa.Column("line", sa.Integer(), nullable=False, server_default="1"),
-            sa.Column("annotations", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="[]"),
-            sa.UniqueConstraint("tenant_id", "repo", "sha", "path", "name", "line", name="uq_analyzer_symbols"),
+            sa.Column(
+                "annotations",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+                server_default="[]",
+            ),
+            sa.UniqueConstraint(
+                "tenant_id", "repo", "sha", "path", "name", "line", name="uq_analyzer_symbols"
+            ),
         )
     if not _table_exists("analyzer_endpoints"):
         op.create_table(
@@ -75,7 +84,9 @@ def upgrade() -> None:
             sa.Column("method", sa.String(16), nullable=False),
             sa.Column("route", sa.Text(), nullable=False),
             sa.Column("handler", sa.Text(), nullable=False, server_default=""),
-            sa.UniqueConstraint("tenant_id", "repo", "sha", "method", "route", name="uq_analyzer_endpoints"),
+            sa.UniqueConstraint(
+                "tenant_id", "repo", "sha", "method", "route", name="uq_analyzer_endpoints"
+            ),
         )
     if not _table_exists("analyzer_edges"):
         op.create_table(
@@ -88,7 +99,9 @@ def upgrade() -> None:
             sa.Column("dst", sa.Text(), nullable=False),
             sa.Column("kind", sa.String(64), nullable=False, server_default="depends_on"),
             sa.Column("confidence", sa.String(16), nullable=False, server_default="Exact"),
-            sa.UniqueConstraint("tenant_id", "repo", "sha", "src", "dst", "kind", name="uq_analyzer_edges"),
+            sa.UniqueConstraint(
+                "tenant_id", "repo", "sha", "src", "dst", "kind", name="uq_analyzer_edges"
+            ),
         )
 
 

@@ -213,9 +213,7 @@ def traced(
         except (TypeError, ValueError):
             signature = None
 
-        def _open_span(
-            f_args: tuple[Any, ...], f_kwargs: dict[str, Any]
-        ) -> tuple[Any, Any]:
+        def _open_span(f_args: tuple[Any, ...], f_kwargs: dict[str, Any]) -> tuple[Any, Any]:
             # Bind positional args to parameter names so scope extraction
             # works for positional calls (activities take `params` first).
             bound_kwargs = dict(f_kwargs)
@@ -226,13 +224,9 @@ def traced(
                         bound_kwargs.setdefault(name, value)
                 except Exception as bind_exc:
                     logger.warning("Trace arg binding failed open: %s", bind_exc)
-            tenant_id, investigation_id = extract_scope(
-                f_args, bound_kwargs, tenant_from, inv_from
-            )
+            tenant_id, investigation_id = extract_scope(f_args, bound_kwargs, tenant_from, inv_from)
             if tenant_id is None and require_scope:
-                logger.warning(
-                    "Span %s missing iap.tenant_id (non-compliant)", span_name
-                )
+                logger.warning("Span %s missing iap.tenant_id (non-compliant)", span_name)
             cm = tracer.start_as_current_span(span_name) if tracer is not None else _null_span()
             span = cm.__enter__()
             _set_span_attributes(
@@ -246,9 +240,7 @@ def traced(
             )
             return cm, span
 
-        def _close_span(
-            cm: Any, span: Any, result: Any, exc: BaseException | None
-        ) -> None:
+        def _close_span(cm: Any, span: Any, result: Any, exc: BaseException | None) -> None:
             try:
                 if exc is not None:
                     _fail(span, exc)

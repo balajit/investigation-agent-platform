@@ -348,32 +348,44 @@ def test_behavior_duplicate_evidence_id_inadmissible() -> None:
 
 
 def test_behavior_predicate_mismatch_invalid() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(predicate="other(x)"), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(predicate="other(x)"), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
 def test_behavior_value_mismatch_invalid() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(asserted_value=500), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(asserted_value=500), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
 def test_behavior_bool_is_not_int() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(asserted_value=True), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(asserted_value=True), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
 def test_behavior_float_asserted_value_inadmissible() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(asserted_value=200.5), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(asserted_value=200.5), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
 
 
 def test_behavior_build_mismatch_invalid() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(build_identity="build-002"), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(build_identity="build-002"), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
 def test_behavior_environment_mismatch_invalid() -> None:
-    outcome, _ = validate_behavior_premises(_behavior_claim(environment="production"), _behavior_premises())
+    outcome, _ = validate_behavior_premises(
+        _behavior_claim(environment="production"), _behavior_premises()
+    )
     assert outcome == RuleOutcome.INVALID_INFERENCE
 
 
@@ -397,9 +409,7 @@ def test_behavior_wrong_header_unsupported() -> None:
 
 
 def test_behavior_unknown_claim_field_inadmissible() -> None:
-    outcome, _ = validate_behavior_premises(
-        _behavior_claim(extra_field="x"), _behavior_premises()
-    )
+    outcome, _ = validate_behavior_premises(_behavior_claim(extra_field="x"), _behavior_premises())
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
 
 
@@ -412,7 +422,9 @@ def test_behavior_code_window_must_show_target() -> None:
 
 
 def test_absence_discharge_golden() -> None:
-    outcome, _ = validate_absence_premises(_absence_claim(), _absence_premises(), _absence_manifest())
+    outcome, _ = validate_absence_premises(
+        _absence_claim(), _absence_premises(), _absence_manifest()
+    )
     assert outcome == RuleOutcome.DISCHARGED
 
 
@@ -517,7 +529,9 @@ def test_absence_relevant_exclusion_abstains() -> None:
 
 def test_absence_wrong_header_unsupported() -> None:
     outcome, _ = validate_absence_premises(
-        _absence_claim(form="EXISTENCE", quantifier="EXISTENTIAL"), _absence_premises(), _absence_manifest()
+        _absence_claim(form="EXISTENCE", quantifier="EXISTENTIAL"),
+        _absence_premises(),
+        _absence_manifest(),
     )
     assert outcome == RuleOutcome.UNSUPPORTED_CONSTRUCT
 
@@ -635,7 +649,9 @@ def test_composition_accepts_new_rule_nodes_and_deps() -> None:
 
 
 def _strip_envelope(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")}
+    return {
+        k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")
+    }
 
 
 def _real_hash(artifact: dict[str, Any]) -> str:
@@ -714,7 +730,15 @@ def _behavior_check_request(
         "assumptions": [],
         "canonical_proposition": {
             key: proposition[key]
-            for key in ("predicate", "quantifier", "canon_version", "form", "relation", "modality", "asserted_value")
+            for key in (
+                "predicate",
+                "quantifier",
+                "canon_version",
+                "form",
+                "relation",
+                "modality",
+                "asserted_value",
+            )
         },
         "context_id": derived.context_id,
         "derivation_id": derived.derivation_id,
@@ -785,12 +809,16 @@ def test_checker_independent_of_monkeypatched_producer(monkeypatch: Any) -> None
         "validate_behavior_premises",
         lambda claim, premises, manifest=None: (RuleOutcome.DISCHARGED, "always"),
     )
-    outcome, _ = check_certificate(_behavior_check_request(runtime_override={"predicate": "other(x)"}))
+    outcome, _ = check_certificate(
+        _behavior_check_request(runtime_override={"predicate": "other(x)"})
+    )
     assert outcome == CheckerOutcome.INVALID_INFERENCE
 
 
 def test_checker_rejects_behavior_predicate_mismatch() -> None:
-    outcome, _ = check_certificate(_behavior_check_request(runtime_override={"predicate": "other(x)"}))
+    outcome, _ = check_certificate(
+        _behavior_check_request(runtime_override={"predicate": "other(x)"})
+    )
     assert outcome == CheckerOutcome.INVALID_INFERENCE
 
 
@@ -911,9 +939,7 @@ def test_preimage_equals_normalized_model_payload_without_envelope() -> None:
 
     record = _behavior_premises()[0]
     model = RangeReadFact.model_validate(record)
-    payload = model.model_dump(
-        mode="json", exclude={"evidence_id", "content_hash", "premise_type"}
-    )
+    payload = model.model_dump(mode="json", exclude={"evidence_id", "content_hash", "premise_type"})
     assert set(payload) == set(record) - {"evidence_id", "content_hash", "premise_type"}
     digest = "sha256:" + hashlib.sha256(canonical_dict_bytes(payload)).hexdigest()
     assert digest == _real_hash(_strip_envelope(record))

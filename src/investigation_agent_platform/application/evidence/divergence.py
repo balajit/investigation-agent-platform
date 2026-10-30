@@ -28,9 +28,7 @@ def _scalar(value: Any) -> Any:
         return None
 
 
-def diff_expected_actual(
-    expected: Any, actual: Any, path: str = ""
-) -> list[dict[str, Any]]:
+def diff_expected_actual(expected: Any, actual: Any, path: str = "") -> list[dict[str, Any]]:
     """Recursive diff of golden vs observed (pure, deterministic).
 
     Returns [{path, kind, expected, actual}] with kind in
@@ -46,11 +44,22 @@ def diff_expected_actual(
             label = at or "$"
             if isinstance(exp, dict) and isinstance(act, dict):
                 for key in exp:
-                    _walk(exp[key], act.get(key, None) if key in act else _MISSING, f"{label}.{key}" if label != "$" else str(key))
+                    _walk(
+                        exp[key],
+                        act.get(key, None) if key in act else _MISSING,
+                        f"{label}.{key}" if label != "$" else str(key),
+                    )
                 for key in act:
                     if key not in exp:
                         if len(out) < _MAX_DIVERGENCES:
-                            out.append({"path": f"{label}.{key}" if label != "$" else str(key), "kind": "unexpected", "expected": None, "actual": _scalar(act[key])})
+                            out.append(
+                                {
+                                    "path": f"{label}.{key}" if label != "$" else str(key),
+                                    "kind": "unexpected",
+                                    "expected": None,
+                                    "actual": _scalar(act[key]),
+                                }
+                            )
                 return
             if isinstance(exp, list) and isinstance(act, list):
                 for index in range(max(len(exp), len(act))):
@@ -61,17 +70,28 @@ def diff_expected_actual(
                     )
                 return
             if exp is _MISSING or act is _MISSING:
-                out.append({
-                    "path": label,
-                    "kind": "missing" if act is _MISSING else "unexpected",
-                    "expected": None if exp is _MISSING else _scalar(exp),
-                    "actual": None if act is _MISSING else _scalar(act),
-                })
+                out.append(
+                    {
+                        "path": label,
+                        "kind": "missing" if act is _MISSING else "unexpected",
+                        "expected": None if exp is _MISSING else _scalar(exp),
+                        "actual": None if act is _MISSING else _scalar(act),
+                    }
+                )
                 return
-            if type(exp) is not type(act) and not (
-                isinstance(exp, (int, float)) and isinstance(act, (int, float))
-            ) or exp != act:
-                out.append({"path": label, "kind": "mismatch", "expected": _scalar(exp), "actual": _scalar(act)})
+            if (
+                type(exp) is not type(act)
+                and not (isinstance(exp, (int, float)) and isinstance(act, (int, float)))
+                or exp != act
+            ):
+                out.append(
+                    {
+                        "path": label,
+                        "kind": "mismatch",
+                        "expected": _scalar(exp),
+                        "actual": _scalar(act),
+                    }
+                )
 
         _walk(expected, actual, path or "")
         return out
@@ -79,9 +99,7 @@ def diff_expected_actual(
         return []
 
 
-def evaluate_assertions(
-    rows: list[dict[str, Any]], assertions: list[Any]
-) -> list[dict[str, Any]]:
+def evaluate_assertions(rows: list[dict[str, Any]], assertions: list[Any]) -> list[dict[str, Any]]:
     """Evaluate field assertions over parsed rows (pure, deterministic).
 
     Returns FAIL entries [{field, op, expected, observed, row}]. PASS rows
@@ -104,7 +122,12 @@ def evaluate_assertions(
                         op = str(getattr(assertion, "op", "") or "").lower()
                         value = getattr(assertion, "value", None)
                     if not field or op not in (
-                        "present", "absent", "equals", "one_of", "gte", "lte",
+                        "present",
+                        "absent",
+                        "equals",
+                        "one_of",
+                        "gte",
+                        "lte",
                     ):
                         continue
                     present = field in row and row[field] is not None
@@ -118,7 +141,9 @@ def evaluate_assertions(
                     elif op == "equals":
                         failed = row[field] != value
                     elif op == "one_of":
-                        failed = row[field] not in (list(value) if isinstance(value, list) else [value])
+                        failed = row[field] not in (
+                            list(value) if isinstance(value, list) else [value]
+                        )
                     elif op in ("gte", "lte"):
                         try:
                             observed_num = float(row[field])  # type: ignore[arg-type]
@@ -127,13 +152,15 @@ def evaluate_assertions(
                         except (TypeError, ValueError):
                             failed = True
                     if failed:
-                        fails.append({
-                            "field": field,
-                            "op": op,
-                            "expected": _scalar(value),
-                            "observed": _scalar(row.get(field, None)),
-                            "row": index,
-                        })
+                        fails.append(
+                            {
+                                "field": field,
+                                "op": op,
+                                "expected": _scalar(value),
+                                "observed": _scalar(row.get(field, None)),
+                                "row": index,
+                            }
+                        )
                 except Exception:
                     continue
         return fails
@@ -169,7 +196,6 @@ def shape_divergence_evidence(
     Fingerprint scopes per investigation (same doctrine as log rows).
     """
 
-
     now = datetime.now(UTC)
     path = str(divergence.get("path", "") or "")
     kind = str(divergence.get("kind", "") or "")
@@ -180,9 +206,7 @@ def shape_divergence_evidence(
         f"Expected-vs-actual divergence at '{path}': {kind} "
         f"(expected {exp_text!r}, observed {act_text!r})."
     )[:2000]
-    fingerprint = (
-        f"divergence:{tenant_id}:{investigation_id}:{endpoint}:{path}:{kind}"
-    )
+    fingerprint = f"divergence:{tenant_id}:{investigation_id}:{endpoint}:{path}:{kind}"
     return Evidence(
         tenant_id=tenant_id,
         investigation_id=investigation_id,

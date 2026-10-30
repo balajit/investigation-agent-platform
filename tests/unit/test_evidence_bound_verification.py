@@ -207,7 +207,11 @@ def test_history_ignores_discovery_only_and_zero_match_rows():
     stale_absence = base.model_copy(
         update={
             "summary": "Scoped search over repo:history=OrderServiceImpl.java returned zero matches.",
-            "attributes": {"search_scope": "repo:history=x", "match_count": 0, "discovery_only": True},
+            "attributes": {
+                "search_scope": "repo:history=x",
+                "match_count": 0,
+                "discovery_only": True,
+            },
         }
     )
     hyp = _hyp(
@@ -275,9 +279,7 @@ def test_call_edge_requires_each_named_caller_to_have_a_separate_bound_claim():
         "src/OrderServiceRestProxy.java",
         "10| public String submit() {\n11| return handler.handle(orderId);",
     )
-    hyp = _hyp(
-        "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle"
-    )
+    hyp = _hyp("OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle")
     assessments = [
         HypothesisEvidenceAssessment(
             hypothesis_id=hyp.id,
@@ -423,9 +425,7 @@ def test_v3_call_edge_obligation_requires_all_persisted_callers():
     )
     hyp = _hyp("OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle")
     helper = helper.model_copy(
-        update={
-            "provenance": helper.provenance.model_copy(update={"investigation_id": iid})
-        }
+        update={"provenance": helper.provenance.model_copy(update={"investigation_id": iid})}
     )
     helper_target = ClaimTarget(
         symbol="OrderServiceHandler.handle",
@@ -798,9 +798,10 @@ def test_call_edge_binding_returns_only_target_containing_rows():
         [containing, non_containing], target, [containing]
     )
     assert rows == [containing]
-    assert VerificationEngine.caller_edge_binding_rows(
-        [non_containing], target, [non_containing]
-    ) == []
+    assert (
+        VerificationEngine.caller_edge_binding_rows([non_containing], target, [non_containing])
+        == []
+    )
 
     hypothesis = _hyp("OrderQualifyHelper calls OrderServiceHandler.handle")
     assessment = HypothesisEvidenceAssessment(
@@ -818,9 +819,7 @@ def test_call_edge_binding_returns_only_target_containing_rows():
             "supporting_evidence_ids": [non_containing.evidence_id],
         }
     )
-    ok, reason = VerificationEngine().check_claim_kind(
-        non_containing_hypothesis, [non_containing]
-    )
+    ok, reason = VerificationEngine().check_claim_kind(non_containing_hypothesis, [non_containing])
     assert ok is False
     assert "CALL_EDGE_INCOMPLETE_ENUMERATION" in reason
 

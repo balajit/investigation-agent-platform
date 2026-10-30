@@ -27,12 +27,18 @@ def build_temporal_tracing_interceptor() -> Any | None:
     try:
         from temporalio.contrib.opentelemetry import TracingInterceptor
     except ImportError as exc:
-        logger.info("Temporal OTel contrib unavailable; traces stay activity-local", extra={"error": str(exc)[:150]})
+        logger.info(
+            "Temporal OTel contrib unavailable; traces stay activity-local",
+            extra={"error": str(exc)[:150]},
+        )
         return None
     try:
         return TracingInterceptor()
     except Exception as exc:
-        logger.warning("Temporal TracingInterceptor build failed; continuing untraced", extra={"error": str(exc)[:200]})
+        logger.warning(
+            "Temporal TracingInterceptor build failed; continuing untraced",
+            extra={"error": str(exc)[:200]},
+        )
         return None
 
 

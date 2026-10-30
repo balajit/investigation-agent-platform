@@ -61,7 +61,9 @@ def _chain(*ids):
             evidence_ids=list(ids[:2]),
         ),
         SimpleNamespace(
-            cause="handler crash", mechanism="restarts", effect="retry storm",
+            cause="handler crash",
+            mechanism="restarts",
+            effect="retry storm",
             evidence_ids=list(ids[2:4]),
         ),
     ]

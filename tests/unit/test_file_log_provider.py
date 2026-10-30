@@ -205,11 +205,16 @@ class TestSearch:
         self._write(tmp_path, "app.log", ['{"message": "hi"}'])
         adapter = _adapter(tmp_path)
         profile = ApplicationProfile.model_validate(
-            {"id": "x", "tenant_id": "t", "name": "X", "description": "t", "environment": "development", "datasources": []}
+            {
+                "id": "x",
+                "tenant_id": "t",
+                "name": "X",
+                "description": "t",
+                "environment": "development",
+                "datasources": [],
+            }
         )
-        result = await adapter.search_runtime_evidence(
-            "t", uuid4(), _request(), profile
-        )
+        result = await adapter.search_runtime_evidence("t", uuid4(), _request(), profile)
         assert result.total_count == 0
 
     @pytest.mark.asyncio
@@ -243,9 +248,7 @@ class TestSearch:
 
     @pytest.mark.asyncio
     async def test_cursor_pagination(self, tmp_path) -> None:
-        self._write(
-            tmp_path, "app.log", [json.dumps({"message": f"m{i}"}) for i in range(5)]
-        )
+        self._write(tmp_path, "app.log", [json.dumps({"message": f"m{i}"}) for i in range(5)])
         adapter = _adapter(tmp_path)
         first = await adapter.search_runtime_evidence(
             "t", uuid4(), _request(limit=2), _profile(["*.log"])
@@ -345,7 +348,11 @@ class TestSearch:
         )
         adapter.profile = profile
         fetched = await adapter.get_runtime_evidence(
-            "t", uuid4(), result.items[0].evidence_id, "development", None  # type: ignore[arg-type]
+            "t",
+            uuid4(),
+            result.items[0].evidence_id,
+            "development",
+            None,  # type: ignore[arg-type]
         )
         assert fetched.evidence_id == result.items[0].evidence_id
 

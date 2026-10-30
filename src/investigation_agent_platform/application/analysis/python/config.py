@@ -68,7 +68,9 @@ def _env_access(value_node: Any, source_bytes: bytes) -> tuple[str, str | None] 
         if attr not in _ENV_CALLS:
             return None
         args = value_node.child_by_field_name("arguments")
-        params = [c for c in (args.children if args is not None else value_node.children) if c.is_named]
+        params = [
+            c for c in (args.children if args is not None else value_node.children) if c.is_named
+        ]
         if not params:
             return None
         key_node = params[0]
@@ -240,7 +242,10 @@ def resolve_python_config_fact(
                     declaration_location=loc_of(node),
                     limitation_codes=(limitation or "unsupported_default_expression",),
                     assumptions=("effective_value_requires_runtime",),
-                    structured_fact={"env_keys": env_keys, "precedence": ["environment", "declared_default"]},
+                    structured_fact={
+                        "env_keys": env_keys,
+                        "precedence": ["environment", "declared_default"],
+                    },
                     parser_version=_p.parser_version(),
                 )
             return CodeFactResolutionV2(

@@ -47,7 +47,9 @@ def _ctx(rows: list[Any]) -> Any:
     async def find_by_investigation_id(tenant_id: str, inv_id: object) -> list[Any]:
         return list(rows)
 
-    return SimpleNamespace(evidence_repo=SimpleNamespace(find_by_investigation_id=find_by_investigation_id))
+    return SimpleNamespace(
+        evidence_repo=SimpleNamespace(find_by_investigation_id=find_by_investigation_id)
+    )
 
 
 class _Env:
@@ -103,12 +105,22 @@ def test_shadow_evaluates_but_never_blocks(monkeypatch: pytest.MonkeyPatch) -> N
     # Unpinned revision: checker-VALID inputs, OPEN obligation -> DENY verdict,
     # but shadow must still allow.
     row = _row()
-    object.__setattr__(row, "attributes", {"code_fact_resolution_v2": {
-        "status": "RESOLVED",
-        "subject_identity": "handle",
-        "revision": REV,
-        "declaration_location": {"file_path": "src/handler.py", "line_start": 10, "line_end": 5},
-    }})
+    object.__setattr__(
+        row,
+        "attributes",
+        {
+            "code_fact_resolution_v2": {
+                "status": "RESOLVED",
+                "subject_identity": "handle",
+                "revision": REV,
+                "declaration_location": {
+                    "file_path": "src/handler.py",
+                    "line_start": 10,
+                    "line_end": 5,
+                },
+            }
+        },
+    )
     allowed, blockers = _run(wiring.kernel_gate_for_conclusion("t", uuid4(), _ctx([row])))
     assert allowed is True and blockers == []
 
@@ -134,12 +146,22 @@ def test_enforcing_deny_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     # Inverted range passes the adapter (ints present) but fails certify's
     # strict range check -> DENY entry -> enforcing blocks.
     row = _row()
-    object.__setattr__(row, "attributes", {"code_fact_resolution_v2": {
-        "status": "RESOLVED",
-        "subject_identity": "handle",
-        "revision": REV,
-        "declaration_location": {"file_path": "src/handler.py", "line_start": 10, "line_end": 5},
-    }})
+    object.__setattr__(
+        row,
+        "attributes",
+        {
+            "code_fact_resolution_v2": {
+                "status": "RESOLVED",
+                "subject_identity": "handle",
+                "revision": REV,
+                "declaration_location": {
+                    "file_path": "src/handler.py",
+                    "line_start": 10,
+                    "line_end": 5,
+                },
+            }
+        },
+    )
     allowed, blockers = _run(wiring.kernel_gate_for_conclusion("t", uuid4(), _ctx([row])))
     assert allowed is False
     assert blockers and blockers[0].startswith("kernel-denied:")
@@ -245,7 +267,11 @@ def test_assemble_trusted_context_round_trip() -> None:
         "known_normalization_ops": [],
         "derivation_deps": {},
         "repository_bindings": [
-            {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"}
+            {
+                "evidence_id": "r1",
+                "content_digest": "sha256:" + "ab" * 32,
+                "repository_id": "repo-a",
+            }
         ],
         "expected_context_id": "ctx-1",
         "reconciliation_adjudicated": True,
@@ -254,9 +280,14 @@ def test_assemble_trusted_context_round_trip() -> None:
     }
     assert assemble_trusted_context_bytes(**payload) == encode_trusted_context_bytes(payload)
     with pytest.raises(SnapshotError):
-        assemble_trusted_context_bytes(**{**payload, "repository_bindings": [
-            {"evidence_id": "r1", "content_digest": "bad", "repository_id": "repo-a"}
-        ][:1]})
+        assemble_trusted_context_bytes(
+            **{
+                **payload,
+                "repository_bindings": [
+                    {"evidence_id": "r1", "content_digest": "bad", "repository_id": "repo-a"}
+                ][:1],
+            }
+        )
     dupes = [
         {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"},
         {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"},
@@ -271,7 +302,11 @@ def test_assemble_trusted_context_boundary_rejects_malformed() -> None:
         assemble_trusted_context_bytes,
     )
 
-    good_binding = {"evidence_id": "r1", "content_digest": "sha256:" + "ab" * 32, "repository_id": "repo-a"}
+    good_binding = {
+        "evidence_id": "r1",
+        "content_digest": "sha256:" + "ab" * 32,
+        "repository_id": "repo-a",
+    }
     base = {
         "rule_bundle_version": "rules/v2",
         "model_encoding": {},
@@ -285,9 +320,17 @@ def test_assemble_trusted_context_boundary_rejects_malformed() -> None:
         "policy_reason": "",
     }
     for bad in (
-        {"evidence_id": "", "content_digest": good_binding["content_digest"], "repository_id": "repo-a"},
+        {
+            "evidence_id": "",
+            "content_digest": good_binding["content_digest"],
+            "repository_id": "repo-a",
+        },
         {"evidence_id": "r1", "content_digest": "", "repository_id": "repo-a"},
-        {"evidence_id": "r1", "content_digest": good_binding["content_digest"], "repository_id": ""},
+        {
+            "evidence_id": "r1",
+            "content_digest": good_binding["content_digest"],
+            "repository_id": "",
+        },
         {"evidence_id": "r1", "content_digest": "sha256:" + "zz" * 32, "repository_id": "repo-a"},
         {"evidence_id": "r1", "content_digest": "md5:abc", "repository_id": "repo-a"},
     ):
@@ -421,9 +464,7 @@ def test_publish_seam_calls_service_for_commits(monkeypatch: pytest.MonkeyPatch)
     assert calls and calls[0]["mode"] == "single"
     forwarded = calls[0]["routes"]
     assert forwarded is not None and len(forwarded) == 1
-    assert forwarded[0].repository_bindings == (
-        report["claims"][0]["bundle"]["binding"],
-    )
+    assert forwarded[0].repository_bindings == (report["claims"][0]["bundle"]["binding"],)
 
 
 def test_publish_seam_skips_without_commits(monkeypatch: pytest.MonkeyPatch) -> None:

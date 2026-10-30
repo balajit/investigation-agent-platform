@@ -19,18 +19,12 @@ from investigation_agent_platform.api.app import create_app
 # content (out of scope per the spec's Non-Goals), and FastAPI additionally
 # emits a default empty application/json 200 that no JSON model applies to.
 SSE_EXEMPT = frozenset({"POST /api/v1/chat/sessions/{session_id}/messages -> 200"})
-UNTYPED_ALLOWLIST = frozenset(
-    {
-    }
-)
+UNTYPED_ALLOWLIST = frozenset({})
 
 # Subset of the above whose 2xx schema is an open additionalProperties object.
 # The other four allowlisted routes are untyped but structurally closed
 # (e.g. {"status": "UP"}); they need response models all the same.
-OPEN_OBJECT_ALLOWLIST = UNTYPED_ALLOWLIST - frozenset(
-    {
-    }
-)
+OPEN_OBJECT_ALLOWLIST = UNTYPED_ALLOWLIST - frozenset({})
 
 
 def _iter_success_schemas(spec: dict):

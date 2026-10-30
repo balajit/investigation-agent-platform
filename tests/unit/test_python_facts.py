@@ -175,9 +175,7 @@ def test_missing_symbol_and_wrong_extension():
 
 
 def test_unpinned_revision_fails_closed():
-    r = resolve_python_value_fact(
-        _evidence("timeout = 30", revision="HEAD"), "timeout"
-    )
+    r = resolve_python_value_fact(_evidence("timeout = 30", revision="HEAD"), "timeout")
     assert r.status == CodeFactStatus.UNRESOLVED
 
 
@@ -185,16 +183,12 @@ def test_unpinned_revision_fails_closed():
 
 
 def test_explicit_version_is_honored():
-    r = resolve_python_value_fact(
-        _evidence("timeout = 30"), "timeout", language_version="3.10"
-    )
+    r = resolve_python_value_fact(_evidence("timeout = 30"), "timeout", language_version="3.10")
     assert r.status == CodeFactStatus.RESOLVED
     assert r.language_version == "3.10"
     assert "assumed_default_language_version" not in r.assumptions
     # Tuple form as produced by repo metadata discovery.
-    r2 = resolve_python_value_fact(
-        _evidence("timeout = 30"), "timeout", language_version=(3, 11)
-    )
+    r2 = resolve_python_value_fact(_evidence("timeout = 30"), "timeout", language_version=(3, 11))
     assert r2.status == CodeFactStatus.RESOLVED
     assert r2.language_version == "3.11"
     assert "assumed_default_language_version" not in r2.assumptions
@@ -298,7 +292,9 @@ def test_dataclass_factory_classified_not_executed():
 
 
 def test_pydantic_field_default_resolves():
-    src = "from pydantic import BaseModel, Field\nclass M(BaseModel):\n    n: int = Field(default=5)"
+    src = (
+        "from pydantic import BaseModel, Field\nclass M(BaseModel):\n    n: int = Field(default=5)"
+    )
     r = resolve_python_framework_fact(_evidence(src), "n", class_scope="M")
     assert r.status == CodeFactStatus.RESOLVED
     assert r.resolved_value == "5"

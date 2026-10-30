@@ -123,9 +123,7 @@ class TestClassifyProviderFailure:
             ExecutionError("request timed out after 30s"), "x"
         )
         assert reason == "timeout" and blocking is False
-        reason, _, blocking = classify_provider_failure(
-            ExecutionError("401 Unauthorized"), "x"
-        )
+        reason, _, blocking = classify_provider_failure(ExecutionError("401 Unauthorized"), "x")
         assert reason == "provider_unavailable" and blocking is False
 
     def test_generic_execution_error_is_internal(self) -> None:
@@ -189,9 +187,7 @@ class TestTypedHandlerOutcomes:
             raise ProviderTimeoutException("symbol index timed out")
 
         _, _ = _ctx_with(SimpleNamespace(find_symbol=_find_symbol))
-        result = await execute_action_activity(
-            _input("TRACE_LOGIC", {"symbol": "price"})
-        )
+        result = await execute_action_activity(_input("TRACE_LOGIC", {"symbol": "price"}))
         assert _outcome(result)["miss_reason"] == "timeout"
 
     @pytest.mark.asyncio
@@ -230,9 +226,7 @@ class TestAuthBlockHelper:
 
     def test_degraded_never_blocks(self) -> None:
         assert (
-            _is_auth_blocked(
-                {"action_outcome": {"status": "DEGRADED", "miss_reason": "timeout"}}
-            )
+            _is_auth_blocked({"action_outcome": {"status": "DEGRADED", "miss_reason": "timeout"}})
             is False
         )
 
@@ -306,7 +300,10 @@ class TestIdempotencyOutcomeFidelity:
             "evidence_ids": [],
             "item_count": 0,
         }
-        cached = {"success": True, "data": {"status": "EXECUTED", "items_count": 0, "action_outcome": outcome}}
+        cached = {
+            "success": True,
+            "data": {"status": "EXECUTED", "items_count": 0, "action_outcome": outcome},
+        }
 
         async def _never(tenant_id, investigation_id, application_id, req):  # type: ignore[no-untyped-def]
             raise AssertionError("replayed action must not re-execute")
@@ -373,9 +370,7 @@ class TestReasoningUnavailable:
             ),
         )
         ctx = AppContext()
-        ctx.investigation_repo = SimpleNamespace(
-            get_by_id=AsyncMock(return_value=inv)
-        )
+        ctx.investigation_repo = SimpleNamespace(get_by_id=AsyncMock(return_value=inv))
         ctx.reasoning_coordinator = SimpleNamespace(  # type: ignore[attr-defined]
             reason=AsyncMock(return_value=decision)
         )
@@ -540,9 +535,7 @@ class TestRateLimited:
         safety = MagicMock()
         safety.validate_prompt_safety = AsyncMock(return_value=True)
         gateway = MagicMock()
-        gateway.complete = AsyncMock(
-            side_effect=RateLimitException("throttled", retry_after=20.0)
-        )
+        gateway.complete = AsyncMock(side_effect=RateLimitException("throttled", retry_after=20.0))
         coord = ReasoningCoordinator(prompt_safety_policy=safety, llm_gateway=gateway)
         decision = await coord.reason("tenant-a", InvestigationState(investigation=inv))
         assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
@@ -568,15 +561,9 @@ class TestRetryAfterWait:
 
         assert MAX_RETRY_AFTER_WAIT == 15.0
         assert (
-            _wait_with_retry_after(
-                _retry_state(RateLimitException("t", retry_after=120.0))
-            )
-            == 15.0
+            _wait_with_retry_after(_retry_state(RateLimitException("t", retry_after=120.0))) == 15.0
         )
-        assert (
-            _wait_with_retry_after(_retry_state(RateLimitException("t", retry_after=5.0)))
-            == 5.0
-        )
+        assert _wait_with_retry_after(_retry_state(RateLimitException("t", retry_after=5.0))) == 5.0
 
     def test_no_hint_falls_back_to_exponential(self) -> None:
         from investigation_agent_platform.application.evidence.gateway import (
@@ -649,13 +636,13 @@ class TestCallEdgePackets:
             )
 
         _, saved = _ctx_with(SimpleNamespace(find_call_graph=_find_call_graph))
-        result = await execute_action_activity(
-            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
-        )
+        result = await execute_action_activity(_input("FIND_CALL_GRAPH", {"symbol": "reserve"}))
         # Summary + one edge packet (the location-less edge is skipped).
         assert result.data["items_count"] == 2
         edges = [
-            e for e in saved if e.evidence_type == EvidenceType.CALL_GRAPH
+            e
+            for e in saved
+            if e.evidence_type == EvidenceType.CALL_GRAPH
             and e.attributes.get("caller_symbol") == "CheckoutController"
         ]
         assert len(edges) == 1
@@ -747,9 +734,7 @@ class TestInvalidSchemaRetry:
     @pytest.mark.asyncio
     async def test_persistent_invalid_abstains_typed(self) -> None:
         # SWE-agent loop §2: two hidden resamples (three attempts total).
-        coord, state, gateway = _reason_harness(
-            [self._invalid(), self._invalid(), self._invalid()]
-        )
+        coord, state, gateway = _reason_harness([self._invalid(), self._invalid(), self._invalid()])
         decision = await coord.reason("tenant-a", state)
         assert gateway.complete.call_count == 3
         assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
@@ -947,9 +932,7 @@ class TestCallSiteChaining:
             saved.append(item)
 
         ctx.evidence_repo.save = _save_one
-        result = await execute_action_activity(
-            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
-        )
+        result = await execute_action_activity(_input("FIND_CALL_GRAPH", {"symbol": "reserve"}))
         # Summary + 2 edges + one actual source call-site range.
         assert result.data["items_count"] == 4
         assert calls["req"].file_path == "Checkout.java"
@@ -974,11 +957,7 @@ class TestCallSiteChaining:
             calls.append(1)
             raise AssertionError("no located edge: must not read")
 
-        _, _ = _ctx_with(
-            SimpleNamespace(find_call_graph=_find_call_graph, get_source=_get_source)
-        )
-        result = await execute_action_activity(
-            _input("FIND_CALL_GRAPH", {"symbol": "reserve"})
-        )
+        _, _ = _ctx_with(SimpleNamespace(find_call_graph=_find_call_graph, get_source=_get_source))
+        result = await execute_action_activity(_input("FIND_CALL_GRAPH", {"symbol": "reserve"}))
         assert result.data["items_count"] == 1
         assert calls == []

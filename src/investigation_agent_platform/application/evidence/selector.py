@@ -26,6 +26,7 @@ def _selected_extra(provider: Any) -> dict[str, Any]:
     except Exception:
         return {}
 
+
 T = TypeVar("T")
 
 
@@ -140,7 +141,9 @@ class EvidenceProviderSelector:
                         "environment": environment,
                     },
                 )
-                raise ProviderNotConfiguredError(f"No runtime provider configured for tenant context '{key}'")
+                raise ProviderNotConfiguredError(
+                    f"No runtime provider configured for tenant context '{key}'"
+                )
             return provider
 
     def find_runtime_provider(self, key: str) -> RuntimeEvidenceProviderProtocol | None:
@@ -188,7 +191,9 @@ class EvidenceProviderSelector:
                         )
                     else:
                         return resolved
-            raise ProviderNotConfiguredError(f"No state provider configured for tenant context '{key}'")
+            raise ProviderNotConfiguredError(
+                f"No state provider configured for tenant context '{key}'"
+            )
 
     @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_code_provider(
@@ -213,7 +218,9 @@ class EvidenceProviderSelector:
                     extra={"tenant_id": tenant_id, "application_id": application_id},
                 )
                 return sole
-            raise ProviderNotConfiguredError(f"No code provider configured for tenant context '{key}'")
+            raise ProviderNotConfiguredError(
+                f"No code provider configured for tenant context '{key}'"
+            )
 
     @traced("gateway", component="selector", extra_from=_selected_extra)
     async def get_code_intelligence_provider(

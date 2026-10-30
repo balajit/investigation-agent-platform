@@ -127,7 +127,9 @@ async def fake_rls_session(factory: FakeSessionFactory, tenant_id: str) -> Any:
 
 
 @pytest.fixture
-def draft_repository(monkeypatch: pytest.MonkeyPatch) -> tuple[SqlAlchemyOnboardingRequestRepository, FakeSessionFactory]:
+def draft_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[SqlAlchemyOnboardingRequestRepository, FakeSessionFactory]:
     import investigation_agent_platform.infrastructure.persistence.onboarding_request_repository as module
 
     factory = FakeSessionFactory()
@@ -178,7 +180,9 @@ async def test_draft_create_and_same_hash_replay_write_one_audit_and_no_jobs(
     assert factory.audits[0]["p_action"] == "CREATE"
     inserts = [sql.lower() for sql, _params in factory.statements if "insert into" in sql.lower()]
     assert len(inserts) == 2  # one request row and its audit function call
-    assert all("background_jobs" not in sql and "onboarding_dispatches" not in sql for sql in inserts)
+    assert all(
+        "background_jobs" not in sql and "onboarding_dispatches" not in sql for sql in inserts
+    )
 
 
 @pytest.mark.asyncio
@@ -239,5 +243,9 @@ async def test_draft_revision_cas_and_no_transition_beyond_draft(
             expected_revision=2,
         )
     assert len(factory.rows) == before
-    assert not any("insert into background_jobs" in sql.lower() for sql, _params in factory.statements)
-    assert not any("insert into onboarding_dispatches" in sql.lower() for sql, _params in factory.statements)
+    assert not any(
+        "insert into background_jobs" in sql.lower() for sql, _params in factory.statements
+    )
+    assert not any(
+        "insert into onboarding_dispatches" in sql.lower() for sql, _params in factory.statements
+    )

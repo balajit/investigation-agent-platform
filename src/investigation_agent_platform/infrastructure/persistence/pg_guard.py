@@ -76,9 +76,7 @@ def verdict_for_url(url: str) -> GuardDecision:
     try:
         parsed = urlparse(url)
     except ValueError:
-        return GuardDecision(
-            Verdict.DENY_UNPARSABLE, "database URL is not parseable"
-        )
+        return GuardDecision(Verdict.DENY_UNPARSABLE, "database URL is not parseable")
     if not parsed.scheme or parsed.scheme.lower() not in _POSTGRES_SCHEMES:
         return GuardDecision(
             Verdict.DENY_UNPARSABLE,
@@ -86,9 +84,7 @@ def verdict_for_url(url: str) -> GuardDecision:
         )
     host = (parsed.hostname or "").lower()
     if not host:
-        return GuardDecision(
-            Verdict.DENY_UNPARSABLE, "database URL has no host"
-        )
+        return GuardDecision(Verdict.DENY_UNPARSABLE, "database URL has no host")
     if not _is_loopback(host):
         return GuardDecision(
             Verdict.DENY_REMOTE,
@@ -122,9 +118,7 @@ def require_disposable(url: str, *, purpose: str) -> None:
     if override is not None:
         try:
             parsed = urlparse(url)
-            scheme_ok = parsed.scheme.lower() in _POSTGRES_SCHEMES and bool(
-                parsed.hostname
-            )
+            scheme_ok = parsed.scheme.lower() in _POSTGRES_SCHEMES and bool(parsed.hostname)
         except ValueError:
             scheme_ok = False
         if not scheme_ok:

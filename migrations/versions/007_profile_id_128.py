@@ -17,15 +17,19 @@ from alembic import op  # type: ignore[import-not-found]
 
 def upgrade() -> None:
     op.alter_column(
-        "application_profiles", "id",
-        existing_type=sa.String(64), type_=sa.String(128),
+        "application_profiles",
+        "id",
+        existing_type=sa.String(64),
+        type_=sa.String(128),
         existing_nullable=False,
     )
 
 
 def downgrade() -> None:
     op.alter_column(
-        "application_profiles", "id",
-        existing_type=sa.String(128), type_=sa.String(64),
+        "application_profiles",
+        "id",
+        existing_type=sa.String(128),
+        type_=sa.String(64),
         existing_nullable=False,
     )

@@ -22,7 +22,9 @@ class CsvPayload(BaseModel):
     """CSV half of the batch-intake request body (requires explicit field_mapping)."""
 
     text: str = Field(..., min_length=1, max_length=1_000_000, description="Raw CSV document text")
-    field_mapping: dict[str, Any] = Field(..., description="CSV column to BatchIntakeRecord field mapping")
+    field_mapping: dict[str, Any] = Field(
+        ..., description="CSV column to BatchIntakeRecord field mapping"
+    )
 
 
 class BatchIntakeBody(BaseModel):
@@ -33,8 +35,14 @@ class BatchIntakeBody(BaseModel):
     as BatchIntakeDetail (TO_DO-026: code wins, route kept).
     """
 
-    records: list[BatchIntakeRecord] | None = Field(default=None, max_length=MAX_BATCH_RECORDS, description="Validated intake records (up to the batch cap)")
-    csv: CsvPayload | None = Field(default=None, description="CSV document plus explicit field mapping")
+    records: list[BatchIntakeRecord] | None = Field(
+        default=None,
+        max_length=MAX_BATCH_RECORDS,
+        description="Validated intake records (up to the batch cap)",
+    )
+    csv: CsvPayload | None = Field(
+        default=None, description="CSV document plus explicit field mapping"
+    )
 
 
 class BatchSubmitAck(BaseModel):

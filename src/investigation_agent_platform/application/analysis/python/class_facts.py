@@ -121,7 +121,11 @@ def resolve_python_class_attr_fact(
         if node.type in {"function_definition", "async_function_definition"}:
             name = node.child_by_field_name("name")
             label = _p.node_text(name, source_bytes).strip() if name is not None else ""
-            if label == symbol and node.parent is not None and node.parent.type == "decorated_definition":
+            if (
+                label == symbol
+                and node.parent is not None
+                and node.parent.type == "decorated_definition"
+            ):
                 pass
             if label in {"__getattribute__", "__getattr__", "__setattr__", "__set_name__"}:
                 dynamic = "descriptor_hook_requires_runtime"
@@ -163,7 +167,12 @@ def resolve_python_class_attr_fact(
                 break
             cur = cur.parent
         enclosing_is_class_body = method == node or (cur == cls)
-        if left.type == "identifier" and _p.node_text(left, source_bytes).strip() == symbol and enclosing_is_class_body and value is not None:
+        if (
+            left.type == "identifier"
+            and _p.node_text(left, source_bytes).strip() == symbol
+            and enclosing_is_class_body
+            and value is not None
+        ):
             # `InitVar` members are constructor-only: never class attributes.
             # (`ClassVar` constants resolve normally below — they are real
             # class attributes.)
@@ -227,7 +236,9 @@ def resolve_python_class_attr_fact(
             repository=repository,
             revision=revision,
             fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
-            semantic_stage=SemanticStage.CONSTRUCTOR_BODY if init_writes else SemanticStage.DECLARATION,
+            semantic_stage=SemanticStage.CONSTRUCTOR_BODY
+            if init_writes
+            else SemanticStage.DECLARATION,
             declaring_type=class_scope,
             field_name=symbol,
             subject_identity=f"{class_scope}.{symbol}",

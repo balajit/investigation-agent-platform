@@ -879,9 +879,7 @@ class PyGit2Adapter:
                     query_fingerprint=QueryFingerprint(
                         provider_type="GIT",
                         operation="GET_CODE_HISTORY",
-                        normalized_query_hash=hashlib.sha256(
-                            proof_scope.encode()
-                        ).hexdigest(),
+                        normalized_query_hash=hashlib.sha256(proof_scope.encode()).hexdigest(),
                     ),
                     source_location=SourceLocation(
                         system="Git",
@@ -899,12 +897,9 @@ class PyGit2Adapter:
                         source=f"git://{repository}/history/{path}",
                         title=f"No history for {path} at {tip_hex[:8]}",
                         summary=(
-                            f"History walk from {tip_hex[:8]} found no commit "
-                            f"touching {path}."
+                            f"History walk from {tip_hex[:8]} found no commit touching {path}."
                         ),
-                        content_snippet=(
-                            f"No commit reachable from {tip_hex} touches {path}."
-                        ),
+                        content_snippet=(f"No commit reachable from {tip_hex} touches {path}."),
                         attributes={"search_scope": proof_scope, "match_count": 0},
                         observed_at=now,
                         retrieved_at=now,

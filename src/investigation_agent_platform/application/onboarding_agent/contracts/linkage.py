@@ -78,9 +78,7 @@ class ReportLinkage(BaseModel):
     report_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-def analysis_idempotency_key(
-    request_id: UUID, revision: int, generation: int
-) -> str:
+def analysis_idempotency_key(request_id: UUID, revision: int, generation: int) -> str:
     """Stable idempotency key for the coverage analysis activity."""
     if revision < 1 or generation < 1:
         raise ValueError("revision and generation must be >= 1")
@@ -93,11 +91,11 @@ def canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
     Raises TypeError on float values so callers normalize decimals to
     schema-defined strings instead of inheriting platform float formatting.
     """
+
     def _reject_floats(node: Any) -> None:
         if isinstance(node, float):
             raise TypeError(
-                "float values are not canonicalizable; "
-                "pre-normalize to schema-defined strings"
+                "float values are not canonicalizable; pre-normalize to schema-defined strings"
             )
         if isinstance(node, Mapping):
             for value in node.values():
@@ -167,20 +165,11 @@ def report_content_hash(report_body: Mapping[str, Any]) -> str:
     fields are rejected, never hashed silently (see module unknown-field
     policy).
     """
-    unknown = (
-        set(report_body)
-        - _APPROVED_REPORT_BODY_FIELDS
-        - _EXCLUDED_REPORT_BODY_FIELDS
-    )
+    unknown = set(report_body) - _APPROVED_REPORT_BODY_FIELDS - _EXCLUDED_REPORT_BODY_FIELDS
     if unknown:
         raise ValueError(
-            "unknown report body fields rejected from content hash: "
-            + ", ".join(sorted(unknown))
+            "unknown report body fields rejected from content hash: " + ", ".join(sorted(unknown))
         )
-    body = {
-        key: value
-        for key, value in report_body.items()
-        if key in _APPROVED_REPORT_BODY_FIELDS
-    }
+    body = {key: value for key, value in report_body.items() if key in _APPROVED_REPORT_BODY_FIELDS}
     body["canonicalization_version"] = CANONICALIZATION_VERSION
     return sha256_hex(canonical_json_bytes(body))

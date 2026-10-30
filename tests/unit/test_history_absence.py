@@ -58,7 +58,10 @@ def _row(
         content_snippet="s",
         observed_at=now,
         retrieved_at=now,
-        attributes={"match_count": match_count, **({"discovery_only": True} if discovery_only else {})},
+        attributes={
+            "match_count": match_count,
+            **({"discovery_only": True} if discovery_only else {}),
+        },
         provenance=EvidenceProvenance(
             tenant_id="t",
             investigation_id=iid,
@@ -85,9 +88,7 @@ def _target(**kw) -> ClaimTarget:
 
 class TestHistoryAbsenceOutcome:
     def test_inspected_empty(self) -> None:
-        outcome, _, rows = VerificationEngine.history_absence_outcome(
-            [_row()], _target()
-        )
+        outcome, _, rows = VerificationEngine.history_absence_outcome([_row()], _target())
         assert outcome == "INSPECTED_EMPTY"
         assert len(rows) == 1
 
@@ -109,9 +110,7 @@ class TestHistoryAbsenceOutcome:
         assert outcome == "SEARCH_INCOMPLETE"
 
     def test_revision_less_row(self) -> None:
-        outcome, _, _ = VerificationEngine.history_absence_outcome(
-            [_row(revision=None)], _target()
-        )
+        outcome, _, _ = VerificationEngine.history_absence_outcome([_row(revision=None)], _target())
         assert outcome == "SEARCH_INCOMPLETE"
 
     def test_positive_row_blocks_absence(self) -> None:
@@ -119,9 +118,7 @@ class TestHistoryAbsenceOutcome:
         positive = positive.model_copy(
             update={"attributes": dict(positive.attributes, match_count=3)}
         )
-        outcome, _, _ = VerificationEngine.history_absence_outcome(
-            [_row(), positive], _target()
-        )
+        outcome, _, _ = VerificationEngine.history_absence_outcome([_row(), positive], _target())
         assert outcome == "SEARCH_INCOMPLETE"
 
     def test_commit_naming_target_deferred(self) -> None:
@@ -220,9 +217,7 @@ class TestValidateHistoryAbsence:
             }
         )
         hyp = _hyp(
-            ClaimTarget(
-                file_path=FILE, commit_id="abc123", commit_subject="Fix filter edge case"
-            ),
+            ClaimTarget(file_path=FILE, commit_id="abc123", commit_subject="Fix filter edge case"),
             positive.evidence_id,
         )
         engine = VerificationEngine(claim_binding_version="cbv2")

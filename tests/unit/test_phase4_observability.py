@@ -65,9 +65,7 @@ class TestEmittedSeries:
         with _adapter_ctx() as (adapter, sctx, reader):
             adapter.record_code_action(sctx, "SEARCH_CODE", "DEGRADED", "timeout")
             adapter.record_code_action(sctx, "SEARCH_CODE", "DEGRADED", "timeout")
-            adapter.record_code_action(
-                sctx, "WALK_STACK", "EMPTY", "walk_stack_no_resolution"
-            )
+            adapter.record_code_action(sctx, "WALK_STACK", "EMPTY", "walk_stack_no_resolution")
         series = _series(reader)
         timeout_key = (
             "code.action.executions",
@@ -97,7 +95,15 @@ class TestEmittedSeries:
             adapter.record_replay_mismatch(sctx)
             adapter.record_code_packets(sctx, included=3, truncated=1, dropped=2)
         series = _series(reader)
-        assert series[("verification.decisions", (("claim_kind", "DEFINITION"), ("limitation", "none"), ("status", "VERIFIED")))] == 1
+        assert (
+            series[
+                (
+                    "verification.decisions",
+                    (("claim_kind", "DEFINITION"), ("limitation", "none"), ("status", "VERIFIED")),
+                )
+            ]
+            == 1
+        )
         assert series[("conclusion.limitations", (("kind", "RIVAL_UNTESTED"),))] == 1
         assert series[("verification.location_answers", (("has_untested_rival", "true"),))] == 1
         assert series[("verification.location_answers", (("has_untested_rival", "false"),))] == 1
@@ -120,9 +126,11 @@ class TestEmittedSeries:
             adapter.record_code_action(sctx, "SEARCH_CODE", "DEGRADED", "timeout")
         series = _series(reader)
         blob = str(series)
-        assert "deadbeef" not in blob and ".java" not in blob and ":" not in str(
-            [k for k in series]
-        ).replace("code.action.executions", "")
+        assert (
+            "deadbeef" not in blob
+            and ".java" not in blob
+            and ":" not in str([k for k in series]).replace("code.action.executions", "")
+        )
 
 
 def _ctx_with(gateway):

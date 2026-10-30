@@ -138,12 +138,9 @@ def materialize_session_templates(profile: dict[str, Any]) -> dict[str, Any]:
                 anchor_name = "auto_session_anchor"
                 if anchor_name not in templates:
                     templates[anchor_name] = {
-                        "description": (
-                            "Auto-derived (G-3): anchor rows for a session."
-                        ),
+                        "description": ("Auto-derived (G-3): anchor rows for a session."),
                         "sql": (
-                            f"SELECT * FROM {session_entity} "
-                            f"WHERE {session_key} = :session_id"
+                            f"SELECT * FROM {session_entity} WHERE {session_key} = :session_id"
                         ),
                         "read_only": True,
                     }

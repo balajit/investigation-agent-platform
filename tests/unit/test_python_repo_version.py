@@ -30,7 +30,7 @@ def test_python_version_file():
 def test_pyproject_requires_python():
     content = '[project]\nname = "x"\nrequires-python = ">=3.10"\n'
     assert parse_version_file("pyproject.toml", content) == (3, 10)
-    assert parse_version_file("pyproject.toml", "[project]\nname = \"x\"\n") is None
+    assert parse_version_file("pyproject.toml", '[project]\nname = "x"\n') is None
     assert parse_version_file("pyproject.toml", "not toml [[[\n") is None
     # Numbered evidence lines are tolerated.
     numbered = '1| [project]\n2| requires-python = ">=3.9"\n'

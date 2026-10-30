@@ -21,7 +21,9 @@ def _row(path="app.py", rev="a" * 40, start=10, end=20):
         provider="code",
         evidence_type=EvidenceType.SOURCE_CODE,
         provenance=SimpleNamespace(
-            source_location=SimpleNamespace(file_path=path, revision=rev, line_start=start, line_end=end)
+            source_location=SimpleNamespace(
+                file_path=path, revision=rev, line_start=start, line_end=end
+            )
         ),
         content_snippet="def serve():\n    pass\n",
     )
@@ -62,11 +64,20 @@ def test_d3p_n16_observer_none_contract_static() -> None:
     tree = ast.parse(Path(veng.__file__).read_text())
     calls: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and getattr(getattr(node, "func", None), "id", "") == "_record_gate_note":
+        if (
+            isinstance(node, ast.Call)
+            and getattr(getattr(node, "func", None), "id", "") == "_record_gate_note"
+        ):
             calls.append(ast.dump(node)[:200])
     assert len(calls) >= 4, calls  # T2a site + T2b site + behavior flip + backstop
     text = Path(veng.__file__).read_text()
-    assert "observer" not in text.replace("_record_gate_note(observer", "").replace("observer: Callable", "").replace("observer = ", "") or True
+    assert (
+        "observer"
+        not in text.replace("_record_gate_note(observer", "")
+        .replace("observer: Callable", "")
+        .replace("observer = ", "")
+        or True
+    )
 
 
 def test_d3p_n16_observer_absent_vs_present_identical_location_gate() -> None:
@@ -81,7 +92,9 @@ def test_d3p_n16_observer_absent_vs_present_identical_location_gate() -> None:
         assert second is None
     else:
         assert first == second
-    assert len(notes) == 1 and notes[0]["tap"] == "T2a" and notes[0]["input_set"] == "CITED_LOCATION"
+    assert (
+        len(notes) == 1 and notes[0]["tap"] == "T2a" and notes[0]["input_set"] == "CITED_LOCATION"
+    )
 
 
 def test_d3p_n16_observer_absent_vs_present_identical_inner_gate() -> None:
@@ -215,24 +228,39 @@ async def test_d3p_f02_shadow_on_native_identical_to_off(monkeypatch) -> None:
     inv_id = uuid4()
     e1, e2 = uuid4(), uuid4()
     h1 = Hypothesis(
-        tenant_id="t", investigation_id=inv_id, title="weak", statement="weak claim",
-        description="d", status=HypothesisStatus.REJECTED,
-        confidence_score=0.1, support_score=0.1,
+        tenant_id="t",
+        investigation_id=inv_id,
+        title="weak",
+        statement="weak claim",
+        description="d",
+        status=HypothesisStatus.REJECTED,
+        confidence_score=0.1,
+        support_score=0.1,
     )
     h2 = Hypothesis(
-        tenant_id="t", investigation_id=inv_id, title="strong",
-        statement="serve is defined in src/app.py", description="d",
-        status=HypothesisStatus.SUPPORTED, confidence_score=0.9, support_score=0.9,
+        tenant_id="t",
+        investigation_id=inv_id,
+        title="strong",
+        statement="serve is defined in src/app.py",
+        description="d",
+        status=HypothesisStatus.SUPPORTED,
+        confidence_score=0.9,
+        support_score=0.9,
         supporting_evidence_ids=[e1],
         claim_kind=ClaimKind.DEFINITION,
         claim_target=ClaimTarget(
-            symbol="serve", declaring_type="Handler", file_path="src/app.py",
-            commit_id=r40, scope="file",
+            symbol="serve",
+            declaring_type="Handler",
+            file_path="src/app.py",
+            commit_id=r40,
+            scope="file",
         ),
     )
     rows = [
         SimpleNamespace(
-            evidence_id=e1, provider="code", evidence_type=EvidenceType.SOURCE_CODE,
+            evidence_id=e1,
+            provider="code",
+            evidence_type=EvidenceType.SOURCE_CODE,
             provenance=SimpleNamespace(
                 source_location=SimpleNamespace(
                     file_path="src/app.py", revision=r40, line_start=10, line_end=20
@@ -241,7 +269,9 @@ async def test_d3p_f02_shadow_on_native_identical_to_off(monkeypatch) -> None:
             content_snippet="def serve():\n    pass\n",
         ),
         SimpleNamespace(
-            evidence_id=e2, provider="code", evidence_type=EvidenceType.SOURCE_CODE,
+            evidence_id=e2,
+            provider="code",
+            evidence_type=EvidenceType.SOURCE_CODE,
             provenance=SimpleNamespace(
                 source_location=SimpleNamespace(
                     file_path="src/app.py", revision=r40, line_start=1, line_end=5
@@ -282,13 +312,23 @@ async def test_d3p_f02_shadow_on_native_identical_to_off(monkeypatch) -> None:
             corroborating_evidence_ids=[],
             explanation="spy",
             confidence=InvestigationConfidence(
-                coverage_score=0.0, reliability_score=0.0, causal_score=0.0,
+                coverage_score=0.0,
+                reliability_score=0.0,
+                causal_score=0.0,
                 contradiction_penalty=0.0,
             ),
         )
 
-    def _spy(self, hypothesis, evidence_items, contradictions, causal_chain, policy,
-             sibling_hypotheses=None, observer=None):
+    def _spy(
+        self,
+        hypothesis,
+        evidence_items,
+        contradictions,
+        causal_chain,
+        policy,
+        sibling_hypotheses=None,
+        observer=None,
+    ):
         return _spy_result(hypothesis.id)
 
     monkeypatch.setattr(VerificationEngine, "evaluate_hypothesis", _spy)
@@ -344,17 +384,32 @@ def test_d3p_f09_rollback_restores_legacy_shape(monkeypatch) -> None:
         run_shadow_turn,
     )
 
-    assert run_shadow_turn(
-        candidate=_hyp(), bound=[_row()], refuting_ids=[], triage_route="",
-        verifier_version="v2", investigation_id="i", hypothesis_id="h",
-        application_id="a", input_set="BOUND_FULL", table=None, registry=None,  # type: ignore[arg-type]
-    ) is None
+    assert (
+        run_shadow_turn(
+            candidate=_hyp(),
+            bound=[_row()],
+            refuting_ids=[],
+            triage_route="",
+            verifier_version="v2",
+            investigation_id="i",
+            hypothesis_id="h",
+            application_id="a",
+            input_set="BOUND_FULL",
+            table=None,
+            registry=None,  # type: ignore[arg-type]
+        )
+        is None
+    )
     native = {"verified": False, "status": "INCONCLUSIVE", "producing_path": "blocked"}
     assert attach_shadow_observations(native, []) == native
     assert "shadow_definitions" not in attach_shadow_observations(native, [])
     from investigation_agent_platform.application.worker.activities import _derive_loop_telemetry
 
-    out = _derive_loop_telemetry({"llm_tokens_total": 5}, {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0}, 0)
+    out = _derive_loop_telemetry(
+        {"llm_tokens_total": 5},
+        {"hypotheses_formulated": 0, "hypotheses_bound": 0, "hypotheses_verified": 0},
+        0,
+    )
     assert out is not None
     assert "shadow_definition_summary" not in out
     assert "definition_shadow_trace" not in out

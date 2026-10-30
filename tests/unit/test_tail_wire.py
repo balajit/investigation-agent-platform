@@ -54,9 +54,7 @@ class TestChatWire:
             headers={**HEADERS, "X-Idempotency-Key": "chat-wire-2"},
         ).json()
         session_id = created["session"]["id"]
-        body = client.get(
-            f"/api/v1/chat/sessions/{session_id}/messages", headers=HEADERS
-        ).json()
+        body = client.get(f"/api/v1/chat/sessions/{session_id}/messages", headers=HEADERS).json()
         assert body == {"items": [], "total": 0, "offset": 0, "limit": 100}
 
     def test_unknown_session_404_envelope(self, _restore_context: None) -> None:
@@ -106,9 +104,7 @@ class TestAggregateWire:
 class TestBatchWire:
     def test_submit_requires_key_envelope(self, _restore_context: None) -> None:
         _, client = _client()
-        resp = client.post(
-            "/api/v1/batch-intake", json={"records": []}, headers=HEADERS
-        )
+        resp = client.post("/api/v1/batch-intake", json={"records": []}, headers=HEADERS)
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 

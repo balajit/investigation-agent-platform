@@ -173,12 +173,12 @@ def _assert_mutations_resolve(records_by_id: dict[str, dict[str, Any]]) -> None:
             assert mutation["operation"] == "replace"
             baseline_available = baseline["inputs"]["available_evidence_ids"]
             missing_artifact_id = (
-                "ev-runtime-001"
-                if record["fixture_id"] == "G4E-BEH-012"
-                else "ev-history-001"
+                "ev-runtime-001" if record["fixture_id"] == "G4E-BEH-012" else "ev-history-001"
             )
             assert mutation["value"] == [
-                evidence_id for evidence_id in baseline_available if evidence_id != missing_artifact_id
+                evidence_id
+                for evidence_id in baseline_available
+                if evidence_id != missing_artifact_id
             ]
         if record["family"] == "ABSENCE" and record["fixture_id"] == "G4E-ABS-016":
             assert mutation["field_path"] == "inputs.manifest.evidence_ids"
@@ -188,12 +188,15 @@ def _assert_mutations_resolve(records_by_id: dict[str, dict[str, Any]]) -> None:
         value: Any = baseline["inputs"]
         for segment in segments[1:-1]:
             assert isinstance(value, dict) and segment in value, (
-                record["fixture_id"], mutation["field_path"], segment
+                record["fixture_id"],
+                mutation["field_path"],
+                segment,
             )
             value = value[segment]
         final_key = segments[-1]
         assert isinstance(value, dict) and final_key in value, (
-            record["fixture_id"], mutation["field_path"]
+            record["fixture_id"],
+            mutation["field_path"],
         )
         assert mutation["operation"] == "remove" or (
             mutation["operation"] == "replace" and final_key in value
@@ -326,7 +329,9 @@ def _assert_manifest_bindings(record: dict[str, Any]) -> None:
         assert set(ids) == {coverage_id}, record["fixture_id"]
         assert set(available_ids) == {coverage_id}, record["fixture_id"]
         assert types[coverage_id] == "ABSENCE_COVERAGE_FACT", record["fixture_id"]
-        assert inputs["coverage_evidence"]["premise_type"] == types[coverage_id], record["fixture_id"]
+        assert inputs["coverage_evidence"]["premise_type"] == types[coverage_id], record[
+            "fixture_id"
+        ]
     elif family == "HISTORY":
         assert set(available_ids) == set(ids), record["fixture_id"]
 
@@ -342,7 +347,9 @@ def test_component1_provenance_amendment_a2_pins() -> None:
     # the build-source mapping digest the rule joins on; the unsupported
     # case carries neither.
     assert by_id["G4E-BEH-001"]["inputs"]["proposition"]["asserted_value"] == 200
-    assert by_id["G4E-BEH-001"]["inputs"]["build_source_mapping"]["mapping_digest"].startswith("sha256:")
+    assert by_id["G4E-BEH-001"]["inputs"]["build_source_mapping"]["mapping_digest"].startswith(
+        "sha256:"
+    )
     assert "asserted_value" not in by_id["G4E-BEH-004"]["inputs"].get("proposition", {})
     assert "build_source_mapping" not in by_id["G4E-BEH-004"]["inputs"]
 

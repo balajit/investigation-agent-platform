@@ -42,13 +42,17 @@ def _row(eid="ev-001", snippet="def serve():\n    pass\n", loc=None):
     )
 
 
-def _candidate(kind="DEFINITION", symbol="serve", commit=R40, scope="file", decl="Handler", fp="src/app.py"):
+def _candidate(
+    kind="DEFINITION", symbol="serve", commit=R40, scope="file", decl="Handler", fp="src/app.py"
+):
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
 
     target = SimpleNamespace(
         symbol=symbol, declaring_type=decl, file_path=fp, commit_id=commit, scope=scope
     )
-    hyp = SimpleNamespace(claim_kind=getattr(ClaimKind, kind, kind), claim_target=target, assessments=[])
+    hyp = SimpleNamespace(
+        claim_kind=getattr(ClaimKind, kind, kind), claim_target=target, assessments=[]
+    )
     return hyp
 
 
@@ -226,8 +230,10 @@ def test_d3p_n09a_d_contract_only_change_refuses() -> None:
 
     row = _table().rows[0]
     bad = ActualResolver(
-        bundle=row.resolver_bundle, bundle_version=row.bundle_version,
-        contract_digest="sha256:other", artifact_digest=row.artifact_digest,
+        bundle=row.resolver_bundle,
+        bundle_version=row.bundle_version,
+        contract_digest="sha256:other",
+        artifact_digest=row.artifact_digest,
     )
     with pytest.raises(DispatchError):
         verify_definition_binding(row, bad)
@@ -241,8 +247,10 @@ def test_d3p_n09b_d_executable_substitution_refuses() -> None:
 
     row = _table().rows[0]
     bad = ActualResolver(
-        bundle=row.resolver_bundle, bundle_version=row.bundle_version,
-        contract_digest=row.contract_digest, artifact_digest="sha256:other",
+        bundle=row.resolver_bundle,
+        bundle_version=row.bundle_version,
+        contract_digest=row.contract_digest,
+        artifact_digest="sha256:other",
     )
     with pytest.raises(DispatchError):
         verify_definition_binding(row, bad)
@@ -290,9 +298,21 @@ def test_d3p_summarize_breaks_down_input_set_and_reason() -> None:
     and a reason-code breakdown (additive dicts, §7 Observability)."""
     summary = summarize_shadow_definitions(
         [
-            {"outcome": "ABSTAINED", "input_set": "BOUND_FULL", "reason_code": "unbound-repository"},
-            {"outcome": "ABSTAINED", "input_set": "CITED_LOCATION", "reason_code": "unbound-repository"},
-            {"outcome": "UNAVAILABLE", "input_set": "BOUND_FULL", "reason_code": "no-candidate-rows"},
+            {
+                "outcome": "ABSTAINED",
+                "input_set": "BOUND_FULL",
+                "reason_code": "unbound-repository",
+            },
+            {
+                "outcome": "ABSTAINED",
+                "input_set": "CITED_LOCATION",
+                "reason_code": "unbound-repository",
+            },
+            {
+                "outcome": "UNAVAILABLE",
+                "input_set": "BOUND_FULL",
+                "reason_code": "no-candidate-rows",
+            },
             {"capture_error": True, "reason": "tap-fault", "input_set": "CONCLUDE_GATE"},
         ]
     )
@@ -327,8 +347,17 @@ def test_d3p_shadow_module_import_closure_static() -> None:
         for n in ast.walk(tree)
         if isinstance(n, (ast.Import, ast.ImportFrom))
     }
-    assert top <= {"__future__", "hashlib", "enum", "typing", "pydantic", "os", "logging",
-                   "dataclasses", "investigation_agent_platform"}, top
+    assert top <= {
+        "__future__",
+        "hashlib",
+        "enum",
+        "typing",
+        "pydantic",
+        "os",
+        "logging",
+        "dataclasses",
+        "investigation_agent_platform",
+    }, top
     text = _P(mod.__file__).read_text()
     assert "import subprocess" not in text
     assert "importlib" not in text

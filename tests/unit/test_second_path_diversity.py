@@ -242,19 +242,26 @@ def _history_proposition(**over: Any) -> dict[str, Any]:
 
 
 def _strip(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")}
+    return {
+        k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")
+    }
 
 
-def _assemble(rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any) -> dict[str, Any]:
+def _assemble(
+    rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any
+) -> dict[str, Any]:
     artifacts: dict[str, dict[str, Any]] = {}
     hashes: dict[str, str] = {}
     types: dict[str, str] = {}
     premises: list[dict[str, Any]] = []
     for record in records:
         art = _strip(record)
-        digest = "sha256:" + hashlib.sha256(
-            json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ).hexdigest()
+        digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+        )
         pid = str(record["evidence_id"])
         artifacts[pid] = art
         hashes[pid] = digest
@@ -275,7 +282,9 @@ def _assemble(rule_id: str, records: list[dict[str, Any]], proposition: dict[str
     return {"inputs": inputs, "premises": premises, "manifest": manifest, "artifacts": artifacts}
 
 
-def _certified(rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any) -> dict[str, Any]:
+def _certified(
+    rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any
+) -> dict[str, Any]:
     asm = _assemble(rule_id, records, proposition, **manifest_kw)
     cert = certify(asm["inputs"], asm["premises"], asm["artifacts"])
     return {**asm, "cert": cert, "proposition": proposition}
@@ -329,7 +338,11 @@ def test_second_path_agrees_definition_valid() -> None:
     outcome, _ = _check(bundle)
     assert outcome == CheckerOutcome.VALID
     second, _ = check_rule_second_path(
-        "definition/v1", bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"]
+        "definition/v1",
+        bundle["cert"],
+        bundle["proposition"],
+        bundle["manifest"],
+        bundle["artifacts"],
     )
     assert second == CheckerOutcome.VALID
 
@@ -339,7 +352,11 @@ def test_second_path_agrees_call_edge_valid() -> None:
     outcome, _ = _check(bundle)
     assert outcome == CheckerOutcome.VALID
     second, _ = check_rule_second_path(
-        "call_edge/v1", bundle["cert"], bundle["proposition"], bundle["manifest"], bundle["artifacts"]
+        "call_edge/v1",
+        bundle["cert"],
+        bundle["proposition"],
+        bundle["manifest"],
+        bundle["artifacts"],
     )
     assert second == CheckerOutcome.VALID
 
@@ -531,9 +548,17 @@ def test_conjunction_neutered_first_path_still_denies(monkeypatch: pytest.Monkey
     relabeled.pop("content_hash", None)
     artifacts = dict(bundle["artifacts"])
     artifacts["ev-sp-call-edge-0"] = {k: v for k, v in relabeled.items() if k != "evidence_id"}
-    new_hash = "sha256:" + hashlib.sha256(
-        json.dumps(artifacts["ev-sp-call-edge-0"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
+    new_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                artifacts["ev-sp-call-edge-0"],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+    )
     manifest = build_manifest(
         ["ev-sp-call-edge-0"],
         {"ev-sp-call-edge-0": new_hash},
@@ -573,7 +598,9 @@ def test_conjunction_neutered_first_path_still_denies(monkeypatch: pytest.Monkey
     real_outcome, _ = _check(forged_request_bundle)
     assert real_outcome != CheckerOutcome.VALID
     monkeypatch.setitem(
-        cert_mod._CHECKER_SEMANTICS, "call_edge/v1", lambda *a, **k: (CheckerOutcome.VALID, "neutered")
+        cert_mod._CHECKER_SEMANTICS,
+        "call_edge/v1",
+        lambda *a, **k: (CheckerOutcome.VALID, "neutered"),
     )
     outcome, reasons = _check(forged_request_bundle)
     assert outcome == CheckerOutcome.CHECKER_FAILURE
@@ -627,7 +654,9 @@ def test_second_path_detects_hash_mismatch() -> None:
     bundle = _certified("definition/v1", [_definition_record()], _definition_proposition())
     tampered = dict(bundle["artifacts"])
     victim = "ev-sp-definition-0"
-    tampered[victim] = dict(tampered[victim], window_text="def handle(event):\n    return other(event)")
+    tampered[victim] = dict(
+        tampered[victim], window_text="def handle(event):\n    return other(event)"
+    )
     second, _ = check_rule_second_path(
         "definition/v1", bundle["cert"], bundle["proposition"], bundle["manifest"], tampered
     )

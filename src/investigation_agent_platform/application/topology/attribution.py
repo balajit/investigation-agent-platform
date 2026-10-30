@@ -47,6 +47,7 @@ from investigation_agent_platform.ports.topology.ports import DomainAttributionP
 
 logger = logging.getLogger(__name__)
 
+
 def _attribution_extra(result: Any) -> dict[str, Any]:
     """Attribution outcome class + confidence (never frame contents)."""
     try:
@@ -60,6 +61,7 @@ def _attribution_extra(result: Any) -> dict[str, Any]:
         return extra
     except Exception:
         return {}
+
 
 ATTRIBUTION_RULE_VERSION = "v2"
 

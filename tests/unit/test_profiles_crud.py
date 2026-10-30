@@ -74,9 +74,7 @@ class TestCreateProfile:
         assert "sql" not in ds["query_templates"]["find"]
         assert ds["query_templates"]["find"]["description"] == "find"
 
-    def test_create_duplicate_same_content_replays_200(
-        self, _restore_context: None
-    ) -> None:
+    def test_create_duplicate_same_content_replays_200(self, _restore_context: None) -> None:
         _, client = _client()
         first = client.post("/api/v1/profiles", json=_body(), headers=HEADERS)
         assert first.status_code == 201
@@ -84,9 +82,7 @@ class TestCreateProfile:
         assert second.status_code == 200
         assert second.json()["idempotent_replay"] is True
 
-    def test_create_duplicate_different_content_conflicts(
-        self, _restore_context: None
-    ) -> None:
+    def test_create_duplicate_different_content_conflicts(self, _restore_context: None) -> None:
         _, client = _client()
         assert client.post("/api/v1/profiles", json=_body(), headers=HEADERS).status_code == 201
         altered = _body()
@@ -122,9 +118,7 @@ class TestCreateProfile:
         )
         assert resp.status_code == 422
 
-    def test_create_active_without_services_rejected(
-        self, _restore_context: None
-    ) -> None:
+    def test_create_active_without_services_rejected(self, _restore_context: None) -> None:
         _, client = _client()
         resp = client.post(
             "/api/v1/profiles",
@@ -133,18 +127,14 @@ class TestCreateProfile:
         )
         assert resp.status_code == 422
 
-    def test_create_secret_connection_ref_rejected(
-        self, _restore_context: None
-    ) -> None:
+    def test_create_secret_connection_ref_rejected(self, _restore_context: None) -> None:
         _, client = _client()
         body = _body()
         body["datasources"][0]["connection_ref"] = "postgresql://user:pw@host/db"
         resp = client.post("/api/v1/profiles", json=body, headers=HEADERS)
         assert resp.status_code == 400
 
-    def test_create_with_idempotency_key_replays(
-        self, _restore_context: None
-    ) -> None:
+    def test_create_with_idempotency_key_replays(self, _restore_context: None) -> None:
         _, client = _client()
         headers = {**HEADERS, "X-Idempotency-Key": "k-1"}
         first = client.post("/api/v1/profiles", json=_body(), headers=headers)
@@ -225,10 +215,7 @@ class TestUpdateProfile:
 
     def test_update_unknown_app_404(self, _restore_context: None) -> None:
         _, client = _client()
-        assert (
-            client.put("/api/v1/profiles/nope", json=_body(), headers=HEADERS).status_code
-            == 404
-        )
+        assert client.put("/api/v1/profiles/nope", json=_body(), headers=HEADERS).status_code == 404
 
 
 class TestDeleteProfile:
@@ -239,10 +226,7 @@ class TestDeleteProfile:
         assert resp.status_code == 200
         assert resp.json() == {"id": "svc-a", "version": None, "deleted": 1}
         assert client.get("/api/v1/profiles/svc-a", headers=HEADERS).status_code == 404
-        assert (
-            client.get("/api/v1/profiles/svc-a/revisions", headers=HEADERS).status_code
-            == 404
-        )
+        assert client.get("/api/v1/profiles/svc-a/revisions", headers=HEADERS).status_code == 404
         assert all(
             i["id"] != "svc-a"
             for i in client.get("/api/v1/profiles", headers=HEADERS).json()["items"]
@@ -252,9 +236,7 @@ class TestDeleteProfile:
         _, client = _client()
         assert client.delete("/api/v1/profiles/nope", headers=HEADERS).status_code == 404
 
-    def test_delete_app_with_active_history_409_and_kept(
-        self, _restore_context: None
-    ) -> None:
+    def test_delete_app_with_active_history_409_and_kept(self, _restore_context: None) -> None:
         _, client = _client()
         client.post("/api/v1/profiles", json=_body(), headers=HEADERS)
         client.put("/api/v1/profiles/svc-a", json=_body(status="ACTIVE"), headers=HEADERS)
@@ -264,9 +246,7 @@ class TestDeleteProfile:
         revs = client.get("/api/v1/profiles/svc-a/revisions", headers=HEADERS).json()
         assert revs["total"] == 2
 
-    def test_delete_single_draft_revision_over_active(
-        self, _restore_context: None
-    ) -> None:
+    def test_delete_single_draft_revision_over_active(self, _restore_context: None) -> None:
         import anyio
 
         ctx, client = _client()
@@ -299,10 +279,7 @@ class TestDeleteProfile:
     def test_delete_missing_version_404(self, _restore_context: None) -> None:
         _, client = _client()
         client.post("/api/v1/profiles", json=_body(), headers=HEADERS)
-        assert (
-            client.delete("/api/v1/profiles/svc-a?version=9", headers=HEADERS).status_code
-            == 404
-        )
+        assert client.delete("/api/v1/profiles/svc-a?version=9", headers=HEADERS).status_code == 404
 
     def test_delete_idempotent_replay(self, _restore_context: None) -> None:
         _, client = _client()
@@ -321,12 +298,12 @@ class TestLifecycleGates:
         # Full bodies round-trip (sanitized GET output intentionally cannot:
         # template SQL is never readable, so updates re-supply it).
         assert (
-            client.post("/api/v1/profiles", json=_body(status="ACTIVE"), headers=HEADERS).status_code
+            client.post(
+                "/api/v1/profiles", json=_body(status="ACTIVE"), headers=HEADERS
+            ).status_code
             == 201
         )
-        up = client.put(
-            "/api/v1/profiles/svc-a", json=_body(status="DEPRECATED"), headers=HEADERS
-        )
+        up = client.put("/api/v1/profiles/svc-a", json=_body(status="DEPRECATED"), headers=HEADERS)
         assert up.status_code == 200, up.text
         resp = client.post(
             "/api/v1/investigations",

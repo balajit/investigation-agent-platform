@@ -195,9 +195,6 @@ def detect_modules(file_paths: list[str]) -> list[RepoModule]:
                 modules.setdefault(root, build_system)
             except Exception:
                 continue
-        return [
-            RepoModule(path=root, build_system=modules[root])
-            for root in sorted(modules)
-        ]
+        return [RepoModule(path=root, build_system=modules[root]) for root in sorted(modules)]
     except Exception:
         return []

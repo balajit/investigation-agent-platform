@@ -332,7 +332,9 @@ class Datasource(BaseModel):
         if v.startswith(("secret://", "env://")):
             return v
         if contains_secret_text(v):
-            raise ValueError("connection_ref must be secret:// or env:// (secrets never in profile).")
+            raise ValueError(
+                "connection_ref must be secret:// or env:// (secrets never in profile)."
+            )
         if "://" in v and "@" in v.split("://", 1)[1].split("/", 1)[0]:
             raise ValueError("connection_ref must not embed credentials; use secret:// or env://.")
         return v
@@ -403,9 +405,7 @@ class InvestigationConfig(BaseModel):
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     default_time_window: int = Field(default=3600, alias="defaultTimeWindow", ge=60, le=86400)
-    max_evidence_per_query: int = Field(
-        default=50, alias="maximumEvidencePerQuery", ge=1, le=500
-    )
+    max_evidence_per_query: int = Field(default=50, alias="maximumEvidencePerQuery", ge=1, le=500)
     max_investigation_duration: int = Field(
         default=7200, alias="maximumInvestigationDuration", ge=60, le=86400
     )

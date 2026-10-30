@@ -156,9 +156,7 @@ async def _with_idempotency(
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     try:
-        cached, reserved = await ctx.idempotency_store.reserve_or_get(
-            tenant_id, key, request_hash
-        )
+        cached, reserved = await ctx.idempotency_store.reserve_or_get(tenant_id, key, request_hash)
     except (IdempotencyConflictError, IdempotencyInProgressError) as exc:
         raise _err("IDEMPOTENCY_CONFLICT", str(exc), 409) from exc
     if not reserved:
@@ -173,9 +171,9 @@ async def _with_idempotency(
 
 def _detail_payload(profile: ApplicationProfile, version: int) -> dict[str, Any]:
     """ProfileDetail dict with the route's exclusion semantics (no replay flag)."""
-    return ProfileDetail(
-        profile=ProfileView.from_domain(profile), version=version
-    ).model_dump(mode="json", by_alias=True, exclude_unset=True)
+    return ProfileDetail(profile=ProfileView.from_domain(profile), version=version).model_dump(
+        mode="json", by_alias=True, exclude_unset=True
+    )
 
 
 def _replay_payload(profile: ApplicationProfile, version: int) -> dict[str, Any]:
@@ -238,9 +236,7 @@ async def create_profile(
         _check_promotable(profile)
 
     async def _produce() -> dict[str, Any]:
-        existing = await ctx.profile_repo.get_by_application_id(
-            x_tenant_id, profile.id, version=1
-        )
+        existing = await ctx.profile_repo.get_by_application_id(x_tenant_id, profile.id, version=1)
         if existing is not None:
             if existing.model_dump(mode="json", by_alias=True) == profile.model_dump(
                 mode="json", by_alias=True
@@ -284,20 +280,14 @@ def _spring_http_error(exc: ConfigClientError) -> ApiError:
             code=exc.code, http_status=404, message="Spring application/profile/label not found."
         )
     if isinstance(exc, ConfigRateLimitError):
-        headers = (
-            {"Retry-After": str(exc.retry_after)}
-            if exc.retry_after is not None
-            else None
-        )
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
         return ApiError(
             code=exc.code,
             http_status=429,
             message="Spring upstream throttled the request.",
             headers=headers,
         )
-    return ApiError(
-        code=exc.code, http_status=503, message="Spring Config Server unavailable."
-    )
+    return ApiError(code=exc.code, http_status=503, message="Spring Config Server unavailable.")
 
 
 def _fetch_config(binding: SpringBinding) -> Any:
@@ -305,16 +295,24 @@ def _fetch_config(binding: SpringBinding) -> Any:
     server = binding.server_url.rstrip("/")
     allowed_servers = allowed_server_urls()
     if not allowed_servers or server not in allowed_servers:
-        raise ApiError(code="SPRING_FORBIDDEN", http_status=403, message="Config server not allowlisted.")
+        raise ApiError(
+            code="SPRING_FORBIDDEN", http_status=403, message="Config server not allowlisted."
+        )
     apps = allowed_spring_applications()
     profiles = allowed_spring_profiles()
     if not apps or binding.application not in apps:
-        raise ApiError(code="SPRING_FORBIDDEN", http_status=403, message="Spring app not importable.")
+        raise ApiError(
+            code="SPRING_FORBIDDEN", http_status=403, message="Spring app not importable."
+        )
     if not profiles or binding.profile not in profiles:
-        raise ApiError(code="SPRING_FORBIDDEN", http_status=403, message="Spring profile not importable.")
+        raise ApiError(
+            code="SPRING_FORBIDDEN", http_status=403, message="Spring profile not importable."
+        )
     oauth = oauth_settings()
     if not oauth["token_url"] or not oauth["client_id"] or not oauth["client_secret"]:
-        raise ApiError(code="SPRING_UNAVAILABLE", http_status=503, message="Spring OAuth not configured.")
+        raise ApiError(
+            code="SPRING_UNAVAILABLE", http_status=503, message="Spring OAuth not configured."
+        )
     try:
         credentials = OAuth2ClientCredentials(
             token_url=oauth["token_url"],
@@ -386,7 +384,9 @@ async def derive_from_spring(
     try:
         binding = SpringBinding.model_validate(spring)
     except ValidationError as exc:
-        raise _err("SPRING_BINDING_INVALID", f"Invalid spring binding: {exc.errors()[:2]}", 400) from exc
+        raise _err(
+            "SPRING_BINDING_INVALID", f"Invalid spring binding: {exc.errors()[:2]}", 400
+        ) from exc
     persist = body.get("persist", True)
     if not isinstance(persist, bool):
         raise _err("SPRING_BINDING_INVALID", "persist must be boolean.", 400)
@@ -518,10 +518,7 @@ def _generate_profile_from_repo(
     checkout = _clone(clone_url, branch)
     try:
         files = _list_files(checkout)
-        modules = [
-            {"path": m.path, "build_system": m.build_system}
-            for m in _modules(files)
-        ]
+        modules = [{"path": m.path, "build_system": m.build_system} for m in _modules(files)]
         # G1+G3: detect repo type from paths + marker samples, then parse
         # with the matching generator (generic fallback preserves legacy
         # Spring behavior when detection is inconclusive).
@@ -538,10 +535,17 @@ def _generate_profile_from_repo(
                 try:
                     base = rel.rsplit("/", 1)[-1]
                     if base in (
-                        "pom.xml", "build.gradle", "build.gradle.kts",
-                        "pyproject.toml", "manage.py", "settings.py",
-                        "main.py", "app.py", "application.yml",
-                        "application.yaml", "application.properties",
+                        "pom.xml",
+                        "build.gradle",
+                        "build.gradle.kts",
+                        "pyproject.toml",
+                        "manage.py",
+                        "settings.py",
+                        "main.py",
+                        "app.py",
+                        "application.yml",
+                        "application.yaml",
+                        "application.properties",
                     ) or base.endswith("Application.java"):
                         samples[rel] = (checkout / rel).read_text(
                             encoding="utf-8", errors="replace"
@@ -576,7 +580,8 @@ def _generate_profile_from_repo(
                     502,
                 ) from exc
         merged_config, overridden = _merge_configs(
-            server_config, parsed.get("spring_files", {}) or {},
+            server_config,
+            parsed.get("spring_files", {}) or {},
         )
         from investigation_agent_platform.integrations.profile_gen.generate import (
             dominant_language as _dominant_language,
@@ -650,7 +655,12 @@ async def generate_profile(
             tenant_app_id = _derive_app_id(x_tenant_id, app_name)
         except ValueError as exc:
             raise _err("GENERATE_BINDING_INVALID", str(exc), 400) from exc
-    if isinstance(body.get("org"), str) and isinstance(body.get("repo"), str) and body.get("org") and body.get("repo"):
+    if (
+        isinstance(body.get("org"), str)
+        and isinstance(body.get("repo"), str)
+        and body.get("org")
+        and body.get("repo")
+    ):
         org, repo = body["org"], body["repo"]
     else:
         if not isinstance(repo_ref, str) or not repo_ref:
@@ -664,8 +674,16 @@ async def generate_profile(
         except ValueError as exc:
             raise _err("GENERATE_BINDING_INVALID", str(exc), 400) from exc
     for value, label in ((org, "org"), (repo, "repo")):
-        if not isinstance(value, str) or not value or len(value) > 128 or "/" in value or ".." in value:
-            raise _err("GENERATE_BINDING_INVALID", f"{label} is required (max 128, no slashes).", 400)
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 128
+            or "/" in value
+            or ".." in value
+        ):
+            raise _err(
+                "GENERATE_BINDING_INVALID", f"{label} is required (max 128, no slashes).", 400
+            )
     branch = body.get("branch", "") or "main"
     if not isinstance(branch, str) or len(branch) > 128:
         raise _err("GENERATE_BINDING_INVALID", "branch must be a string (max 128).", 400)
@@ -750,8 +768,10 @@ async def refresh_generated_profile(
         raise _err("PROFILE_NOT_FOUND", f"Unknown application {tenant_app_id!r}.", 404)
     latest = revisions[0]
     if (
-        isinstance(body.get("org"), str) and isinstance(body.get("repo"), str)
-        and body.get("org") and body.get("repo")
+        isinstance(body.get("org"), str)
+        and isinstance(body.get("repo"), str)
+        and body.get("org")
+        and body.get("repo")
     ):
         org, repo = body["org"], body["repo"]
     else:
@@ -767,8 +787,16 @@ async def refresh_generated_profile(
         except ValueError as exc:
             raise _err("GENERATE_BINDING_INVALID", str(exc), 400) from exc
     for value, label in ((org, "org"), (repo, "repo")):
-        if not isinstance(value, str) or not value or len(value) > 128 or "/" in value or ".." in value:
-            raise _err("GENERATE_BINDING_INVALID", f"{label} is required (max 128, no slashes).", 400)
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 128
+            or "/" in value
+            or ".." in value
+        ):
+            raise _err(
+                "GENERATE_BINDING_INVALID", f"{label} is required (max 128, no slashes).", 400
+            )
     branch = body.get("branch", "") or "main"
     spring = body.get("spring")
     operator = body.get("operator", {})
@@ -788,7 +816,9 @@ async def refresh_generated_profile(
     except ApiError:
         raise
     except Exception as exc:
-        raise _err("GENERATE_FAILED", f"Profile re-derivation failed: {str(exc)[:200]}", 500) from exc
+        raise _err(
+            "GENERATE_FAILED", f"Profile re-derivation failed: {str(exc)[:200]}", 500
+        ) from exc
     from investigation_agent_platform.integrations.profile_gen.assembler import (
         refresh_profile as _refresh_merge,
     )
@@ -853,7 +883,8 @@ async def spring_drift(
 
 @router.get(
     "/profiles/{app_id}",
-    response_model=ProfileDetail,    response_model_by_alias=True,
+    response_model=ProfileDetail,
+    response_model_by_alias=True,
     response_model_exclude_unset=True,
     responses=COMMON_ERROR_RESPONSES,
 )
@@ -865,9 +896,7 @@ async def get_profile(
     """Latest revision by default (any status — DRAFTs are retrievable); ``?version=N`` pins exactly (no fallback)."""
     ctx = get_app_context()
     if version is not None:
-        profile = await ctx.profile_repo.get_by_application_id(
-            x_tenant_id, app_id, version=version
-        )
+        profile = await ctx.profile_repo.get_by_application_id(x_tenant_id, app_id, version=version)
         if profile is None:
             raise _err("PROFILE_NOT_FOUND", f"No revision {version} for {app_id!r}.", 404)
         return ProfileDetail(profile=ProfileView.from_domain(profile), version=profile.version)

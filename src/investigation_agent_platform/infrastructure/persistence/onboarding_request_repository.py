@@ -94,7 +94,9 @@ class SqlAlchemyOnboardingRequestRepository:
                         "expected revision does not match the current draft revision"
                     )
                 if current.state != "DRAFT":
-                    raise DraftRevisionConflictError("only DRAFT requests can be edited in Phase 1B")
+                    raise DraftRevisionConflictError(
+                        "only DRAFT requests can be edited in Phase 1B"
+                    )
                 revision = current.revision + 1
 
             statement = (

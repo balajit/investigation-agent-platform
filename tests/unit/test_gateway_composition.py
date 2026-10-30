@@ -128,9 +128,7 @@ class TestGatewayComposition:
             )
         )
         _wire_evidence_gateway(ctx, cfg)
-        assert isinstance(
-            ctx.evidence_gateway._correlation_engine, EphemeralCorrelationEngine
-        )
+        assert isinstance(ctx.evidence_gateway._correlation_engine, EphemeralCorrelationEngine)
 
     def test_correlation_engine_unwired_without_postgres_dsn(self) -> None:
         from investigation_agent_platform.api.dependencies import AppContext
@@ -140,9 +138,7 @@ class TestGatewayComposition:
         )
 
         ctx = AppContext()
-        cfg = _production_config(
-            evidence=EvidenceConfig(cursor_signing_key="test-signing-key")
-        )
+        cfg = _production_config(evidence=EvidenceConfig(cursor_signing_key="test-signing-key"))
         _wire_evidence_gateway(ctx, cfg)
         assert ctx.evidence_gateway._correlation_engine is None
 
@@ -296,10 +292,7 @@ class TestForeignInvestigationFilter:
         row = self._row(
             content_snippet="workflow wf-investigation-41a8fbbb-05ca-4d66-987d-da2ad7585d87 failed"
         )
-        assert (
-            references_foreign_investigation(row, "fcff6042-1eac-440e-82ac-0eae5ea02e15")
-            is True
-        )
+        assert references_foreign_investigation(row, "fcff6042-1eac-440e-82ac-0eae5ea02e15") is True
 
     def test_keeps_own_rows_and_uuid_free_rows(self):
         from investigation_agent_platform.application.evidence.gateway import (

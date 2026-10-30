@@ -120,14 +120,20 @@ def test_persist_groups_duplicates_with_verbatim_ids():
 def test_persist_skips_non_log_rows():
     repo = _Repo()
     ctx = SimpleNamespace(log_exemplar_repo=repo)
-    n = run(_persist_log_exemplars(ctx, "n-a", uuid4(), [_evidence(etype=EvidenceType.DATABASE_STATE)]))
+    n = run(
+        _persist_log_exemplars(ctx, "n-a", uuid4(), [_evidence(etype=EvidenceType.DATABASE_STATE)])
+    )
     assert n == 0 and repo.saved == []
 
 
 def test_persist_fail_open_without_repo_and_on_error():
     assert run(_persist_log_exemplars(SimpleNamespace(), "n-a", uuid4(), [_evidence()])) == 0
     assert (
-        run(_persist_log_exemplars(SimpleNamespace(log_exemplar_repo=_Repo(fail=True)), "n-a", uuid4(), [_evidence()]))
+        run(
+            _persist_log_exemplars(
+                SimpleNamespace(log_exemplar_repo=_Repo(fail=True)), "n-a", uuid4(), [_evidence()]
+            )
+        )
         == 0
     )
 
@@ -272,7 +278,6 @@ def test_coerce_root_ids_drops_unparseable():
     assert _coerce_root_ids(None) == ([], 0)
 
 
-
 class TestIdempotencyWaitForOwner:
     def _ctx(self, store):
         from types import SimpleNamespace
@@ -330,6 +335,7 @@ class TestIdempotencyWaitForOwner:
         from investigation_agent_platform.domain.common.exceptions import (
             IdempotencyInProgressError,
         )
+
         try:
             from temporalio.exceptions import ApplicationFailure
         except ImportError:
@@ -445,12 +451,15 @@ class TestReferenceOrientationShaping:
         )
 
         async def _run():
-            assert await _recall_reference_docs(
-                SimpleNamespace(), "t", "app", "cognee decision"
-            ) == []
-            assert await _recall_reference_docs(
-                SimpleNamespace(reference_repo=object()), "t", "app", ""
-            ) == []
+            assert (
+                await _recall_reference_docs(SimpleNamespace(), "t", "app", "cognee decision") == []
+            )
+            assert (
+                await _recall_reference_docs(
+                    SimpleNamespace(reference_repo=object()), "t", "app", ""
+                )
+                == []
+            )
 
         _asyncio.run(_run())
 
@@ -541,33 +550,39 @@ class TestCallGraphKeywordFallback:
         )
 
         async def _run():
-            assert await fallback_call_graph_to_search(
-                gateway=None,
-                tenant_id="t",
-                investigation_id="i",
-                application_id="app",
-                parameters={},
-                evidence_repo=None,
-                bank=list,
-                record_outcome=len,
-                outcome_detail={},
-            ) == 0
+            assert (
+                await fallback_call_graph_to_search(
+                    gateway=None,
+                    tenant_id="t",
+                    investigation_id="i",
+                    application_id="app",
+                    parameters={},
+                    evidence_repo=None,
+                    bank=list,
+                    record_outcome=len,
+                    outcome_detail={},
+                )
+                == 0
+            )
 
             class BadGateway:
                 async def search_code(self, *args, **kwargs):
                     raise RuntimeError("down")
 
-            assert await fallback_call_graph_to_search(
-                gateway=BadGateway(),
-                tenant_id="t",
-                investigation_id="i",
-                application_id="app",
-                parameters={"symbol": "x"},
-                evidence_repo=None,
-                bank=list,
-                record_outcome=len,
-                outcome_detail={},
-            ) == 0
+            assert (
+                await fallback_call_graph_to_search(
+                    gateway=BadGateway(),
+                    tenant_id="t",
+                    investigation_id="i",
+                    application_id="app",
+                    parameters={"symbol": "x"},
+                    evidence_repo=None,
+                    bank=list,
+                    record_outcome=len,
+                    outcome_detail={},
+                )
+                == 0
+            )
 
         _asyncio.run(_run())
 
@@ -648,13 +663,15 @@ class TestExpectationsDerivation:
 
         out = derive_endpoint_expectations(
             "getLocation",
-            {"type": "object",
-             "required": ["type"],
-             "properties": {
-                 "type": {"type": "string", "enum": ["COMMERCIAL", "RESIDENTIAL", "BULK"]},
-                 "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                 "notes": {"type": "string"},
-             }},
+            {
+                "type": "object",
+                "required": ["type"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["COMMERCIAL", "RESIDENTIAL", "BULK"]},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "notes": {"type": "string"},
+                },
+            },
         )
         assert out["endpoint_id"] == "getLocation"
         by_name = {a["name"]: a for a in out["attributes"]}
@@ -677,13 +694,23 @@ class TestExpectationsDerivation:
             merge_expectations,
         )
 
-        derived = [{"endpoint_id": "e", "attributes": [
-            {"name": "type", "allowed_values": ["A"]},
-            {"name": "old", "required": True},
-        ]}]
-        operator = [{"endpoint_id": "e", "attributes": [
-            {"name": "type", "allowed_values": ["A", "B"]},
-        ]}]
+        derived = [
+            {
+                "endpoint_id": "e",
+                "attributes": [
+                    {"name": "type", "allowed_values": ["A"]},
+                    {"name": "old", "required": True},
+                ],
+            }
+        ]
+        operator = [
+            {
+                "endpoint_id": "e",
+                "attributes": [
+                    {"name": "type", "allowed_values": ["A", "B"]},
+                ],
+            }
+        ]
         merged = merge_expectations(derived, operator)
         by_name = {a["name"]: a for a in merged[0]["attributes"]}
         assert by_name["type"]["allowed_values"] == ["A", "B"]
@@ -694,14 +721,29 @@ class TestExpectationsDerivation:
             ApplicationProfile,
         )
 
-        profile = ApplicationProfile.model_validate({
-            "id": "app", "tenant_id": "t", "name": "n",
-            "description": "d", "environment": "development",
-            "expectations": {"endpoints": [{"endpoint_id": "e", "attributes": [
-                {"name": "type", "required": True,
-                 "allowed_values": ["COMMERCIAL", "RESIDENTIAL"]},
-            ]}]},
-        })
+        profile = ApplicationProfile.model_validate(
+            {
+                "id": "app",
+                "tenant_id": "t",
+                "name": "n",
+                "description": "d",
+                "environment": "development",
+                "expectations": {
+                    "endpoints": [
+                        {
+                            "endpoint_id": "e",
+                            "attributes": [
+                                {
+                                    "name": "type",
+                                    "required": True,
+                                    "allowed_values": ["COMMERCIAL", "RESIDENTIAL"],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
         assert profile.expectations.endpoints[0].endpoint_id == "e"
         assert profile.expectations.endpoints[0].attributes[0].required is True
 
@@ -717,8 +759,11 @@ class TestBuildIntakeSeed:
             failing_symbol="com.acme.OfferSvc.price",
             caller_symbol="com.acme.Orchestrator.run",
             top_frame_file="OfferSvc.java",
-            frames=[{"file": "OfferSvc.java", "line": 42, "function": "price"},
-                    {"junk": True}, None],
+            frames=[
+                {"file": "OfferSvc.java", "line": 42, "function": "price"},
+                {"junk": True},
+                None,
+            ],
             log_refs=["es://idx/1"],
             trace_refs=["trace-9"],
             severity="CRITICAL",
@@ -726,9 +771,7 @@ class TestBuildIntakeSeed:
             actual={"locationType": None},
         )
         assert seed["error_class"] == "NullPointerException"
-        assert seed["frames"] == [
-            {"file": "OfferSvc.java", "line": 42, "function": "price"}
-        ]
+        assert seed["frames"] == [{"file": "OfferSvc.java", "line": 42, "function": "price"}]
         assert seed["log_refs"] == ["es://idx/1"]
         assert seed["severity"] == "CRITICAL"
         assert seed["expected"] == {"locationType": "COMMERCIAL"}
@@ -833,7 +876,9 @@ class TestDivergence:
         fails = evaluate_assertions(rows, assertions)
         assert any(f["field"] == "locationType" and f["row"] == 1 for f in fails)
         assert any(f["op"] == "equals" for f in fails)
-        assert evaluate_assertions([{"channel": "web"}], [{"field": "channel", "op": "present"}]) == []
+        assert (
+            evaluate_assertions([{"channel": "web"}], [{"field": "channel", "op": "present"}]) == []
+        )
         assert evaluate_assertions(["notadict"], assertions) == []
 
 
@@ -844,9 +889,24 @@ class TestJourneySpine:
         )
 
         rows = [
-            {"tracking_id": "t2", "service": "offer", "timestamp": "2026-10-18T01:00:02Z", "status": "ok"},
-            {"tracking_id": "t1", "service": "orchestrator", "timestamp": "2026-10-18T01:00:00Z", "status": "ok"},
-            {"tracking_id": "t1", "service": "location", "timestamp": "2026-10-18T01:00:01Z", "status": "ERROR timeout"},
+            {
+                "tracking_id": "t2",
+                "service": "offer",
+                "timestamp": "2026-10-18T01:00:02Z",
+                "status": "ok",
+            },
+            {
+                "tracking_id": "t1",
+                "service": "orchestrator",
+                "timestamp": "2026-10-18T01:00:00Z",
+                "status": "ok",
+            },
+            {
+                "tracking_id": "t1",
+                "service": "location",
+                "timestamp": "2026-10-18T01:00:01Z",
+                "status": "ERROR timeout",
+            },
             {"tracking_id": "", "service": "x", "timestamp": "", "status": ""},
         ]
         spine = build_journey_spine(rows, session_id="s1")
@@ -873,10 +933,21 @@ class TestRelationshipMerge:
 
         derived = [
             {"from_entity": "orders", "from_key": "id", "to_entity": "items", "to_key": "order_id"},
-            {"from_entity": "orders", "from_key": "id", "to_entity": "legacy", "to_key": "order_id"},
+            {
+                "from_entity": "orders",
+                "from_key": "id",
+                "to_entity": "legacy",
+                "to_key": "order_id",
+            },
         ]
         operator = [
-            {"from_entity": "orders", "from_key": "id", "to_entity": "legacy", "to_key": "order_id", "tombstoned": True},
+            {
+                "from_entity": "orders",
+                "from_key": "id",
+                "to_entity": "legacy",
+                "to_key": "order_id",
+                "tombstoned": True,
+            },
             {"from_entity": "items", "from_key": "id", "to_entity": "offers", "to_key": "item_id"},
         ]
         merged = merge_relationships(derived, operator)
@@ -890,15 +961,24 @@ class TestRelationshipMerge:
             materialize_session_templates,
         )
 
-        profile = {"datasources": [{
-            "id": "primary",
-            "session_entity": "orders",
-            "session_key": "session_id",
-            "relationships": [
-                {"from_entity": "orders", "from_key": "id", "to_entity": "items", "to_key": "order_id"},
-            ],
-            "query_templates": {},
-        }]}
+        profile = {
+            "datasources": [
+                {
+                    "id": "primary",
+                    "session_entity": "orders",
+                    "session_key": "session_id",
+                    "relationships": [
+                        {
+                            "from_entity": "orders",
+                            "from_key": "id",
+                            "to_entity": "items",
+                            "to_key": "order_id",
+                        },
+                    ],
+                    "query_templates": {},
+                }
+            ]
+        }
         out = materialize_session_templates(profile)
         templates = out["datasources"][0]["query_templates"]
         assert "auto_session_anchor" in templates
@@ -968,10 +1048,18 @@ class TestJourneyFusion:
 
         class FakeFindingRepo:
             async def list_findings(self, tenant_id, investigation_id, limit=50):
-                return ([SimpleNamespace(
-                    finding_type=SimpleNamespace(value="OBSERVATION"),
-                    statement="only", evidence_ids=[], related_hypothesis_ids=[],
-                    confidence=0.5)], None)
+                return (
+                    [
+                        SimpleNamespace(
+                            finding_type=SimpleNamespace(value="OBSERVATION"),
+                            statement="only",
+                            evidence_ids=[],
+                            related_hypothesis_ids=[],
+                            confidence=0.5,
+                        )
+                    ],
+                    None,
+                )
 
             async def save_finding_record(self, tenant_id, finding):
                 saved.append(finding)
@@ -1022,9 +1110,12 @@ class TestWalkSessionGraphHandler:
         profile = SimpleNamespace(
             environment="test",
             investigation=SimpleNamespace(
-                default_time_window=3600, max_evidence_per_query=50,
-                correlation_depth=2, max_hypotheses=5,
-                max_source_files=50, max_database_rows=200,
+                default_time_window=3600,
+                max_evidence_per_query=50,
+                correlation_depth=2,
+                max_hypotheses=5,
+                max_source_files=50,
+                max_database_rows=200,
                 evidence_budget=None,
             ),
             query_templates={},
@@ -1106,8 +1197,10 @@ class TestPremiseDistillation:
 
         def _hyp(statement, status):
             return SimpleNamespace(
-                statement=statement, status=status,
-                supporting_evidence_ids=[uuid4()], confidence_score=0.9,
+                statement=statement,
+                status=status,
+                supporting_evidence_ids=[uuid4()],
+                confidence_score=0.9,
             )
 
         class FakeHypRepo:
@@ -1118,12 +1211,17 @@ class TestPremiseDistillation:
                 ]
 
         svc = KnowledgeCaptureService(
-            artifact_repo=None, hypothesis_repo=FakeHypRepo(),
+            artifact_repo=None,
+            hypothesis_repo=FakeHypRepo(),
         )
 
         async def _run():
             return await svc._distill_premises(
-                "t", iid, "app", datetime.now(UTC), 90,
+                "t",
+                iid,
+                "app",
+                datetime.now(UTC),
+                90,
             )
 
         premises = _asyncio.run(_run())
@@ -1144,7 +1242,11 @@ class TestPremiseDistillation:
 
         async def _run():
             return await svc._distill_premises(
-                "t", uuid4(), "app", datetime.now(UTC), 90,
+                "t",
+                uuid4(),
+                "app",
+                datetime.now(UTC),
+                90,
             )
 
         assert _asyncio.run(_run()) == []
@@ -1243,9 +1345,10 @@ public class OfferController {
             parse_value_keys,
         )
 
-        assert parse_feign_client(
-            '@FeignClient(name = "location", url = "http://loc:8080")'
-        ) == {"name": "location", "url": "http://loc:8080"}
+        assert parse_feign_client('@FeignClient(name = "location", url = "http://loc:8080")') == {
+            "name": "location",
+            "url": "http://loc:8080",
+        }
         assert parse_feign_client("plain class") is None
         calls = parse_rest_calls('rest.getForObject("http://h/api/{id}", String.class)')
         assert calls == [{"method": "getForObject", "url": "http://h/api/{id}"}]
@@ -1257,9 +1360,7 @@ public class OfferController {
             parse_spring_yaml,
         )
 
-        props = parse_properties_file(
-            "# comment\nserver.port=8080\nserver.port=9090\n!bang\n"
-        )
+        props = parse_properties_file("# comment\nserver.port=8080\nserver.port=9090\n!bang\n")
         assert props == {"server.port": "9090"}
         flat = parse_spring_yaml("server:\n  port: 8080\nspring:\n  application:\n    name: svc\n")
         assert flat.get("server.port") == 8080
@@ -1299,11 +1400,15 @@ class TestAssemblerMerge:
         )
 
         profile, report = assemble_profile(
-            tenant_id="t", app_id="svc", org="acme", repo="svc",
+            tenant_id="t",
+            app_id="svc",
+            org="acme",
+            repo="svc",
             modules=[{"path": "svc", "build_system": "maven"}],
             controllers=[{"endpoints": [{"method": "GET", "path": "ofm/ping"}]}],
-            validations=[{"attributes": [{"name": "type", "required": True,
-                                           "allowed_values": ["A"]}]}],
+            validations=[
+                {"attributes": [{"name": "type", "required": True, "allowed_values": ["A"]}]}
+            ],
             feign_clients=[{"name": "loc", "url": ""}],
             config={"spring.application.name": "svc-app"},
         )
@@ -1321,17 +1426,25 @@ class TestAssemblerMerge:
             refresh_profile,
         )
 
-        current = {"id": "a", "version": 3, "status": "ACTIVE",
-                   "investigation": {"enabledEvidenceTypes": ["X"]}}
-        fresh = {"id": "a", "investigation": {"enabledEvidenceTypes": ["Y"]},
-                 "services": [{"name": "s"}]}
+        current = {
+            "id": "a",
+            "version": 3,
+            "status": "ACTIVE",
+            "investigation": {"enabledEvidenceTypes": ["X"]},
+        }
+        fresh = {
+            "id": "a",
+            "investigation": {"enabledEvidenceTypes": ["Y"]},
+            "services": [{"name": "s"}],
+        }
         operator = {"investigation": {"enabledEvidenceTypes": ["X", "Z"]}}
         merged = refresh_profile(current, fresh, operator)
         assert merged["version"] == 3 and merged["status"] == "ACTIVE"
         assert merged["investigation"]["enabledEvidenceTypes"] == ["X", "Z"]
         assert merged["services"] == [{"name": "s"}]
         tombstoned = refresh_profile(
-            current, fresh,
+            current,
+            fresh,
             {"services": [{"name": "s", "__tombstone": True}]},
         )
         assert tombstoned["services"] == []
@@ -1372,8 +1485,7 @@ class TestGenerateOrchestration:
             )
             files = list_files(root)
             modules = [
-                {"path": m.path, "build_system": m.build_system}
-                for m in detect_modules(files)
+                {"path": m.path, "build_system": m.build_system} for m in detect_modules(files)
             ]
             assert modules == [{"path": ".", "build_system": "maven"}]
             # pom at root yields no module dir; add nested module
@@ -1381,23 +1493,27 @@ class TestGenerateOrchestration:
             (root / "api" / "pom.xml").write_text("<project/>")
             files = list_files(root)
             modules = [
-                {"path": m.path, "build_system": m.build_system}
-                for m in detect_modules(files)
+                {"path": m.path, "build_system": m.build_system} for m in detect_modules(files)
             ]
             assert ("api", "maven") in [(m["path"], m["build_system"]) for m in modules]
             parsed = parse_checkout(root, files)
             assert any(
-                e["path"] == "ofm/ping"
-                for c in parsed["controllers"]
-                for e in c["endpoints"]
+                e["path"] == "ofm/ping" for c in parsed["controllers"] for e in c["endpoints"]
             )
             merged, overridden = merge_configs({}, parsed["spring_files"])
             assert merged.get("server.port") == 8080
             profile, report = assemble_profile(
-                tenant_id="t", app_id="offer-svc", org="acme", repo="svc",
-                modules=modules, controllers=parsed["controllers"],
-                validations=[], feign_clients=[], config=merged,
-                overridden_keys=overridden, operator={},
+                tenant_id="t",
+                app_id="offer-svc",
+                org="acme",
+                repo="svc",
+                modules=modules,
+                controllers=parsed["controllers"],
+                validations=[],
+                feign_clients=[],
+                config=merged,
+                overridden_keys=overridden,
+                operator={},
             )
             assert profile["status"] == "DRAFT"
             assert profile["services"][0]["code"]["source_roots"] == ["."]
@@ -1516,21 +1632,34 @@ port = os.getenv("PORT")
             detect_repo_type,
         )
 
-        assert detect_repo_type(
-            ["pom.xml", "src/main/java/A.java"],
-            {"pom.xml": "<project><artifactId>x</artifactId><dependency>spring-boot-starter-web</dependency></project>"},
-        )["repo_type"] == "java-spring"
-        assert detect_repo_type(
-            ["pom.xml", "src/main/java/A.java"],
-            {"pom.xml": "<project><build><plugin>quarkus-maven-plugin</plugin></build></project>"},
-        )["repo_type"] == "java-quarkus"
-        assert detect_repo_type(
-            ["pyproject.toml", "app/main.py"],
-            {"app/main.py": "from fastapi import FastAPI\napp = FastAPI()"},
-        )["repo_type"] == "python-fastapi"
-        assert detect_repo_type(
-            ["pyproject.toml", "app/main.py"], {}
-        )["repo_type"] == "python-generic"
+        assert (
+            detect_repo_type(
+                ["pom.xml", "src/main/java/A.java"],
+                {
+                    "pom.xml": "<project><artifactId>x</artifactId><dependency>spring-boot-starter-web</dependency></project>"
+                },
+            )["repo_type"]
+            == "java-spring"
+        )
+        assert (
+            detect_repo_type(
+                ["pom.xml", "src/main/java/A.java"],
+                {
+                    "pom.xml": "<project><build><plugin>quarkus-maven-plugin</plugin></build></project>"
+                },
+            )["repo_type"]
+            == "java-quarkus"
+        )
+        assert (
+            detect_repo_type(
+                ["pyproject.toml", "app/main.py"],
+                {"app/main.py": "from fastapi import FastAPI\napp = FastAPI()"},
+            )["repo_type"]
+            == "python-fastapi"
+        )
+        assert (
+            detect_repo_type(["pyproject.toml", "app/main.py"], {})["repo_type"] == "python-generic"
+        )
         assert detect_repo_type([], {})["repo_type"] == "unknown"
         assert detect_repo_type(None)["repo_type"] == "unknown"
 
@@ -1545,7 +1674,10 @@ class TestAssemblerDependencies:
         )
 
         profile, _ = assemble_profile(
-            tenant_id="t", app_id="svc", org="o", repo="r",
+            tenant_id="t",
+            app_id="svc",
+            org="o",
+            repo="r",
             feign_clients=[{"name": "loc", "url": "http://x"}],
         )
         validated = ApplicationProfile.model_validate(profile)
@@ -1572,8 +1704,14 @@ class TestProfileIdentity:
             parse_repo_ref,
         )
 
-        assert parse_repo_ref("github.com/samplecorp/orders-service") == ("samplecorp", "orders-service")
-        assert parse_repo_ref("https://github.com/samplecorp/orders-service.git") == ("samplecorp", "orders-service")
+        assert parse_repo_ref("github.com/samplecorp/orders-service") == (
+            "samplecorp",
+            "orders-service",
+        )
+        assert parse_repo_ref("https://github.com/samplecorp/orders-service.git") == (
+            "samplecorp",
+            "orders-service",
+        )
         assert parse_repo_ref("samplecorp/orders-service") == ("samplecorp", "orders-service")
         for bad in ["git@github.com:samplecorp/x.git", "../evil", "onlyone", "", "a/b/c"]:
             try:
@@ -1597,9 +1735,11 @@ class TestShapeSearchKeywords:
             _shape_search_keywords,
         )
 
-        out = _shape_search_keywords([
-            "Which slices of the LLM reasoner code-evidence implementation plan lack implementation?"
-        ])
+        out = _shape_search_keywords(
+            [
+                "Which slices of the LLM reasoner code-evidence implementation plan lack implementation?"
+            ]
+        )
         assert "slices" not in out  # stopword
         assert "reasoner" in out and "code" in out and "evidence" in out
         assert "plan" in out

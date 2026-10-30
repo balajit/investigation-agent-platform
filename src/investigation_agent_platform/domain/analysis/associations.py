@@ -31,7 +31,11 @@ class AssociationRecord:
 
 
 def symptom_signature(symptom: str, hub: str, error_class: str = "") -> str:
-    canonical = json.dumps({"s": symptom.strip().lower(), "h": hub.strip().lower(), "e": error_class.strip().lower()}, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        {"s": symptom.strip().lower(), "h": hub.strip().lower(), "e": error_class.strip().lower()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
 
@@ -46,17 +50,23 @@ class AssociationStore:
         existing = self.records.get(key)
         if existing is not None:
             merged = AssociationRecord(
-                tenant_id=rec.tenant_id, symptom_signature=rec.symptom_signature,
-                hub_entity=rec.hub_entity, root_cause_statement=rec.root_cause_statement,
-                fix_locations=rec.fix_locations, outcome=rec.outcome,
+                tenant_id=rec.tenant_id,
+                symptom_signature=rec.symptom_signature,
+                hub_entity=rec.hub_entity,
+                root_cause_statement=rec.root_cause_statement,
+                fix_locations=rec.fix_locations,
+                outcome=rec.outcome,
                 weight=round(min(MAX_WEIGHT, existing.weight + 0.25), 4),
             )
             self.records[key] = merged
             return merged
         clamped = AssociationRecord(
-            tenant_id=rec.tenant_id, symptom_signature=rec.symptom_signature,
-            hub_entity=rec.hub_entity, root_cause_statement=rec.root_cause_statement,
-            fix_locations=tuple(rec.fix_locations), outcome=rec.outcome,
+            tenant_id=rec.tenant_id,
+            symptom_signature=rec.symptom_signature,
+            hub_entity=rec.hub_entity,
+            root_cause_statement=rec.root_cause_statement,
+            fix_locations=tuple(rec.fix_locations),
+            outcome=rec.outcome,
             weight=round(max(MIN_WEIGHT, min(MAX_WEIGHT, rec.weight)), 4),
         )
         self.records[key] = clamped
@@ -70,15 +80,24 @@ class AssociationStore:
         delta = VERIFY_REWARD if verified else -REFUTE_PENALTY
         new_weight = round(max(MIN_WEIGHT, min(MAX_WEIGHT, rec.weight + delta)), 4)
         self.records[key] = AssociationRecord(
-            tenant_id=rec.tenant_id, symptom_signature=rec.symptom_signature,
-            hub_entity=rec.hub_entity, root_cause_statement=rec.root_cause_statement,
-            fix_locations=rec.fix_locations, outcome="VERIFIED" if verified else "REFUTED",
+            tenant_id=rec.tenant_id,
+            symptom_signature=rec.symptom_signature,
+            hub_entity=rec.hub_entity,
+            root_cause_statement=rec.root_cause_statement,
+            fix_locations=rec.fix_locations,
+            outcome="VERIFIED" if verified else "REFUTED",
             weight=new_weight,
         )
         return new_weight
 
-    def recall(self, tenant_id: str, signature: str, *, threshold: float = 1.0, limit: int = 5) -> list[AssociationRecord]:
-        cands = [r for (t, s, _), r in self.records.items() if t == tenant_id and s == signature and r.weight >= threshold]
+    def recall(
+        self, tenant_id: str, signature: str, *, threshold: float = 1.0, limit: int = 5
+    ) -> list[AssociationRecord]:
+        cands = [
+            r
+            for (t, s, _), r in self.records.items()
+            if t == tenant_id and s == signature and r.weight >= threshold
+        ]
         cands.sort(key=lambda r: (-r.weight, r.hub_entity))
         return cands[:limit]
 
@@ -95,16 +114,26 @@ def jump_start_packet(records: list[AssociationRecord]) -> dict:
     return {
         "type": "association_orientation",
         "ranked": [
-            {"hub": r.hub_entity, "cause": r.root_cause_statement,
-             "fix_locations": list(r.fix_locations), "weight": r.weight}
+            {
+                "hub": r.hub_entity,
+                "cause": r.root_cause_statement,
+                "fix_locations": list(r.fix_locations),
+                "weight": r.weight,
+            }
             for r in sorted(records, key=lambda r: -r.weight)
         ],
     }
 
 
-def bank_mid_loop_fact(statement: str, subject: str, predicate: str, obj: str, provenance: dict) -> dict:
+def bank_mid_loop_fact(
+    statement: str, subject: str, predicate: str, obj: str, provenance: dict
+) -> dict:
     """Mid-loop banking: prose-first for the prompt, triple-attached, provenance-bound."""
     statement = statement.strip()
     if not statement:
         raise ValueError("statement must be non-empty")
-    return {"prose": statement, "triple": {"subject": subject, "predicate": predicate, "object": obj}, "provenance": dict(provenance)}
+    return {
+        "prose": statement,
+        "triple": {"subject": subject, "predicate": predicate, "object": obj},
+        "provenance": dict(provenance),
+    }

@@ -93,9 +93,7 @@ def test_canonical_key_escapes_pipes_and_normalizes_paths():
     )
     assert key_plain == key_slashed == key_backslash
 
-    key_pipe = VerificationEngine.canonical_caller_edge_key(
-        "A|B", "C", "src/a.py", "abc"
-    )
+    key_pipe = VerificationEngine.canonical_caller_edge_key("A|B", "C", "src/a.py", "abc")
     assert "|" in key_pipe  # separators remain
     assert "A|B" not in key_pipe  # component pipe is escaped
     assert "A%7CB" in key_pipe
@@ -116,9 +114,7 @@ def test_workflow_key_matches_canonical_helper():
         def _escape(value):
             return str(value or "").strip().replace("|", "%7C")
 
-        normalized = (
-            str(file_path or "").replace("\\", "/").strip().strip("/").lstrip("./")
-        )
+        normalized = str(file_path or "").replace("\\", "/").strip().strip("/").lstrip("./")
         return "|".join(
             (
                 _escape(symbol),
@@ -135,9 +131,7 @@ def test_workflow_key_matches_canonical_helper():
     ]
     for symbol, counterpart, path, commit in cases:
         assert _workflow_key(symbol, counterpart, path, commit) == (
-            VerificationEngine.canonical_caller_edge_key(
-                symbol, counterpart, path, commit
-            )
+            VerificationEngine.canonical_caller_edge_key(symbol, counterpart, path, commit)
         )
 
 
@@ -152,9 +146,7 @@ def test_method_qualified_counterpart_proves_class_stem():
         "src/OrderServiceRestProxy.java",
         "10| public String submit() {\n11| return handler.handle(orderId);",
     )
-    statement = (
-        "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle"
-    )
+    statement = "OrderQualifyHelper and OrderServiceRestProxy call OrderServiceHandler.handle"
     hyp = _hyp(statement)
     assessments = [
         HypothesisEvidenceAssessment(

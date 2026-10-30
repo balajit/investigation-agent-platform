@@ -189,9 +189,7 @@ def test_never_touched_in_large_history_banks_proof(tmp_path: Path) -> None:
         target.write_text(f"v{i}\n", encoding="utf-8")
         repo.index.add(f"churn/file{i}.txt")
     repo.index.write()
-    repo.create_commit(
-        "HEAD", author, author, "bulk", repo.index.write_tree(), []
-    )
+    repo.create_commit("HEAD", author, author, "bulk", repo.index.write_tree(), [])
     rows = _history(_adapter(tmp_path), tmp_path, "service/never/existed.txt")
     assert len(rows) == 1
     row = rows[0]
@@ -239,7 +237,4 @@ class TestBankedPositive:
         )
 
         assert _banked_positive([self._row(match_count=0)]) is False
-        assert (
-            _banked_positive([self._row(match_count=0), self._row(match_count=1)])
-            is True
-        )
+        assert _banked_positive([self._row(match_count=0), self._row(match_count=1)]) is True

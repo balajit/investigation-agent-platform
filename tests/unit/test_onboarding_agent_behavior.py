@@ -76,11 +76,7 @@ def _verdict() -> ServiceVerdict:
             Claim(
                 statement="billing persists to postgres",
                 confidence=Confidence.VERIFIED,
-                evidence=[
-                    EvidencePointer(
-                        output_hash=HASH_A, field_path="census.files[3]"
-                    )
-                ],
+                evidence=[EvidencePointer(output_hash=HASH_A, field_path="census.files[3]")],
             ),
             Claim(
                 statement="read replicas cover reporting load",
@@ -149,9 +145,7 @@ def test_assemble_happy_path_hashes_verify() -> None:
         catalog_version="catalog-7",
         generation=1,
     )
-    assert report.report_content_hash == report_content_hash(
-        report.model_dump(mode="json")
-    )
+    assert report.report_content_hash == report_content_hash(report.model_dump(mode="json"))
     assert report.verdicts[0].claims[0].confidence == Confidence.VERIFIED
 
 
@@ -190,9 +184,7 @@ def test_assemble_unmapped_capability_requires_named_gap() -> None:
 def test_assemble_probeless_speculative_claim_rejected() -> None:
     bad = _verdict()
     with pytest.raises(ValidationError):
-        bad.claims.append(
-            Claim(statement="maybe scales", confidence=Confidence.SPECULATIVE)
-        )
+        bad.claims.append(Claim(statement="maybe scales", confidence=Confidence.SPECULATIVE))
 
 
 def test_draft_dispositions_mapped_unmapped_ambiguous() -> None:
@@ -299,9 +291,7 @@ def test_diagnose_empty_history_is_insufficient_evidence() -> None:
 def test_diagnose_clock_skew_blocks_staleness_judgment() -> None:
     now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
     skewed = _snapshot(
-        stages=[
-            StageObservation(stage="QUEUED", entered_at=now + timedelta(hours=1))
-        ],
+        stages=[StageObservation(stage="QUEUED", entered_at=now + timedelta(hours=1))],
         current_stage="QUEUED",
     )
     diagnosis = diagnose(skewed)
@@ -319,9 +309,7 @@ def test_diagnose_repeated_failures_projected() -> None:
     diagnosis = diagnose(_snapshot(consecutive_failures=4))
     kinds = [cause.cause for cause in diagnosis.causes]
     assert any("consecutive failures" in text for text in kinds)
-    repeated = next(
-        cause for cause in diagnosis.causes if "consecutive failures" in cause.cause
-    )
+    repeated = next(cause for cause in diagnosis.causes if "consecutive failures" in cause.cause)
     assert repeated.confidence == Confidence.PROJECTED
     assert repeated.distinguishing_tests
 
@@ -339,25 +327,19 @@ def _question(kind: QuestionKind, subject: str, **overrides: Any) -> CoverageQue
 
 def test_why_unsupported_answered_with_citations() -> None:
     report = _assemble()
-    answer = answer_coverage_question(
-        report, _question(QuestionKind.WHY, subject="postgres")
-    )
+    answer = answer_coverage_question(report, _question(QuestionKind.WHY, subject="postgres"))
     assert answer.status == "answered"
     assert answer.matched_service == "billing"
     assert answer.matched_disposition is not None
     assert answer.matched_disposition.capability == "postgres"
     assert "native registry entry" in answer.summary
     assert len(answer.citations) == 2
-    assert all(
-        pointer.output_hash in (HASH_A, HASH_B) for pointer in answer.citations
-    )
+    assert all(pointer.output_hash in (HASH_A, HASH_B) for pointer in answer.citations)
 
 
 def test_why_unknown_subject_names_probe() -> None:
     report = _assemble()
-    answer = answer_coverage_question(
-        report, _question(QuestionKind.WHY, subject="mainframe")
-    )
+    answer = answer_coverage_question(report, _question(QuestionKind.WHY, subject="mainframe"))
     assert answer.status == "unknown"
     assert answer.citations == []
     assert answer.resolving_probe is not None
@@ -366,9 +348,7 @@ def test_why_unknown_subject_names_probe() -> None:
 
 def test_service_level_match_lists_tier_and_dispositions() -> None:
     report = _assemble()
-    answer = answer_coverage_question(
-        report, _question(QuestionKind.WHY, subject="BILLING")
-    )
+    answer = answer_coverage_question(report, _question(QuestionKind.WHY, subject="BILLING"))
     assert answer.status == "answered"
     assert "deep" in answer.summary
     assert "postgres=SUPPORTED" in answer.summary
@@ -396,9 +376,7 @@ def test_limitations_kind_echoes_report_limitations() -> None:
 
 def test_customer_audience_omits_tooling_versions() -> None:
     report = _assemble()
-    operator = answer_coverage_question(
-        report, _question(QuestionKind.WHY, subject="postgres")
-    )
+    operator = answer_coverage_question(report, _question(QuestionKind.WHY, subject="postgres"))
     customer = answer_coverage_question(
         report,
         _question(QuestionKind.WHY, subject="postgres", audience=Audience.CUSTOMER),

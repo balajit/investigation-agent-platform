@@ -114,7 +114,9 @@ def _records_from_body(body: BatchIntakeBody) -> list[BatchIntakeRecord]:
                 code="BATCH_VALIDATION", http_status=status.HTTP_400_BAD_REQUEST, message=str(exc)
             ) from exc
     raise ApiError(
-        code="BATCH_INPUT_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="Provide either records or csv with an explicit field_mapping"
+        code="BATCH_INPUT_REQUIRED",
+        http_status=status.HTTP_400_BAD_REQUEST,
+        message="Provide either records or csv with an explicit field_mapping",
     )
 
 
@@ -135,12 +137,16 @@ async def create_batch_intake(
     """Ingest one batch and start its parent workflow (idempotent)."""
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     if getattr(ctx, "batch_repo", None) is None:
         raise ApiError(
-            code="BATCH_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Batch store is unavailable"
+            code="BATCH_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Batch store is unavailable",
         )
     records = _records_from_body(body)
     canonical = json.dumps([r.model_dump(mode="json") for r in records], sort_keys=True)
@@ -170,7 +176,10 @@ async def create_batch_intake(
         ) from exc
     except BatchQuotaExceededError as exc:
         raise ApiError(
-            code="BATCH_VALIDATION", http_status=status.HTTP_429_TOO_MANY_REQUESTS, message=str(exc), headers={"Retry-After": "60"}
+            code="BATCH_VALIDATION",
+            http_status=status.HTTP_429_TOO_MANY_REQUESTS,
+            message=str(exc),
+            headers={"Retry-After": "60"},
         ) from exc
     except ConcurrencyError as exc:
         raise ApiError(
@@ -180,7 +189,9 @@ async def create_batch_intake(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; batch was recorded but not started"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; batch was recorded but not started",
         )
     workflow_id = f"wf-batch-{job.id.hex}"
     try:
@@ -204,7 +215,9 @@ async def create_batch_intake(
             extra=sanitize_extra({"job_id": str(job.id), "event": "batch_intake.dispatch_failed"}),
         )
         raise ApiError(
-            code="BATCH_DISPATCH_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start batch workflow; batch was recorded but not started"
+            code="BATCH_DISPATCH_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to start batch workflow; batch was recorded but not started",
         ) from exc
 
     try:
@@ -262,7 +275,9 @@ async def get_batch_intake(
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_BATCH_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid batch id format"
+            code="INVALID_BATCH_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid batch id format",
         ) from exc
     service = _service(ctx)
     job, records, total = await service.get_batch(x_tenant_id, job_uuid, limit, offset)
@@ -302,7 +317,9 @@ async def cancel_batch_intake(
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_BATCH_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid batch id format"
+            code="INVALID_BATCH_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid batch id format",
         ) from exc
     service = _service(ctx)
     job = await service.cancel_batch(x_tenant_id, job_uuid)
@@ -341,14 +358,18 @@ async def retry_batch_intake(
     attempt-suffixed child ids (no collisions with prior attempts)."""
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     try:
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_BATCH_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid batch id format"
+            code="INVALID_BATCH_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid batch id format",
         ) from exc
     canonical = json.dumps({"job_id": job_id, "op": "retry"}, sort_keys=True)
     request_hash = hashlib.sha256(canonical.encode()).hexdigest()
@@ -371,14 +392,18 @@ async def retry_batch_intake(
     reset = await service.retry_failed(x_tenant_id, job_uuid)
     if not reset:
         raise ApiError(
-            code="BATCH_NOTHING_TO_RETRY", http_status=status.HTTP_409_CONFLICT, message="No failed records to retry"
+            code="BATCH_NOTHING_TO_RETRY",
+            http_status=status.HTTP_409_CONFLICT,
+            message="No failed records to retry",
         )
     job = await ctx.background_job_repo.get_by_id(x_tenant_id, job_uuid)
     attempt = getattr(job, "attempt", 1) if job is not None else 1
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable",
         )
     workflow_id = f"wf-batch-{job_uuid.hex}-r{attempt}"
     try:
@@ -402,7 +427,9 @@ async def retry_batch_intake(
             extra=sanitize_extra({"job_id": job_id, "event": "batch_intake.retry_failed"}),
         )
         raise ApiError(
-            code="BATCH_RETRY_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start batch retry"
+            code="BATCH_RETRY_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to start batch retry",
         ) from exc
     if job is not None:
         try:
@@ -455,11 +482,15 @@ async def purge_batch_intake(
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_BATCH_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid batch id format"
+            code="INVALID_BATCH_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid batch id format",
         ) from exc
     service = _service(ctx)
     if not await service.purge_batch(x_tenant_id, job_uuid):
         raise ApiError(
-            code="BATCH_PURGE_REFUSED", http_status=status.HTTP_409_CONFLICT, message="Batch is missing, active, or within retention"
+            code="BATCH_PURGE_REFUSED",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Batch is missing, active, or within retention",
         )
     return BatchIntakeAck(job_id=job_id, status="PURGED")

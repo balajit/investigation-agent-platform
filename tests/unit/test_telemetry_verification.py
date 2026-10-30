@@ -37,8 +37,11 @@ def _hit(doc_id="doc1", index="logs-a-1"):  # type: ignore[no-untyped-def]
     return {
         "_id": doc_id,
         "_index": index,
-        "_source": {"@timestamp": "2026-01-01T00:00:00Z", "message": "boom",
-                    "service": {"name": "svc-a"}},
+        "_source": {
+            "@timestamp": "2026-01-01T00:00:00Z",
+            "message": "boom",
+            "service": {"name": "svc-a"},
+        },
         "sort": [1767225600000, doc_id],
     }
 
@@ -93,7 +96,9 @@ def _by_name(results):  # type: ignore[no-untyped-def]
 async def test_verify_all_green_with_fake_client():  # type: ignore[no-untyped-def]
     client = FakeClient()
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="tenant-a", home_service="svc-a",
+        configs=_configs(),
+        tenant_id="tenant-a",
+        home_service="svc-a",
         client_factory=_factory(client),
     )
     by_name = _by_name(results)
@@ -118,7 +123,9 @@ async def test_verify_all_green_with_fake_client():  # type: ignore[no-untyped-d
 async def test_verify_empty_rows_still_attributes_and_fetch_fails():  # type: ignore[no-untyped-def]
     client = FakeClient(hits=[])
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="tenant-a", home_service="svc-a",
+        configs=_configs(),
+        tenant_id="tenant-a",
+        home_service="svc-a",
         client_factory=_factory(client),
     )
     by_name = _by_name(results)
@@ -130,7 +137,9 @@ async def test_verify_empty_rows_still_attributes_and_fetch_fails():  # type: ig
 @pytest.mark.asyncio
 async def test_verify_unknown_tenant_short_circuits():  # type: ignore[no-untyped-def]
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="nope", home_service="svc-a",
+        configs=_configs(),
+        tenant_id="nope",
+        home_service="svc-a",
         client_factory=_factory(FakeClient()),
     )
     assert [r.name for r in results] == ["config loads"]
@@ -140,7 +149,9 @@ async def test_verify_unknown_tenant_short_circuits():  # type: ignore[no-untype
 @pytest.mark.asyncio
 async def test_verify_unhomed_service_short_circuits():  # type: ignore[no-untyped-def]
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="tenant-a", home_service="ghost",
+        configs=_configs(),
+        tenant_id="tenant-a",
+        home_service="ghost",
         client_factory=_factory(FakeClient()),
     )
     assert [r.name for r in results] == ["config loads", "home endpoint homing service"]
@@ -156,7 +167,9 @@ async def test_verify_from_dir_loads_file(tmp_path):  # type: ignore[no-untyped-
         encoding="utf-8",
     )
     results = await verify_tenant_telemetry_from_dir(
-        telemetry_dir=str(tmp_path), tenant_id="tenant-a", home_service="svc-a",
+        telemetry_dir=str(tmp_path),
+        tenant_id="tenant-a",
+        home_service="svc-a",
         client_factory=_factory(FakeClient()),
     )
     assert _by_name(results)["fetch resolves home endpoint"].passed
@@ -177,7 +190,9 @@ async def test_verify_from_dir_malformed_fails_closed(tmp_path):  # type: ignore
     )
     with pytest.raises(PlatformConfigurationError):
         await verify_tenant_telemetry_from_dir(
-            telemetry_dir=str(tmp_path), tenant_id="tenant-a", home_service="svc",
+            telemetry_dir=str(tmp_path),
+            tenant_id="tenant-a",
+            home_service="svc",
             client_factory=_factory(FakeClient()),
         )
 
@@ -203,7 +218,9 @@ class FailingClient(FakeClient):
 @pytest.mark.asyncio
 async def test_verify_provider_error_records_fail_and_continues():  # type: ignore[no-untyped-def]
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="tenant-a", home_service="svc-a",
+        configs=_configs(),
+        tenant_id="tenant-a",
+        home_service="svc-a",
         client_factory=_factory(FailingClient()),
     )
     by_name = _by_name(results)
@@ -258,8 +275,13 @@ def _app_hit(doc_id="doc1", index="logs-a-1", app="svc-a"):  # type: ignore[no-u
     return {
         "_id": doc_id,
         "_index": index,
-        "_source": {"@timestamp": "2026-01-01T00:00:00Z", "message": "boom",
-                    "appName": app, "error": False, "traceId": "t1"},
+        "_source": {
+            "@timestamp": "2026-01-01T00:00:00Z",
+            "message": "boom",
+            "appName": app,
+            "error": False,
+            "traceId": "t1",
+        },
         "sort": [1767225600000, doc_id],
     }
 
@@ -274,9 +296,12 @@ async def test_verify_with_mapping_attributes_service(tmp_path):  # type: ignore
     registry = load_mapping_profiles(tmp_path)
     client = FakeClient(hits=[_app_hit()])
     results = await verify_tenant_telemetry(
-        configs=_configs(), tenant_id="tenant-a", home_service="svc-a",
+        configs=_configs(),
+        tenant_id="tenant-a",
+        home_service="svc-a",
         client_factory=_factory(client),
-        mapping_source_id="test-svc-map", mapping_registry=registry,
+        mapping_source_id="test-svc-map",
+        mapping_registry=registry,
     )
     by_name = _by_name(results)
     assert by_name["endpoint attributed"].passed
@@ -288,7 +313,9 @@ async def test_verify_with_mapping_attributes_service(tmp_path):  # type: ignore
 async def test_verify_mapping_without_registry_fails_closed():  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError, match="mapping_registry or mapping_profiles_path"):
         await verify_tenant_telemetry(
-            configs=_configs(), tenant_id="tenant-a", home_service="svc-a",
+            configs=_configs(),
+            tenant_id="tenant-a",
+            home_service="svc-a",
             client_factory=_factory(FakeClient()),
             mapping_source_id="test-svc-map",
         )

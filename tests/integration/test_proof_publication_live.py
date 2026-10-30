@@ -498,7 +498,12 @@ async def test_k5_alternative_survival(live: Any, _writers_all: None) -> None:
     assert denied.committed is False
     assert await _counts(live, inv_id) == (0, 0, 0, 0)
     ok = await svc.commit(
-        TENANT, inv_id, exp, [good, bad], mode="any", reconciliation_adjudicated=True,
+        TENANT,
+        inv_id,
+        exp,
+        [good, bad],
+        mode="any",
+        reconciliation_adjudicated=True,
         policy=_policy(),
     )
     assert ok.committed is True
@@ -516,7 +521,12 @@ async def test_k12_policy_version_new_decision(live: Any) -> None:
     svc = ProofPublicationService(live.factory)
     route = _definition_route("OrderService", "class OrderService:\n    pass\n")
     first = await svc.commit(
-        TENANT, inv_id, exp, [route], gate_policy_version="gate/v1", reconciliation_adjudicated=True,
+        TENANT,
+        inv_id,
+        exp,
+        [route],
+        gate_policy_version="gate/v1",
+        reconciliation_adjudicated=True,
         policy=_policy(),
     )
     assert first.committed is True
@@ -549,7 +559,12 @@ async def test_commit_happy_path_with_projections(live: Any) -> None:
     svc = ProofPublicationService(live.factory)
     route = _definition_route("OrderService", "class OrderService:\n    pass\n")
     out = await svc.commit(
-        TENANT, inv_id, exp, [route], lifecycle=_lifecycle(), reconciliation_adjudicated=True,
+        TENANT,
+        inv_id,
+        exp,
+        [route],
+        lifecycle=_lifecycle(),
+        reconciliation_adjudicated=True,
         policy=_policy(),
     )
     assert out.committed is True
@@ -571,7 +586,9 @@ async def test_interleaved_version_bump_denied(live: Any) -> None:
         row.version = int(row.version) + 1
     svc = ProofPublicationService(live.factory)
     route = _definition_route("OrderService", "class OrderService:\n    pass\n")
-    denied = await svc.commit(TENANT, inv_id, exp, [route], lifecycle=_lifecycle(), policy=_policy())
+    denied = await svc.commit(
+        TENANT, inv_id, exp, [route], lifecycle=_lifecycle(), policy=_policy()
+    )
     assert denied.committed is False
     assert denied.reason == "STALE_VERSION"
     assert await _counts(live, inv_id) == (0, 0, 0, 0)
@@ -607,7 +624,9 @@ async def test_unadjudicated_conflict_denied_then_adjudicated_commits(live: Any)
     assert denied.committed is False
     assert denied.reason == "CONFLICT_UNRESOLVED"
     assert await _counts(live, inv_id) == (0, 0, 0, 0)
-    ok = await svc.commit(TENANT, inv_id, exp, [route], reconciliation_adjudicated=True, policy=_policy())
+    ok = await svc.commit(
+        TENANT, inv_id, exp, [route], reconciliation_adjudicated=True, policy=_policy()
+    )
     assert ok.committed is True
 
 
@@ -647,7 +666,12 @@ async def test_idempotent_recommit(live: Any) -> None:
     svc = ProofPublicationService(live.factory)
     route = _definition_route("OrderService", "class OrderService:\n    pass\n")
     first = await svc.commit(
-        TENANT, inv_id, exp, [route], lifecycle=_lifecycle(), reconciliation_adjudicated=True,
+        TENANT,
+        inv_id,
+        exp,
+        [route],
+        lifecycle=_lifecycle(),
+        reconciliation_adjudicated=True,
         policy=_policy(),
     )
     assert first.committed is True
@@ -657,7 +681,12 @@ async def test_idempotent_recommit(live: Any) -> None:
         evidence_digest=exp.evidence_digest,
     )
     second = await svc.commit(
-        TENANT, inv_id, exp2, [route], lifecycle=_lifecycle(), reconciliation_adjudicated=True,
+        TENANT,
+        inv_id,
+        exp2,
+        [route],
+        lifecycle=_lifecycle(),
+        reconciliation_adjudicated=True,
         policy=_policy(),
     )
     assert second.committed is True
@@ -680,7 +709,9 @@ async def test_rls_enforced_for_least_privilege_role(live: Any) -> None:
     exp = await _expectation(live, hyp)
     svc = ProofPublicationService(live.factory)
     route = _definition_route("OrderService", "class OrderService:\n    pass\n")
-    out = await svc.commit(TENANT, inv_id, exp, [route], reconciliation_adjudicated=True, policy=_policy())
+    out = await svc.commit(
+        TENANT, inv_id, exp, [route], reconciliation_adjudicated=True, policy=_policy()
+    )
     assert out.committed is True
     async with live.engine.connect() as conn:
         trans = await conn.begin()
@@ -892,5 +923,7 @@ async def test_R4e_out_of_policy_repository_denied_writes_nothing(live: Any) -> 
     )
     denied = await svc.commit(TENANT, inv_id, exp, [rerouted], policy=_policy())
     assert denied.committed is False
-    assert denied.reason == "POLICY_DENIED:POLICY_DENIED:policy-scope:external/untrusted", denied.reason
+    assert denied.reason == "POLICY_DENIED:POLICY_DENIED:policy-scope:external/untrusted", (
+        denied.reason
+    )
     assert await _counts(live, inv_id) == (0, 0, 0, 0)

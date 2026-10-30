@@ -30,6 +30,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 logger = logging.getLogger("iap.application")
 
+
 def _knowledge_extra(context: Any) -> dict[str, Any]:
     """Context composition counts (never fact text)."""
     try:
@@ -44,6 +45,7 @@ def _knowledge_extra(context: Any) -> dict[str, Any]:
         return extra
     except Exception:
         return {}
+
 
 # Checker: (tenant_id, reverify_spec) -> True if the live source still agrees.
 ReverifyChecker = Callable[[str, Any], Awaitable[bool]]
@@ -164,7 +166,9 @@ class KnowledgeRetrievalService:
             return None
         try:
             raw = await self.context_cache.get(
-                cache_key(tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints)
+                cache_key(
+                    tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints
+                )
             )
         except Exception as exc:
             logger.warning("Context cache lookup failed open: %s", exc)
@@ -175,7 +179,10 @@ class KnowledgeRetrievalService:
             import json as _json
 
             envelope = _json.loads(raw)
-            if not isinstance(envelope, dict) or envelope.get("format_version") != CACHE_FORMAT_VERSION:
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("format_version") != CACHE_FORMAT_VERSION
+            ):
                 return None
             return KnowledgeContext.model_validate(envelope["context"])
         except Exception as exc:
@@ -201,7 +208,9 @@ class KnowledgeRetrievalService:
                 {"format_version": CACHE_FORMAT_VERSION, "context": context.model_dump(mode="json")}
             )
             await self.context_cache.set(
-                cache_key(tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints),
+                cache_key(
+                    tenant_id, application_id, investigation_id, kinds, code_issue_fingerprints
+                ),
                 envelope,
                 self.context_cache_ttl_seconds,
             )

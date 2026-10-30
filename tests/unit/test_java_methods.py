@@ -135,7 +135,7 @@ def test_varargs_resolves_multi_argument_call():
         "  void join(String sep) {}\n"
         "  void join(String... parts) {}\n"
         "  void run() {\n"
-        "    join(\"a\", \"b\");\n"
+        '    join("a", "b");\n'
         "  }\n"
         "}"
     )
@@ -152,7 +152,7 @@ def test_varargs_fixed_arity_wins_single_argument_call():
         "  void join(String sep) {}\n"
         "  void join(String... parts) {}\n"
         "  void run() {\n"
-        "    join(\"a\");\n"
+        '    join("a");\n'
         "  }\n"
         "}"
     )
@@ -219,7 +219,7 @@ def test_reflection_abstains():
         "class Widget {\n"
         "  void process(int v) {}\n"
         "  void run() throws Exception {\n"
-        "    getClass().getMethod(\"process\", int.class).invoke(this, 5);\n"
+        '    getClass().getMethod("process", int.class).invoke(this, 5);\n'
         "  }\n"
         "}"
     )
@@ -277,12 +277,7 @@ def test_unknown_receiver_type_abstains():
 
 def test_cross_module_scope_abstains():
     evidence = _source_evidence(
-        "class Widget {\n"
-        "  void process(int v) {}\n"
-        "  void run() {\n"
-        "    process(5);\n"
-        "  }\n"
-        "}"
+        "class Widget {\n  void process(int v) {}\n  void run() {\n    process(5);\n  }\n}"
     )
     result = resolve_java_call_target(evidence, "process", declaring_type="com.external.Lib")
     assert result.status == CodeFactStatus.UNRESOLVED
@@ -299,8 +294,8 @@ def test_missing_call_site_abstains():
 def test_float_suffix_selects_float_overload():
     evidence = _source_evidence(
         "class Widget {\n"
-        "  String fmt(float x) { return \"f\"; }\n"
-        "  String fmt(double x) { return \"d\"; }\n"
+        '  String fmt(float x) { return "f"; }\n'
+        '  String fmt(double x) { return "d"; }\n'
         "  void run() {\n"
         "    fmt(1.0f);\n"
         "  }\n"
@@ -315,8 +310,8 @@ def test_float_suffix_selects_float_overload():
 def test_plain_float_literal_selects_double_overload():
     evidence = _source_evidence(
         "class Widget {\n"
-        "  String fmt(float x) { return \"f\"; }\n"
-        "  String fmt(double x) { return \"d\"; }\n"
+        '  String fmt(float x) { return "f"; }\n'
+        '  String fmt(double x) { return "d"; }\n'
         "  void run() {\n"
         "    fmt(1.0);\n"
         "  }\n"

@@ -157,9 +157,7 @@ def _binary(node: Any, source: bytes) -> tuple[_Value | None, str | None]:
                 if len(lp) + len(rp) > 4096:
                     return (None, "unsupported_string_size")
                 return (("str", lp + rp), None)
-            if text == "*" and (
-                (lk == "str" and rk == "int") or (lk == "int" and rk == "str")
-            ):
+            if text == "*" and ((lk == "str" and rk == "int") or (lk == "int" and rk == "str")):
                 s, n = (lp, rp) if lk == "str" else (rp, lp)
                 if n < 0 or n > 256 or len(s) * max(n, 0) > 4096:
                     return (None, "unsupported_string_size")

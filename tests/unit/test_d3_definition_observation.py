@@ -96,16 +96,26 @@ def test_d3p_g01_path_normalization_identical_preimage() -> None:
     a = _resolved()
     b = _resolved()
     object.__setattr__(b.target, "file_path", "x")  # placeholder, replaced below
-    t1 = BoundTargetIdentity(symbol="s", declaring_type=None, file_path="./src/app.py", revision=R40)
+    t1 = BoundTargetIdentity(
+        symbol="s", declaring_type=None, file_path="./src/app.py", revision=R40
+    )
     t2 = BoundTargetIdentity(symbol="s", declaring_type=None, file_path="src//app.py", revision=R40)
     assert t1.file_path == t2.file_path == "src/app.py"
     r1 = ResolvedDefinitionPayload(
-        target=t1, repository=_repo(), resolver=_resolver(), limitation_codes=[],
-        lineage=_lineage(_repo()), assumptions=[],
+        target=t1,
+        repository=_repo(),
+        resolver=_resolver(),
+        limitation_codes=[],
+        lineage=_lineage(_repo()),
+        assumptions=[],
     )
     r2 = ResolvedDefinitionPayload(
-        target=t2, repository=_repo(), resolver=_resolver(), limitation_codes=[],
-        lineage=_lineage(_repo()), assumptions=[],
+        target=t2,
+        repository=_repo(),
+        resolver=_resolver(),
+        limitation_codes=[],
+        lineage=_lineage(_repo()),
+        assumptions=[],
     )
     assert compute_definition_id(DefinitionVariant.RESOLVED_TARGET_BINDING, r1) == (
         compute_definition_id(DefinitionVariant.RESOLVED_TARGET_BINDING, r2)
@@ -114,7 +124,9 @@ def test_d3p_g01_path_normalization_identical_preimage() -> None:
 
 
 def test_d3p_g01_symbol_exactness_no_last_segment_match() -> None:
-    full = BoundTargetIdentity(symbol="a::serve", declaring_type=None, file_path="f.py", revision=R40)
+    full = BoundTargetIdentity(
+        symbol="a::serve", declaring_type=None, file_path="f.py", revision=R40
+    )
     last = BoundTargetIdentity(symbol="serve", declaring_type=None, file_path="f.py", revision=R40)
     assert full.symbol != last.symbol  # native tolerance deliberately not carried over
     upper = BoundTargetIdentity(symbol="Serve", declaring_type=None, file_path="f.py", revision=R40)
@@ -139,7 +151,9 @@ def test_d3p_g01_symbol_stripped_and_nfc() -> None:
     with pytest.raises((EdgeError, ValidationError)):
         BoundTargetIdentity(symbol="   ", declaring_type=None, file_path="f.py", revision=R40)
     with pytest.raises((EdgeError, ValidationError)):
-        BoundTargetIdentity(symbol="serv\u0065\u0301", declaring_type=None, file_path="f.py", revision=R40)
+        BoundTargetIdentity(
+            symbol="serv\u0065\u0301", declaring_type=None, file_path="f.py", revision=R40
+        )
 
 
 # --- D3P-G03/G04: unresolved / partial shapes -------------------------------
@@ -147,7 +161,9 @@ def test_d3p_g01_symbol_stripped_and_nfc() -> None:
 
 def test_d3p_g03_unresolved_ref_only_no_bound_endpoint() -> None:
     payload = UnresolvedDefinitionPayload(
-        observed_ref=RangeReference(file_path="src/app.py", revision=R40, start_line=10, end_line=20),
+        observed_ref=RangeReference(
+            file_path="src/app.py", revision=R40, start_line=10, end_line=20
+        ),
         limitation_codes=[LimitationCode.MISSING_INPUT],
         repository=None,
         resolver=_resolver(),
@@ -180,17 +196,27 @@ def test_d3p_g04_partial_missing_taxonomy() -> None:
 def test_d3p_n01_unknown_variant_rejected() -> None:
     with pytest.raises((EdgeError, ValidationError, ValueError)):
         verify_definition_observation(
-            {"observation_id": "x", "variant": "RESOLVED_EDGE", "record_version": "definition/v1",
-             "payload": {}}
+            {
+                "observation_id": "x",
+                "variant": "RESOLVED_EDGE",
+                "record_version": "definition/v1",
+                "payload": {},
+            }
         )
 
 
 def test_d3p_n01_unknown_field_rejected() -> None:
     with pytest.raises((EdgeError, ValidationError)):
         ResolvedDefinitionPayload(
-            target=BoundTargetIdentity(symbol="s", declaring_type=None, file_path="f.py", revision=R40),
-            repository=_repo(), resolver=_resolver(), limitation_codes=[],
-            lineage=_lineage(_repo()), assumptions=[], bogus=1,  # type: ignore[call-arg]
+            target=BoundTargetIdentity(
+                symbol="s", declaring_type=None, file_path="f.py", revision=R40
+            ),
+            repository=_repo(),
+            resolver=_resolver(),
+            limitation_codes=[],
+            lineage=_lineage(_repo()),
+            assumptions=[],
+            bogus=1,  # type: ignore[call-arg]
         )
 
 
@@ -199,19 +225,27 @@ def test_d3p_n01_missing_taxonomy_and_resolved_codes() -> None:
         make_definition_observation(
             DefinitionVariant.PARTIAL_OBSERVATION,
             PartialDefinitionPayload(
-                target=None, limitation_codes=[LimitationCode.MISSING_INPUT],
-                missing=["repository"], repository=_repo(), resolver=_resolver(),
-                lineage=_lineage(_repo()), assumptions=[],
+                target=None,
+                limitation_codes=[LimitationCode.MISSING_INPUT],
+                missing=["repository"],
+                repository=_repo(),
+                resolver=_resolver(),
+                lineage=_lineage(_repo()),
+                assumptions=[],
             ),
         )
     with pytest.raises(EdgeError):
         make_definition_observation(
             DefinitionVariant.RESOLVED_TARGET_BINDING,
             ResolvedDefinitionPayload(
-                target=BoundTargetIdentity(symbol="s", declaring_type=None, file_path="f.py", revision=R40),
-                repository=_repo(), resolver=_resolver(),
+                target=BoundTargetIdentity(
+                    symbol="s", declaring_type=None, file_path="f.py", revision=R40
+                ),
+                repository=_repo(),
+                resolver=_resolver(),
                 limitation_codes=[LimitationCode.MISSING_INPUT],
-                lineage=_lineage(_repo()), assumptions=[],
+                lineage=_lineage(_repo()),
+                assumptions=[],
             ),
         )
 
@@ -225,15 +259,21 @@ def test_d3p_n01_duplicate_assumptions_and_sources() -> None:
     from investigation_agent_platform.domain.proof.edge_observation import LineageSource
 
     dup = LineageSource(
-        evidence_id="ev-001", evidence_digest="sha256:e1", artifact_digest="sha256:a1",
-        scope="file", revision=R40, repository=_repo(),
+        evidence_id="ev-001",
+        evidence_digest="sha256:e1",
+        artifact_digest="sha256:a1",
+        scope="file",
+        revision=R40,
+        repository=_repo(),
     )
     from investigation_agent_platform.domain.proof.edge_observation import Lineage
 
     with pytest.raises(EdgeError):
         make_definition_observation(
             DefinitionVariant.RESOLVED_TARGET_BINDING,
-            _resolved(lineage=Lineage(sources=[dup, dup], analyzer_run_id="a", execution_identity="e")),
+            _resolved(
+                lineage=Lineage(sources=[dup, dup], analyzer_run_id="a", execution_identity="e")
+            ),
         )
 
 
@@ -246,7 +286,9 @@ def test_d3p_n03_adjudication_counts() -> None:
     assert zero.variant == DefinitionVariant.PARTIAL_OBSERVATION
     assert zero.missing == ["target"] and zero.limitation_codes == [LimitationCode.MISSING_INPUT]
     multi = adjudicate_target_binding(3, True)
-    assert multi.missing == ["target"] and multi.limitation_codes == [LimitationCode.AMBIGUOUS_TARGET]
+    assert multi.missing == ["target"] and multi.limitation_codes == [
+        LimitationCode.AMBIGUOUS_TARGET
+    ]
     noref = adjudicate_target_binding(0, False)
     assert noref.variant == DefinitionVariant.UNRESOLVED_OBSERVATION
     with pytest.raises(EdgeError):
@@ -264,23 +306,25 @@ def test_d3p_n02_canon_negatives_rejected() -> None:
     record, never repaired into a different record."""
     # bad path: backslash rejected by the repo rule
     with pytest.raises((EdgeError, ValidationError)):
-        BoundTargetIdentity(
-            symbol="s", declaring_type=None, file_path="src\\app.py", revision=R40
-        )
+        BoundTargetIdentity(symbol="s", declaring_type=None, file_path="src\\app.py", revision=R40)
     # reversed range
     with pytest.raises((EdgeError, ValidationError)):
         RangeReference(file_path="src/app.py", revision=R40, start_line=20, end_line=10)
     # float line (StrictInt)
     with pytest.raises((EdgeError, ValidationError)):
         RangeReference(
-            file_path="src/app.py", revision=R40,
-            start_line=10.5, end_line=20,  # type: ignore[arg-type]
+            file_path="src/app.py",
+            revision=R40,
+            start_line=10.5,
+            end_line=20,  # type: ignore[arg-type]
         )
     # null field
     with pytest.raises((EdgeError, ValidationError)):
         RangeReference(
-            file_path="src/app.py", revision=None,  # type: ignore[arg-type]
-            start_line=10, end_line=20,
+            file_path="src/app.py",
+            revision=None,  # type: ignore[arg-type]
+            start_line=10,
+            end_line=20,
         )
     # non-NFC range text is normalized-or-rejected at the shared layer;
     # the D3 symbol path pins NFC explicitly (G01), the range path pins
@@ -353,7 +397,12 @@ def test_d3p_module_import_closure_static() -> None:
 
     allowed = {
         "definition_observation": {
-            "__future__", "hashlib", "unicodedata", "enum", "typing", "pydantic",
+            "__future__",
+            "hashlib",
+            "unicodedata",
+            "enum",
+            "typing",
+            "pydantic",
             "investigation_agent_platform",
         },
     }

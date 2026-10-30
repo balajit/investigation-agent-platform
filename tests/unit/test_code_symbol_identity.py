@@ -115,9 +115,11 @@ def test_compute_ast_node_id_parity():
 
 
 def test_signature_hash_matches_topology():
-    assert _create().signature_hash == _topology_peer().signature_hash == hashlib.sha256(
-        _SIG.encode()
-    ).hexdigest()
+    assert (
+        _create().signature_hash
+        == _topology_peer().signature_hash
+        == hashlib.sha256(_SIG.encode()).hexdigest()
+    )
 
 
 def test_legacy_payload_still_validates():

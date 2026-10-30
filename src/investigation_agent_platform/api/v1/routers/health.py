@@ -165,9 +165,7 @@ async def readiness(response: Response) -> HealthView:
     wal = getattr(ctx, "_buffer_wal", None)
     if wal is not None:
         try:
-            checks["buffer"] = (
-                f"pending={int(wal.pending_count())} held={int(wal.held_count())}"
-            )
+            checks["buffer"] = f"pending={int(wal.pending_count())} held={int(wal.held_count())}"
         except Exception:
             checks["buffer"] = "UNKNOWN"
     else:

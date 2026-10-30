@@ -127,9 +127,7 @@ async def search_reference_docs(
             limit=limit,
         )
     except ValueError as exc:
-        raise ApiError(
-            code="REFERENCE_VALIDATION", http_status=400, message=str(exc)
-        ) from exc
+        raise ApiError(code="REFERENCE_VALIDATION", http_status=400, message=str(exc)) from exc
     return CursorEnvelope[ReferenceSearchHitView](
         items=[ReferenceSearchHitView.model_validate(h.model_dump(mode="json")) for h in hits],
         next_cursor=next_cursor,

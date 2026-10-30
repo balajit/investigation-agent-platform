@@ -155,9 +155,7 @@ def classify_terminal_handoff(
     record instead of generic filler.
     """
     try:
-        status_text = str(
-            getattr(status, "value", status) if status is not None else ""
-        ).upper()
+        status_text = str(getattr(status, "value", status) if status is not None else "").upper()
     except Exception:
         status_text = ""
     try:
@@ -187,9 +185,7 @@ def classify_terminal_handoff(
         upstream = None
     try:
         limitation_texts = [
-            str(item or "").strip()
-            for item in (limitations or [])
-            if str(item or "").strip()
+            str(item or "").strip() for item in (limitations or []) if str(item or "").strip()
         ]
     except Exception:
         limitation_texts = []
@@ -206,9 +202,7 @@ def classify_terminal_handoff(
         return S7Handoff(state=HandoffState.PROVED)
 
     if upstream is not None:
-        steps = [
-            f"Named handoff to {upstream[:200]}: no fetch crosses the tenant boundary."
-        ]
+        steps = [f"Named handoff to {upstream[:200]}: no fetch crosses the tenant boundary."]
         if fetch is not None:
             steps.append(f"Localizing evidence/next fetch: {fetch[:300]}")
         return S7Handoff(
@@ -256,8 +250,7 @@ def classify_terminal_handoff(
     record: list[str] = []
     if eliminated:
         record.append(
-            f"Frontier exhausted: {len(eliminated)} rival(s) ruled out; "
-            "see the elimination record."
+            f"Frontier exhausted: {len(eliminated)} rival(s) ruled out; see the elimination record."
         )
     if alternatives:
         record.append(f"Ranked alternatives: {alternatives[0][:300]}")

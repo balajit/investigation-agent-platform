@@ -36,7 +36,9 @@ pytestmark = pytest.mark.skipif(
 def _reachable() -> bool:
     parsed = urlparse(PG_URL)
     try:
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 5432), timeout=1):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 5432), timeout=1
+        ):
             return True
     except OSError:
         return False
@@ -57,9 +59,7 @@ def draft_roles():  # type: ignore[no-untyped-def]
         pytest.skip("IAP onboarding PostgreSQL test server is unreachable")
     admin = create_engine(_url())
     prefix = f"iap_draft_{uuid.uuid4().hex[:10]}"
-    roles = {
-        name: f"{prefix}_{name}" for name in ("app", "worker", "registry_admin", "migrator")
-    }
+    roles = {name: f"{prefix}_{name}" for name in ("app", "worker", "registry_admin", "migrator")}
     passwords = {name: secrets.token_urlsafe(24) for name in roles}
     schema = f"{prefix}_schema"
     engines: dict[str, Any] = {}
@@ -67,7 +67,7 @@ def draft_roles():  # type: ignore[no-untyped-def]
         with admin.begin() as conn:
             for name, role in roles.items():
                 conn.exec_driver_sql(
-                    f'CREATE ROLE "{role}" LOGIN PASSWORD \'{passwords[name]}\' '
+                    f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{passwords[name]}' "
                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                 )
                 conn.exec_driver_sql(f'GRANT "{role}" TO CURRENT_USER')
@@ -141,15 +141,19 @@ def _create_schema(admin: Any, schema: str, roles: dict[str, str]) -> None:
                 f"({key_column}=current_setting('app.tenant_id',true))"
             )
         conn.exec_driver_sql(
-            f'CREATE POLICY request_audit_migrator_insert ON onboarding_request_audits '
+            f"CREATE POLICY request_audit_migrator_insert ON onboarding_request_audits "
             f'FOR INSERT TO "{migrator}" WITH CHECK (true)'
         )
-        conn.exec_driver_sql(f'GRANT SELECT, INSERT ON tenant_registry, onboarding_requests TO "{app}"')
+        conn.exec_driver_sql(
+            f'GRANT SELECT, INSERT ON tenant_registry, onboarding_requests TO "{app}"'
+        )
         conn.exec_driver_sql(f'GRANT SELECT ON onboarding_request_audits TO "{app}"')
         conn.exec_driver_sql(f'GRANT SELECT ON onboarding_requests TO "{roles["worker"]}"')
         conn.exec_driver_sql(f'GRANT SELECT ON tenant_registry TO "{roles["registry_admin"]}"')
         conn.exec_driver_sql(f'GRANT SELECT, INSERT ON onboarding_request_audits TO "{migrator}"')
-        conn.exec_driver_sql("GRANT SELECT ON background_jobs, onboarding_dispatches TO CURRENT_USER")
+        conn.exec_driver_sql(
+            "GRANT SELECT ON background_jobs, onboarding_dispatches TO CURRENT_USER"
+        )
         conn.exec_driver_sql(
             f'CREATE FUNCTION "{schema}".record_onboarding_request_audit('
             "p_tenant_id text,p_request_id uuid,p_revision integer,p_actor_sub text,"
@@ -180,7 +184,11 @@ def _draft() -> TenantIntakeEnvelope:
         intake=TenantIntakeV1(
             application_id="example-application",
             environment="test",
-            repositories=(RepositoryReference(provider_key="sample-git-host", repository_id="example-team/example-service"),),
+            repositories=(
+                RepositoryReference(
+                    provider_key="sample-git-host", repository_id="example-team/example-service"
+                ),
+            ),
         )
     )
 
@@ -232,7 +240,9 @@ async def test_actual_app_role_draft_replay_conflict_and_side_effect_bounds(draf
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
         assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_requests").scalar_one() == 1
-        assert conn.exec_driver_sql("SELECT state,actor_id,job_id FROM onboarding_requests").one() == (
+        assert conn.exec_driver_sql(
+            "SELECT state,actor_id,job_id FROM onboarding_requests"
+        ).one() == (
             "DRAFT",
             "verified-sub-a",
             None,
@@ -255,7 +265,9 @@ async def test_actual_app_role_draft_replay_conflict_and_side_effect_bounds(draf
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-b',true)")
         assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_requests").scalar_one() == 0
-        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 0
+        assert (
+            conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 0
+        )
 
     with engines["app"].begin() as conn:
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')

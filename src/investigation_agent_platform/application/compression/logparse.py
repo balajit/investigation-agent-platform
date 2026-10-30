@@ -166,9 +166,7 @@ def order_temporal(lines: Iterable[ParsedLine]) -> list[ParsedLine]:
     `heapq.merge` territory when inputs arrive pre-sorted per file; the list
     sort here is the general case (interleaved multi-file streams).
     """
-    return sorted(
-        lines, key=lambda line: (line.timestamp is None, line.timestamp, line.seq)
-    )
+    return sorted(lines, key=lambda line: (line.timestamp is None, line.timestamp, line.seq))
 
 
 def signature(line: ParsedLine) -> tuple[str, str, str]:
@@ -180,9 +178,7 @@ def signature(line: ParsedLine) -> tuple[str, str, str]:
     """
     if line.record is not None:
         logger_name = str(line.record.get("logger", ""))
-        message = str(
-            line.record.get("message", line.record.get("event", line.raw))
-        )
+        message = str(line.record.get("message", line.record.get("event", line.raw)))
         level = str(line.record.get("level", ""))
     else:
         logger_name, message, level = "", line.raw, ""
@@ -335,9 +331,7 @@ def merge_ordered(streams: list[Iterable[ParsedLine]]) -> Iterator[ParsedLine]:
         yield line
         try:
             nxt = next(iterators[index])
-            heapq.heappush(
-                heap, ((nxt.timestamp is None, nxt.timestamp, nxt.seq), index, nxt)
-            )
+            heapq.heappush(heap, ((nxt.timestamp is None, nxt.timestamp, nxt.seq), index, nxt))
         except StopIteration:
             continue
 

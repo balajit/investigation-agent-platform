@@ -324,7 +324,15 @@ def test_cleanup_plan_and_approve(capsys: Any) -> None:
 
 def test_verify_telemetry_missing_dir_fails(tmp_path: Any, capsys: Any) -> None:
     code = main(
-        ["--tenant", "tenant-a", "verify-telemetry", "--telemetry-dir", str(tmp_path / "nope"), "--home-service", "svc-a"]
+        [
+            "--tenant",
+            "tenant-a",
+            "verify-telemetry",
+            "--telemetry-dir",
+            str(tmp_path / "nope"),
+            "--home-service",
+            "svc-a",
+        ]
     )
     assert code == 1
     assert "[FAIL] config loads" in capsys.readouterr().out
@@ -332,8 +340,16 @@ def test_verify_telemetry_missing_dir_fails(tmp_path: Any, capsys: Any) -> None:
 
 def test_verify_telemetry_missing_dir_json(tmp_path: Any, capsys: Any) -> None:
     code = main(
-        ["--tenant", "tenant-a", "--json", "verify-telemetry",
-         "--telemetry-dir", str(tmp_path / "nope"), "--home-service", "svc-a"]
+        [
+            "--tenant",
+            "tenant-a",
+            "--json",
+            "verify-telemetry",
+            "--telemetry-dir",
+            str(tmp_path / "nope"),
+            "--home-service",
+            "svc-a",
+        ]
     )
     assert code == 1
     body = json.loads(capsys.readouterr().out)
@@ -348,7 +364,15 @@ def test_verify_telemetry_malformed_file_errors(tmp_path: Any, capsys: Any) -> N
         "[two]\nurl = https://b.example.com\nservices = svc\n"
     )
     code = main(
-        ["--tenant", "tenant-a", "verify-telemetry", "--telemetry-dir", str(tmp_path), "--home-service", "svc-a"]
+        [
+            "--tenant",
+            "tenant-a",
+            "verify-telemetry",
+            "--telemetry-dir",
+            str(tmp_path),
+            "--home-service",
+            "svc-a",
+        ]
     )
     assert code == 2
     assert "exactly one endpoint" in capsys.readouterr().out

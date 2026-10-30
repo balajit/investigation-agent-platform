@@ -33,9 +33,20 @@ def _conditional(node: Any) -> bool:
     """True when the import sits under an if/try/with (not top-level/definite)."""
     current = node.parent
     while current is not None:
-        if current.type in {"if_statement", "try_statement", "with_statement", "while_statement", "for_statement"}:
+        if current.type in {
+            "if_statement",
+            "try_statement",
+            "with_statement",
+            "while_statement",
+            "for_statement",
+        }:
             return True
-        if current.type in {"function_definition", "async_function_definition", "class_definition", "module"}:
+        if current.type in {
+            "function_definition",
+            "async_function_definition",
+            "class_definition",
+            "module",
+        }:
             return current.type != "module"
         current = current.parent
     return False
@@ -227,7 +238,9 @@ def resolve_python_import_fact(
     if _p.has_syntax_error(tree.root_node):
         return unresolved("python_syntax_error_or_incomplete_source_window")
 
-    matches = [b for b in collect_imports(tree.root_node, source_bytes) if b["bound_name"] == symbol]
+    matches = [
+        b for b in collect_imports(tree.root_node, source_bytes) if b["bound_name"] == symbol
+    ]
     if not matches:
         # A name bound by a dynamic import call binds nothing statically.
         for node in _p.walk(tree.root_node):
@@ -239,7 +252,11 @@ def resolve_python_import_fact(
             if _p.node_text(named[0], source_bytes).strip() != symbol or len(named) < 2:
                 continue
             call_text = _p.node_text(named[-1], source_bytes)
-            if "__import__" in call_text or "importlib" in call_text or "import_module" in call_text:
+            if (
+                "__import__" in call_text
+                or "importlib" in call_text
+                or "import_module" in call_text
+            ):
                 return CodeFactResolutionV2(
                     status=CodeFactStatus.PARTIAL,
                     repository=repository,

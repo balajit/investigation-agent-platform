@@ -42,7 +42,6 @@ def test_no_force_before_two_turns_elapsed():
     assert _should_force_formulate(1, 0, ["h1"], 9, 0) is False
 
 
-
 def test_absence_disconfirmation_uses_cited_provider_location_and_key():
     from types import SimpleNamespace
     from uuid import uuid4
@@ -114,16 +113,15 @@ def test_absence_disconfirmation_rejects_locationless_or_unrelated_candidates():
             attributes={"discovery_only": True, "search_scope": "other-scope"},
         )
 
-    assert _absence_disconfirmation_target(
-        {
-            "claims": [
-                {"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src"}}
-            ]
-        },
-        [_row("FIND_CALL_GRAPH", "")],
-        [],
-        0,
-    ) is None
+    assert (
+        _absence_disconfirmation_target(
+            {"claims": [{"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src"}}]},
+            [_row("FIND_CALL_GRAPH", "")],
+            [],
+            0,
+        )
+        is None
+    )
 
 
 def test_absence_disconfirmation_rejects_segment_collision_and_empty_row():
@@ -150,17 +148,19 @@ def test_absence_disconfirmation_rejects_segment_collision_and_empty_row():
             },
         }
 
-    reason = {
-        "claims": [
-            {"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src/app"}}
-        ]
-    }
-    assert _absence_disconfirmation_target(
-        reason, [_row("src/application.py", 1, scope="repo@abc123:src/application")], [], 0
-    ) is None
+    reason = {"claims": [{"claim_kind": "ABSENCE", "target": {"scope": "repo@abc123:src/app"}}]}
+    assert (
+        _absence_disconfirmation_target(
+            reason, [_row("src/application.py", 1, scope="repo@abc123:src/application")], [], 0
+        )
+        is None
+    )
     assert _absence_disconfirmation_target(reason, [_row("src/app.py", 0)], [], 0) is None
     assert _absence_disconfirmation_target(reason, [_row("src/app.py", True)], [], 0) is None
-    assert _absence_disconfirmation_target(reason, [_row("src/app.py", 1, tenant="")], [], 0) is None
+    assert (
+        _absence_disconfirmation_target(reason, [_row("src/app.py", 1, tenant="")], [], 0) is None
+    )
+
 
 def test_log_force_routes_error_complaint_to_search_logs():
     from investigation_agent_platform.application.worker.workflows import (
@@ -927,7 +927,6 @@ def test_callsite_does_not_suppress_same_path_wrong_range_read():
     )
     assert hit is not None
     assert hit["action_parameters"]["start_line"] == 10
-
 
 
 def test_subject_identifies_across_qualification_levels():

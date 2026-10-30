@@ -74,9 +74,7 @@ def test_forcing_cascade_order() -> None:
 
 
 def test_forcing_cap_reached_withholds_rule() -> None:
-    d = decide(
-        _snap(stack_walk_owed=True, forcing_used={"walk_stack": 2}, evidence_banked_total=4)
-    )
+    d = decide(_snap(stack_walk_owed=True, forcing_used={"walk_stack": 2}, evidence_banked_total=4))
     assert not any(c.forced and c.action == "WALK_STACK" for c in d.candidates)
     assert any("walk_stack" in w.reason for w in d.withheld)
 
@@ -91,9 +89,7 @@ def test_formulate_gated_on_banked_evidence() -> None:
 
 def test_verify_gated_on_unverified() -> None:
     assert "VERIFY_HYPOTHESIS" not in {c.action for c in decide(_snap()).candidates}
-    assert "VERIFY_HYPOTHESIS" in {
-        c.action for c in decide(_snap(unverified_count=2)).candidates
-    }
+    assert "VERIFY_HYPOTHESIS" in {c.action for c in decide(_snap(unverified_count=2)).candidates}
 
 
 def test_blocked_withheld_failed_penalized() -> None:

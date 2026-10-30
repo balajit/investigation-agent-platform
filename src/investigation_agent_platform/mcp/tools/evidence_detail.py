@@ -39,8 +39,12 @@ TOOL_ANNOTATIONS = ToolAnnotations(
 )
 
 
-@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
-        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
+@traced(
+    "mcp",
+    component="tools",
+    tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+    inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),
+)
 async def get_evidence_core(
     *,
     services: InvestigationServices,

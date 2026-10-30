@@ -121,7 +121,9 @@ def test_report_reference_is_linked_not_embedded_in_intake_hash() -> None:
     intake = TenantIntakeV1(
         application_id="app-a",
         environment="test",
-        repositories=(RepositoryReference(provider_key="sample-git-host", repository_id="team/service"),),
+        repositories=(
+            RepositoryReference(provider_key="sample-git-host", repository_id="team/service"),
+        ),
     )
     plain = TenantIntakeEnvelope(intake=intake)
     linked = TenantIntakeEnvelope(
@@ -155,9 +157,7 @@ def test_unknown_provider_key_is_rejected() -> None:
 
 
 def test_example_provider_keys_match_provisional_set() -> None:
-    example_path = (
-        Path(__file__).resolve().parents[2] / "config" / "tenant-id.env.example.yaml"
-    )
+    example_path = Path(__file__).resolve().parents[2] / "config" / "tenant-id.env.example.yaml"
     example = yaml.safe_load(example_path.read_text(encoding="utf-8"))
     provider_keys = {
         *(repository["provider_key"] for repository in example.get("repositories", [])),

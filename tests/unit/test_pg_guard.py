@@ -1,6 +1,5 @@
 """Disposable-PostgreSQL guard tests: verdict matrix, override, commands."""
 
-
 import pytest
 
 from investigation_agent_platform.infrastructure.persistence.pg_guard import (
@@ -59,9 +58,7 @@ def test_override_allows_with_reason_on_stderr(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("IAP_PG_GUARD_OVERRIDE", "deploy pipeline checkout-42")
-    require_disposable(
-        "postgresql://iap:iap@localhost:5432/iap", purpose="alembic upgrade"
-    )
+    require_disposable("postgresql://iap:iap@localhost:5432/iap", purpose="alembic upgrade")
     assert "deploy pipeline checkout-42" in capsys.readouterr().err
 
 
@@ -78,9 +75,7 @@ def test_empty_override_does_not_bypass(
 ) -> None:
     monkeypatch.setenv("IAP_PG_GUARD_OVERRIDE", "   ")
     with pytest.raises(RuntimeError, match="refusing"):
-        require_disposable(
-            "postgresql://iap:iap@localhost:5432/iap", purpose="alembic stamp"
-        )
+        require_disposable("postgresql://iap:iap@localhost:5432/iap", purpose="alembic stamp")
 
 
 @pytest.mark.parametrize(
@@ -105,9 +100,7 @@ def test_command_is_write_matrix(command: str | None, write: bool) -> None:
 def test_allow_path_is_silent(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    require_disposable(
-        "postgresql://iap:iap@localhost:5439/iap_test", purpose="alembic stamp"
-    )
+    require_disposable("postgresql://iap:iap@localhost:5439/iap_test", purpose="alembic stamp")
     assert capsys.readouterr().err == ""
 
 
@@ -122,6 +115,4 @@ def test_similarly_named_vars_do_not_bypass(
     monkeypatch.setenv("IAP_PG_GUARD_OVERRIDE_EXTRA", "deploy")
     monkeypatch.setenv("PG_GUARD_OVERRIDE", "deploy")
     with pytest.raises(RuntimeError, match="refusing"):
-        require_disposable(
-            "postgresql://iap:iap@localhost:5432/iap", purpose="alembic stamp"
-        )
+        require_disposable("postgresql://iap:iap@localhost:5432/iap", purpose="alembic stamp")

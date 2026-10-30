@@ -54,6 +54,7 @@ def _base_names(cls: Any, source: bytes) -> list[str] | None:
 
 def _c3(class_name: str, bases: dict[str, list[str]]) -> list[str] | None:
     """C3 linearization over in-window classes; None on unknown base or conflict."""
+
     def merge(seqs: list[list[str]]) -> list[str] | None:
         result: list[str] = []
         seqs = [list(s) for s in seqs if s]
@@ -127,17 +128,42 @@ def _context(
     if reason:
         return (None, None, repository, revision or "", "", evidence_ids, reason, ())
     if location is None:
-        return (None, None, repository, revision or "", "", evidence_ids, "missing_source_location", ())
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            "",
+            evidence_ids,
+            "missing_source_location",
+            (),
+        )
     if not source_path.lower().endswith(source_path_suffix):
-        return (None, None, repository, revision or "", "", evidence_ids, "not_a_python_source_file", ())
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            "",
+            evidence_ids,
+            "not_a_python_source_file",
+            (),
+        )
     if not repository:
-        return (None, None, repository, revision or "", "", evidence_ids, "repository_identity_unavailable", ())
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            "",
+            evidence_ids,
+            "repository_identity_unavailable",
+            (),
+        )
     return (lines, location, repository, revision, source_path, evidence_ids, "", ())
 
 
-def _parse_window(
-    lines: Any, location: Any
-) -> tuple[Any, bytes] | tuple[None, str]:
+def _parse_window(lines: Any, location: Any) -> tuple[Any, bytes] | tuple[None, str]:
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
         tree = _p.parse_python(source_bytes)

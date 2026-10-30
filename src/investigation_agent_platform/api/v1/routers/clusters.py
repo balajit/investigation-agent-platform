@@ -79,18 +79,24 @@ async def get_cluster(
         cluster_uuid = UUID(cluster_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_CLUSTER_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid cluster id format"
+            code="INVALID_CLUSTER_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid cluster id format",
         ) from exc
     cluster_repo = getattr(ctx, "finding_cluster_repo", None)
     if cluster_repo is None:
         raise ApiError(
-            code="CLUSTER_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Cluster store is unavailable"
+            code="CLUSTER_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Cluster store is unavailable",
         )
     taxonomy = await cluster_repo.load_taxonomy(x_tenant_id)
     cluster = next((c for c in taxonomy if c.id == cluster_uuid), None)
     if cluster is None:
         raise ApiError(
-            code="CLUSTER_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Cluster not found"
+            code="CLUSTER_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Cluster not found",
         )
     assignments, total = await cluster_repo.cluster_assignments(
         x_tenant_id, cluster_uuid, limit=limit, offset=offset
@@ -136,7 +142,9 @@ async def run_clustering(
 
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     canonical = json.dumps(body.model_dump(mode="json"), sort_keys=True)
@@ -177,7 +185,9 @@ async def run_clustering(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; clustering was not started"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; clustering was not started",
         )
     try:
         from investigation_agent_platform.application.worker.workflows import (
@@ -208,7 +218,9 @@ async def run_clustering(
             extra=sanitize_extra({"job_id": str(job.id), "event": "clusters.dispatch_failed"}),
         )
         raise ApiError(
-            code="CLUSTER_DISPATCH_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start clustering workflow; job was not started"
+            code="CLUSTER_DISPATCH_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to start clustering workflow; job was not started",
         ) from exc
 
     try:

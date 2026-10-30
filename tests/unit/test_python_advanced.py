@@ -104,7 +104,9 @@ def test_from_import_alias_resolves():
 
 
 def test_conditional_import_is_partial():
-    r = resolve_python_import_fact(_evidence("try:\n    import opt\nexcept ImportError:\n    pass"), "opt")
+    r = resolve_python_import_fact(
+        _evidence("try:\n    import opt\nexcept ImportError:\n    pass"), "opt"
+    )
     assert r.status == CodeFactStatus.PARTIAL
     assert "conditional_import_may_not_execute" in r.limitation_codes
 
@@ -307,7 +309,9 @@ def test_control_async_and_generator_marked():
 
 
 def test_getenv_default_resolves():
-    r = resolve_python_config_fact(_evidence('import os\nTIMEOUT = os.getenv("TIMEOUT", "30")'), "TIMEOUT")
+    r = resolve_python_config_fact(
+        _evidence('import os\nTIMEOUT = os.getenv("TIMEOUT", "30")'), "TIMEOUT"
+    )
     assert r.status == CodeFactStatus.RESOLVED
     assert r.fact_category == JavaFactCategory.CONFIGURATION_FACT
     assert r.resolved_value == "30"
@@ -316,7 +320,7 @@ def test_getenv_default_resolves():
 
 
 def test_environ_subscript_without_default_partial():
-    r = resolve_python_config_fact(_evidence("import os\nKEY = os.environ[\"KEY\"]"), "KEY")
+    r = resolve_python_config_fact(_evidence('import os\nKEY = os.environ["KEY"]'), "KEY")
     assert r.status == CodeFactStatus.PARTIAL
     assert "undeclared_default_requires_runtime" in r.limitation_codes
 
@@ -357,7 +361,9 @@ def test_import_declaration_verifies():
     ev = _evidence("from m import n as c")
     r = resolve_python_import_fact(ev, "c")
     banked = _banked(r, ev)
-    hyp = _hypothesis(banked, "c", "m.n", "c is imported from m.n", JavaFactCategory.DECLARATION_FACT)
+    hyp = _hypothesis(
+        banked, "c", "m.n", "c is imported from m.n", JavaFactCategory.DECLARATION_FACT
+    )
     ok, _ = VerificationEngine.java_fact_proof(hyp, [banked])
     assert ok
     assert VerificationEngine().validate_java_fact_claim(hyp, [banked], []) is not None
@@ -367,7 +373,13 @@ def test_mro_semantic_verifies():
     ev = _evidence("class Base:\n    pass\n\nclass Sub(Base):\n    pass\n")
     r = resolve_python_mro_fact(ev, "Sub")
     banked = _banked(r, ev)
-    hyp = _hypothesis(banked, "Sub", None, "Sub inherits Base then object", JavaFactCategory.LANGUAGE_SEMANTIC_FACT)
+    hyp = _hypothesis(
+        banked,
+        "Sub",
+        None,
+        "Sub inherits Base then object",
+        JavaFactCategory.LANGUAGE_SEMANTIC_FACT,
+    )
     ok, _ = VerificationEngine.java_fact_proof(hyp, [banked])
     assert ok
 
@@ -377,7 +389,10 @@ def test_config_verifies_at_likely_with_source():
     r = resolve_python_config_fact(ev, "TIMEOUT")
     banked = _banked(r, ev, {"configuration_source": "svc/mod.py"})
     hyp = _hypothesis(
-        banked, "TIMEOUT", "30", "TIMEOUT defaults to 30 unless overridden",
+        banked,
+        "TIMEOUT",
+        "30",
+        "TIMEOUT defaults to 30 unless overridden",
         JavaFactCategory.CONFIGURATION_FACT,
     )
     ok, _ = VerificationEngine.java_fact_proof(hyp, [banked])

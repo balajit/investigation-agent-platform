@@ -214,12 +214,17 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
         terminal_reason = "token-exhausted terminal"
     if terminal_reason:
         conclude = RankedAction(
-            action="CONCLUDE", priority=_PRIORITY_CONCLUDE_TERMINAL,
-            reason=terminal_reason, forced=False,
+            action="CONCLUDE",
+            priority=_PRIORITY_CONCLUDE_TERMINAL,
+            reason=terminal_reason,
+            forced=False,
         )
         return PolicyDecision(
-            candidates=[conclude], withheld=[], terminal=True,
-            terminal_reason=terminal_reason, selected="CONCLUDE",
+            candidates=[conclude],
+            withheld=[],
+            terminal=True,
+            terminal_reason=terminal_reason,
+            selected="CONCLUDE",
             ignored_unknown_history=ignored,
         )
 
@@ -233,17 +238,17 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
         if not trigger:
             continue
         if _forcing_used(snapshot, rule) >= _forcing_cap(snapshot, rule):
-            withheld.append(
-                WithheldAction(action=action, reason=f"forcing cap reached: {rule}")
-            )
+            withheld.append(WithheldAction(action=action, reason=f"forcing cap reached: {rule}"))
             continue
         if action == "FORMULATE_HYPOTHESIS":
             fired_forcing.add(rule)
         forced_actions.add(action)
         candidates.append(
             RankedAction(
-                action=action, priority=priority,
-                reason=f"forcing rule fires: {rule}", forced=True,
+                action=action,
+                priority=priority,
+                reason=f"forcing rule fires: {rule}",
+                forced=True,
             )
         )
 
@@ -257,9 +262,7 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
     for action in _GATHERING_ACTIONS:
         cap = snapshot.action_caps.get(action)
         if cap is not None and counts.get(action, 0) >= int(cap):
-            withheld.append(
-                WithheldAction(action=action, reason="per-action run cap reached")
-            )
+            withheld.append(WithheldAction(action=action, reason="per-action run cap reached"))
             continue
         last = _last_outcome(known_history, action)
         if last == "BLOCKED":
@@ -279,8 +282,10 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
     if "FORMULATE_HYPOTHESIS" not in forced_actions and snapshot.evidence_banked_total > 0:
         candidates.append(
             RankedAction(
-                action="FORMULATE_HYPOTHESIS", priority=_PRIORITY_FORMULATE_BASE,
-                reason="banked evidence available to commit", forced=False,
+                action="FORMULATE_HYPOTHESIS",
+                priority=_PRIORITY_FORMULATE_BASE,
+                reason="banked evidence available to commit",
+                forced=False,
             )
         )
     elif "FORMULATE_HYPOTHESIS" not in forced_actions and not any(
@@ -294,8 +299,10 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
     if snapshot.unverified_count > 0:
         candidates.append(
             RankedAction(
-                action="VERIFY_HYPOTHESIS", priority=_PRIORITY_VERIFY_BASE,
-                reason="unverified hypotheses await evaluation", forced=False,
+                action="VERIFY_HYPOTHESIS",
+                priority=_PRIORITY_VERIFY_BASE,
+                reason="unverified hypotheses await evaluation",
+                forced=False,
             )
         )
     else:
@@ -306,14 +313,17 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
     if snapshot.verified_present:
         candidates.append(
             RankedAction(
-                action="CONCLUDE", priority=_PRIORITY_CONCLUDE_VERIFIED,
-                reason="proof-backed conclusion available", forced=False,
+                action="CONCLUDE",
+                priority=_PRIORITY_CONCLUDE_VERIFIED,
+                reason="proof-backed conclusion available",
+                forced=False,
             )
         )
     else:
         candidates.append(
             RankedAction(
-                action="CONCLUDE", priority=_PRIORITY_CONCLUDE_BASE,
+                action="CONCLUDE",
+                priority=_PRIORITY_CONCLUDE_BASE,
                 reason="terminal fallback; commits whatever the loop established",
                 forced=False,
             )
@@ -322,8 +332,11 @@ def decide(snapshot: PlannerSnapshot) -> PolicyDecision:
     candidates.sort(key=lambda c: (c.priority, c.action))
     selected = candidates[0].action if candidates else None
     return PolicyDecision(
-        candidates=candidates, withheld=withheld, terminal=False,
-        terminal_reason="", selected=selected,
+        candidates=candidates,
+        withheld=withheld,
+        terminal=False,
+        terminal_reason="",
+        selected=selected,
         ignored_unknown_history=ignored,
     )
 

@@ -1968,9 +1968,7 @@ class TestActivityPathsBlockUnlinkedCaller:
             [_attempt_event([row_a.evidence_id, row_b.evidence_id])],
         )
         with (
-            patch.object(
-                VerificationEngine, "validate_location_claim", return_value=None
-            ),
+            patch.object(VerificationEngine, "validate_location_claim", return_value=None),
             patch.object(
                 VerificationEngine,
                 "evaluate_caller_edge",

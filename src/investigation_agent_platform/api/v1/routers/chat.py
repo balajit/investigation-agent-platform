@@ -73,7 +73,9 @@ def _load_quota_policy() -> Any | None:
     return QuotaPolicy.model_validate(_load_cfg().quotas.model_dump(mode="json"))
 
 
-def _require_quota_guard(tenant_id: str, quota_policy: Any | None, quota_enforcer: Any | None) -> None:
+def _require_quota_guard(
+    tenant_id: str, quota_policy: Any | None, quota_enforcer: Any | None
+) -> None:
     """Fail closed in production when the SSE/session quota guard is missing (TO_DO-027).
 
     Non-production keeps the best-effort warning path so dev/test traffic is
@@ -133,7 +135,9 @@ def _streaming_gateway() -> Any:
     cfg = load_application_config_from_env().llm
     if cfg.provider.lower() not in ("openai", "azure", "muse"):
         raise ApiError(
-            code="STREAMING_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message=f"Streaming is unavailable for provider {cfg.provider!r}"
+            code="STREAMING_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=f"Streaming is unavailable for provider {cfg.provider!r}",
         )
     return OpenAIStreamingGateway(cfg)
 
@@ -156,12 +160,16 @@ async def create_chat_session(
     _ = principal_id
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     if getattr(ctx, "chat_repo", None) is None:
         raise ApiError(
-            code="CHAT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Chat store is unavailable"
+            code="CHAT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Chat store is unavailable",
         )
     canonical = json.dumps(body.model_dump(mode="json"), sort_keys=True)
     request_hash = hashlib.sha256(canonical.encode()).hexdigest()
@@ -191,7 +199,10 @@ async def create_chat_session(
         )
     except ChatQuotaExceededError as exc:
         raise ApiError(
-            code="CONCURRENCY_CONFLICT", http_status=status.HTTP_429_TOO_MANY_REQUESTS, message=str(exc), headers={"Retry-After": "60"}
+            code="CONCURRENCY_CONFLICT",
+            http_status=status.HTTP_429_TOO_MANY_REQUESTS,
+            message=str(exc),
+            headers={"Retry-After": "60"},
         ) from exc
     except ConcurrencyError as exc:
         raise ApiError(
@@ -228,18 +239,24 @@ async def post_chat_message(
     ctx = get_app_context()
     if getattr(ctx, "chat_repo", None) is None:
         raise ApiError(
-            code="CHAT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Chat store is unavailable"
+            code="CHAT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Chat store is unavailable",
         )
     try:
         session_uuid = UUID(session_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_SESSION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid session id format"
+            code="INVALID_SESSION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid session id format",
         ) from exc
     session = await ctx.chat_repo.get_session(x_tenant_id, session_uuid)
     if session is None or getattr(session, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="SESSION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Session not found"
+            code="SESSION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Session not found",
         )
     # Fail-closed order (TO_DO-027): the quota guard is checked before the
     # streaming gateway is built, so production never streams unguarded.
@@ -259,9 +276,7 @@ async def post_chat_message(
         except Exception:
             logger.exception(
                 "Chat SSE failed",
-                extra=sanitize_extra(
-                    {"tenant_id": x_tenant_id, "event": "chat.sse.failed"}
-                ),
+                extra=sanitize_extra({"tenant_id": x_tenant_id, "event": "chat.sse.failed"}),
             )
             payload = json.dumps({"event": "error", "data": {"code": "STREAM_FAILED"}})
             yield f"event: error\ndata: {payload}\n\n"
@@ -301,12 +316,16 @@ async def list_chat_messages(
         session_uuid = UUID(session_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_SESSION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid session id format"
+            code="INVALID_SESSION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid session id format",
         ) from exc
     session = await ctx.chat_repo.get_session(x_tenant_id, session_uuid)
     if session is None or getattr(session, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="SESSION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Session not found"
+            code="SESSION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Session not found",
         )
     service = _chat_service(ctx, tenant_id=x_tenant_id)
     items, total = await service.list_messages(x_tenant_id, session_uuid, limit, offset)
@@ -337,16 +356,22 @@ async def delete_chat_session(
         session_uuid = UUID(session_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_SESSION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid session id format"
+            code="INVALID_SESSION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid session id format",
         ) from exc
     session = await ctx.chat_repo.get_session(x_tenant_id, session_uuid)
     if session is None or getattr(session, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="SESSION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Session not found"
+            code="SESSION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Session not found",
         )
     service = _chat_service(ctx, tenant_id=x_tenant_id)
     if not await service.delete_session(x_tenant_id, session_uuid):
         raise ApiError(
-            code="CHAT_LEGAL_HOLD", http_status=status.HTTP_409_CONFLICT, message="Legal hold is set; deletion refused"
+            code="CHAT_LEGAL_HOLD",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Legal hold is set; deletion refused",
         )
     return SessionDeleteAck(session_id=session_id, status="DELETED")

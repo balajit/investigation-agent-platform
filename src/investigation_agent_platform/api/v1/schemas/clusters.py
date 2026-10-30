@@ -15,7 +15,9 @@ from investigation_agent_platform.domain.finding.models import Finding
 class RunClustersBody(BaseModel):
     """POST /clusters/run request body."""
 
-    limit: int = Field(default=500, ge=1, le=2000, description="Maximum findings to cluster in one run")
+    limit: int = Field(
+        default=500, ge=1, le=2000, description="Maximum findings to cluster in one run"
+    )
     batch_size: int = Field(default=25, ge=1, le=100, description="Findings per clustering batch")
 
 

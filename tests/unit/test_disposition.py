@@ -78,7 +78,9 @@ def _conclusion(inv_id, status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED, evidence
         tenant_id="n-a",
         investigation_id=inv_id,
         status=status,
-        root_cause="db pool exhausted" if status == ConclusionStatus.ROOT_CAUSE_ESTABLISHED else None,
+        root_cause="db pool exhausted"
+        if status == ConclusionStatus.ROOT_CAUSE_ESTABLISHED
+        else None,
         supporting_evidence_ids=list(evidence_ids),
         generated_at=datetime.now(UTC),
     )
@@ -103,7 +105,9 @@ def run(coro):
 
 
 def test_signature_extracts_paths_symbols_words():
-    sig = keyword_signature("GET /investigations/{id} fails in InvestigationService.execute with timeout")
+    sig = keyword_signature(
+        "GET /investigations/{id} fails in InvestigationService.execute with timeout"
+    )
     assert "path:/investigations/{id}".replace("{id}", "{id}") in sig or any(
         t.startswith("path:/investigations") for t in sig
     )
@@ -162,14 +166,18 @@ def test_case_g_text_alone_never_duplicates():
 
 def test_case_b_provisional_follow_up_pending_verdict():
     target = uuid4()
-    d = decide([_match(target, status="COMPLETED", conclusion="ROOT_CAUSE_ESTABLISHED", by="fingerprint")])
+    d = decide(
+        [_match(target, status="COMPLETED", conclusion="ROOT_CAUSE_ESTABLISHED", by="fingerprint")]
+    )
     assert d.action == DispositionAction.FOLLOW_UP and d.start_run is True
     assert d.primary_link == "FOLLOW_UP_OF"
 
 
 def test_case_c_abstention_seeded_fresh():
     target = uuid4()
-    d = decide([_match(target, status="COMPLETED", conclusion="INSUFFICIENT_EVIDENCE", by="fingerprint")])
+    d = decide(
+        [_match(target, status="COMPLETED", conclusion="INSUFFICIENT_EVIDENCE", by="fingerprint")]
+    )
     assert d.action == DispositionAction.SEEDED_FRESH and d.start_run is True
     assert d.primary_link == "RELATES_TO"
 
@@ -400,7 +408,9 @@ def test_reverify_detects_changed_code():
 
 def test_find_similar_exact_fingerprint_row():
     repo = InMemoryInvestigationRepository()
-    prior = _inv("pool exhausted on checkout", status=InvestigationStatus.RUNNING, fingerprint="fp-1")
+    prior = _inv(
+        "pool exhausted on checkout", status=InvestigationStatus.RUNNING, fingerprint="fp-1"
+    )
     run(repo.create("n-a", prior))
     matches = run(
         find_similar(
@@ -456,7 +466,9 @@ def test_find_similar_respects_retention_and_app():
 
 def test_disposition_for_request_duplicate_active():
     repo = InMemoryInvestigationRepository()
-    prior = _inv("pool exhausted on checkout", status=InvestigationStatus.RUNNING, fingerprint="fp-9")
+    prior = _inv(
+        "pool exhausted on checkout", status=InvestigationStatus.RUNNING, fingerprint="fp-9"
+    )
     run(repo.create("n-a", prior))
     d = run(
         disposition_for_request(
@@ -490,7 +502,9 @@ def test_disposition_for_request_case_b_confirmed_serves_cached():
     ev_repo = InMemoryEvidenceRepository()
     eid = uuid4()
     run(ev_repo.save("n-a", _evidence_row(eid)))
-    prior = _inv("pool exhausted on checkout", status=InvestigationStatus.COMPLETED, fingerprint="fp-7")
+    prior = _inv(
+        "pool exhausted on checkout", status=InvestigationStatus.COMPLETED, fingerprint="fp-7"
+    )
     run(repo.create("n-a", prior))
     run(findings.save_conclusion("n-a", _conclusion(prior.id, evidence_ids=[eid])))
     d = run(
@@ -512,7 +526,9 @@ def test_disposition_for_request_case_b_confirmed_serves_cached():
 def test_disposition_for_request_case_b_stale_follows_up():
     repo = InMemoryInvestigationRepository()
     findings = InMemoryFindingConclusionRepository()
-    prior = _inv("pool exhausted on checkout", status=InvestigationStatus.COMPLETED, fingerprint="fp-8")
+    prior = _inv(
+        "pool exhausted on checkout", status=InvestigationStatus.COMPLETED, fingerprint="fp-8"
+    )
     run(repo.create("n-a", prior))
     # Conclusion cites evidence that no longer exists → STALE follow-up.
     run(findings.save_conclusion("n-a", _conclusion(prior.id, evidence_ids=[uuid4()])))

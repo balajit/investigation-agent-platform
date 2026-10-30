@@ -10,9 +10,7 @@ from investigation_agent_platform.infrastructure.evidence.mcp_connections import
 
 
 def test_derive_postgres_connection_entry():
-    entry = derive_connection_entry(
-        "jdbc:postgresql://dbhost:5432/iapdb", "iap", tenants=["n-a"]
-    )
+    entry = derive_connection_entry("jdbc:postgresql://dbhost:5432/iapdb", "iap", tenants=["n-a"])
     assert entry["kind"] == "postgres"
     assert entry["host"] == "dbhost"
     assert entry["database"] == "iapdb"
@@ -30,9 +28,7 @@ def test_derive_strips_embedded_credentials():
 
 
 def test_derive_oracle_connection_entry():
-    entry = derive_connection_entry(
-        "jdbc:oracle:thin:@//orahost:1521/ORCL", "ora", tenants=["n-a"]
-    )
+    entry = derive_connection_entry("jdbc:oracle:thin:@//orahost:1521/ORCL", "ora", tenants=["n-a"])
     assert entry["kind"] == "oracle"
     assert entry["host"] == "orahost"
 
@@ -112,6 +108,4 @@ def test_mcp_adapter_rejects_unknown_transport():
     )
 
     with _pytest.raises(ValueError):
-        McpEvidenceAdapter(
-            server_params=None, allowed_tools=["execute_sql"], transport="grpc"
-        )
+        McpEvidenceAdapter(server_params=None, allowed_tools=["execute_sql"], transport="grpc")

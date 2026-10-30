@@ -110,9 +110,7 @@ def _mock_rls(module: str, session: MagicMock) -> MagicMock:
     return patch(f"{module}.rls_session", return_value=cm)
 
 
-def _session_with(
-    scalars_result: MagicMock | None = None, execute_rowcount: int = 0
-) -> MagicMock:
+def _session_with(scalars_result: MagicMock | None = None, execute_rowcount: int = 0) -> MagicMock:
     session = AsyncMock()
     if scalars_result is not None:
         session.scalars = AsyncMock(return_value=scalars_result)
@@ -274,9 +272,7 @@ class TestFactSemantics:
                 fact_type=FactType.OBSERVATION,
             )
             inv_with_fact = inv.model_copy(update={"facts": [fact]})
-            with patch(
-                f"{APP}.investigation_repository.rls_session", return_value=cm
-            ):
+            with patch(f"{APP}.investigation_repository.rls_session", return_value=cm):
                 repo = make_repo(session)
                 await repo.save("tenant-a", inv_with_fact, expected_version=1)
             assert len(added) == 1
@@ -360,8 +356,9 @@ class TestSaveBatch:
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.evidence_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.evidence_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             await repo.save_batch("tenant-a", items, investigation_id=uuid.uuid4())
@@ -390,8 +387,9 @@ class TestMutationLogs:
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.timeline_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.timeline_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyTimelineRepository(db_session_factory=MagicMock())
             await repo.append("tenant-a", event, investigation_id=iid)
@@ -413,8 +411,9 @@ class TestMutationLogs:
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
         iid = uuid.uuid4()
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.transition_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.transition_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyTransitionRepository(db_session_factory=MagicMock())
             await repo.record_transition(
@@ -440,9 +439,7 @@ class TestMutationLogs:
         cm.__aexit__ = AsyncMock(return_value=None)
         with patch(f"{APP}.transition_repository.rls_session", return_value=cm):
             repo = SqlAlchemyTransitionRepository(db_session_factory=MagicMock())
-            await repo.record_transition(
-                "tenant-a", uuid.uuid4(), "CREATED", "INVESTIGATING", "go"
-            )
+            await repo.record_transition("tenant-a", uuid.uuid4(), "CREATED", "INVESTIGATING", "go")
         assert added[0].actor == "SYSTEM"
 
     @pytest.mark.asyncio
@@ -469,8 +466,9 @@ class TestMutationLogs:
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.investigation_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.investigation_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyInvestigationRepository(db_session_factory=MagicMock())
             await repo.create("tenant-a", inv)
@@ -490,8 +488,9 @@ class TestMutationLogs:
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.profile_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.profile_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyApplicationProfileRepository(db_session_factory=MagicMock())
             await repo.save("tenant-a", profile)
@@ -501,9 +500,7 @@ class TestMutationLogs:
         assert rows[0].outcome == "inserted"
 
     @pytest.mark.asyncio
-    async def test_failure_path_uses_exception_log(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_failure_path_uses_exception_log(self, caplog: pytest.LogCaptureFixture) -> None:
         from investigation_agent_platform.infrastructure.persistence.evidence_repository import (
             SqlAlchemyEvidenceRepository,
         )
@@ -513,8 +510,9 @@ class TestMutationLogs:
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
-        with caplog.at_level(logging.INFO), patch(
-            f"{APP}.evidence_repository.rls_session", return_value=cm
+        with (
+            caplog.at_level(logging.INFO),
+            patch(f"{APP}.evidence_repository.rls_session", return_value=cm),
         ):
             repo = SqlAlchemyEvidenceRepository(db_session_factory=MagicMock())
             with pytest.raises(RuntimeError):
@@ -587,12 +585,12 @@ class TestTenantPredicates:
             await SqlAlchemyArtifactRepository(
                 db_session_factory=MagicMock()
             ).list_for_investigation("tenant-a", uuid.uuid4())
-            await SqlAlchemySessionRepository(
-                db_session_factory=MagicMock()
-            ).list_own_sessions("tenant-a", uuid.uuid4())
-            await SqlAlchemySessionRepository(
-                db_session_factory=MagicMock()
-            ).count_own_sessions("tenant-a", uuid.uuid4())
+            await SqlAlchemySessionRepository(db_session_factory=MagicMock()).list_own_sessions(
+                "tenant-a", uuid.uuid4()
+            )
+            await SqlAlchemySessionRepository(db_session_factory=MagicMock()).count_own_sessions(
+                "tenant-a", uuid.uuid4()
+            )
         for call in session.scalars.await_args_list:
             assert "tenant_id" in str(call.args[0])
 
@@ -709,9 +707,7 @@ class TestCoreRetention:
         )
 
         cutoff = datetime.now(UTC)
-        session = _session_with(
-            scalars_result=_scalars(all_=[uuid.uuid4()]), execute_rowcount=1
-        )
+        session = _session_with(scalars_result=_scalars(all_=[uuid.uuid4()]), execute_rowcount=1)
         cm = AsyncMock()
         cm.__aenter__ = AsyncMock(return_value=session)
         cm.__aexit__ = AsyncMock(return_value=None)
@@ -748,9 +744,9 @@ class TestCoreRetention:
             cm.__aenter__ = AsyncMock(return_value=session)
             cm.__aexit__ = AsyncMock(return_value=None)
             with patch(f"{APP}.{module}.rls_session", return_value=cm):
-                purged = await repo_cls(
-                    db_session_factory=MagicMock()
-                ).purge_expired("tenant-a", cutoff)
+                purged = await repo_cls(db_session_factory=MagicMock()).purge_expired(
+                    "tenant-a", cutoff
+                )
             assert purged == 0
             assert session.execute.await_count == 0
             text = str(session.scalars.await_args.args[0])

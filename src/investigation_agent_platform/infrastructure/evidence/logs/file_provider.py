@@ -138,9 +138,7 @@ def _parse_line(line: str) -> _ParsedLine:
     service = doc.get("service", {})
     code = doc.get("code", {})
     function = str(code.get("function", "") or "") if isinstance(code, dict) else ""
-    message = str(
-        doc.get("message", doc.get("event", doc.get("msg", doc.get("log", "")))) or ""
-    )
+    message = str(doc.get("message", doc.get("event", doc.get("msg", doc.get("log", "")))) or "")
     extra = doc.get("extra", {})
     tenant_hint, inv_hint = "", ""
     story: dict[str, Any] = {}
@@ -277,7 +275,9 @@ class FileLogAdapter:
     def _allowed_roots(self) -> list[Path]:
         roots: list[Path] = []
         for raw in self._settings.roots:
-            candidate = (self._root / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
+            candidate = (
+                (self._root / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
+            )
             roots.append(candidate)
         return roots
 
@@ -317,9 +317,7 @@ class FileLogAdapter:
                         resolved = candidate.resolve()
                     except OSError:
                         continue
-                    if not any(
-                        resolved == root or root in resolved.parents for root in roots
-                    ):
+                    if not any(resolved == root or root in resolved.parents for root in roots):
                         continue
                     if resolved.is_symlink() or not resolved.is_file():
                         continue

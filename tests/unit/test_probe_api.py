@@ -43,6 +43,7 @@ class _Repo:
 def _adapter(handler=None):
     def _factory():
         return httpx.AsyncClient(transport=httpx.MockTransport(handler or _ok))
+
     return HttpxApiProbeAdapter(profile_repo=_Repo(), client_factory=_factory)
 
 
@@ -58,7 +59,9 @@ def _ok(request: httpx.Request) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_probe_success_redacts_headers_and_injects_tenant():
     result = await _adapter().probe(
-        "tenant-a", "app", ApiProbeRequest(endpoint_id="list-things", path_params={"thing_id": "42"})
+        "tenant-a",
+        "app",
+        ApiProbeRequest(endpoint_id="list-things", path_params={"thing_id": "42"}),
     )
     assert result.status_code == 200
     assert result.resolved_url == "http://internal:8000/api/v1/things/42"
@@ -75,9 +78,7 @@ async def test_unknown_endpoint_rejected_before_network():
         return _ok(request)
 
     with pytest.raises(ProbeEndpointNotFoundError):
-        await _adapter(_handler).probe(
-            "tenant-a", "app", ApiProbeRequest(endpoint_id="nope")
-        )
+        await _adapter(_handler).probe("tenant-a", "app", ApiProbeRequest(endpoint_id="nope"))
     assert calls == []
 
 
@@ -126,17 +127,13 @@ async def test_non_http_base_url_rejected():
 
     adapter = HttpxApiProbeAdapter(profile_repo=_BadRepo())
     with pytest.raises(SecurityPolicyViolationException):
-        await adapter.probe(
-            "tenant-a", "app", ApiProbeRequest(endpoint_id="list-things")
-        )
+        await adapter.probe("tenant-a", "app", ApiProbeRequest(endpoint_id="list-things"))
 
 
 @pytest.mark.asyncio
 async def test_anonymous_tenant_rejected():
     with pytest.raises(SecurityPolicyViolationException):
-        await _adapter().probe(
-            "anonymous", "app", ApiProbeRequest(endpoint_id="list-things")
-        )
+        await _adapter().probe("anonymous", "app", ApiProbeRequest(endpoint_id="list-things"))
 
 
 @pytest.mark.asyncio

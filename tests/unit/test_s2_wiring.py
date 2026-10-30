@@ -73,9 +73,7 @@ def _range_row(
                 revision=revision,
             ),
         ),
-        freshness=EvidenceFreshness(
-            observed_at=datetime.now(UTC), retrieved_at=datetime.now(UTC)
-        ),
+        freshness=EvidenceFreshness(observed_at=datetime.now(UTC), retrieved_at=datetime.now(UTC)),
         fingerprint=f"fp-{uuid4()}",
     )
 
@@ -234,8 +232,6 @@ def test_classifier_roots_mirror_validator():
 
 
 def test_template_count_capped():
-    rows = [
-        _range_row(FLAG_SNIPPET, file_path=f"tenant/svc/f{i}.py") for i in range(12)
-    ]
+    rows = [_range_row(FLAG_SNIPPET, file_path=f"tenant/svc/f{i}.py") for i in range(12)]
     section = compile_dormant_templates(rows, anchors=_anchors())
     assert len(section["templates"]) == 8

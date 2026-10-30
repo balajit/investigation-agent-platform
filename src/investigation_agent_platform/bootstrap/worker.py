@@ -223,9 +223,7 @@ async def run_temporal_worker(config: ApplicationConfig | TemporalConfig) -> Non
             )
             await asyncio.sleep(min(30.0, 2.0 * (attempt + 1)))
     if client is None:
-        raise RuntimeError(
-            f"Temporal unreachable after retries: {last_exc}"
-        ) from last_exc
+        raise RuntimeError(f"Temporal unreachable after retries: {last_exc}") from last_exc
     # Part 11.12: dev worker reads/writes the same Postgres-backed stores as
     # the API (buffered proxies); otherwise jobs/records created by the API
     # are invisible here and vice versa. Production already uses SQL.

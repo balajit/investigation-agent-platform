@@ -68,9 +68,7 @@ def test_census_totals_must_reconcile_and_include_unknown() -> None:
             language="python",
             parse_status=ParseStatus.PARSED,
             capabilities=[
-                ExtractedCapability(
-                    name="symbols", extractor="tree-sitter", extractor_version="1"
-                )
+                ExtractedCapability(name="symbols", extractor="tree-sitter", extractor_version="1")
             ],
             loc=10,
         ),
@@ -114,9 +112,7 @@ def test_parse_status_is_distinct_from_extracted_capabilities() -> None:
         parse_status=ParseStatus.SYNTAX_ERRORS,
         parse_error="unexpected indent at line 3",
         capabilities=[
-            ExtractedCapability(
-                name="symbols", extractor="tree-sitter", extractor_version="1"
-            )
+            ExtractedCapability(name="symbols", extractor="tree-sitter", extractor_version="1")
         ],
         loc=50,
     )
@@ -167,9 +163,7 @@ def test_hygiene_finding_rejects_unredacted_secrets() -> None:
 
 
 def test_claim_requires_probe_unless_verified() -> None:
-    evidence = [
-        EvidencePointer(output_hash="a" * 64, field_path="census.files[0]")
-    ]
+    evidence = [EvidencePointer(output_hash="a" * 64, field_path="census.files[0]")]
     with pytest.raises(ValidationError, match="confirming probe"):
         Claim(statement="uses django", confidence=Confidence.PROJECTED, evidence=evidence)
     with pytest.raises(ValidationError, match="confirming probe"):
@@ -256,9 +250,7 @@ def test_input_manifest_hash_ignores_order_and_volatile_fields() -> None:
     first = input_manifest_hash(sniffer_outputs=[out_a, out_b], **kwargs)
     second = input_manifest_hash(sniffer_outputs=[out_b, out_a], **kwargs)
     assert first == second
-    assert first != input_manifest_hash(
-        sniffer_outputs=[out_a], **{**kwargs, "generation": 3}
-    )
+    assert first != input_manifest_hash(sniffer_outputs=[out_a], **{**kwargs, "generation": 3})
     with pytest.raises(ValueError, match="content_hash"):
         input_manifest_hash(sniffer_outputs=[{"tool": "x"}], **kwargs)
 
@@ -301,9 +293,7 @@ def test_canonicalization_version_is_pinned_in_hash_preimages() -> None:
             }
         ],
     }
-    expected = hashlib.sha256(
-        canonical_json_bytes(expected_manifest)
-    ).hexdigest()
+    expected = hashlib.sha256(canonical_json_bytes(expected_manifest)).hexdigest()
     assert (
         input_manifest_hash(
             sniffer_outputs=[out],

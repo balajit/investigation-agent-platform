@@ -39,7 +39,12 @@ def upgrade() -> None:
             sa.Column("fencing_token", sa.Integer(), nullable=False),
             sa.Column("report_content_hash", sa.String(64), nullable=False),
             sa.Column("action", sa.String(16), nullable=False),
-            sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column(
+                "occurred_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.func.now(),
+            ),
             sa.ForeignKeyConstraint(
                 ["tenant_id", "request_id", "revision", "generation"],
                 [
@@ -52,11 +57,19 @@ def upgrade() -> None:
                 name="fk_coverage_filing_audit_report",
             ),
             sa.CheckConstraint("action IN ('FILED')", name="ck_coverage_filing_audit_action"),
-            sa.CheckConstraint("length(worker_id) > 0", name="ck_coverage_filing_audit_worker_nonempty"),
-            sa.CheckConstraint("length(database_role) > 0", name="ck_coverage_filing_audit_role_nonempty"),
-            sa.CheckConstraint("fencing_token >= 0", name="ck_coverage_filing_audit_token_nonnegative"),
+            sa.CheckConstraint(
+                "length(worker_id) > 0", name="ck_coverage_filing_audit_worker_nonempty"
+            ),
+            sa.CheckConstraint(
+                "length(database_role) > 0", name="ck_coverage_filing_audit_role_nonempty"
+            ),
+            sa.CheckConstraint(
+                "fencing_token >= 0", name="ck_coverage_filing_audit_token_nonnegative"
+            ),
             sa.CheckConstraint("revision >= 1", name="ck_coverage_filing_audit_revision_positive"),
-            sa.CheckConstraint("generation >= 1", name="ck_coverage_filing_audit_generation_positive"),
+            sa.CheckConstraint(
+                "generation >= 1", name="ck_coverage_filing_audit_generation_positive"
+            ),
         )
         op.create_index(
             "ix_coverage_filing_audit_report",
@@ -88,13 +101,9 @@ def upgrade() -> None:
         )
     )
     op.execute(
-        sa.text(
-            "GRANT SELECT ON onboarding_coverage_filing_audits TO iap_app, iap_migrator"
-        )
+        sa.text("GRANT SELECT ON onboarding_coverage_filing_audits TO iap_app, iap_migrator")
     )
-    op.execute(
-        sa.text("GRANT INSERT ON onboarding_coverage_filing_audits TO iap_migrator")
-    )
+    op.execute(sa.text("GRANT INSERT ON onboarding_coverage_filing_audits TO iap_migrator"))
     op.execute(
         sa.text(
             "CREATE OR REPLACE FUNCTION record_onboarding_coverage_filing("

@@ -24,9 +24,7 @@ def _ctx_with(write_error=None):  # type: ignore[no-untyped-def]
         profile_repo=SimpleNamespace(
             get_by_application_id=AsyncMock(return_value=None), save=_fail
         ),
-        investigation_repo=SimpleNamespace(
-            get_by_id=AsyncMock(return_value=None), create=_fail
-        ),
+        investigation_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=None), create=_fail),
         evidence_repo=SimpleNamespace(
             find_by_investigation_id=AsyncMock(return_value=[]), save=_fail
         ),
@@ -47,9 +45,7 @@ def _ctx_with(write_error=None):  # type: ignore[no-untyped-def]
         artifact_repo=SimpleNamespace(
             list_for_investigation=AsyncMock(return_value=[]), save=_fail
         ),
-        session_repo=SimpleNamespace(
-            count_own_sessions=AsyncMock(return_value=0), append=_fail
-        ),
+        session_repo=SimpleNamespace(count_own_sessions=AsyncMock(return_value=0), append=_fail),
         background_job_repo=SimpleNamespace(
             list_jobs=AsyncMock(return_value=([], 0)), create=_fail
         ),

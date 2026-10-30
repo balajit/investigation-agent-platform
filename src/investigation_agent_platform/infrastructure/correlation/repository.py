@@ -164,9 +164,7 @@ class PostgresRelationshipRepository:
         )
 
         pending = [
-            e
-            for e in edges
-            if e.tenant_id == tenant_id and e.application_id == application_id
+            e for e in edges if e.tenant_id == tenant_id and e.application_id == application_id
         ]
         if not pending:
             return 0
@@ -201,9 +199,7 @@ class PostgresRelationshipRepository:
             await session.commit()
             return len(fresh)
 
-    async def fetch_links_for_node(
-        self, tenant_id: str, node_id: str
-    ) -> list[dict[str, Any]]:
+    async def fetch_links_for_node(self, tenant_id: str, node_id: str) -> list[dict[str, Any]]:
         """§2.4: inbound + outbound investigation-level links for one node.
 
         Returns plain dicts (source, target, type, confidence, reason,

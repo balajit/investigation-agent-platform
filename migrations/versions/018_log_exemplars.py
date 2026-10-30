@@ -48,14 +48,10 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.ForeignKeyConstraint(
-            ["investigation_id"], ["investigations.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["investigation_id"], ["investigations.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "idx_logexemplar_tenant", "log_exemplars", ["tenant_id"]
-    )
+    op.create_index("idx_logexemplar_tenant", "log_exemplars", ["tenant_id"])
     op.create_index(
         "idx_logexemplar_tenant_inv",
         "log_exemplars",

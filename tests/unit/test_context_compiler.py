@@ -46,9 +46,7 @@ def _evidence(summary="log line", snippet="", etype=EvidenceType.LOG):
             ),
             source_location=SourceLocation(system="test", identifier="x"),
         ),
-        freshness=EvidenceFreshness(
-            observed_at=datetime.now(UTC), retrieved_at=datetime.now(UTC)
-        ),
+        freshness=EvidenceFreshness(observed_at=datetime.now(UTC), retrieved_at=datetime.now(UTC)),
         fingerprint=f"fp-{uuid4()}",
     )
 
@@ -83,7 +81,9 @@ def _state(evidence):
 
 def test_source_code_body_reaches_compiled_context():
     body = "def handler():\n    return buggy_value"
-    ctx = compile_reasoning_context(_state([_evidence(snippet=body, etype=EvidenceType.SOURCE_CODE)]))
+    ctx = compile_reasoning_context(
+        _state([_evidence(snippet=body, etype=EvidenceType.SOURCE_CODE)])
+    )
     assert ctx["prompt_version"] == REASONER_PROMPT_VERSION
     excerpt = ctx["evidence_excerpts"][0]
     assert body in excerpt["content"]
@@ -92,7 +92,9 @@ def test_source_code_body_reaches_compiled_context():
 
 def test_long_code_body_truncated_with_disclosure():
     body = "x = 1\n" * 680  # 4080 chars: fits Evidence cap (4096), exceeds packet cap (4000)
-    ctx = compile_reasoning_context(_state([_evidence(snippet=body, etype=EvidenceType.SOURCE_CODE)]))
+    ctx = compile_reasoning_context(
+        _state([_evidence(snippet=body, etype=EvidenceType.SOURCE_CODE)])
+    )
     excerpt = ctx["evidence_excerpts"][0]
     assert excerpt["content_truncated"] is True
     assert len(excerpt["content"]) <= 4000
@@ -207,7 +209,9 @@ def test_low_relevance_old_unbound_is_tier2_summary_only():
 
     # Push past the recency window with newer items so this one is old on all axes.
     old = _tier_evidence(snippet="def f(): stale", relevance=0.1, age_seconds=7200)
-    newer = [_tier_evidence(snippet=f"def g{i}(): x", relevance=0.1, age_seconds=i) for i in range(6)]
+    newer = [
+        _tier_evidence(snippet=f"def g{i}(): x", relevance=0.1, age_seconds=i) for i in range(6)
+    ]
     excerpts = compile_evidence_excerpts([old, *newer])
     by_id = {e["evidence_id"]: e for e in excerpts}
     stale = by_id[str(old.evidence_id)]
@@ -221,7 +225,10 @@ def test_recency_grants_tier1():
         compile_evidence_excerpts,
     )
 
-    items = [_tier_evidence(snippet=f"def g{i}(): x", relevance=0.1, age_seconds=(5 - i) * 10) for i in range(6)]
+    items = [
+        _tier_evidence(snippet=f"def g{i}(): x", relevance=0.1, age_seconds=(5 - i) * 10)
+        for i in range(6)
+    ]
     excerpts = compile_evidence_excerpts(items)
     tiers = [e["tier"] for e in excerpts]
     assert tiers.count(1) == 5  # 5 most recent (default window)
@@ -238,7 +245,10 @@ def test_relevance_floor_env_override(monkeypatch):
     os.environ["IAP_COMPILER_FULL_EXCERPT_RELEVANCE"] = "0.99"
     try:
         ev = _tier_evidence(snippet="def f(): warm", relevance=0.9, age_seconds=3600)
-        fillers = [_tier_evidence(snippet=f"def h{i}(): y", relevance=0.99, age_seconds=0) for i in range(6)]
+        fillers = [
+            _tier_evidence(snippet=f"def h{i}(): y", relevance=0.99, age_seconds=0)
+            for i in range(6)
+        ]
         excerpts = compile_evidence_excerpts([ev, *fillers])
         by_id = {e["evidence_id"]: e for e in excerpts}
         assert by_id[str(ev.evidence_id)]["tier"] == 2
@@ -259,9 +269,7 @@ def test_compiled_context_wires_hypothesis_bound_set():
 
 def _code_evidence(summary="code", snippet="x = 1", retrieved=None):
 
-    ev = _evidence(
-        summary=summary, snippet=snippet, etype=EvidenceType.SOURCE_CODE
-    )
+    ev = _evidence(summary=summary, snippet=snippet, etype=EvidenceType.SOURCE_CODE)
     if retrieved is not None:
         fresh = ev.freshness.model_copy(update={"retrieved_at": retrieved})
         ev = ev.model_copy(update={"retrieved_at": retrieved, "freshness": fresh})
@@ -302,16 +310,26 @@ class TestContextShrink:
         )
 
         old = {
-            "evidence_id": "bound-1", "tier": 1, "content": "x" * 5000,
-            "summary": "s", "retrieved_at": "2020-01-01",
+            "evidence_id": "bound-1",
+            "tier": 1,
+            "content": "x" * 5000,
+            "summary": "s",
+            "retrieved_at": "2020-01-01",
         }
         new = {
-            "evidence_id": "new-1", "tier": 1, "content": "y" * 100,
-            "summary": "s", "retrieved_at": "2026-01-01",
+            "evidence_id": "new-1",
+            "tier": 1,
+            "content": "y" * 100,
+            "summary": "s",
+            "retrieved_at": "2026-01-01",
         }
         ctx = {
-            "plan": {}, "hypotheses": [], "timeline": [], "pending_questions": [],
-            "findings": [], "evidence_excerpts": [old, new],
+            "plan": {},
+            "hypotheses": [],
+            "timeline": [],
+            "pending_questions": [],
+            "findings": [],
+            "evidence_excerpts": [old, new],
         }
         out = enforce_context_budget(ctx, bound={"bound-1"}, budget=200)
         by_id = {e["evidence_id"]: e for e in out["evidence_excerpts"]}
@@ -328,13 +346,19 @@ class TestContextShrink:
 
         def _row(eid, year, size=2000):
             return {
-                "evidence_id": eid, "tier": 1, "content": "z" * size,
-                "summary": "s", "retrieved_at": f"{year}-06-01",
+                "evidence_id": eid,
+                "tier": 1,
+                "content": "z" * size,
+                "summary": "s",
+                "retrieved_at": f"{year}-06-01",
             }
 
         ctx = {
-            "plan": {}, "hypotheses": [], "timeline": [],
-            "pending_questions": [], "findings": [],
+            "plan": {},
+            "hypotheses": [],
+            "timeline": [],
+            "pending_questions": [],
+            "findings": [],
             "evidence_excerpts": [_row("old", "2020"), _row("mid", "2023"), _row("new", "2026")],
         }
         out = enforce_context_budget(ctx, budget=1100)
@@ -354,8 +378,12 @@ class TestContextShrink:
         def _hyp(statement, status):
             iid = uuid4()
             return Hypothesis(
-                tenant_id="t", investigation_id=iid, title=statement[:50],
-                description=statement, statement=statement, status=status,
+                tenant_id="t",
+                investigation_id=iid,
+                title=statement[:50],
+                description=statement,
+                statement=statement,
+                status=status,
             )
 
         hyps = [
@@ -381,10 +409,12 @@ class TestContextShrink:
 
         def _ctx():
             return {
-                "plan": {"a": 1}, "hypotheses": [],
+                "plan": {"a": 1},
+                "hypotheses": [],
                 "timeline": [{"event": f"e{i}"} for i in range(10)],
                 "pending_questions": [f"q{i}" for i in range(10)],
-                "findings": [], "evidence_excerpts": [],
+                "findings": [],
+                "evidence_excerpts": [],
             }
 
         first = enforce_context_budget(_ctx(), budget=300)

@@ -49,9 +49,7 @@ class _Metrics:
     def __init__(self) -> None:
         self.calls: list[tuple[str, float, dict[str, str]]] = []
 
-    def record_metric(
-        self, metric_name: str, value: float, tags: dict[str, str]
-    ) -> None:
+    def record_metric(self, metric_name: str, value: float, tags: dict[str, str]) -> None:
         self.calls.append((metric_name, float(value), dict(tags)))
 
     def names(self) -> list[str]:
@@ -85,9 +83,7 @@ def _gateway(
         search_calls.append(dict(kwargs))
         return list(search_rows or [])
 
-    async def _authority_fn(
-        tenant_id: str, repository_id: str, revision: str
-    ) -> dict[str, Any]:
+    async def _authority_fn(tenant_id: str, repository_id: str, revision: str) -> dict[str, Any]:
         assert tenant_id == "tenant-a"
         assert repository_id == "acme--pay"
         assert revision == "rev-1"
@@ -134,12 +130,8 @@ def flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_flag_off_symbol_hit_is_byte_identical(
     flag_off: None,
 ) -> None:
-    gateway, metrics, search_calls = _gateway(
-        find_symbol_result=[_symbol("a::b"), _symbol("a::c")]
-    )
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    gateway, metrics, search_calls = _gateway(find_symbol_result=[_symbol("a::b"), _symbol("a::c")])
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.items == []
     assert result.total_count == 2
     assert result.provider_metadata == {
@@ -159,14 +151,38 @@ async def test_call_graph_both_depth_expands_callers_and_callees():
     provider.profile = SimpleNamespace(name="test-profile")
     provider.find_callers = AsyncMock(
         side_effect=[
-            [CallGraphNode(caller_symbol="caller-1", callee_symbol="root", location=CodeLocation(file_path="src/caller.py", line_number=10))],
-            [CallGraphNode(caller_symbol="caller-2", callee_symbol="caller-1", location=CodeLocation(file_path="src/caller2.py", line_number=20))],
+            [
+                CallGraphNode(
+                    caller_symbol="caller-1",
+                    callee_symbol="root",
+                    location=CodeLocation(file_path="src/caller.py", line_number=10),
+                )
+            ],
+            [
+                CallGraphNode(
+                    caller_symbol="caller-2",
+                    callee_symbol="caller-1",
+                    location=CodeLocation(file_path="src/caller2.py", line_number=20),
+                )
+            ],
         ]
     )
     provider.find_callees = AsyncMock(
         side_effect=[
-            [CallGraphNode(caller_symbol="root", callee_symbol="callee-1", location=CodeLocation(file_path="src/callee.py", line_number=30))],
-            [CallGraphNode(caller_symbol="callee-1", callee_symbol="callee-2", location=CodeLocation(file_path="src/callee2.py", line_number=40))],
+            [
+                CallGraphNode(
+                    caller_symbol="root",
+                    callee_symbol="callee-1",
+                    location=CodeLocation(file_path="src/callee.py", line_number=30),
+                )
+            ],
+            [
+                CallGraphNode(
+                    caller_symbol="callee-1",
+                    callee_symbol="callee-2",
+                    location=CodeLocation(file_path="src/callee2.py", line_number=40),
+                )
+            ],
         ]
     )
     selector = MagicMock()
@@ -183,24 +199,26 @@ async def test_call_graph_both_depth_expands_callers_and_callees():
         fuzzy_dataset_fn=None,
     )
     result = await gateway.find_call_graph(
-        "tenant-a", uuid.uuid4(), "app-1",
+        "tenant-a",
+        uuid.uuid4(),
+        "app-1",
         CallGraphRequest(repository="repo", symbol="root", direction="BOTH", depth=2),
     )
 
     assert {item["caller_symbol"] for item in result.provider_metadata["callers"]} == {
-        "caller-1", "caller-2"
+        "caller-1",
+        "caller-2",
     }
     assert {item["callee_symbol"] for item in result.provider_metadata["callees"]} == {
-        "callee-1", "callee-2"
+        "callee-1",
+        "callee-2",
     }
 
 
 @pytest.mark.asyncio
 async def test_flag_off_empty_miss_is_byte_identical(flag_off: None) -> None:
     gateway, metrics, search_calls = _gateway(find_symbol_result=[])
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.items == []
     assert result.total_count == 0
     assert result.provider_metadata == {"symbols": []}
@@ -227,9 +245,7 @@ async def test_flag_defaults_off_without_env(
 ) -> None:
     monkeypatch.delenv("IAP_COGNEE_ENABLED", raising=False)
     gateway, metrics, search_calls = _gateway(find_symbol_result=[])
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.provider_metadata == {"symbols": []}
     assert search_calls == []
 
@@ -243,8 +259,13 @@ async def test_flag_on_fallback_verifies_and_targets(flag_on: None) -> None:
     authority = {kept_id: kept_node, other_id: other_node}
     search_rows = [
         # Fuzzy payload junk (scores/snippets/summaries) must not survive.
-        {"node_id": kept_id, "score": 0.99, "snippet": "def charge(): ...",
-         "summary": "handles payments", "qualified_name": "WRONG::NAME"},
+        {
+            "node_id": kept_id,
+            "score": 0.99,
+            "snippet": "def charge(): ...",
+            "summary": "handles payments",
+            "qualified_name": "WRONG::NAME",
+        },
         {"node_id": other_id, "score": 0.5},
         {"node_id": "unmapped-ghost", "score": 0.9, "snippet": "x"},
         {"no_node_id": True, "score": 1.0},
@@ -252,9 +273,7 @@ async def test_flag_on_fallback_verifies_and_targets(flag_on: None) -> None:
     gateway, metrics, search_calls = _gateway(
         find_symbol_result=[], search_rows=search_rows, authority=authority
     )
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     # Never banked as Evidence rows.
     assert result.items == []
     metadata = result.provider_metadata
@@ -282,9 +301,7 @@ async def test_flag_on_fallback_verifies_and_targets(flag_on: None) -> None:
     assert "handles payments" not in dumped
     assert "unmapped-ghost" not in dumped
     # D5 counters at each stage.
-    assert metrics.by_name("iap.code_recall.miss") == [
-        (1.0, {"miss": "ZERO_EXACT_HITS"})
-    ]
+    assert metrics.by_name("iap.code_recall.miss") == [(1.0, {"miss": "ZERO_EXACT_HITS"})]
     assert metrics.by_name("iap.code_recall.fallback.candidates_seen") == [
         (3.0, {"miss": "ZERO_EXACT_HITS"})
     ]
@@ -314,13 +331,9 @@ async def test_flag_on_overload_abstention_maps_to_miss(flag_on: None) -> None:
     )
     # Flag-on: the abstention maps to a miss and flows through fallback
     # instead of raising — structural truth still vetoes (no guessed rows).
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.items == []
-    assert result.provider_metadata["code_recall_miss"] == (
-        CodeRecallMiss.AMBIGUOUS_OVERLOAD.value
-    )
+    assert result.provider_metadata["code_recall_miss"] == (CodeRecallMiss.AMBIGUOUS_OVERLOAD.value)
     assert len(result.provider_metadata["fuzzy_verified_targets"]) == 1
     miss_counters = metrics.by_name("iap.code_recall.miss")
     assert miss_counters == [(1.0, {"miss": "AMBIGUOUS_OVERLOAD"})]
@@ -355,21 +368,17 @@ async def test_run_budget_exhaustion_counts_without_search(
     )
     investigation_id = uuid.uuid4()
     for _ in range(FALLBACK_RUN_CAP):
-        result = await gateway.find_symbol(
-            "tenant-a", investigation_id, "app-1", _request()
-        )
+        result = await gateway.find_symbol("tenant-a", investigation_id, "app-1", _request())
         assert "fuzzy_orientation" in result.provider_metadata
     assert len(search_calls) == FALLBACK_RUN_CAP
-    exhausted = await gateway.find_symbol(
-        "tenant-a", investigation_id, "app-1", _request()
-    )
+    exhausted = await gateway.find_symbol("tenant-a", investigation_id, "app-1", _request())
     # Exhausted: normal counted outcome — deterministic envelope, no search.
     assert len(search_calls) == FALLBACK_RUN_CAP
     assert "fuzzy_orientation" not in exhausted.provider_metadata
     assert exhausted.provider_metadata["code_recall_miss"] == "ZERO_EXACT_HITS"
-    assert metrics.by_name(
-        "iap.code_recall.fallback.run_budget_exhausted"
-    ) == [(1.0, {"miss": "ZERO_EXACT_HITS"})]
+    assert metrics.by_name("iap.code_recall.fallback.run_budget_exhausted") == [
+        (1.0, {"miss": "ZERO_EXACT_HITS"})
+    ]
 
 
 @pytest.mark.asyncio
@@ -377,12 +386,8 @@ async def test_telescoping_caps_per_call_inside_per_run(
     flag_on: None,
 ) -> None:
     rows = [{"node_id": f"node-{i}"} for i in range(FALLBACK_CANDIDATE_CAP + 15)]
-    gateway, metrics, search_calls = _gateway(
-        find_symbol_result=[], search_rows=rows, authority={}
-    )
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    gateway, metrics, search_calls = _gateway(find_symbol_result=[], search_rows=rows, authority={})
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     # Per-call cap telescopes inside the per-run budget: 25 rows in, 10 seen,
     # all discarded against the empty authority — counted, never an error.
     assert result.provider_metadata["fuzzy_candidates_seen"] == FALLBACK_CANDIDATE_CAP
@@ -403,9 +408,7 @@ async def test_fully_discarded_fallback_is_normal_outcome(
         search_rows=[{"node_id": "ghost-1"}, {"node_id": "ghost-2"}],
         authority={},
     )
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.items == []
     assert result.provider_metadata["fuzzy_verified_targets"] == []
     orientation = result.provider_metadata["fuzzy_orientation"]
@@ -439,9 +442,7 @@ async def test_flag_on_without_seams_degrades_to_deterministic(
         query_safety_policy=policy,
         sanitizer=MagicMock(),
     )
-    result = await gateway.find_symbol(
-        "tenant-a", uuid.uuid4(), "app-1", _request()
-    )
+    result = await gateway.find_symbol("tenant-a", uuid.uuid4(), "app-1", _request())
     assert result.items == []
     assert result.total_count == 0
     assert result.provider_metadata["symbols"] == []

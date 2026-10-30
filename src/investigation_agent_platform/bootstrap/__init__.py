@@ -501,9 +501,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
         # malformed files abort boot — a half-configured evidence layer
         # must never serve. Empty dir = no tenant endpoints; the global
         # deployment below serves every tenant.
-        tenant_configs = load_tenant_telemetry_configs(
-            config.evidence.tenant_telemetry_dir
-        )
+        tenant_configs = load_tenant_telemetry_configs(config.evidence.tenant_telemetry_dir)
         tenant_router = None
         if tenant_configs:
             from investigation_agent_platform.infrastructure.evidence.runtime.elastic import (
@@ -595,8 +593,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     ),
                     provider_id="file-log",
                 ),
-                default=not bool(config.evidence.elasticsearch_url)
-                and tenant_router is None,
+                default=not bool(config.evidence.elasticsearch_url) and tenant_router is None,
             )
             logger.info("File-log provider registered", extra={"roots": file_roots})
         else:
@@ -719,6 +716,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 "Code provider registered",
                 extra={"key": "pygit2-local", "base": config.topology.code_repo_base_path},
             )
+
         # P3-4: generic OAuth2 (env-configured single provider). Registered
         # once; MCP entries reference it by provider_id and the adapter
         # resolves per-call tokens through the TenantScopedOAuthProvider
@@ -741,7 +739,9 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     return None
                 _, provider = built
                 ctx.credential_registry.register(oauth2_manifest(provider_id), provider)
-                logger.info("OAuth2 credential provider registered", extra={"provider_id": provider_id})
+                logger.info(
+                    "OAuth2 credential provider registered", extra={"provider_id": provider_id}
+                )
             return TenantScopedOAuthProvider(provider, provider_id)
 
         # MCP registers only with explicit server entries (no config shape
@@ -847,9 +847,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
         mcp_entries = list(mcp_entries) + _postgres_mcp_servers(config)
         secret_store = build_secret_store_from_env()
         if secret_store is not None:
-            logger.info(
-                "Secret store backend wired", extra={"provider": secret_store.name}
-            )
+            logger.info("Secret store backend wired", extra={"provider": secret_store.name})
             secret_chain: ChainedSecretResolver = ChainedSecretResolver(
                 environment=config.environment,
                 resolvers=[

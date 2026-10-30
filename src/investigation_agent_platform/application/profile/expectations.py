@@ -12,9 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def derive_endpoint_expectations(
-    endpoint_id: str, schema: dict[str, Any] | None
-) -> dict[str, Any]:
+def derive_endpoint_expectations(endpoint_id: str, schema: dict[str, Any] | None) -> dict[str, Any]:
     """Derive an EndpointExpectation-shaped dict from an object schema.
 
     Pure and deterministic. Returns {} when the schema carries nothing
@@ -40,7 +38,9 @@ def derive_endpoint_expectations(
                     entry["required"] = True
                 enum_values = subschema.get("enum")
                 if isinstance(enum_values, list):
-                    allowed = [str(v) for v in enum_values if isinstance(v, (str, int, float, bool))]
+                    allowed = [
+                        str(v) for v in enum_values if isinstance(v, (str, int, float, bool))
+                    ]
                     if allowed:
                         entry["allowed_values"] = allowed[:100]
                 minimum = subschema.get("minimum")

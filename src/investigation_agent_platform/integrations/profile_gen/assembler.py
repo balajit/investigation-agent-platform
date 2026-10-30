@@ -39,8 +39,7 @@ def normalize_placeholders(path: str) -> tuple[str, list[str]]:
         def _record(match: Any) -> str:
             try:
                 name = (
-                    match.group("name") or match.group("bracket")
-                    or match.group("colon2") or ""
+                    match.group("name") or match.group("bracket") or match.group("colon2") or ""
                 ).strip()
                 if name and name not in placeholders:
                     placeholders.append(name[:64])
@@ -91,7 +90,9 @@ def assemble_profile(
         if "." in source_roots:
             # Whole-tree root subsumes module roots (single-module repos).
             source_roots = ["."]
-        build_systems = sorted({str(m.get("build_system", "")) for m in modules if m.get("build_system")})
+        build_systems = sorted(
+            {str(m.get("build_system", "")) for m in modules if m.get("build_system")}
+        )
 
         def _cfg(*names: str, default: Any = None) -> Any:
             for name in names:
@@ -99,9 +100,7 @@ def assemble_profile(
                     return config_map[name]
             return default
 
-        app_name = str(
-            _cfg("spring.application.name", default=app_id) or app_id
-        )[:128]
+        app_name = str(_cfg("spring.application.name", default=app_id) or app_id)[:128]
         probeable = []
         for controller in controllers or []:
             try:
@@ -135,9 +134,7 @@ def assemble_profile(
             try:
                 if not isinstance(client, dict) or not client.get("name"):
                     continue
-                dependencies.append(
-                    {"service": str(client["name"])[:128], "critical": False}
-                )
+                dependencies.append({"service": str(client["name"])[:128], "critical": False})
             except Exception:
                 continue
         expectation_attrs: dict[str, dict[str, dict[str, Any]]] = {}
@@ -155,8 +152,7 @@ def assemble_profile(
                 candidates: list[dict[str, Any]] = []
                 if validation.get("field"):
                     constraints = [
-                        c for c in (validation.get("constraints", []) or [])
-                        if isinstance(c, str)
+                        c for c in (validation.get("constraints", []) or []) if isinstance(c, str)
                     ]
                     candidates.append(
                         {
@@ -208,8 +204,12 @@ def assemble_profile(
             "status": "DRAFT",
             "owner": "profile-generator",
             "allowed_capabilities": [
-                "SEARCH_CODE", "FIND_SYMBOL", "FIND_CALL_GRAPH",
-                "GET_CODE", "GET_CODE_HISTORY", "CORRELATE",
+                "SEARCH_CODE",
+                "FIND_SYMBOL",
+                "FIND_CALL_GRAPH",
+                "GET_CODE",
+                "GET_CODE_HISTORY",
+                "CORRELATE",
             ],
             "mapping_source_id": "generic-ecs",
             "services": [
@@ -231,7 +231,10 @@ def assemble_profile(
             ],
             "investigation": {
                 "enabledEvidenceTypes": [
-                    "SOURCE_CODE", "CALL_GRAPH", "COMMIT_HISTORY", "TRACE",
+                    "SOURCE_CODE",
+                    "CALL_GRAPH",
+                    "COMMIT_HISTORY",
+                    "TRACE",
                 ],
             },
             "expectations": {

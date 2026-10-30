@@ -119,17 +119,25 @@ async def authorize_scoped(
         if grant.revoked_at is not None or not (grant.valid_from <= instant < grant.expires_at):
             return AuthorizationDecision(False, principal_id, required, scope, "GRANT_INACTIVE")
         if grant.policy_version != policy_version:
-            return AuthorizationDecision(False, principal_id, required, scope, "POLICY_VERSION_STALE")
+            return AuthorizationDecision(
+                False, principal_id, required, scope, "POLICY_VERSION_STALE"
+            )
         if grant.application_id != (scope.application_id or ""):
-            return AuthorizationDecision(False, principal_id, required, scope, "APPLICATION_MISMATCH")
+            return AuthorizationDecision(
+                False, principal_id, required, scope, "APPLICATION_MISMATCH"
+            )
         if grant.environment != scope.environment:
-            return AuthorizationDecision(False, principal_id, required, scope, "ENVIRONMENT_MISMATCH")
+            return AuthorizationDecision(
+                False, principal_id, required, scope, "ENVIRONMENT_MISMATCH"
+            )
         if grant.operation != scope.operation:
             return AuthorizationDecision(False, principal_id, required, scope, "OPERATION_MISMATCH")
         if required in _SEPARATION_OF_DUTIES and (
             requester_id is None or principal_id == requester_id
         ):
-            return AuthorizationDecision(False, principal_id, required, scope, "SEPARATION_OF_DUTIES")
+            return AuthorizationDecision(
+                False, principal_id, required, scope, "SEPARATION_OF_DUTIES"
+            )
         return AuthorizationDecision(True, principal_id, required, scope, "ALLOWED")
     if grant.principal_id != principal_id or grant.capability is not required:
         return AuthorizationDecision(False, principal_id, required, scope, "GRANT_SCOPE_MISMATCH")
@@ -150,9 +158,7 @@ async def authorize_scoped(
         return AuthorizationDecision(False, principal_id, required, scope, "ENVIRONMENT_MISMATCH")
     if grant.operation != scope.operation:
         return AuthorizationDecision(False, principal_id, required, scope, "OPERATION_MISMATCH")
-    if required in _SEPARATION_OF_DUTIES and (
-        requester_id is None or principal_id == requester_id
-    ):
+    if required in _SEPARATION_OF_DUTIES and (requester_id is None or principal_id == requester_id):
         return AuthorizationDecision(False, principal_id, required, scope, "SEPARATION_OF_DUTIES")
     return AuthorizationDecision(True, principal_id, required, scope, "ALLOWED")
 
@@ -186,5 +192,7 @@ def authorize(
         return AuthorizationDecision(False, principal_id, required, scope, "CAPABILITY_MISSING")
     if required in _SEPARATION_OF_DUTIES:
         if requester_id is None or principal_id == requester_id:
-            return AuthorizationDecision(False, principal_id, required, scope, "SEPARATION_OF_DUTIES")
+            return AuthorizationDecision(
+                False, principal_id, required, scope, "SEPARATION_OF_DUTIES"
+            )
     return AuthorizationDecision(True, principal_id, required, scope, "ALLOWED")

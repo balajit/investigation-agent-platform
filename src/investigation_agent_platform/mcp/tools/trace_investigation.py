@@ -60,8 +60,12 @@ EnvironmentParam = Annotated[str, Field(min_length=1, max_length=100, pattern=EN
 MaxEvidenceParam = Annotated[int, Field(ge=1, le=100)]
 
 
-@traced("mcp", component="tools", tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
-        inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),)
+@traced(
+    "mcp",
+    component="tools",
+    tenant_from=lambda a, k: getattr(k.get("scope"), "tenant_id", None),
+    inv_from=lambda a, k: getattr(k.get("scope"), "investigation_id", None),
+)
 async def investigate_trace_core(
     *,
     services: InvestigationServices,

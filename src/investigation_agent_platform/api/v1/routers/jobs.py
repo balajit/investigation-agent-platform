@@ -56,7 +56,9 @@ async def get_job(
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_JOB_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid job id format"
+            code="INVALID_JOB_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid job id format",
         ) from exc
     job = await _get_job_or_404(ctx, x_tenant_id, job_uuid)
     return JobDetail.model_validate({"job": job.model_dump(mode="json")})
@@ -110,11 +112,15 @@ async def cancel_job(
         job_uuid = UUID(job_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_JOB_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid job id format"
+            code="INVALID_JOB_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid job id format",
         ) from exc
     job = await _get_job_or_404(ctx, x_tenant_id, job_uuid)
     if job.status in TERMINAL_JOB_STATUSES:
-        return JobCancelResponse.model_validate({"job": job.model_dump(mode="json"), "cancelled": False})
+        return JobCancelResponse.model_validate(
+            {"job": job.model_dump(mode="json"), "cancelled": False}
+        )
     updated = job.model_copy(
         update={"status": BackgroundJobStatus.CANCEL_REQUESTED, "version": job.version + 1}
     )
@@ -133,7 +139,9 @@ async def cancel_job(
             )
     refreshed = await ctx.background_job_repo.get_by_id(x_tenant_id, job_uuid)
     payload = refreshed if refreshed is not None else updated
-    return JobCancelResponse.model_validate({"job": payload.model_dump(mode="json"), "cancelled": True})
+    return JobCancelResponse.model_validate(
+        {"job": payload.model_dump(mode="json"), "cancelled": True}
+    )
 
 
 @router.websocket("/jobs/{job_id}/stream")

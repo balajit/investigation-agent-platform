@@ -132,9 +132,7 @@ class SqlAlchemyOnboardingCoverageRepository:
                         model_version=validated.model_version,
                         report_json=report_json,
                     )
-                    .on_conflict_do_nothing(
-                        constraint="uq_coverage_report_request_generation"
-                    )
+                    .on_conflict_do_nothing(constraint="uq_coverage_report_request_generation")
                     .returning(CoverageReportORM.id)
                 )
                 inserted_id = await session.scalar(statement)

@@ -72,7 +72,9 @@ def _expand_env_refs(value: str) -> str:
     _pattern = _re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^{}]*))?\}")
     for _ in range(5):
         expanded, count = _pattern.subn(
-            lambda m: _os.environ.get(m.group(1), m.group(2) if m.group(2) is not None else m.group(0)),
+            lambda m: _os.environ.get(
+                m.group(1), m.group(2) if m.group(2) is not None else m.group(0)
+            ),
             value,
         )
         value = expanded
@@ -293,9 +295,9 @@ class McpEvidenceAdapter:
                 return EvidenceQueryResult(
                     items=items,
                     cursor=None,
-                            has_more=False,
-                            total_count=len(items),
-                        )
+                    has_more=False,
+                    total_count=len(items),
+                )
             except TimeoutError as exc:
                 logger.error(
                     "MCP tool invocation timed out",
@@ -437,9 +439,7 @@ class McpEvidenceAdapter:
                         evidence_type=EvidenceType.DATABASE_STATE,
                         source=state_source,
                         provider=(
-                            f"mcp-state-{connection_name}"
-                            if connection_name
-                            else "mcp-state"
+                            f"mcp-state-{connection_name}" if connection_name else "mcp-state"
                         ),
                     )
                     for item in content_items
@@ -487,9 +487,7 @@ class McpEvidenceAdapter:
         return ""
 
     @staticmethod
-    def _resolve_template_sql(
-        request: Any, profile: Any, tenant_id: str
-    ) -> str:
+    def _resolve_template_sql(request: Any, profile: Any, tenant_id: str) -> str:
         """Render a profile-declared template into SQL (P3-2).
 
         Matches ``<datasource_id>.<name>`` or bare ``<name>`` against the

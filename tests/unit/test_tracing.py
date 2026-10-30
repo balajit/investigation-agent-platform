@@ -128,7 +128,10 @@ def test_scope_extraction_from_dataclass_params():
     # Positional dataclass (Temporal activity calling convention).
     assert extract_scope((Params("pt", "pi"),), {}) == ("pt", "pi")
     assert extract_scope((), {"params": Params("pt", "pi")}) == ("pt", "pi")
-    assert extract_scope((), {"params": {"tenant_id": "dt", "investigation_id": "di"}}) == ("dt", "di")
+    assert extract_scope((), {"params": {"tenant_id": "dt", "investigation_id": "di"}}) == (
+        "dt",
+        "di",
+    )
 
 
 def test_scope_extraction_paths():

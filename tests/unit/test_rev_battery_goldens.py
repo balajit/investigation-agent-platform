@@ -120,9 +120,7 @@ def test_L2_1_enumeration_guard_fixed():
         "10|     public String submit(String orderId) {\n"
         "11|         return handler.handle(orderId);"
     )
-    row = _ev(
-        snippet=snippet, file_path=path, line_start=1, line_end=13, revision=REV
-    )
+    row = _ev(snippet=snippet, file_path=path, line_start=1, line_end=13, revision=REV)
     target = ClaimTarget(
         symbol="OrderServiceHandler.handle",
         counterpart="OrderServiceRestProxy.submit",
@@ -200,9 +198,7 @@ def test_L2_2_comment_row_shows_no_call():
         line_end=5,
         commit_id=REV,
     )
-    hyp = _hyp_with_edge(
-        "OrderServiceRestProxy calls the order service handler.", target, row
-    )
+    hyp = _hyp_with_edge("OrderServiceRestProxy calls the order service handler.", target, row)
     ok, reason = ENGINE.check_claim_kind(hyp, [row])
     assert ok is False
     assert "no cited row shows a call" in reason or "no exact bound range read" in reason
@@ -266,9 +262,7 @@ def test_L5_1_behavior_lacks_runtime():
         "7|         if (orderType == null) {\n"
         '8|             return "STANDARD";'
     )
-    row = _ev(
-        snippet=snippet, file_path=path, line_start=6, line_end=19, revision=REV
-    )
+    row = _ev(snippet=snippet, file_path=path, line_start=6, line_end=19, revision=REV)
     hyp_id = uuid4()
     target = ClaimTarget(
         symbol="LegacyCodeMapper.normalize",
@@ -321,7 +315,7 @@ def _resolved_l5_row():
         "10|         switch (orderType) {\n"
         '11|             case "LEGACY-BULK":\n'
         '12|                 return "BULK";\n'
-        "13|             case \"RESIDENTIAL\":\n"
+        '13|             case "RESIDENTIAL":\n'
         '14|                 return "RESIDENTIAL";\n'
         "15|             default:\n"
         "16|                 return orderType;\n"
@@ -616,9 +610,7 @@ def test_absence_outcome_four_states():
     assert VE.absence_outcome([], ClaimTarget())[0] == "NO_SCOPE"
     assert VE.absence_outcome([], ClaimTarget(scope="s"))[0] == "NO_SEARCH"
     assert (
-        VE.absence_outcome(
-            [_scope_row("other")], ClaimTarget(scope="spring:history=A.java")
-        )[0]
+        VE.absence_outcome([_scope_row("other")], ClaimTarget(scope="spring:history=A.java"))[0]
         == "SCOPE_MISMATCH"
     )
     assert (

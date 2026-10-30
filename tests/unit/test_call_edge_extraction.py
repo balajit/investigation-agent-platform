@@ -152,32 +152,17 @@ def test_caller_edge_seam_admits_untyped_only_under_strict() -> None:
 class TestCallShownConstruction:
     def test_construction_excluded_only_with_flag(self) -> None:
         snippet = "holder = new OrderServiceHandler();"
-        assert (
-            VE._call_shown("OrderServiceHandler", snippet, exclude_construction=True)
-            is False
-        )
-        assert (
-            VE._call_shown("OrderServiceHandler", snippet, exclude_construction=False)
-            is True
-        )
+        assert VE._call_shown("OrderServiceHandler", snippet, exclude_construction=True) is False
+        assert VE._call_shown("OrderServiceHandler", snippet, exclude_construction=False) is True
 
     def test_real_call_shown_regardless_of_flag(self) -> None:
         snippet = "proxy.submit(orderId);"
-        assert (
-            VE._call_shown("OrderService.submit", snippet, exclude_construction=True)
-            is True
-        )
-        assert (
-            VE._call_shown("OrderService.submit", snippet, exclude_construction=False)
-            is True
-        )
+        assert VE._call_shown("OrderService.submit", snippet, exclude_construction=True) is True
+        assert VE._call_shown("OrderService.submit", snippet, exclude_construction=False) is True
 
     def test_declaration_never_a_call_site(self) -> None:
         snippet = "public void submit(String orderId) {"
-        assert (
-            VE._call_shown("OrderService.submit", snippet, exclude_construction=False)
-            is False
-        )
+        assert VE._call_shown("OrderService.submit", snippet, exclude_construction=False) is False
 
     def test_every_call_site_pins_the_flag(self) -> None:
         """Audit: every _call_shown call site passes exclude_construction
@@ -188,12 +173,9 @@ class TestCallShownConstruction:
 
         root = _Path(__file__).resolve().parents[2]
         src = (
-            root
-            / "src/investigation_agent_platform/application/investigation/verification.py"
+            root / "src/investigation_agent_platform/application/investigation/verification.py"
         ).read_text()
-        calls = [
-            m.start() for m in _re.finditer(r"(?<!def )_call_shown\(", src)
-        ]
+        calls = [m.start() for m in _re.finditer(r"(?<!def )_call_shown\(", src)]
         assert calls, "expected _call_shown call sites"
         for pos in calls:
             window = src[pos : pos + 400]

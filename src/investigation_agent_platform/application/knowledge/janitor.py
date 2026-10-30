@@ -25,6 +25,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 logger = logging.getLogger("iap.application")
 
+
 def _sweep_extra(result: Any) -> dict[str, Any]:
     """Sweep transition counts (never artifact IDs)."""
     try:

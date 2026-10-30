@@ -35,7 +35,9 @@ def _url(username: str | None = None, password: str | None = None):  # type: ign
 def request_audit_roles():  # type: ignore[no-untyped-def]
     parsed = urlparse(PG_URL)
     try:
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 5432), timeout=1):
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 5432), timeout=1
+        ):
             pass
     except OSError:
         pytest.skip("IAP onboarding PostgreSQL test server is unreachable")
@@ -49,7 +51,7 @@ def request_audit_roles():  # type: ignore[no-untyped-def]
         with admin.begin() as conn:
             for name, role in roles.items():
                 conn.exec_driver_sql(
-                    f'CREATE ROLE "{role}" LOGIN PASSWORD \'{passwords[name]}\' '
+                    f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{passwords[name]}' "
                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                 )
                 conn.exec_driver_sql(f'GRANT "{role}" TO CURRENT_USER')
@@ -101,19 +103,21 @@ def _create_schema(admin: Any, schema: str, roles: dict[str, str]) -> None:
             conn.exec_driver_sql(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
             conn.exec_driver_sql(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
             conn.exec_driver_sql(
-                f"CREATE POLICY {table}_tenant ON {table} FOR SELECT TO \"{app}\" "
+                f'CREATE POLICY {table}_tenant ON {table} FOR SELECT TO "{app}" '
                 f"USING ({tenant_column}=current_setting('app.tenant_id',true))"
             )
             if table == "onboarding_requests":
                 conn.exec_driver_sql(
-                    f"CREATE POLICY {table}_app_insert ON {table} FOR INSERT TO \"{app}\" "
+                    f'CREATE POLICY {table}_app_insert ON {table} FOR INSERT TO "{app}" '
                     "WITH CHECK (tenant_id=current_setting('app.tenant_id',true) AND state='DRAFT' AND job_id IS NULL)"
                 )
             if table == "onboarding_request_audits":
                 conn.exec_driver_sql(
                     f'CREATE POLICY {table}_migrator_insert ON {table} FOR INSERT TO "{migrator}" WITH CHECK (true)'
                 )
-        conn.exec_driver_sql(f'GRANT SELECT, INSERT ON tenant_registry, onboarding_requests TO "{app}"')
+        conn.exec_driver_sql(
+            f'GRANT SELECT, INSERT ON tenant_registry, onboarding_requests TO "{app}"'
+        )
         conn.exec_driver_sql(f'GRANT SELECT ON onboarding_request_audits TO "{app}"')
         conn.exec_driver_sql(f'GRANT SELECT, INSERT ON onboarding_request_audits TO "{migrator}"')
         conn.exec_driver_sql("INSERT INTO tenant_registry VALUES ('tenant-a'),('tenant-b')")
@@ -144,9 +148,11 @@ def test_app_executes_request_audit_while_other_roles_are_denied(request_audit_r
     admin, roles, schema = request_audit_roles
     with admin.begin() as conn:
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
-        conn.exec_driver_sql("INSERT INTO onboarding_requests VALUES "
+        conn.exec_driver_sql(
+            "INSERT INTO onboarding_requests VALUES "
             "('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','tenant-a',"
-            "'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',1,'key-a','hash-a','DRAFT','sub-a',NULL)")
+            "'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',1,'key-a','hash-a','DRAFT','sub-a',NULL)"
+        )
 
     with admin.begin() as conn:
         conn.exec_driver_sql(f'SET ROLE "{roles["app"]}"')
@@ -169,7 +175,9 @@ def test_app_executes_request_audit_while_other_roles_are_denied(request_audit_r
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-b',true)")
         assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_requests").scalar_one() == 0
-        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 0
+        assert (
+            conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 0
+        )
 
     for role in (roles["app"], roles["worker"], roles["registry_admin"]):
         with admin.begin() as conn:
@@ -232,4 +240,6 @@ def test_accept_action_is_recorded_and_other_actions_are_rejected(request_audit_
         conn.exec_driver_sql(f'SET ROLE "{roles["app"]}"')
         conn.exec_driver_sql(f'SET search_path TO "{schema}"')
         conn.exec_driver_sql("SELECT set_config('app.tenant_id','tenant-a',true)")
-        assert conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 1
+        assert (
+            conn.exec_driver_sql("SELECT count(*) FROM onboarding_request_audits").scalar_one() == 1
+        )

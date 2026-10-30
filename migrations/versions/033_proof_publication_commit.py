@@ -56,14 +56,20 @@ def upgrade() -> None:
             "proof_derivations",
             sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), primary_key=True),
             sa.Column("tenant_id", sa.String(64), nullable=False),
-            sa.Column("investigation_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column(
+                "investigation_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False
+            ),
             sa.Column("derivation_id", sa.String(256), nullable=False),
             sa.Column("proposition_id", sa.String(256), nullable=False),
             sa.Column("context_id", sa.String(256), nullable=False),
             sa.Column("rule_id", sa.String(128), nullable=False),
             sa.Column("rule_version", sa.String(64), nullable=False, server_default="v1"),
-            sa.Column("premise_ids", sa.dialects.postgresql.JSONB(), nullable=False, server_default="[]"),
-            sa.Column("depends_on", sa.dialects.postgresql.JSONB(), nullable=False, server_default="[]"),
+            sa.Column(
+                "premise_ids", sa.dialects.postgresql.JSONB(), nullable=False, server_default="[]"
+            ),
+            sa.Column(
+                "depends_on", sa.dialects.postgresql.JSONB(), nullable=False, server_default="[]"
+            ),
             sa.Column("route", sa.String(64), nullable=False, server_default="mandatory"),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.ForeignKeyConstraint(
@@ -84,7 +90,9 @@ def upgrade() -> None:
             "proof_publication_commits",
             sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), primary_key=True),
             sa.Column("tenant_id", sa.String(64), nullable=False),
-            sa.Column("investigation_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column(
+                "investigation_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False
+            ),
             sa.Column("derivation_id", sa.String(256), nullable=False),
             sa.Column("context_id", sa.String(256), nullable=False),
             sa.Column("gate_policy_version", sa.String(64), nullable=False),

@@ -29,9 +29,7 @@ _METHOD_SIG_RE = re.compile(
     r"(?:public|protected|private)?\s*[\w<>\[\]]+\s+(\w+)\s*\(",
     re.DOTALL,
 )
-_CONFIG_PROPERTY_RE = re.compile(
-    r"@ConfigProperty\(\s*(?:name\s*=\s*)?\"([^\"]*)\""
-)
+_CONFIG_PROPERTY_RE = re.compile(r"@ConfigProperty\(\s*(?:name\s*=\s*)?\"([^\"]*)\"")
 _REGISTER_CLIENT_RE = re.compile(
     r"@RegisterRestClient(?:\(\s*(?:configKey\s*=\s*)?\"([^\"]*)\"[^)]*\))?"
 )

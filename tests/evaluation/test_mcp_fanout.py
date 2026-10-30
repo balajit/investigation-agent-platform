@@ -86,9 +86,7 @@ def _gateway(providers, timeout_seconds=30.0, fanout_concurrency=None):
         if key == "pg-primary":
             primary = provider
     # Mirror production: registry fallback resolves the primary.
-    sel.attach_datasource_registry(
-        SimpleNamespace(resolve_default=AsyncMock(return_value=primary))
-    )
+    sel.attach_datasource_registry(SimpleNamespace(resolve_default=AsyncMock(return_value=primary)))
     gw = AsyncEvidenceGateway(
         provider_selector=sel,
         timeout_seconds=timeout_seconds,
@@ -102,9 +100,7 @@ def _gateway(providers, timeout_seconds=30.0, fanout_concurrency=None):
     gw._enforce_authorization = AsyncMock()
     gw._effective_profile = AsyncMock(return_value=SimpleNamespace(id="app"))
     deduplicator = AsyncMock(spec=EvidenceDeduplicator)
-    deduplicator.deduplicate.side_effect = (
-        lambda tenant_id, items, investigation_id=None: items
-    )
+    deduplicator.deduplicate.side_effect = lambda tenant_id, items, investigation_id=None: items
     gw._deduplicator = deduplicator
     return gw
 

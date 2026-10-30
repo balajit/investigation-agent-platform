@@ -68,6 +68,9 @@ def is_generated(path: str, content: bytes) -> tuple[bool, str]:
         if marker in text:
             return True, "marker"
     lines = [line for line in text.splitlines() if line.strip()]
-    if lines and sum(1 for line in lines if line.strip().startswith(("@", "import"))) / len(lines) > 0.8:
+    if (
+        lines
+        and sum(1 for line in lines if line.strip().startswith(("@", "import"))) / len(lines) > 0.8
+    ):
         return True, "logic-density"
     return False, ""

@@ -23,9 +23,7 @@ _ROUTER_PREFIX_RE = re.compile(r"APIRouter\(\s*prefix\s*=\s*\"([^\"]*)\"")
 _FIELD_RE = re.compile(r"^\s*(\w+)\s*:\s*[^=\n]+?(?:=\s*Field\(([^)]*)\))?\s*$")
 _FIELD_KW_RE = re.compile(r"(gt|ge|lt|le|min_length|max_length|pattern)\s*=\s*([^,\)]+)")
 _PYDANTIC_CONSTRAINTS = {"gt", "ge", "lt", "le", "min_length", "max_length", "pattern"}
-_HTTPX_RE = re.compile(
-    r"(?:httpx|requests)\.(get|post|put|delete|patch)\(\s*[\"']([^\"']+)[\"']"
-)
+_HTTPX_RE = re.compile(r"(?:httpx|requests)\.(get|post|put|delete|patch)\(\s*[\"']([^\"']+)[\"']")
 _ENV_RE = re.compile(
     r"os\.getenv\(\s*[\"']([^\"']+)[\"']|os\.environ(?:\[|\.get\()\s*[\"']([^\"']+)[\"']"
 )

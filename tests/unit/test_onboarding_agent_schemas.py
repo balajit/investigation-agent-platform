@@ -27,8 +27,7 @@ def test_schema_files_match_registered_models() -> None:
     pinned = sorted(path.name for path in SCHEMAS_DIR.glob("*.schema.json"))
     expected = sorted(f"{name}.schema.json" for name in SCHEMA_MODELS)
     assert pinned == expected, (
-        "schema directory drift: regenerate with "
-        "scripts/generate-onboarding-agent-schemas.py"
+        "schema directory drift: regenerate with scripts/generate-onboarding-agent-schemas.py"
     )
 
 

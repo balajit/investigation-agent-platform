@@ -865,8 +865,7 @@ async def _gate_conclusion_or_fail(
             VerificationEngine.caller_edge_diagnostics(candidate)
             if VerificationEngine.resolve_claim_kind(
                 candidate,
-                strict=claim_binding_version
-                in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
+                strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
             )
             == ClaimKind.CALL_EDGE
             else ([], [], None)
@@ -965,9 +964,7 @@ async def _gate_conclusion_or_fail(
                 # partial answers survive instead of evaporating.
                 ranked_alternatives=_ranked_alternatives,
                 next_check=_abstention_next,
-                recommended_next_steps=list(
-                    _abstention_handoff.recommended_next_steps or []
-                ),
+                recommended_next_steps=list(_abstention_handoff.recommended_next_steps or []),
                 eliminated_rivals=list(_abstention_eliminated or []),
                 handoff=_abstention_handoff,
                 proven_callers=_proven_callers,
@@ -1252,9 +1249,9 @@ async def _gate_conclusion_or_fail(
         return None
 
     causal_chain = []
-    for s in (getattr(candidate, "causal_steps", []) or []):
+    for s in getattr(candidate, "causal_steps", []) or []:
         resolved_ids = []
-        for raw_eid in (s.evidence_ids or []):
+        for raw_eid in s.evidence_ids or []:
             matched_key = _resolve_evidence_key(raw_eid)
             if matched_key is not None:
                 resolved_ids.append(matched_key)
@@ -1853,7 +1850,9 @@ async def _gate_conclusion_or_fail(
     try:
         _tier = str(getattr(verification, "tier", "established") or "established")
         _vstatus = str(
-            getattr(getattr(verification, "status", ""), "value", getattr(verification, "status", ""))
+            getattr(
+                getattr(verification, "status", ""), "value", getattr(verification, "status", "")
+            )
         )
         _would_establish = (
             _vstatus == "VERIFIED"
@@ -1946,8 +1945,7 @@ async def _gate_conclusion_or_fail(
         if (location_answered or code_value_answered or doc_answered)
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
-            if getattr(verification, "tier", "established") == "likely"
-            or _rival_bar_failed
+            if getattr(verification, "tier", "established") == "likely" or _rival_bar_failed
             else (
                 ConclusionStatus.ROOT_CAUSE_ESTABLISHED
                 if verification.status == VerificationStatus.VERIFIED
@@ -1983,11 +1981,10 @@ async def _gate_conclusion_or_fail(
             str(item)[:300]
             for item in list(getattr(verification, "against_evidence", []) or [])[:20]
         ],
-            provisional=getattr(verification, "tier", "established") == "likely"
-            or _rival_bar_failed,
-            ranked_alternatives=_alternatives,
-            eliminated_rivals=list(_eliminated_rivals),
-            handoff=_verdict_handoff,
+        provisional=getattr(verification, "tier", "established") == "likely" or _rival_bar_failed,
+        ranked_alternatives=_alternatives,
+        eliminated_rivals=list(_eliminated_rivals),
+        handoff=_verdict_handoff,
         proven_callers=_proven_callers,
         unresolved_callers=_unresolved_callers,
         caller_coverage=_caller_coverage,
@@ -2161,9 +2158,7 @@ async def _collect_hypothesis_gate_reasons(
         hypothesis_repo = getattr(ctx, "hypothesis_repo", None)
         if hypothesis_repo is None:
             return []
-        hypotheses = await hypothesis_repo.find_by_investigation_id(
-            tenant_id, investigation_id
-        )
+        hypotheses = await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
     except Exception:
         return []
     reasons: list[str] = []
@@ -2272,15 +2267,11 @@ async def conclude_investigation_activity(
                         # platform/workflow errors. A blocked provider fetch
                         # is a telemetry-deferred handoff, not a crash.
                         _epistemic_reason_lower = (reason or "").strip().lower()
-                        epistemic = (
-                            _epistemic_reason_lower
-                            in (
-                                "verification_failed_or_limit_reached",
-                                "budget_exceeded",
-                                "defer_repair_budget_exhausted",
-                            )
-                            or _epistemic_reason_lower.startswith("provider_blocked")
-                        )
+                        epistemic = _epistemic_reason_lower in (
+                            "verification_failed_or_limit_reached",
+                            "budget_exceeded",
+                            "defer_repair_budget_exhausted",
+                        ) or _epistemic_reason_lower.startswith("provider_blocked")
                         if epistemic:
                             from investigation_agent_platform.application.investigation.verification import (
                                 VERIFIER_VERSION_CURRENT,
@@ -2320,10 +2311,8 @@ async def conclude_investigation_activity(
                                     # actionable while the fetch itself is down.
                                     try:
                                         if "provider_blocked" not in _epistemic_reason:
-                                            _hyp_reasons = (
-                                                await _collect_hypothesis_gate_reasons(
-                                                    ctx, tenant_id, investigation_id
-                                                )
+                                            _hyp_reasons = await _collect_hypothesis_gate_reasons(
+                                                ctx, tenant_id, investigation_id
                                             )
                                             _epistemic_check = _route_terminal_check(
                                                 _hyp_reasons, _epistemic_check
@@ -2334,9 +2323,7 @@ async def conclude_investigation_activity(
                                         status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
                                         reason=_epistemic_reason,
                                         next_check=_epistemic_check,
-                                        limitations=[
-                                            f"Investigation ended: {reason}."
-                                        ],
+                                        limitations=[f"Investigation ended: {reason}."],
                                     )
                                     await finding_repo.save_conclusion(
                                         tenant_id,

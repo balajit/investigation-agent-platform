@@ -369,7 +369,9 @@ class AsyncElasticAdapter:
             raise ProviderNotConfiguredError(
                 f"No Elasticsearch deployment serves tenant '{tenant_id}'"
             )
-        boundary = float(request_timeout) if request_timeout is not None else float(self._request_timeout)
+        boundary = (
+            float(request_timeout) if request_timeout is not None else float(self._request_timeout)
+        )
         try:
             response = await asyncio.wait_for(
                 active_client.search(index=index, body=body),
@@ -474,7 +476,9 @@ class AsyncElasticAdapter:
                 if mapping.legacy_index_synthesis:
                     if not index.startswith(f"logs-{tenant_id}-"):
                         raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
-                elif not any(fnmatch.fnmatchcase(index, pattern) for pattern in mapping.index_patterns):
+                elif not any(
+                    fnmatch.fnmatchcase(index, pattern) for pattern in mapping.index_patterns
+                ):
                     raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
                 fetch_client = None
                 fetch_timeout = None

@@ -429,8 +429,7 @@ def stamp_anchors(
         last_good_g=last_good,
         onset_given=onset_raw is not None
         and (not isinstance(onset_raw, str) or bool(onset_raw.strip())),
-        last_good_given=g_raw is not None
-        and (not isinstance(g_raw, str) or bool(g_raw.strip())),
+        last_good_given=g_raw is not None and (not isinstance(g_raw, str) or bool(g_raw.strip())),
         spread_budget=spread_budget,
     )
 

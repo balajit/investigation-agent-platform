@@ -29,11 +29,15 @@ async def _require_owned_investigation(ctx: Any, tenant_id: str, investigation_i
     investigation = await ctx.get_investigation_service().execute(tenant_id, investigation_id)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", tenant_id) != tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     return investigation
 
@@ -55,7 +59,9 @@ async def list_knowledge(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id",
         ) from exc
 
     investigation = await _require_owned_investigation(ctx, x_tenant_id, investigation_uuid)
@@ -111,7 +117,9 @@ async def search_knowledge(
     kind: str | None = Query(default=None, max_length=64, pattern=NO_NUL_PATTERN),
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(
-        default=None, max_length=512, pattern=NO_NUL_PATTERN,
+        default=None,
+        max_length=512,
+        pattern=NO_NUL_PATTERN,
         description="Lexical free-text filter over artifact statements (slice 0; "
         "vector recall upgrades this behind the same contract).",
     ),

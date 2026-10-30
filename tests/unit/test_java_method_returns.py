@@ -44,7 +44,13 @@ public class LegacyCodeMapper {
 """
 
 
-def _source_evidence(source, *, start=1, path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java", revision="54d73240d6b5"):
+def _source_evidence(
+    source,
+    *,
+    start=1,
+    path="service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java",
+    revision="54d73240d6b5",
+):
     iid = uuid4()
     eid = uuid4()
     now = datetime.now(UTC)
@@ -100,10 +106,7 @@ def test_resolves_l5_null_guard_return():
     assert result.resolved_value == "STANDARD"
     assert result.fact_category == JavaFactCategory.SOURCE_VALUE_FACT
     assert result.value_semantics == CodeValueSemantics.GUARDED_RETURN_LITERAL
-    assert (
-        result.subject_identity
-        == "com.sample.orders.legacy.LegacyCodeMapper.normalize"
-    )
+    assert result.subject_identity == "com.sample.orders.legacy.LegacyCodeMapper.normalize"
     assert result.declaration_location.line_start == 5
     assert result.declaration_location.line_end == 5
     assert result.source_evidence_ids == (ev.evidence_id,)
@@ -320,7 +323,9 @@ def test_conflicting_claimed_value_fails_closed():
 
 def test_method_return_fact_without_structured_value_fails_closed():
     ev = _source_evidence(_MAPPER)
-    resolution = resolve_java_method_return_fact(ev, "normalize", guard_condition="orderType == null")
+    resolution = resolve_java_method_return_fact(
+        ev, "normalize", guard_condition="orderType == null"
+    )
     banked = ev.model_copy(
         update={
             "attributes": {

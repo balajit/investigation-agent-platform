@@ -106,9 +106,7 @@ def _probe_request(**overrides: Any) -> RuntimeEvidenceRequest:
     now = datetime.now(UTC)
     kwargs: dict[str, Any] = {
         "environment": "production",
-        "time_range": TimeRange(
-            start_time=now - timedelta(days=PROBE_WINDOW_DAYS), end_time=now
-        ),
+        "time_range": TimeRange(start_time=now - timedelta(days=PROBE_WINDOW_DAYS), end_time=now),
         "limit": PROBE_LIMIT,
     }
     kwargs.update(overrides)
@@ -116,7 +114,9 @@ def _probe_request(**overrides: Any) -> RuntimeEvidenceRequest:
 
 
 class _EvidenceRow:
-    def __init__(self, tenant_id: str, investigation_id: UUID, evidence_id: UUID, source: str) -> None:
+    def __init__(
+        self, tenant_id: str, investigation_id: UUID, evidence_id: UUID, source: str
+    ) -> None:
         self.tenant_id = tenant_id
         self.investigation_id = investigation_id
         self.evidence_id = evidence_id
@@ -257,9 +257,7 @@ async def verify_tenant_telemetry(
 
     adapter = AsyncElasticAdapter(
         client=None,  # tenant-only mode: no global deployment
-        settings=ElasticAdapterSettings(
-            cursor_signing_key=cursor_signing_key or os.urandom(32)
-        ),
+        settings=ElasticAdapterSettings(cursor_signing_key=cursor_signing_key or os.urandom(32)),
         tenant_router=router,
         mapping_registry=mapping_registry,
     )
@@ -316,7 +314,9 @@ async def verify_tenant_telemetry(
 
     try:
         await adapter.search_runtime_evidence(
-            tenant_id, uuid.uuid4(), _probe_request(),
+            tenant_id,
+            uuid.uuid4(),
+            _probe_request(),
             _probe_profile(tenant_id, "no-such-service"),
         )
         record("unhomed service fails closed", False, "no error raised")
@@ -324,7 +324,9 @@ async def verify_tenant_telemetry(
         record("unhomed service fails closed", True, str(exc)[:120])
     try:
         await adapter.search_runtime_evidence(
-            "tenant-unknown", uuid.uuid4(), _probe_request(),
+            "tenant-unknown",
+            uuid.uuid4(),
+            _probe_request(),
             _probe_profile(tenant_id, home_service),
         )
         record("unknown tenant fails closed", False, "no error raised")
@@ -355,9 +357,7 @@ async def verify_tenant_telemetry(
         else:
             hit = hits[0]
             iid, eid = uuid.uuid4(), uuid.uuid4()
-            row = _EvidenceRow(
-                tenant_id, iid, eid, f"elasticsearch://{hit['_index']}/{hit['_id']}"
-            )
+            row = _EvidenceRow(tenant_id, iid, eid, f"elasticsearch://{hit['_index']}/{hit['_id']}")
             try:
                 fetched = await adapter.get_runtime_evidence(
                     tenant_id, iid, eid, "production", _EvidenceLookup(row)

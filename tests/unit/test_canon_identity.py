@@ -170,8 +170,12 @@ def test_path_strip_rules_and_backslash_rejection() -> None:
 def test_float_and_nfd_inputs_rejected() -> None:
     with pytest.raises(CanonicalizationError) as excinfo:
         canonical_bytes(
-            {"canon_version": "canon/v1", "predicate": "p", "quantifier": "EXISTENTIAL",
-             "scope": {"confidence": 0.5}}
+            {
+                "canon_version": "canon/v1",
+                "predicate": "p",
+                "quantifier": "EXISTENTIAL",
+                "scope": {"confidence": 0.5},
+            }
         )
     assert excinfo.value.code == CanonError.INVALID_FLOAT.value
     with pytest.raises(CanonicalizationError) as excinfo:
@@ -191,9 +195,7 @@ def test_context_derivation_decision_ids_are_stable_and_distinct() -> None:
     assert ctx_a != context_id(pid, {"revision": "rev-2"})
     der = derivation_id(ctx_a, "call_edge/v1", "v1", "sha256:" + "0" * 64, ["a", "b"], {})
     assert der == derivation_id(ctx_a, "call_edge/v1", "v1", "sha256:" + "0" * 64, ["a", "b"], {})
-    assert der != derivation_id(
-        ctx_a, "call_edge/v1", "v1", "sha256:" + "0" * 64, ["a", "c"], {}
-    )
+    assert der != derivation_id(ctx_a, "call_edge/v1", "v1", "sha256:" + "0" * 64, ["a", "c"], {})
     dec = decision_id(der, "cert-1", "gate/v3", {"fresh": True}, "clean")
     assert dec == decision_id(der, "cert-1", "gate/v3", {"fresh": True}, "clean")
     assert dec != decision_id(der, "cert-1", "gate/v3", {"fresh": False}, "clean")
@@ -340,9 +342,7 @@ def test_v2_target_keys_validate_and_participate_in_identity() -> None:
     )
     assert proposition_id(history) == proposition_id(dict(history))
     assert v2_unknown_target_keys("history/v1", history["target"]) == []
-    assert v2_unknown_target_keys("history/v1", {"commit_id": "c" * 40, "bogus": 1}) == [
-        "bogus"
-    ]
+    assert v2_unknown_target_keys("history/v1", {"commit_id": "c" * 40, "bogus": 1}) == ["bogus"]
     assert v2_unknown_scope_keys(
         "behavior/v1", {"repository": "r", "revision": "a" * 40, "extra": 1}
     ) == ["extra"]

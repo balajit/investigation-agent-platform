@@ -64,17 +64,25 @@ def _typed(ids: list[str]) -> dict[str, str]:
 
 
 def test_manifest_digest_binds_content_and_order() -> None:
-    m1 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
-    m2 = build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
+    m1 = build_manifest(
+        ["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"])
+    )
+    m2 = build_manifest(
+        ["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"])
+    )
     assert manifest_digest(m1) == manifest_digest(m2)
     assert manifest_digest(m1).startswith("sha256:")
-    reordered = build_manifest(["e2", "e1"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"]))
+    reordered = build_manifest(
+        ["e2", "e1"], {"e1": _h("a"), "e2": _h("b")}, premise_types=_typed(["e1", "e2"])
+    )
     assert manifest_digest(reordered) != manifest_digest(m1)
 
 
 def test_manifest_rejects_premise_type_key_mismatch() -> None:
     with pytest.raises(ManifestConstructionError) as excinfo:
-        build_manifest(["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types={"e1": "RANGE_READ_FACT"})
+        build_manifest(
+            ["e1", "e2"], {"e1": _h("a"), "e2": _h("b")}, premise_types={"e1": "RANGE_READ_FACT"}
+        )
     assert excinfo.value.code == "PREMISE_TYPE_MISMATCH"
 
 
@@ -139,7 +147,9 @@ def test_manifest_rejects_duplicates_and_bad_hashes() -> None:
 
 
 def test_empty_match_manifest_evaluates_for_absence() -> None:
-    manifest = build_manifest([], {}, {"scope": "repo@rev:/:query=q"}, coverage=ManifestCoverage.COMPLETE_EMPTY)
+    manifest = build_manifest(
+        [], {}, {"scope": "repo@rev:/:query=q"}, coverage=ManifestCoverage.COMPLETE_EMPTY
+    )
     out = evaluate(_inputs(manifest=manifest), available_hashes={})
     assert isinstance(out, Derivation)
     assert out.premise_ids == []

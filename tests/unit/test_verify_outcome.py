@@ -67,7 +67,9 @@ def _result(status, corroborating=(), against=(), conf=None):
 
 def test_verified_persists_scores_bindings_and_supported():
     cited = [uuid4(), uuid4()]
-    out = apply_verification_outcome(_hyp(), _result(VerificationStatus.VERIFIED, corroborating=cited))
+    out = apply_verification_outcome(
+        _hyp(), _result(VerificationStatus.VERIFIED, corroborating=cited)
+    )
     assert out.status == HypothesisStatus.SUPPORTED
     assert out.support_score == 0.6
     assert out.confidence_score == _conf().overall_confidence
@@ -146,7 +148,10 @@ def test_verification_status_value_handles_enum_and_string() -> None:
         _verification_status_value,
     )
 
-    assert _verification_status_value(SimpleNamespace(status=VerificationStatus.VERIFIED)) == "VERIFIED"
+    assert (
+        _verification_status_value(SimpleNamespace(status=VerificationStatus.VERIFIED))
+        == "VERIFIED"
+    )
     assert _verification_status_value(SimpleNamespace(status="VERIFIED")) == "VERIFIED"
     assert _verification_status_value(SimpleNamespace(status="inconclusive")) == "inconclusive"
     assert _verification_status_value(SimpleNamespace(status=None)) == ""

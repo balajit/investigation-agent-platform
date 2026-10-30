@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 _MAPPING_RE = re.compile(
-    r'@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)'
+    r"@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)"
     r'\s*(?:\(\s*(?:"([^"]*)")?[^)]*\))?'
 )
 _METHOD_FROM_ANNOTATION = {
@@ -25,16 +25,21 @@ _METHOD_FROM_ANNOTATION = {
 }
 _METHOD_ATTR_RE = re.compile(r"method\s*=\s*RequestMethod\.(\w+)")
 _PATH_ATTR_RE = re.compile(r'(?:value|path)\s*=\s*"([^"]*)"')
-_CLASS_REQUEST_MAPPING_RE = re.compile(
-    r"@RequestMapping\(\s*\"([^\"]*)\""
-)
-_FIELD_RE = re.compile(
-    r"(?:private|protected|public)\s+([\w<>\[\].,\s]+?)\s+(\w+)\s*[;=]"
-)
+_CLASS_REQUEST_MAPPING_RE = re.compile(r"@RequestMapping\(\s*\"([^\"]*)\"")
+_FIELD_RE = re.compile(r"(?:private|protected|public)\s+([\w<>\[\].,\s]+?)\s+(\w+)\s*[;=]")
 _ANNOTATION_RE = re.compile(r"@(\w+)(?:\(([^)]*)\))?")
 _CONSTRAINT_ANNOTATIONS = {
-    "NotNull", "NotBlank", "NotEmpty", "Size", "Min", "Max",
-    "Pattern", "Valid", "Positive", "PositiveOrZero", "Required",
+    "NotNull",
+    "NotBlank",
+    "NotEmpty",
+    "Size",
+    "Min",
+    "Max",
+    "Pattern",
+    "Valid",
+    "Positive",
+    "PositiveOrZero",
+    "Required",
 }
 _FEIGN_RE = re.compile(
     r"@FeignClient\(\s*(?:name|value)\s*=\s*\"([^\"]*)\""
@@ -69,7 +74,7 @@ def parse_java_controller(text: str) -> dict[str, Any]:
                 # method attribute, followed by a class declaration) —
                 # skip it here; base_path above already captured it.
                 if kind_name == "RequestMapping" and "method" not in full.lower():
-                    following = body[match.end():match.end() + 120]
+                    following = body[match.end() : match.end() + 120]
                     if re.search(r"\b(class|interface)\b", following):
                         continue
                 method = _METHOD_FROM_ANNOTATION.get(kind_name, "")
@@ -111,14 +116,10 @@ def parse_dto_validations(text: str) -> list[dict[str, Any]]:
                         pending.append(name)
                 field_match = _FIELD_RE.match(stripped)
                 if field_match and pending:
-                    out.append(
-                        {"field": field_match.group(2), "constraints": list(pending)}
-                    )
+                    out.append({"field": field_match.group(2), "constraints": list(pending)})
                     pending = []
                 elif field_match or (
-                    stripped
-                    and not stripped.startswith("@")
-                    and not stripped.startswith("//")
+                    stripped and not stripped.startswith("@") and not stripped.startswith("//")
                 ):
                     pending = []
             except Exception:
@@ -153,7 +154,13 @@ def parse_rest_calls(text: str) -> list[dict[str, str]]:
 def parse_value_keys(text: str) -> list[str]:
     """Extract @Value property keys (pure)."""
     try:
-        return sorted({_VALUE_RE.search(m.group(0)) and m.group(1) for m in _VALUE_RE.finditer(str(text or "")) if m.group(1)})
+        return sorted(
+            {
+                _VALUE_RE.search(m.group(0)) and m.group(1)
+                for m in _VALUE_RE.finditer(str(text or ""))
+                if m.group(1)
+            }
+        )
     except Exception:
         return []
 

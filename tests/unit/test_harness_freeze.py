@@ -113,9 +113,7 @@ def test_freeze_digest_excludes_self_hash() -> None:
 
 def test_runset_builder_requires_explicit_code_revision() -> None:
     source = (
-        Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "build_d3_stagec_runset.py"
+        Path(__file__).resolve().parents[2] / "scripts" / "build_d3_stagec_runset.py"
     ).read_text(encoding="utf-8")
     assert "explicit governed code revision required" in source
     assert '"code_revision": code_revision' in source

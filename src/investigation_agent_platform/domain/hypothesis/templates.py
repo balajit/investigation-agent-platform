@@ -492,7 +492,7 @@ def _row_repository(row: object) -> str:
         return match.group(1)[:256]
     system = getattr(getattr(row, "provenance", None), "source_system", "")
     text = str(system or "").strip()
-    return (text[:256] if text else "unknown-repo")
+    return text[:256] if text else "unknown-repo"
 
 
 def _upstream_identity(snippet: str, file_path: str) -> str:
@@ -504,7 +504,7 @@ def _upstream_identity(snippet: str, file_path: str) -> str:
     if match is not None:
         return match.group(1)[:512]
     top = file_path.strip().lstrip("/").split("/", 1)[0]
-    return (top[:512] if top else file_path[:512])
+    return top[:512] if top else file_path[:512]
 
 
 def classify_banked_sites(
@@ -586,9 +586,7 @@ def classify_banked_sites(
     for (repository, revision, _file), sites in sorted(groups.items()):
         ordered = sorted(sites, key=lambda s: (s.line, s.kind.value))
         try:
-            paths.append(
-                SuspectPath(repository=repository, revision=revision, sites=ordered)
-            )
+            paths.append(SuspectPath(repository=repository, revision=revision, sites=ordered))
         except ValueError:
             continue
     return paths

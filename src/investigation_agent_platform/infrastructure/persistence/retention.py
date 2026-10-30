@@ -94,17 +94,13 @@ class CoreRetentionPurge:
         evidence_purged = await self._purge_one(
             tenant_id=tenant_id,
             repo=self._evidence,
-            cutoff=retention_cutoff(
-                CORE_RETENTION_POLICIES[CoreRetentionClass.EVIDENCE.value], at
-            ),
+            cutoff=retention_cutoff(CORE_RETENTION_POLICIES[CoreRetentionClass.EVIDENCE.value], at),
             limit=limit,
         )
         timeline_purged = await self._purge_one(
             tenant_id=tenant_id,
             repo=self._timeline,
-            cutoff=retention_cutoff(
-                CORE_RETENTION_POLICIES[CoreRetentionClass.TIMELINE.value], at
-            ),
+            cutoff=retention_cutoff(CORE_RETENTION_POLICIES[CoreRetentionClass.TIMELINE.value], at),
             limit=limit,
         )
         result = CoreRetentionPurgeResult(
@@ -128,9 +124,7 @@ class CoreRetentionPurge:
         )
         return result
 
-    async def _purge_one(
-        self, tenant_id: str, repo: Any, cutoff: datetime, limit: int
-    ) -> int:
+    async def _purge_one(self, tenant_id: str, repo: Any, cutoff: datetime, limit: int) -> int:
         try:
             return int(await repo.purge_expired(tenant_id, cutoff, limit))
         except Exception as exc:

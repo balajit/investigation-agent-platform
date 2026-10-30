@@ -81,9 +81,7 @@ def test_reserved_attrs_not_duplicated_in_extra():
 
 
 def test_date_seq_cascade_on_size(tmp_path):
-    handler = DateSeqRotatingFileHandler(
-        tmp_path, app_name="iap", max_bytes=200, backup_count=5
-    )
+    handler = DateSeqRotatingFileHandler(tmp_path, app_name="iap", max_bytes=200, backup_count=5)
     handler.setFormatter(logging.Formatter("%(message)s"))
     log = logging.getLogger("cascade-test")
     log.handlers = [handler]

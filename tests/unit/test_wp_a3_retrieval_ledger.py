@@ -47,10 +47,7 @@ def test_classify_rows_beat_everything() -> None:
         classify_retrieval_outcome("FAILED", "timeout", 2, "repo@rev:query=q")
         == RetrievalOutcome.PARTIAL_ROWS
     )
-    assert (
-        classify_retrieval_outcome("SUCCEEDED", None, 1, None)
-        == RetrievalOutcome.ROWS_RETURNED
-    )
+    assert classify_retrieval_outcome("SUCCEEDED", None, 1, None) == RetrievalOutcome.ROWS_RETURNED
 
 
 def test_classify_partial_rows_never_read_as_ordinary_success() -> None:
@@ -168,12 +165,18 @@ def test_ledger_attempt_carries_bound_in_force() -> None:
     # Remediation plan ARCH-HIGH-013: the env-controlled bound rides with
     # the attempt so identical inputs under different settings are
     # distinguishable in run metadata.
-    assert RetrievalLedger().record(
-        "q", "p", "s", RetrievalOutcome.ROWS_RETURNED, ["a"], 1
-    ).max_attempts == 3
-    assert RetrievalLedger(max_attempts=7).record(
-        "q", "p", "s", RetrievalOutcome.ROWS_RETURNED, ["a"], 1
-    ).max_attempts == 7
+    assert (
+        RetrievalLedger()
+        .record("q", "p", "s", RetrievalOutcome.ROWS_RETURNED, ["a"], 1)
+        .max_attempts
+        == 3
+    )
+    assert (
+        RetrievalLedger(max_attempts=7)
+        .record("q", "p", "s", RetrievalOutcome.ROWS_RETURNED, ["a"], 1)
+        .max_attempts
+        == 7
+    )
 
 
 def test_extract_search_query_mirrors_scope_conventions() -> None:
@@ -243,14 +246,16 @@ def test_action_outcome_tolerates_missing_attempt() -> None:
 def test_action_outcome_tolerates_unknown_future_outcome() -> None:
     # RetrievalAttempt.outcome is stored as a plain string in the
     # ActionOutcome dict: an unknown future code still validates.
-    legacy = ActionOutcome.model_validate({
-        "action_type": "SEARCH_CODE",
-        "retrieval_attempt": {
-            "search_query": "q",
-            "outcome": "SOME_FUTURE_OUTCOME",
-            "rows_returned": 1,
-        },
-    })
+    legacy = ActionOutcome.model_validate(
+        {
+            "action_type": "SEARCH_CODE",
+            "retrieval_attempt": {
+                "search_query": "q",
+                "outcome": "SOME_FUTURE_OUTCOME",
+                "rows_returned": 1,
+            },
+        }
+    )
     assert legacy.retrieval_attempt is not None
     assert legacy.retrieval_attempt["outcome"] == "SOME_FUTURE_OUTCOME"
     attempt = RetrievalAttempt(

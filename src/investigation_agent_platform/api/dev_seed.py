@@ -55,11 +55,7 @@ async def _seed_write(write_coro, counts: dict[str, int], what: str) -> bool:
 
 
 def seed_tenants_from_env() -> list[str]:
-    return [
-        t.strip()
-        for t in os.environ.get(SEED_TENANTS_ENV, "").split(",")
-        if t.strip()
-    ]
+    return [t.strip() for t in os.environ.get(SEED_TENANTS_ENV, "").split(",") if t.strip()]
 
 
 async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
@@ -263,22 +259,24 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         ):
             await _seed_write(
                 ctx.timeline_repo.append(  # type: ignore[attr-defined]
-                tenant_id,
-                TimelineEvent(
-                    tenant_id=tenant_id,
-                    investigation_id=showcase.id,
-                    sequence_number=i,
-                    timestamp=now - timedelta(hours=5 - i),
-                    event_type=etype,
-                    description=desc,
-                ),
-                showcase.id,
+                    tenant_id,
+                    TimelineEvent(
+                        tenant_id=tenant_id,
+                        investigation_id=showcase.id,
+                        sequence_number=i,
+                        timestamp=now - timedelta(hours=5 - i),
+                        event_type=etype,
+                        description=desc,
+                    ),
+                    showcase.id,
                 ),
                 counts,
                 f"timeline/{showcase.id}/{i}",
             )
 
-    _existing_hypotheses = await ctx.hypothesis_repo.find_by_investigation_id(tenant_id, showcase.id)  # type: ignore[attr-defined]
+    _existing_hypotheses = await ctx.hypothesis_repo.find_by_investigation_id(
+        tenant_id, showcase.id
+    )  # type: ignore[attr-defined]
     if _existing_hypotheses:
         counts["resumed"] += 1
     else:
@@ -288,17 +286,17 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         ]:
             await _seed_write(
                 ctx.hypothesis_repo.save(  # type: ignore[attr-defined]
-                tenant_id,
-                Hypothesis(
-                    tenant_id=tenant_id,
-                    investigation_id=showcase.id,
-                    title=title,
-                    description=title,
-                    statement=statement,
-                    supporting_evidence_ids=[evidence_ids[0]],
-                ),
-                showcase.id,
-                0,
+                    tenant_id,
+                    Hypothesis(
+                        tenant_id=tenant_id,
+                        investigation_id=showcase.id,
+                        title=title,
+                        description=title,
+                        statement=statement,
+                        supporting_evidence_ids=[evidence_ids[0]],
+                    ),
+                    showcase.id,
+                    0,
                 ),
                 counts,
                 f"hypothesis/{title}",
@@ -355,17 +353,17 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         )
     await _seed_write(
         ctx.finding_repo.save_conclusion(  # type: ignore[attr-defined]
-        tenant_id,
-        InvestigationConclusion(
-            tenant_id=tenant_id,
-            investigation_id=completed.id,
-            status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED,
-            root_cause="Refund batch re-ran after advisory-lock timeout",
-            supporting_evidence_ids=[uuid.uuid4()],
-            supporting_hypothesis_ids=[],
-            confidence=0.9,
-            recommended_next_steps=["Make refund batch idempotent"],
-        ),
+            tenant_id,
+            InvestigationConclusion(
+                tenant_id=tenant_id,
+                investigation_id=completed.id,
+                status=ConclusionStatus.ROOT_CAUSE_ESTABLISHED,
+                root_cause="Refund batch re-ran after advisory-lock timeout",
+                supporting_evidence_ids=[uuid.uuid4()],
+                supporting_hypothesis_ids=[],
+                confidence=0.9,
+                recommended_next_steps=["Make refund batch idempotent"],
+            ),
         ),
         counts,
         f"conclusion/{completed.id}",
@@ -411,18 +409,18 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
     else:
         await _seed_write(
             ctx.artifact_repo.save(  # type: ignore[attr-defined]
-            tenant_id,
-            KnowledgeArtifact(
-                tenant_id=tenant_id,
-                application_id=SEED_APP_ID,
-                investigation_id=showcase.id,
-                kind="runbook",
-                statement="Payment auth slowdowns present as checkout 5xx; check auth p99 first.",
-                confidence=0.8,
-                refresh_policy=RefreshPolicy.IMMUTABLE,
-                valid_from=now - timedelta(days=1),
-                source_evidence_ids=[evidence_ids[0]],
-            ),
+                tenant_id,
+                KnowledgeArtifact(
+                    tenant_id=tenant_id,
+                    application_id=SEED_APP_ID,
+                    investigation_id=showcase.id,
+                    kind="runbook",
+                    statement="Payment auth slowdowns present as checkout 5xx; check auth p99 first.",
+                    confidence=0.8,
+                    refresh_policy=RefreshPolicy.IMMUTABLE,
+                    valid_from=now - timedelta(days=1),
+                    source_evidence_ids=[evidence_ids[0]],
+                ),
             ),
             counts,
             f"artifact/{SEED_APP_ID}",
@@ -532,15 +530,15 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         for finding, cluster in zip(showcase_findings, (cluster_a, cluster_b)):
             await _seed_write(
                 ctx.finding_cluster_repo.assign_finding(  # type: ignore[attr-defined]
-                tenant_id,
-                FindingClusterAssignment(
-                    tenant_id=tenant_id,
-                    finding_id=finding.id,
-                    cluster_id=cluster.id,
-                    method="dev-seed",
-                    confidence=0.9,
-                    taxonomy_revision=1,
-                ),
+                    tenant_id,
+                    FindingClusterAssignment(
+                        tenant_id=tenant_id,
+                        finding_id=finding.id,
+                        cluster_id=cluster.id,
+                        method="dev-seed",
+                        confidence=0.9,
+                        taxonomy_revision=1,
+                    ),
                 ),
                 counts,
                 f"assign/{finding.id}/{cluster.id}",

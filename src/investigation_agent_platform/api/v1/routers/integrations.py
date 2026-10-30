@@ -62,7 +62,7 @@ def _verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
         return False
     try:
         expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(expected, signature[len(prefix):])
+        return hmac.compare_digest(expected, signature[len(prefix) :])
     except Exception:
         return False
 
@@ -118,7 +118,9 @@ async def github_webhook(
     """Accept a GitHub webhook delivery for one tenant's repository."""
     if tenant_id != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     secret = _webhook_secret()
     if not secret:
@@ -130,7 +132,9 @@ async def github_webhook(
     body = await request.body()
     if not _verify_signature(secret, body, x_hub_signature_256):
         raise ApiError(
-            code="WEBHOOK_FORBIDDEN", http_status=status.HTTP_403_FORBIDDEN, message="Invalid webhook signature"
+            code="WEBHOOK_FORBIDDEN",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Invalid webhook signature",
         )
     try:
         import json as _json
@@ -140,7 +144,9 @@ async def github_webhook(
             payload = {}
     except Exception as exc:
         raise ApiError(
-            code="WEBHOOK_BAD_PAYLOAD", http_status=status.HTTP_400_BAD_REQUEST, message="Unparseable webhook payload"
+            code="WEBHOOK_BAD_PAYLOAD",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Unparseable webhook payload",
         ) from exc
 
     event = (x_github_event or "").lower()
@@ -183,7 +189,9 @@ async def github_webhook(
     repository_id = _repository_id_for(full_name)
     if not repository_id:
         raise ApiError(
-            code="WEBHOOK_BAD_PAYLOAD", http_status=status.HTTP_400_BAD_REQUEST, message="Push payload lacks repository.full_name"
+            code="WEBHOOK_BAD_PAYLOAD",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Push payload lacks repository.full_name",
         )
     changed = _changed_files(payload)
 
@@ -191,7 +199,9 @@ async def github_webhook(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; push recorded but not dispatched"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; push recorded but not dispatched",
         )
     from datetime import timedelta as _timedelta
 
@@ -199,9 +209,7 @@ async def github_webhook(
         TopologyProjectionInput,
     )
 
-    workflow_id = (
-        f"wf-topology-{x_tenant_id}-{repository_id}-{revision[:12]}"
-    )
+    workflow_id = f"wf-topology-{x_tenant_id}-{repository_id}-{revision[:12]}"
     try:
         await temporal_client.start_workflow(
             "TopologyProjectionWorkflow",
@@ -250,7 +258,9 @@ async def github_webhook(
                 ),
             )
             raise ApiError(
-                code="WORKFLOW_START_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to dispatch projection workflow"
+                code="WORKFLOW_START_FAILED",
+                http_status=status.HTTP_502_BAD_GATEWAY,
+                message="Failed to dispatch projection workflow",
             ) from exc
     logger.info(
         "GitHub push dispatched topology projection",

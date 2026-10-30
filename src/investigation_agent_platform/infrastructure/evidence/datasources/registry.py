@@ -77,13 +77,9 @@ class DatasourceRegistry:
         version: str | int | None = None,
     ) -> Any:
         """Resolve one datasource to its live adapter (cached)."""
-        profile = await self._profile_repo.get_by_application_id(
-            tenant_id, application_id, version
-        )
+        profile = await self._profile_repo.get_by_application_id(tenant_id, application_id, version)
         if profile is None:
-            raise DatasourceResolutionError(
-                f"No application profile for '{application_id}'."
-            )
+            raise DatasourceResolutionError(f"No application profile for '{application_id}'.")
         datasource = next((d for d in profile.datasources if d.id == datasource_id), None)
         if datasource is None:
             raise DatasourceResolutionError(
@@ -95,17 +91,13 @@ class DatasourceRegistry:
         """Resolve the default state datasource (first STATE, then READONLY)."""
         profile = await self._profile_repo.get_by_application_id(tenant_id, application_id)
         if profile is None:
-            raise DatasourceResolutionError(
-                f"No application profile for '{application_id}'."
-            )
+            raise DatasourceResolutionError(f"No application profile for '{application_id}'.")
         candidates = sorted(
             (d for d in profile.datasources if d.kind in _SQL_KINDS),
             key=lambda d: 0 if d.role == DatasourceRole.STATE else 1,
         )
         if not candidates:
-            raise DatasourceResolutionError(
-                f"No servable state datasource for '{application_id}'."
-            )
+            raise DatasourceResolutionError(f"No servable state datasource for '{application_id}'.")
         errors: list[Exception] = []
         for datasource in candidates:
             try:
@@ -168,7 +160,9 @@ class DatasourceRegistry:
                 f"Connection for datasource {datasource.id!r} is not resolvable."
             ) from exc
 
-        templates = {f"{datasource.id}.{name}": tpl.sql for name, tpl in datasource.query_templates.items()}
+        templates = {
+            f"{datasource.id}.{name}": tpl.sql for name, tpl in datasource.query_templates.items()
+        }
         allowed_tables = set(datasource.allowed_tables)
         for tpl in datasource.query_templates.values():
             allowed_tables.update(tpl.allowed_tables)
@@ -266,7 +260,9 @@ class DatasourceRegistry:
 
     # -- MCP servers declared per datasource -------------------------------
 
-    def resolve_mcp(self, tenant_id: str, profile: ApplicationProfile, datasource: Datasource) -> Any | None:
+    def resolve_mcp(
+        self, tenant_id: str, profile: ApplicationProfile, datasource: Datasource
+    ) -> Any | None:
         """Build the MCP adapter for a datasource's declared ``mcp_server``.
 
         The server NAME comes from the profile; the connection/command catalog
@@ -298,7 +294,11 @@ class DatasourceRegistry:
             "tool_timeout_seconds": float(entry.get("timeout_seconds", 30.0)),
             "max_items_per_call": int(entry.get("max_rows", 1000)),
             "connection_name": str(entry.get("connection", "")),
-            "tenant_allowlist": {t: {entry.get("connection", "")} for t in [tenant_id, *[t for t in datasource.tenants if t != tenant_id]]} or None,
+            "tenant_allowlist": {
+                t: {entry.get("connection", "")}
+                for t in [tenant_id, *[t for t in datasource.tenants if t != tenant_id]]
+            }
+            or None,
             "transport": transport,
             "query_tool": str(entry.get("query_tool", "run-sql")),
             "include_connection": transport == "stdio",

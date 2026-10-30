@@ -62,6 +62,8 @@ def _decide(**over: object) -> tuple[PublicationDecision, str]:
         policy_eligible=bool(args["policy_eligible"]),
         policy_reason=str(args["policy_reason"]),
     )
+
+
 from investigation_agent_platform.domain.proof.rules import RULE_REGISTRY
 
 
@@ -161,7 +163,11 @@ def test_gate_no_stale_publication_end_to_end() -> None:
         {
             "evidence_manifest_digest": new_digest,
             "model_encoding": {"model": "m"},
-            "proposition_scope": {"configuration": "default", "execution": "n/a", "revision": "rev-1"},
+            "proposition_scope": {
+                "configuration": "default",
+                "execution": "n/a",
+                "revision": "rev-1",
+            },
             "reconciliation_state": "unreconciled",
             "rule_bundle_version": "rules/v2",
         },
@@ -170,7 +176,14 @@ def test_gate_no_stale_publication_end_to_end() -> None:
         _request(cert, proposition, manifest, artifacts, expected_context_id=new_ctx)
     )
     assert stale_outcome == CheckerOutcome.STALE_CERTIFICATE
-    decision, reason = _decide(checker_outcome=CheckerOutcome.VALID, certificate_context_id=str(cert["context_id"]), expected_context_id=new_ctx, derivation_id=der_a, reconciliation_adjudicated=True, policy_eligible=True)
+    decision, reason = _decide(
+        checker_outcome=CheckerOutcome.VALID,
+        certificate_context_id=str(cert["context_id"]),
+        expected_context_id=new_ctx,
+        derivation_id=der_a,
+        reconciliation_adjudicated=True,
+        policy_eligible=True,
+    )
     assert decision == PublicationDecision.DENY
     assert reason == "STALE_CONTEXT"
     with pytest.raises(ValueError, match="STALE_CONTEXT"):
@@ -179,11 +192,16 @@ def test_gate_no_stale_publication_end_to_end() -> None:
 
 def test_gate_alternative_route_commits_after_root_loss() -> None:
     """K5 at the gate: a killed route never takes its survivor down with it."""
-    outcome, _ = compose_alternatives(
-        [CheckerOutcome.PREMISE_UNAVAILABLE, CheckerOutcome.VALID]
-    )
+    outcome, _ = compose_alternatives([CheckerOutcome.PREMISE_UNAVAILABLE, CheckerOutcome.VALID])
     assert outcome == CheckerOutcome.VALID
-    decision, _ = _decide(checker_outcome=outcome, certificate_context_id="ctx-live", expected_context_id="ctx-live", derivation_id="der-survivor", reconciliation_adjudicated=True, policy_eligible=True)
+    decision, _ = _decide(
+        checker_outcome=outcome,
+        certificate_context_id="ctx-live",
+        expected_context_id="ctx-live",
+        derivation_id="der-survivor",
+        reconciliation_adjudicated=True,
+        policy_eligible=True,
+    )
     assert decision == PublicationDecision.COMMIT
 
 
@@ -197,11 +215,7 @@ def test_sensitivity_transitivity_is_load_bearing() -> None:
     real = invalidate_by_evidence({"e1"}, {"evidence.content"}, nodes)
     assert real == {"A", "B", "C"}
     # Mutant: direct dependents only (transitivity removed).
-    direct = {
-        nid
-        for nid, n in nodes.items()
-        if "e1" in n.premise_ids or "A" in n.depends_on
-    }
+    direct = {nid for nid, n in nodes.items() if "e1" in n.premise_ids or "A" in n.depends_on}
     assert direct == {"A", "B"}
     assert real - direct == {"C"}
     fresh = invalidate_by_evidence({"e1"}, {"evidence.content"}, nodes)
@@ -212,9 +226,7 @@ def test_sensitivity_cycle_check_is_load_bearing(monkeypatch: Any) -> None:
     """With the cycle guard neutered, a cyclic certificate is accepted."""
     cert, proposition, manifest, artifacts = _definition_cert()
     der = str(cert["derivation_id"])
-    cyclic = _request(
-        cert, proposition, manifest, artifacts, derivation_deps={der: [der]}
-    )
+    cyclic = _request(cert, proposition, manifest, artifacts, derivation_deps={der: [der]})
     outcome, _ = check_certificate(cyclic)
     assert outcome == CheckerOutcome.INVALID_INFERENCE
     monkeypatch.setattr(certificate_mod, "_reachable", lambda *a, **k: False)
@@ -287,14 +299,24 @@ def test_sensitivity_freshness_pin_is_load_bearing() -> None:
     cert, proposition, manifest, artifacts = _definition_cert()
     pinned, _ = check_certificate(
         _request(
-            cert, proposition, manifest, artifacts,
+            cert,
+            proposition,
+            manifest,
+            artifacts,
             expected_context_id=str(cert["context_id"]),
         )
     )
     assert pinned == CheckerOutcome.VALID
     unpinned, _ = check_certificate(_request(cert, proposition, manifest, artifacts))
     assert unpinned == CheckerOutcome.VALID  # no pin: nothing to be stale against
-    decision, reason = _decide(checker_outcome=CheckerOutcome.VALID, certificate_context_id=str(cert["context_id"]), expected_context_id="ctx-moved", derivation_id=str(cert["derivation_id"]), reconciliation_adjudicated=True, policy_eligible=True)
+    decision, reason = _decide(
+        checker_outcome=CheckerOutcome.VALID,
+        certificate_context_id=str(cert["context_id"]),
+        expected_context_id="ctx-moved",
+        derivation_id=str(cert["derivation_id"]),
+        reconciliation_adjudicated=True,
+        policy_eligible=True,
+    )
     assert (decision, reason) == (PublicationDecision.DENY, "STALE_CONTEXT")
 
 

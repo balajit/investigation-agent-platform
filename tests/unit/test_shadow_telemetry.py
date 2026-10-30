@@ -53,6 +53,7 @@ def test_shadow_keys_pass_through() -> None:
     assert out["shadow_trace"][0]["owed"] == {"floor": False}
     assert out["shadow_summary"]["diverged"] == 1
 
+
 def test_malformed_entries_degrade_without_dropping_turns() -> None:
     passed = {
         "shadow_trace": [

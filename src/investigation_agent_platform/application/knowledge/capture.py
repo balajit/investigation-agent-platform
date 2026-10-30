@@ -26,6 +26,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 
 logger = logging.getLogger("iap.application")
 
+
 def _capture_extra(artifacts: Any) -> dict[str, Any]:
     """Stored-artifact count only."""
     try:
@@ -34,6 +35,7 @@ def _capture_extra(artifacts: Any) -> dict[str, Any]:
         return {}
     except Exception:
         return {}
+
 
 # Kinds captured from conclusion-linked evidence. Static attribution is
 # shareable across tenants on a merged code issue; everything else stays
@@ -216,9 +218,7 @@ class KnowledgeCaptureService:
             # default — but ONLY when explicitly authored (fields_set), so
             # default profiles keep the established 90-day behavior.
             try:
-                profile = await self.profile_repo.get_by_application_id(
-                    tenant_id, application_id
-                )
+                profile = await self.profile_repo.get_by_application_id(tenant_id, application_id)
             except Exception:
                 profile = None
             knowledge = getattr(profile, "knowledge", None) if profile else None
@@ -305,9 +305,7 @@ class KnowledgeCaptureService:
 
             if self.hypothesis_repo is None:
                 return []
-            hyps = await self.hypothesis_repo.find_by_investigation_id(
-                tenant_id, investigation_id
-            )
+            hyps = await self.hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
             premises: list[KnowledgeArtifact] = []
             for hyp in hyps or []:
                 try:

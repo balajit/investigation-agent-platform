@@ -107,9 +107,7 @@ def test_new_assessment_fields_round_trip_and_tolerate_future_codes() -> None:
     )
     # Free-form str: an unknown future code still validates (reader tolerance).
     future = dict(asm.model_dump(), reason_code="SOME_FUTURE_CODE")
-    assert HypothesisEvidenceAssessment.model_validate(future).reason_code == (
-        "SOME_FUTURE_CODE"
-    )
+    assert HypothesisEvidenceAssessment.model_validate(future).reason_code == ("SOME_FUTURE_CODE")
 
 
 def test_collector_records_demotions_with_causes() -> None:

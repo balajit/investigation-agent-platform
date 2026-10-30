@@ -67,13 +67,21 @@ class SourceDeleteAck(BaseModel):
 class ReindexBody(BaseModel):
     """POST /reference-docs/sources/{source_id}/reindex request body."""
 
-    application_id: str | None = Field(default=None, max_length=128, description="Owning application profile identifier")
-    source_id: str = Field(..., min_length=1, max_length=256, description="Reference source to reindex")
+    application_id: str | None = Field(
+        default=None, max_length=128, description="Owning application profile identifier"
+    )
+    source_id: str = Field(
+        ..., min_length=1, max_length=256, description="Reference source to reindex"
+    )
 
 
 class RollbackBody(BaseModel):
     """POST /reference-docs/sources/{source_id}/rollback request body."""
 
-    application_id: str | None = Field(default=None, max_length=128, description="Owning application profile identifier")
-    source_id: str = Field(..., min_length=1, max_length=256, description="Reference source to roll back")
+    application_id: str | None = Field(
+        default=None, max_length=128, description="Owning application profile identifier"
+    )
+    source_id: str = Field(
+        ..., min_length=1, max_length=256, description="Reference source to roll back"
+    )
     generation: int = Field(..., ge=1, description="Generation number to restore as active")

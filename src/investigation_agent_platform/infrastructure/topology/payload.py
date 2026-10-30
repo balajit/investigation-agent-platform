@@ -70,6 +70,7 @@ _IMPORT_RE = re.compile(
 _JS_IMPORT_RE = re.compile(r"""^\s*import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]""", re.MULTILINE)
 _FROM_TABLE_RE = re.compile(r"\bFROM\s+[\"'`\[]?([a-zA-Z_][\w.]*)", re.IGNORECASE)
 
+
 def walk_source_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -95,6 +96,7 @@ def walk_source_files(root: Path) -> list[Path]:
 class PayloadTruncated(Exception):
     """Raised when a repo exceeds payload caps; the caller marks FAILED, never partial-READY."""
 
+
 def _parser_version() -> str:
     try:
         from importlib.metadata import version
@@ -102,7 +104,6 @@ def _parser_version() -> str:
         return f"tree-sitter-language-pack=={version('tree-sitter-language-pack')}"
     except Exception:
         return "unknown"
-
 
 
 async def build_payload_for_repo(

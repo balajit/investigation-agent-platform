@@ -222,7 +222,9 @@ def test_load_api_key_wins_over_basic(tmp_path):  # type: ignore[no-untyped-def]
 
 
 def test_load_rejects_bad_timeout_and_name(tmp_path):  # type: ignore[no-untyped-def]
-    _conf(tmp_path, "tenant-a", "[e]\nurl = https://h.example.com\ntimeout = soon\nservices = svc\n")
+    _conf(
+        tmp_path, "tenant-a", "[e]\nurl = https://h.example.com\ntimeout = soon\nservices = svc\n"
+    )
     with pytest.raises(PlatformConfigurationError, match="non-integer timeout"):
         load_tenant_telemetry_configs(tmp_path)
     _conf(tmp_path, "tenant-a", HAPPY)
@@ -268,11 +270,17 @@ def _endpoint(name, services, managed_by="manual"):  # type: ignore[no-untyped-d
 def test_merge_never_clobbers_manual():  # type: ignore[no-untyped-def]
     existing = TenantTelemetryConfig(
         tenant_id="t",
-        endpoints=(_endpoint("manual-es", ["svc-a"], "manual"), _endpoint("old-auto", ["svc-b"], "auto")),
+        endpoints=(
+            _endpoint("manual-es", ["svc-a"], "manual"),
+            _endpoint("old-auto", ["svc-b"], "auto"),
+        ),
     )
     merged = merge_managed_defaults(
         existing,
-        [_endpoint("manual-es", ["svc-CHANGED"], "manual"), _endpoint("new-auto", ["svc-c"], "auto")],
+        [
+            _endpoint("manual-es", ["svc-CHANGED"], "manual"),
+            _endpoint("new-auto", ["svc-c"], "auto"),
+        ],
         tenant_id="t",
     )
     by_name = {e.name: e for e in merged.endpoints}
@@ -316,13 +324,9 @@ def test_router_resolution_and_failures():  # type: ignore[no-untyped-def]
 
 
 def test_build_router_coherence_and_factory_errors():  # type: ignore[no-untyped-def]
-    config = TenantTelemetryConfig(
-        tenant_id="t", endpoints=(_endpoint("slow", ["svc"]),)
-    )
+    config = TenantTelemetryConfig(tenant_id="t", endpoints=(_endpoint("slow", ["svc"]),))
     with pytest.raises(PlatformConfigurationError, match="must strictly exceed"):
-        build_tenant_router(
-            {"t": config}, lambda endpoint: object(), query_timeout_seconds=30.0
-        )
+        build_tenant_router({"t": config}, lambda endpoint: object(), query_timeout_seconds=30.0)
 
     def _boom(endpoint):  # type: ignore[no-untyped-def]
         raise RuntimeError("dial failed")
@@ -353,9 +357,7 @@ async def test_global_path_unchanged_without_router():  # type: ignore[no-untype
     client = MagicMock()
     client.search = AsyncMock(return_value=_search_response([_hit("d1")]))
     adapter = _tenant_adapter(tenant_client=client)
-    result = await adapter.search_runtime_evidence(
-        "tenant-a", uuid.uuid4(), _request(), _profile()
-    )
+    result = await adapter.search_runtime_evidence("tenant-a", uuid.uuid4(), _request(), _profile())
     (index,) = [call.kwargs["index"] for call in client.search.call_args_list]
     assert index == "logs-tenant-a-*-production-*"
     assert result.execution_metadata["endpoint"] is None
@@ -372,9 +374,7 @@ async def test_tenant_routed_search_uses_home_endpoint():  # type: ignore[no-unt
         settings=_settings(),
         tenant_router=_router_with(tenant_client),
     )
-    result = await adapter.search_runtime_evidence(
-        "tenant-a", uuid.uuid4(), _request(), _profile()
-    )
+    result = await adapter.search_runtime_evidence("tenant-a", uuid.uuid4(), _request(), _profile())
     assert global_client.search.call_count == 0
     (index,) = [call.kwargs["index"] for call in tenant_client.search.call_args_list]
     assert index == "logs-orders-*"
@@ -399,14 +399,10 @@ async def test_tenant_routing_without_profile_uses_request_services():  # type: 
     adapter = AsyncElasticAdapter(
         client=MagicMock(), settings=_settings(), tenant_router=_router_with(tenant_client)
     )
-    result = await adapter.search_runtime_evidence(
-        "tenant-a", uuid.uuid4(), _request(), None
-    )
+    result = await adapter.search_runtime_evidence("tenant-a", uuid.uuid4(), _request(), None)
     assert result.execution_metadata["endpoint"] == "orders-es"
     with pytest.raises(ProviderNotConfiguredError):
-        await adapter.search_runtime_evidence(
-            "tenant-a", uuid.uuid4(), _request(services=[]), None
-        )
+        await adapter.search_runtime_evidence("tenant-a", uuid.uuid4(), _request(services=[]), None)
 
 
 def test_adapter_requires_client_or_router():  # type: ignore[no-untyped-def]
@@ -455,9 +451,7 @@ async def test_tenant_fetch_resolves_endpoint_from_stored_index():  # type: igno
     )
     iid, eid = uuid.uuid4(), uuid.uuid4()
     row = _Row("tenant-a", iid, eid, "elasticsearch://logs-orders-7/doc9")
-    result = await adapter.get_runtime_evidence(
-        "tenant-a", iid, eid, "production", _Lookup(row)
-    )
+    result = await adapter.get_runtime_evidence("tenant-a", iid, eid, "production", _Lookup(row))
     assert tenant_client.search.call_count == 1
     assert result is not None
 
@@ -470,9 +464,7 @@ async def test_tenant_fetch_outside_patterns_fails_closed():  # type: ignore[no-
     iid, eid = uuid.uuid4(), uuid.uuid4()
     row = _Row("tenant-a", iid, eid, "elasticsearch://logs-other-1/doc9")
     with pytest.raises(EvidenceNotFoundException):
-        await adapter.get_runtime_evidence(
-            "tenant-a", iid, eid, "production", _Lookup(row)
-        )
+        await adapter.get_runtime_evidence("tenant-a", iid, eid, "production", _Lookup(row))
 
 
 def test_evidence_config_carries_telemetry_dir():  # type: ignore[no-untyped-def]
@@ -556,7 +548,9 @@ def test_ca_certs_validated_at_load(tmp_path, monkeypatch):  # type: ignore[no-u
 
 def test_verify_certs_strict(tmp_path):  # type: ignore[no-untyped-def]
     _conf(
-        tmp_path, "tenant-a", "[e]\nurl = https://h.example.com\nverify_certs = maybe\nservices = svc\n"
+        tmp_path,
+        "tenant-a",
+        "[e]\nurl = https://h.example.com\nverify_certs = maybe\nservices = svc\n",
     )
     with pytest.raises(PlatformConfigurationError, match="non-boolean"):
         load_tenant_telemetry_configs(tmp_path)
@@ -607,7 +601,9 @@ def test_fernet_missing_key_fails_closed(tmp_path, monkeypatch):  # type: ignore
     _, envelope = _fernet_pair("x")
     monkeypatch.delenv("IAP_ES_FERNET_KEY", raising=False)
     _conf(
-        tmp_path, "tenant-a", f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n"
+        tmp_path,
+        "tenant-a",
+        f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n",
     )
     with pytest.raises(PlatformConfigurationError, match="IAP_ES_FERNET_KEY.*not set"):
         load_tenant_telemetry_configs(tmp_path)
@@ -619,7 +615,9 @@ def test_fernet_corrupt_token_and_empty_secret_fail_closed(tmp_path, monkeypatch
     key = Fernet.generate_key().decode("utf-8")
     monkeypatch.setenv("IAP_ES_FERNET_KEY", key)
     _conf(
-        tmp_path, "tenant-a", "[e]\nurl = https://h.example.com\nuser = u\npassword = fernet:corrupt!!\nservices = svc\n"
+        tmp_path,
+        "tenant-a",
+        "[e]\nurl = https://h.example.com\nuser = u\npassword = fernet:corrupt!!\nservices = svc\n",
     )
     with pytest.raises(PlatformConfigurationError, match="outside url-safe base64"):
         load_tenant_telemetry_configs(tmp_path)
@@ -638,7 +636,9 @@ def test_fernet_via_env_override(tmp_path, monkeypatch):  # type: ignore[no-unty
     key, envelope = _fernet_pair("env-supplied-pw")
     monkeypatch.setenv("IAP_ES_FERNET_KEY", key)
     _conf(
-        tmp_path, "tenant-a", "[e]\nurl = https://h.example.com\nuser = u\npassword = plain\nservices = svc\n"
+        tmp_path,
+        "tenant-a",
+        "[e]\nurl = https://h.example.com\nuser = u\npassword = plain\nservices = svc\n",
     )
     monkeypatch.setenv("IAP_ES_TENANT_A_E_PASSWORD", envelope)
     endpoint = load_tenant_telemetry_configs(tmp_path)["tenant-a"].endpoints[0]
@@ -701,9 +701,7 @@ def test_oauth_requires_full_trio():  # type: ignore[no-untyped-def]
 
 def test_oauth_conflicts_with_static_bearer():  # type: ignore[no-untyped-def]
     with pytest.raises(Exception, match="exactly one"):
-        _oauth_endpoint(
-            oauth_client_secret=_secret("s"), bearer_token=_secret("static")
-        )
+        _oauth_endpoint(oauth_client_secret=_secret("s"), bearer_token=_secret("static"))
 
 
 def test_oauth_token_url_scheme():  # type: ignore[no-untyped-def]
@@ -722,9 +720,7 @@ def test_oauth_token_url_scheme():  # type: ignore[no-untyped-def]
 
 def test_oauth_settings_accessor_and_bare_kwargs():  # type: ignore[no-untyped-def]
     assert _auth_endpoint().oauth_settings() is None
-    endpoint = _oauth_endpoint(
-        oauth_client_secret=_secret("s"), oauth_scope="read write"
-    )
+    endpoint = _oauth_endpoint(oauth_client_secret=_secret("s"), oauth_scope="read write")
     settings = endpoint.oauth_settings()
     assert settings is not None and settings.client_id == "cid"
     assert settings.scope == "read write"
@@ -801,9 +797,7 @@ async def test_oauth_empty_token_fails_closed():  # type: ignore[no-untyped-def]
 @pytest.mark.asyncio
 async def test_oauth_fetch_failure_not_cached():  # type: ignore[no-untyped-def]
     err = _ProviderUnavailable("down")
-    provider, calls = _provider(
-        [err, {"access_token": "tok-2", "expires_in": 3600}]
-    )
+    provider, calls = _provider([err, {"access_token": "tok-2", "expires_in": 3600}])
     with pytest.raises(_ProviderUnavailable):
         await provider.token()
     assert await provider.token() == "tok-2"
@@ -893,7 +887,8 @@ def test_fernet_two_part_inline_cipher_round_trip(tmp_path, monkeypatch):  # typ
     token = Fernet(raw_key).encrypt(b"two-part-pw").decode("utf-8")
     envelope = f"fernet:{raw_key.decode('utf-8')}:{token}"
     _conf(
-        tmp_path, "tenant-a",
+        tmp_path,
+        "tenant-a",
         f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n",
     )
     endpoint = load_tenant_telemetry_configs(tmp_path)["tenant-a"].endpoints[0]
@@ -915,7 +910,8 @@ def test_fernet_two_part_malformed_fails_closed(tmp_path, monkeypatch):  # type:
     ]
     for envelope in bad_cases:
         _conf(
-            tmp_path, "tenant-a",
+            tmp_path,
+            "tenant-a",
             f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n",
         )
         with pytest.raises(PlatformConfigurationError):
@@ -930,7 +926,8 @@ def test_fernet_two_part_wrong_cipher_fails_closed(tmp_path, monkeypatch):  # ty
     other = Fernet.generate_key()
     envelope = f"fernet:{other.decode('utf-8')}:{Fernet(token).encrypt(b'x').decode('utf-8')}"
     _conf(
-        tmp_path, "tenant-a",
+        tmp_path,
+        "tenant-a",
         f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n",
     )
     with pytest.raises(PlatformConfigurationError, match="failed to decrypt"):
@@ -950,7 +947,8 @@ def test_fernet_diagnostics_name_the_bad_part(tmp_path, monkeypatch):  # type: i
     ]
     for envelope, fragment in cases:
         _conf(
-            tmp_path, "tenant-a",
+            tmp_path,
+            "tenant-a",
             f"[e]\nurl = https://h.example.com\nuser = u\npassword = {envelope}\nservices = svc\n",
         )
         with pytest.raises(PlatformConfigurationError, match=fragment):

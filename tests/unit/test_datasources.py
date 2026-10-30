@@ -179,9 +179,7 @@ class TestDatasourceRegistry:
         )
 
         monkeypatch.setenv("IAP_DS_TENANT_A_PRIMARY", "postgresql+asyncpg://u:p@h/db")
-        registry, engines = self._registry(
-            _profile([_ds()]), allow_direct_engines=True
-        )
+        registry, engines = self._registry(_profile([_ds()]), allow_direct_engines=True)
         adapter = await registry.resolve("tenant-a", "example-app", "primary")
         assert isinstance(adapter, AsyncPostgresStateAdapter)
         assert engines == ["postgresql+asyncpg://u:p@h/db"]
@@ -190,9 +188,7 @@ class TestDatasourceRegistry:
     @pytest.mark.asyncio
     async def test_cached_per_revision(self, monkeypatch) -> None:
         monkeypatch.setenv("IAP_DS_TENANT_A_PRIMARY", "postgresql+asyncpg://u:p@h/db")
-        registry, engines = self._registry(
-            _profile([_ds()]), allow_direct_engines=True
-        )
+        registry, engines = self._registry(_profile([_ds()]), allow_direct_engines=True)
         first = await registry.resolve("tenant-a", "example-app", "primary")
         second = await registry.resolve("tenant-a", "example-app", "primary")
         assert first is second
@@ -240,7 +236,9 @@ class TestDatasourceRegistry:
 
     @pytest.mark.asyncio
     async def test_unsupported_kind_rejected(self) -> None:
-        registry, _ = self._registry(_profile([_ds(kind=DatasourceKind.REDIS, role=DatasourceRole.CACHE)]))
+        registry, _ = self._registry(
+            _profile([_ds(kind=DatasourceKind.REDIS, role=DatasourceRole.CACHE)])
+        )
         from investigation_agent_platform.infrastructure.evidence.datasources.registry import (
             UnsupportedDatasourceKindError,
         )
@@ -436,7 +434,12 @@ class TestTemplateIdFormat:
         # Hyphenated segments are accepted: datasource ids are kebab-case by
         # convention (sample-orders) and the registry looks IDs up verbatim —
         # the lookup, not the charset, is the injection boundary.
-        for template_id in ("primary.evidence_recent", "default", "a_b.c_d", "sample-orders.version"):
+        for template_id in (
+            "primary.evidence_recent",
+            "default",
+            "a_b.c_d",
+            "sample-orders.version",
+        ):
             await policy.validate_state_request("t", template_id, {})
 
     @pytest.mark.asyncio

@@ -65,9 +65,7 @@ def test_mask_collapses_durations_and_hashes():
 
 
 def test_consecutive_run_collapses_with_span():
-    lines = [
-        _line(i, ts=_ts(second=i), raw=f"req corr-{i}") for i in range(5)
-    ]
+    lines = [_line(i, ts=_ts(second=i), raw=f"req corr-{i}") for i in range(5)]
     out = dedup_collapse(lines)
     assert len(out) == 1
     exemplar = out[0]

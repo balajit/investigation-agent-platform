@@ -179,10 +179,28 @@ class StructuredJsonFormatter(logging.Formatter):
     """Formatter outputting JSON logs enriched with trace_id, span_id, and service metadata."""
 
     RESERVED_LOG_RECORD_ATTRS = {  # noqa: RUF012 - frozen-by-convention set, never mutated (upstream semantics preserved)
-        "args", "asctime", "created", "exc_info", "exc_text", "filename",
-        "funcName", "levelname", "levelno", "lineno", "module", "msecs",
-        "msg", "name", "pathname", "process", "processName", "relativeCreated",
-        "stack_info", "thread", "threadName", "taskName",
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
     }
 
     def __init__(
@@ -423,9 +441,7 @@ def configure_logging(
     active_file: Path | None = None
     file_enabled = bool(file_cfg.get("enabled", True))
     candidate = (
-        log_file
-        or os.environ.get("IAP_LOG_FILE", "")
-        or str(file_cfg.get("path", "data/iap.log"))
+        log_file or os.environ.get("IAP_LOG_FILE", "") or str(file_cfg.get("path", "data/iap.log"))
     )
     if file_enabled and candidate:
         try:

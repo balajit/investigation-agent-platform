@@ -170,8 +170,8 @@ async def create_investigation_activity(
             investigation_id=str(inv.id),
             event="create_investigation_activity completed",
             outputs={"outcome": "created", "status": inv.status.value},
-                elapsed_ms=elapsed_ms(t0),
-            )
+            elapsed_ms=elapsed_ms(t0),
+        )
         _disp, _pid = _disposition_routing(inv)
         return CreateInvestigationOutput(
             investigation_id=str(inv.id),
@@ -857,9 +857,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                 next_action=action_type_value or "QUERY_STATE",
                 action_parameters=dict(getattr(action, "parameters", None) or {}),
                 defer_gathering=(
-                    defer_gathering.model_dump(mode="json")
-                    if defer_gathering is not None
-                    else None
+                    defer_gathering.model_dump(mode="json") if defer_gathering is not None else None
                 ),
                 claims=list(getattr(decision, "claims", None) or []),
                 hypotheses_evaluated=hypotheses_out,
@@ -903,9 +901,7 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     _s4_lookback = _s4_lb
             except Exception:
                 pass
-            _s4 = _s4_readiness(
-                getattr(state, "evidence", []), state.investigation, _s4_lookback
-            )
+            _s4 = _s4_readiness(getattr(state, "evidence", []), state.investigation, _s4_lookback)
             if cumulative_tokens >= limits.max_llm_tokens:
                 story_log(
                     logger,
@@ -957,16 +953,12 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         for c in (getattr(decision, "claims", None) or [])
                         if hasattr(c, "model_dump")
                     ],
-                    "caller_edge_candidates": _caller_edge_candidates_from_evidence(
-                        state.evidence
-                    ),
+                    "caller_edge_candidates": _caller_edge_candidates_from_evidence(state.evidence),
                     "evidence": [
                         {
                             "evidence_id": str(getattr(item, "evidence_id", "") or ""),
                             "tenant_id": str(getattr(item, "tenant_id", "") or ""),
-                            "investigation_id": str(
-                                getattr(item, "investigation_id", "") or ""
-                            ),
+                            "investigation_id": str(getattr(item, "investigation_id", "") or ""),
                             "attributes": dict(getattr(item, "attributes", {}) or {}),
                             "provenance": {
                                 "tenant_id": str(

@@ -133,9 +133,7 @@ class HttpxApiProbeAdapter(ApiProbePort):
         if "{" in path or "}" in path:
             raise SecurityPolicyViolationException("Unresolved path placeholders")
         allowed_qs = set(getattr(endpoint, "allowed_query_params", []) or [])
-        query = {
-            k: str(v) for k, v in (request.query_params or {}).items() if k in allowed_qs
-        }
+        query = {k: str(v) for k, v in (request.query_params or {}).items() if k in allowed_qs}
         base = str(getattr(endpoint, "base_url", "") or "").rstrip("/")
         if not base.startswith(("http://", "https://")):
             raise SecurityPolicyViolationException("Probe base_url must be http(s)")
@@ -147,13 +145,9 @@ class HttpxApiProbeAdapter(ApiProbePort):
             if self._client_factory is not None:
                 client_cm = self._client_factory()
             else:
-                client_cm = httpx.AsyncClient(
-                    timeout=self._timeout_seconds, follow_redirects=False
-                )
+                client_cm = httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False)
             async with client_cm as client:
-                response = await client.request(
-                    method, url, headers={"X-Tenant-ID": tenant_id}
-                )
+                response = await client.request(method, url, headers={"X-Tenant-ID": tenant_id})
         except Exception as exc:
             raise ProbeEndpointNotFoundError(f"Probe request failed: {exc}") from exc
         latency_ms = int((time.monotonic() - started) * 1000)

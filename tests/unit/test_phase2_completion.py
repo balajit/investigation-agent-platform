@@ -98,7 +98,11 @@ def _hyp(statement, status=HypothesisStatus.PROPOSED, assessed_ids=(), claim_kin
 def _verifiable_setup():
     items = [_ev(EvidenceType.RUNTIME_LOG, "p1") for _ in range(3)]
     items += [
-        _ev(EvidenceType.METRIC, "p2", snippet="pool saturation 99, checkout latency exceeded deadline")
+        _ev(
+            EvidenceType.METRIC,
+            "p2",
+            snippet="pool saturation 99, checkout latency exceeded deadline",
+        )
         for _ in range(3)
     ]
     chain = [
@@ -124,10 +128,19 @@ class TestRivalContrast:
     def test_untested_rival_demotes_to_likely(self):
         engine = VerificationEngine()
         items, chain = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         rival = _hyp("A slow downstream causes checkout latency")
         result = engine.evaluate_hypothesis(
-            candidate, items, [], chain, RootCauseVerificationPolicy(),
+            candidate,
+            items,
+            [],
+            chain,
+            RootCauseVerificationPolicy(),
             sibling_hypotheses=[rival],
         )
         assert result.status == VerificationStatus.VERIFIED
@@ -138,11 +151,20 @@ class TestRivalContrast:
     def test_tested_rivals_keep_established(self):
         engine = VerificationEngine()
         items, chain = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         assessed = _hyp("Other cause", assessed_ids=[items[0].evidence_id])
         rejected = _hyp("Bad cause", status=HypothesisStatus.REJECTED)
         result = engine.evaluate_hypothesis(
-            candidate, items, [], chain, RootCauseVerificationPolicy(),
+            candidate,
+            items,
+            [],
+            chain,
+            RootCauseVerificationPolicy(),
             sibling_hypotheses=[assessed, rejected],
         )
         assert result.status == VerificationStatus.VERIFIED
@@ -154,7 +176,11 @@ class TestRivalContrast:
         items, chain = _verifiable_setup()
         candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED)
         result = engine.evaluate_hypothesis(
-            candidate, items, [], chain, RootCauseVerificationPolicy(),
+            candidate,
+            items,
+            [],
+            chain,
+            RootCauseVerificationPolicy(),
             sibling_hypotheses=[candidate],
         )
         assert result.tier == "established"
@@ -165,15 +191,26 @@ class TestRivalContrast:
         items += [_ev(EvidenceType.TRACE, "p1", snippet="span pool wait") for _ in range(3)]
         chain = [
             CausalRelationship(
-                cause="a", effect="b", mechanism="m", confidence=0.9,
+                cause="a",
+                effect="b",
+                mechanism="m",
+                confidence=0.9,
                 evidence_ids=[e.evidence_id for e in items[:2]],
             ),
             CausalRelationship(
-                cause="b", effect="c", mechanism="n", confidence=0.9,
+                cause="b",
+                effect="c",
+                mechanism="n",
+                confidence=0.9,
                 evidence_ids=[e.evidence_id for e in items[2:4]],
             ),
         ]
-        candidate = _hyp("Pool exhaustion causes latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         policy = RootCauseVerificationPolicy(require_cross_layer_evidence=False)
         result = engine.evaluate_hypothesis(candidate, items, [], chain, policy)
         assert result.status == VerificationStatus.VERIFIED
@@ -183,9 +220,18 @@ class TestRivalContrast:
     def test_verified_explanation_names_limitations_not_just_counts(self):
         engine = VerificationEngine()
         items, chain = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         result = engine.evaluate_hypothesis(
-            candidate, items, [], chain, RootCauseVerificationPolicy(),
+            candidate,
+            items,
+            [],
+            chain,
+            RootCauseVerificationPolicy(),
             sibling_hypotheses=[_hyp("Untested rival")],
         )
         assert "Limitations:" in result.explanation
@@ -198,9 +244,7 @@ def _code_row(snippet, file_path="src/svc/pool.py"):
         summary="Pool implementation with exhaustion guard",
         content_snippet=snippet,
         source=f"git://r/{file_path}@abc",
-        provenance=SimpleNamespace(
-            source_location=SimpleNamespace(file_path=file_path)
-        ),
+        provenance=SimpleNamespace(source_location=SimpleNamespace(file_path=file_path)),
     )
 
 
@@ -294,7 +338,12 @@ class TestCausalStepGrounding:
     def test_step_citing_nothing_is_inconclusive(self):
         engine = VerificationEngine()
         items, _ = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [])]
         result = engine.evaluate_hypothesis(
             candidate, items, [], chain, RootCauseVerificationPolicy()
@@ -305,7 +354,12 @@ class TestCausalStepGrounding:
     def test_step_citing_unknown_id_is_inconclusive(self):
         engine = VerificationEngine()
         items, _ = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [uuid4()])]
         result = engine.evaluate_hypothesis(
             candidate, items, [], chain, RootCauseVerificationPolicy()
@@ -317,8 +371,15 @@ class TestCausalStepGrounding:
         engine = VerificationEngine()
         doc = _ev(EvidenceType.DOCUMENTATION, "p1", snippet="pooling runbook guidance")
         items, _ = _verifiable_setup()
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
-        chain = [_chain_step("pool exhaustion", "threads block", "checkout latency", [doc.evidence_id])]
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
+        chain = [
+            _chain_step("pool exhaustion", "threads block", "checkout latency", [doc.evidence_id])
+        ]
         result = engine.evaluate_hypothesis(
             candidate, [doc, *items], [], chain, RootCauseVerificationPolicy()
         )
@@ -333,7 +394,12 @@ class TestCausalStepGrounding:
         ]
         logs = [_ev(EvidenceType.RUNTIME_LOG, "p1", snippet="ok") for _ in range(4)]
         items = code + logs
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         chain = [
             _chain_step(
                 "pool exhaustion",
@@ -371,7 +437,12 @@ class TestCausalStepGrounding:
         filler = [_ev(EvidenceType.RUNTIME_LOG, "p1", snippet="ok") for _ in range(2)]
         filler += [_ev(EvidenceType.RUNTIME_LOG, "p2", snippet="ok") for _ in range(2)]
         items = [code, metric, *filler]
-        candidate = _hyp("Pool exhaustion causes checkout latency", HypothesisStatus.SUPPORTED, assessed_ids=[items[1].evidence_id], claim_kind="CAUSAL")
+        candidate = _hyp(
+            "Pool exhaustion causes checkout latency",
+            HypothesisStatus.SUPPORTED,
+            assessed_ids=[items[1].evidence_id],
+            claim_kind="CAUSAL",
+        )
         chain = [
             _chain_step(
                 "pool exhaustion",
@@ -396,12 +467,12 @@ class TestCausalStepGrounding:
         )
 
     def test_next_check_relation_priority(self):
-        relation_lim = VerificationLimitation(code=LimitationCode.RELATION_UNDEMONSTRATED, detail="d")
+        relation_lim = VerificationLimitation(
+            code=LimitationCode.RELATION_UNDEMONSTRATED, detail="d"
+        )
         unmapped_lim = VerificationLimitation(code=LimitationCode.CONCLUSION_UNMAPPED, detail="d")
         single_lim = VerificationLimitation(code=LimitationCode.SINGLE_PROVIDER, detail="d")
-        assert "causal step" in (
-            VerificationEngine.next_check_for([relation_lim], [], []) or ""
-        )
+        assert "causal step" in (VerificationEngine.next_check_for([relation_lim], [], []) or "")
         # Relation outranks sentence mapping and single-provider corroboration.
         assert "causal step" in (
             VerificationEngine.next_check_for(
@@ -412,9 +483,7 @@ class TestCausalStepGrounding:
         # An untested rival still outranks the relation check.
         rival_lim = VerificationLimitation(code=LimitationCode.RIVAL_UNTESTED, detail="d")
         assert "untested rival" in (
-            VerificationEngine.next_check_for(
-                [rival_lim, relation_lim], ["slow downstream"], []
-            )
+            VerificationEngine.next_check_for([rival_lim, relation_lim], ["slow downstream"], [])
             or ""
         )
 
@@ -508,8 +577,12 @@ def _range_row(snippet="10| if retryCount > 0:\n11|     reserve()"):
                 provider_type="test", operation="GET_SOURCE", normalized_query_hash="h"
             ),
             source_location=SourceLocation(
-                system="test", identifier="x", file_path="pool.py",
-                line_start=10, line_end=11, revision="abc",
+                system="test",
+                identifier="x",
+                file_path="pool.py",
+                line_start=10,
+                line_end=11,
+                revision="abc",
             ),
         ),
         freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
@@ -533,7 +606,9 @@ class TestBehaviorNoRuntimeDemotion:
     def test_code_only_rival_tested_demotes_to_likely(self):
         engine = VerificationEngine()
         code = _range_row()
-        items = [code] + [_ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)]
+        items = [code] + [
+            _ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)
+        ]
         candidate = _hyp(
             "Retry re-enters reserve with a consumed id",
             HypothesisStatus.SUPPORTED,
@@ -542,8 +617,12 @@ class TestBehaviorNoRuntimeDemotion:
         )
         rival = _hyp("Downstream latency", assessed_ids=[items[1].evidence_id])
         result = engine.evaluate_hypothesis(
-            candidate, items, [], self._chain([code.evidence_id]),
-            RootCauseVerificationPolicy(), sibling_hypotheses=[rival],
+            candidate,
+            items,
+            [],
+            self._chain([code.evidence_id]),
+            RootCauseVerificationPolicy(),
+            sibling_hypotheses=[rival],
         )
         assert result.status == VerificationStatus.VERIFIED
         assert result.tier == "likely"
@@ -553,7 +632,9 @@ class TestBehaviorNoRuntimeDemotion:
     def test_code_only_without_rival_stays_inconclusive(self):
         engine = VerificationEngine()
         code = _range_row()
-        items = [code] + [_ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)]
+        items = [code] + [
+            _ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)
+        ]
         candidate = _hyp(
             "Retry re-enters reserve with a consumed id",
             HypothesisStatus.SUPPORTED,
@@ -561,7 +642,10 @@ class TestBehaviorNoRuntimeDemotion:
             claim_kind=ClaimKind.BEHAVIOR,
         )
         result = engine.evaluate_hypothesis(
-            candidate, items, [], self._chain([code.evidence_id]),
+            candidate,
+            items,
+            [],
+            self._chain([code.evidence_id]),
             RootCauseVerificationPolicy(),
         )
         assert result.status == VerificationStatus.INCONCLUSIVE
@@ -570,17 +654,25 @@ class TestBehaviorNoRuntimeDemotion:
         engine = VerificationEngine()
         head = _range_row(snippet="head without numbering")
         object.__setattr__(
-            head, "provenance",
+            head,
+            "provenance",
             EvidenceProvenance(
-                tenant_id="t", investigation_id=uuid4(), provider_type="test",
-                requested_provider_id="test", actual_provider_id="test",
-                source_system="test", retrieval_timestamp=datetime.now(UTC),
+                tenant_id="t",
+                investigation_id=uuid4(),
+                provider_type="test",
+                requested_provider_id="test",
+                actual_provider_id="test",
+                source_system="test",
+                retrieval_timestamp=datetime.now(UTC),
                 query_fingerprint=QueryFingerprint(
-                    provider_type="test", operation="GET_SOURCE", normalized_query_hash="h"),
+                    provider_type="test", operation="GET_SOURCE", normalized_query_hash="h"
+                ),
                 source_location=SourceLocation(system="test", identifier="x"),
             ),
         )
-        items = [head] + [_ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)]
+        items = [head] + [
+            _ev(EvidenceType.DOCUMENTATION, "p1", snippet="runbook note") for _ in range(5)
+        ]
         candidate = _hyp(
             "Retry re-enters reserve",
             HypothesisStatus.SUPPORTED,
@@ -589,8 +681,12 @@ class TestBehaviorNoRuntimeDemotion:
         )
         rival = _hyp("Downstream latency", assessed_ids=[items[1].evidence_id])
         result = engine.evaluate_hypothesis(
-            candidate, items, [], self._chain([head.evidence_id]),
-            RootCauseVerificationPolicy(), sibling_hypotheses=[rival],
+            candidate,
+            items,
+            [],
+            self._chain([head.evidence_id]),
+            RootCauseVerificationPolicy(),
+            sibling_hypotheses=[rival],
         )
         assert result.status == VerificationStatus.INCONCLUSIVE
 

@@ -79,7 +79,9 @@ class TestHubRanking:
             TableStats(name="market", fan_in=71, fan_out=2, num_rows=5000),
             TableStats(name="base_offer", fan_in=44, fan_out=6, num_rows=20000),
             TableStats(name="billing_code", fan_in=27, fan_out=1, num_rows=8000),
-            TableStats(name="product_market", fan_in=2, fan_out=2, num_rows=15000, is_link_table=True),
+            TableStats(
+                name="product_market", fan_in=2, fan_out=2, num_rows=15000, is_link_table=True
+            ),
         ]
         ranked = [h.name for h in score_tables(tables)]
         assert ranked[:2] == ["product", "market"]
@@ -97,8 +99,20 @@ class TestHubRanking:
 
     def test_class_split_enums_to_vocabulary(self):
         classes = [
-            ClassStats(name="com.sample.Product", import_fan_in=50, hits_authority=9.0, entity_package=True, community="sales"),
-            ClassStats(name="com.sample.OrderType", import_fan_in=0, hits_authority=0, is_enum=True, community="sales"),
+            ClassStats(
+                name="com.sample.Product",
+                import_fan_in=50,
+                hits_authority=9.0,
+                entity_package=True,
+                community="sales",
+            ),
+            ClassStats(
+                name="com.sample.OrderType",
+                import_fan_in=0,
+                hits_authority=0,
+                is_enum=True,
+                community="sales",
+            ),
             ClassStats(name="com.sample.UtilsHelper", import_fan_in=30, hits_authority=1.0),
         ]
         out: RankedClasses = rank_classes(classes)

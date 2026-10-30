@@ -484,9 +484,7 @@ class OnboardingService:
             tenant_id=tenant_id,
             home_service=home_service,
             mapping_source_id=mapping_source_id,
-            mapping_profiles_path=(
-                DEFAULT_MAPPING_PROFILES_PATH if mapping_source_id else None
-            ),
+            mapping_profiles_path=(DEFAULT_MAPPING_PROFILES_PATH if mapping_source_id else None),
         )
         return {
             "tenant_id": tenant_id,

@@ -66,9 +66,7 @@ class TestRelationshipQueryShape:
         captured: list = []
         repo = _repo(captured)
         with pytest.raises(ExecutionError):
-            await repo.fetch_relationships_for_evidence(
-                "tenant-a", "my-app", ["not-a-uuid"], 2
-            )
+            await repo.fetch_relationships_for_evidence("tenant-a", "my-app", ["not-a-uuid"], 2)
         assert captured == []
 
 
@@ -92,9 +90,7 @@ class TestRecordEdges:
             committed.append(True)
 
         committed: list = []
-        session = SimpleNamespace(
-            scalars=_scalars, add=added.append, commit=_commit
-        )
+        session = SimpleNamespace(scalars=_scalars, add=added.append, commit=_commit)
 
         class _CM:
             async def __aenter__(self):  # type: ignore[no-untyped-def]
@@ -111,8 +107,10 @@ class TestRecordEdges:
         )
 
         return EvidenceRelationshipRecord(
-            tenant_id="tenant-a", application_id="app-1",
-            source_id=src, target_id=tgt,
+            tenant_id="tenant-a",
+            application_id="app-1",
+            source_id=src,
+            target_id=tgt,
         )
 
     @pytest.mark.asyncio

@@ -89,9 +89,7 @@ def retry_backoff_seconds(attempts: int) -> int:
     """Exponential backoff with a cap. Pure: unit-testable without clocks."""
     if attempts < 0:
         raise ValueError("attempts must be >= 0")
-    backoff: int = min(
-        RETRY_BASE_BACKOFF_SECONDS * (2**attempts), RETRY_MAX_BACKOFF_SECONDS
-    )
+    backoff: int = min(RETRY_BASE_BACKOFF_SECONDS * (2**attempts), RETRY_MAX_BACKOFF_SECONDS)
     return backoff
 
 
@@ -161,9 +159,7 @@ class OnboardingDispatcher:
                 dispatch_id=claim.id,
                 detail="request canceled; not started",
             )
-        current = await self._dispatches.read_dispatch(
-            claim.tenant_id, claim.id
-        )
+        current = await self._dispatches.read_dispatch(claim.tenant_id, claim.id)
         attempts = 0 if current is None else int(current.get("attempts", 0))
         if attempts >= self._max_attempts:
             await self._dispatches.mark_terminal(
@@ -215,9 +211,7 @@ class OnboardingDispatcher:
                 error_code=f"fatal:{exc}",
                 fencing_token=claim.lease_fencing_token,
             )
-            return DispatchResult(
-                DispatchOutcome.TERMINAL, dispatch_id=claim.id, detail=str(exc)
-            )
+            return DispatchResult(DispatchOutcome.TERMINAL, dispatch_id=claim.id, detail=str(exc))
         recorded = await self._dispatches.record_workflow_accepted(
             claim.tenant_id, claim.id, claim.lease_fencing_token, receipt.run_id
         )
@@ -227,9 +221,7 @@ class OnboardingDispatcher:
                 dispatch_id=claim.id,
                 detail="fencing token superseded before run id landed",
             )
-        return DispatchResult(
-            DispatchOutcome.STARTED, dispatch_id=claim.id, run_id=receipt.run_id
-        )
+        return DispatchResult(DispatchOutcome.STARTED, dispatch_id=claim.id, run_id=receipt.run_id)
 
     async def _adopt_existing(self, claim: Any) -> DispatchResult:
         found = await self._lookup.lookup(workflow_id=claim.workflow_id)
@@ -276,9 +268,7 @@ class OnboardingDispatcher:
                 error_code=error_code,
                 fencing_token=claim.lease_fencing_token,
             )
-            return DispatchResult(
-                DispatchOutcome.TERMINAL, dispatch_id=claim.id, detail=error_code
-            )
+            return DispatchResult(DispatchOutcome.TERMINAL, dispatch_id=claim.id, detail=error_code)
         if terminal:
             recorded = await self._dispatches.record_workflow_accepted(
                 claim.tenant_id, claim.id, claim.lease_fencing_token, found.run_id
@@ -309,9 +299,7 @@ class OnboardingDispatcher:
         cannot fix."""
         report = ReconcileReport()
         for _ in range(batch_limit):
-            requeued = await self._dispatches.requeue_one_expired_lease(
-                worker_id=worker_id
-            )
+            requeued = await self._dispatches.requeue_one_expired_lease(worker_id=worker_id)
             if requeued is None:
                 break
             report.requeued_expired += 1
@@ -326,9 +314,7 @@ class OnboardingDispatcher:
                 finished = await self._complete_cancellation(row, found, canceler)
                 if finished:
                     report.canceled += 1
-                    report.notes.append(
-                        f"canceled dispatch {row['id']} ({finished})"
-                    )
+                    report.notes.append(f"canceled dispatch {row['id']} ({finished})")
                 else:
                     report.deferred_cancel += 1
                 continue
@@ -339,18 +325,14 @@ class OnboardingDispatcher:
                     error_code="workflow_not_found",
                 )
                 report.terminal_mirrored += 1
-                report.notes.append(
-                    f"escalated missing workflow {row['workflow_id']}"
-                )
+                report.notes.append(f"escalated missing workflow {row['workflow_id']}")
                 continue
             if found.run_id != row.get("temporal_run_id"):
                 adopted = await self._dispatches.adopt_run_id(
                     row["tenant_id"], row["id"], found.run_id
                 )
                 if adopted:
-                    report.notes.append(
-                        f"adopted run {found.run_id} for {row['workflow_id']}"
-                    )
+                    report.notes.append(f"adopted run {found.run_id} for {row['workflow_id']}")
             terminal, error_code = terminal_for_mirror(found.status)
             if terminal and error_code:
                 await self._dispatches.mark_terminal(
@@ -394,15 +376,11 @@ class OnboardingDispatcher:
         if needs_cancel:
             if canceler is None:
                 return None
-            await canceler.cancel(
-                workflow_id=row["workflow_id"], reason="operator cancellation"
-            )
+            await canceler.cancel(workflow_id=row["workflow_id"], reason="operator cancellation")
         transitioned = await self._dispatches.complete_request_cancellation(
             row["tenant_id"], row["request_id"], row["revision"]
         )
-        await self._dispatches.mark_terminal(
-            row["tenant_id"], row["id"], error_code="canceled"
-        )
+        await self._dispatches.mark_terminal(row["tenant_id"], row["id"], error_code="canceled")
         if not transitioned:
             return "request already canceled"
         if needs_cancel:

@@ -388,7 +388,9 @@ class TestServerArgsExpansion:
         )
 
         monkeypatch.delenv("IAP_DEFINITELY_UNSET_VAR_XYZ", raising=False)
-        assert _expand_env_refs("${IAP_DEFINITELY_UNSET_VAR_XYZ}") == "${IAP_DEFINITELY_UNSET_VAR_XYZ}"
+        assert (
+            _expand_env_refs("${IAP_DEFINITELY_UNSET_VAR_XYZ}") == "${IAP_DEFINITELY_UNSET_VAR_XYZ}"
+        )
 
 
 class TestCurrentSchema:
@@ -425,9 +427,7 @@ class TestCurrentSchema:
             read_only=True,
             schema_name="sample_owner",
             query_templates={
-                "version": QueryTemplate(
-                    description="v", sql="SELECT BANNER FROM v$version"
-                )
+                "version": QueryTemplate(description="v", sql="SELECT BANNER FROM v$version")
             },
         )
         return profile.model_copy(update={"datasources": [ds]})
@@ -484,7 +484,9 @@ class TestCurrentSchema:
         p1, p2 = _patched_session(session)
         with p1, p2:
             await adapter.search_application_state(
-                "tenant-a", UUID(int=1),
-                _request("SELECT 1 FROM dual"), _state_profile(),
+                "tenant-a",
+                UUID(int=1),
+                _request("SELECT 1 FROM dual"),
+                _state_profile(),
             )
         assert calls == ["connect", "sql_run"]

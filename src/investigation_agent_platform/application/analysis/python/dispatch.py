@@ -129,15 +129,9 @@ async def resolve_python_field_fact(
                 break
     else:
         for attempt in (
-            lambda: resolve_python_config_fact(
-                evidence, field_name, language_version=version
-            ),
-            lambda: resolve_python_value_fact(
-                evidence, field_name, language_version=version
-            ),
-            lambda: resolve_python_import_fact(
-                evidence, field_name, language_version=version
-            ),
+            lambda: resolve_python_config_fact(evidence, field_name, language_version=version),
+            lambda: resolve_python_value_fact(evidence, field_name, language_version=version),
+            lambda: resolve_python_import_fact(evidence, field_name, language_version=version),
         ):
             try:
                 candidate = attempt()

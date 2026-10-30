@@ -578,8 +578,11 @@ class TestMigrationChainFinal:
             "onboarding_requests",
             "onboarding_dispatches",
         )
-        source = Path(__file__).resolve().parents[2] / "migrations" / "versions" / (
-            "023_onboarding_control_store.py"
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "migrations"
+            / "versions"
+            / ("023_onboarding_control_store.py")
         )
         text = source.read_text(encoding="utf-8")
         assert "ENABLE ROW LEVEL SECURITY" in text
@@ -590,8 +593,11 @@ class TestMigrationChainFinal:
         assert "BEFORE UPDATE OR DELETE ON onboarding_requests" in text
 
     def test_onboarding_migration_creates_no_phase2_tables(self) -> None:
-        source = Path(__file__).resolve().parents[2] / "migrations" / "versions" / (
-            "023_onboarding_control_store.py"
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "migrations"
+            / "versions"
+            / ("023_onboarding_control_store.py")
         )
         text = source.read_text(encoding="utf-8")
         for table in ("onboarding_steps", "deletion_manifests", "onboarding_store_registry"):
@@ -629,6 +635,7 @@ class TestMigrationChainFinal:
         assert "CREATE TRIGGER onboarding_request_revision_immutable" in proc.stdout
         assert "GRANT UPDATE (state, lease_owner, lease_fencing_token" in proc.stdout
         assert "onboarding_dispatch_worker_select" in proc.stdout
+
 
 # ---------------------------------------------------------------------------
 # 4. Versioned + pinned API/MCP/Kafka contract fixtures

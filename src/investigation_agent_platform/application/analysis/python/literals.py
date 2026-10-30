@@ -135,7 +135,12 @@ def parse_string_literal(text: str) -> tuple[str | None, str | None]:
     match = re.fullmatch(r"([A-Za-z]*)('''|\"\"\"|'|\")([\s\S]*)('''|\"\"\"|'|\")", raw, re.DOTALL)
     if not match:
         return (None, "unsupported_string_literal")
-    prefix, opener, content, closer = match.group(1).lower(), match.group(2), match.group(3), match.group(4)
+    prefix, opener, content, closer = (
+        match.group(1).lower(),
+        match.group(2),
+        match.group(3),
+        match.group(4),
+    )
     if opener != closer:
         return (None, "invalid_string_literal")
     if prefix not in {"", "r", "u", "ur", "ru"}:

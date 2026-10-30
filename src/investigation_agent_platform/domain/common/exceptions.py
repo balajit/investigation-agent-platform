@@ -271,9 +271,7 @@ class ProviderNotConfiguredError(ExecutionError):
     retrying an unregistered provider can never succeed.
     """
 
-    def __init__(
-        self, message: str, details: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(
             message=message,
             details=details,
@@ -291,9 +289,7 @@ class ProbeEndpointNotFoundError(ExecutionError):
     calling as a fallback (that would be an SSRF vector).
     """
 
-    def __init__(
-        self, message: str, details: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(
             message=message,
             details=details,
@@ -311,9 +307,7 @@ class CodePathNotFoundError(ExecutionError):
     Never retryable — the tree does not change mid-run.
     """
 
-    def __init__(
-        self, message: str, details: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(
             message=message,
             details=details,

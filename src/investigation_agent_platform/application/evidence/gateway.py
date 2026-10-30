@@ -142,6 +142,7 @@ def references_foreign_investigation(item: Any, investigation_id: Any) -> bool:
     except Exception:
         return False
 
+
 if TYPE_CHECKING:
     from investigation_agent_platform.domain.topology.models import (
         DomainAttributionResult,
@@ -174,8 +175,6 @@ class ContextCompressor:
             f"\n... [TRUNCATED {len(raw_logs) - (head_count + tail_count)} LOG LINES] ...\n"
         )
         return "\n".join(head) + truncated_msg + "\n".join(tail)
-
-
 
 
 def _dedupe_extra(items: Any) -> dict[str, Any]:
@@ -350,8 +349,11 @@ class EvidenceDeduplicator:
             self._mark_seen(tenant_id, investigation_id, item.fingerprint)
             deduped.append(item)
         return deduped
+
+
 class AsyncEvidenceGateway(EvidenceGatewayProtocol):
     """Asynchronous orchestrator for routing, redacting, persisting, and correlating evidence."""
+
     def __init__(
         self,
         provider_selector: Any,
@@ -526,7 +528,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("investigation_id", str(investigation_id))
             span.set_attribute("application_id", application_id)
-            await self._enforce_authorization(tenant_id, "SEARCH_LOGS", application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "SEARCH_LOGS", application_id=application_id
+            )
             await self._validate_structured_output(request)
             await self._query_safety_policy.validate_runtime_request(tenant_id, request)
             provider = await self._provider_selector.get_runtime_provider(
@@ -559,9 +563,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 # no rows for this context (e.g. no Elastic integration),
                 # consult file_log datasources before reporting empty. The
                 # adapter resolves sources from the live profile revision.
-                find_fallback = getattr(
-                    self._provider_selector, "find_runtime_provider", None
-                )
+                find_fallback = getattr(self._provider_selector, "find_runtime_provider", None)
                 fallback = find_fallback("file-log") if callable(find_fallback) else None
                 if fallback is not None and fallback is not provider:
                     try:
@@ -570,9 +572,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                                 tenant_id,
                                 investigation_id,
                                 request,
-                                await self._effective_profile(
-                                    fallback, tenant_id, application_id
-                                ),
+                                await self._effective_profile(fallback, tenant_id, application_id),
                             ),
                             timeout=self._timeout_seconds,
                         )
@@ -646,7 +646,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: ApplicationStateRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_application_state"):
-            await self._enforce_authorization(tenant_id, "QUERY_STATE", application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "QUERY_STATE", application_id=application_id
+            )
             await self._validate_structured_output(request)
             await self._query_safety_policy.validate_state_request(
                 tenant_id, request.template_id, request.parameters
@@ -665,9 +667,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
 
             result = await asyncio.wait_for(
-                provider.get_application_state(
-                    tenant_id, investigation_id, request, profile
-                ),
+                provider.get_application_state(tenant_id, investigation_id, request, profile),
                 timeout=self._timeout_seconds,
             )
             sanitized_items = [
@@ -734,9 +734,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
 
             async def _query_other(key: str, other: Any) -> tuple[str, str, list[Any]]:
                 other_result = await asyncio.wait_for(
-                    other.get_application_state(
-                        tenant_id, investigation_id, request, profile
-                    ),
+                    other.get_application_state(tenant_id, investigation_id, request, profile),
                     timeout=self._timeout_seconds,
                 )
                 return str(key), "SUCCEEDED", list(other_result.items or [])
@@ -755,18 +753,14 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 serves = getattr(other, "serves_tenant", None)
                 try:
                     if callable(serves) and not serves(tenant_id):
-                        per_source.append(
-                            {"source": str(key), "status": "SKIPPED", "items": 0}
-                        )
+                        per_source.append({"source": str(key), "status": "SKIPPED", "items": 0})
                         continue
                 except Exception as exc:
                     logger.warning(
                         "Fan-out state query degraded for source",
                         extra={"source": str(key), "error": str(exc)},
                     )
-                    per_source.append(
-                        {"source": str(key), "status": "DEGRADED", "items": 0}
-                    )
+                    per_source.append({"source": str(key), "status": "DEGRADED", "items": 0})
                     continue
                 server_dialect = getattr(other, "dialect", None)
                 if query_dialect and server_dialect and server_dialect != query_dialect:
@@ -794,9 +788,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
                 for source_key, status, items in outcomes:
                     extra_items.extend(items)
-                    per_source.append(
-                        {"source": source_key, "status": status, "items": len(items)}
-                    )
+                    per_source.append({"source": source_key, "status": status, "items": len(items)})
             if not per_source:
                 per_source.append(
                     {
@@ -808,8 +800,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 )
             if extra_items:
                 sanitized_extra = [
-                    await self._sanitizer.sanitize_evidence(tenant_id, item)
-                    for item in extra_items
+                    await self._sanitizer.sanitize_evidence(tenant_id, item) for item in extra_items
                 ]
                 # P3-2: dedup ONLY the fan-out extras — re-running dedup over
                 # the already-marked primary items would drop everything.
@@ -932,7 +923,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: CodeSearchRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.search_code"):
-            await self._enforce_authorization(tenant_id, "SEARCH_CODE", application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "SEARCH_CODE", application_id=application_id
+            )
             await self._validate_structured_output(request)
             # Validate via policy if method exists
             validate_fn = getattr(self._query_safety_policy, "validate_code_search_request", None)
@@ -942,7 +935,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(
+                    f"No code provider available for app '{application_id}'"
+                )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
                 raise ProviderNotConfiguredError(
@@ -981,7 +976,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SymbolRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_symbol"):
-            await self._enforce_authorization(tenant_id, "FIND_SYMBOL", application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "FIND_SYMBOL", application_id=application_id
+            )
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -990,7 +987,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(
+                    f"No code provider available for app '{application_id}'"
+                )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
                 raise ProviderNotConfiguredError(
@@ -1028,9 +1027,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                     total_count=len(symbols),
                     provider_metadata={"symbols": [s.model_dump() for s in symbols]},
                 )
-            miss = classify_code_recall_miss(
-                "code", 0, 0, request.symbol_name or ""
-            )
+            miss = classify_code_recall_miss("code", 0, 0, request.symbol_name or "")
             return await self._find_symbol_fuzzy_fallback(
                 tenant_id,
                 investigation_id,
@@ -1171,9 +1168,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             if abstention is not None:
                 raise abstention
             return self._deterministic_symbol_result(symbols, miss)
-        repository_id = await self._resolve_fuzzy_repository_id(
-            tenant_id, application_id, request
-        )
+        repository_id = await self._resolve_fuzzy_repository_id(tenant_id, application_id, request)
         revision = str(getattr(request, "revision", "") or "") or "HEAD"
         dataset = (
             self._resolve_fuzzy_dataset(tenant_id, repository_id, revision)
@@ -1212,9 +1207,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             float(outcome.candidates_seen),
             miss_tag,
         )
-        authority = await self._resolve_fuzzy_authority(
-            tenant_id, repository_id, revision
-        )
+        authority = await self._resolve_fuzzy_authority(tenant_id, repository_id, revision)
         kept, discarded = verify_fuzzy_candidates(
             outcome.candidate_ids, authority, tenant_id, repository_id, revision
         )
@@ -1290,14 +1283,18 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: SourceRequest
     ) -> Evidence:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_source"):
-            await self._enforce_authorization(tenant_id, "GET_CODE", request.file_path, application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "GET_CODE", request.file_path, application_id=application_id
+            )
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_source_request", None)
             if callable(validate_fn):
                 await validate_fn(tenant_id, request)
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
-                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(
+                    f"No code provider available for app '{application_id}'"
+                )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
                 raise ProviderNotConfiguredError(
@@ -1328,7 +1325,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         self, tenant_id: str, investigation_id: UUID, application_id: str, request: CallGraphRequest
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.find_call_graph"):
-            await self._enforce_authorization(tenant_id, "FIND_CALL_GRAPH", application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "FIND_CALL_GRAPH", application_id=application_id
+            )
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_symbol_request", None)
             if callable(validate_fn):
@@ -1338,7 +1337,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id
             )
             if not provider:
-                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(
+                    f"No code provider available for app '{application_id}'"
+                )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
                 raise ProviderNotConfiguredError(
@@ -1440,23 +1441,25 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         request: CodeHistoryRequest,
     ) -> EvidenceQueryResult:
         with tracer.start_as_current_span("AsyncEvidenceGateway.get_code_history"):
-            await self._enforce_authorization(tenant_id, "GET_CODE_HISTORY", request.file_path, application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "GET_CODE_HISTORY", request.file_path, application_id=application_id
+            )
             await self._validate_structured_output(request)
             validate_fn = getattr(self._query_safety_policy, "validate_code_history_request", None)
             if callable(validate_fn):
                 await validate_fn(tenant_id, request)
             provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
             if not provider:
-                raise ProviderNotConfiguredError(f"No code provider available for app '{application_id}'")
+                raise ProviderNotConfiguredError(
+                    f"No code provider available for app '{application_id}'"
+                )
             profile = await self._effective_profile(provider, tenant_id, application_id)
             if profile is None:
                 raise ProviderNotConfiguredError(
                     f"No application profile for '{application_id}'; cannot scope code access"
                 )
             items = await asyncio.wait_for(
-                provider.get_code_history(
-                    tenant_id, investigation_id, request.file_path, profile
-                ),
+                provider.get_code_history(tenant_id, investigation_id, request.file_path, profile),
                 timeout=self._timeout_seconds,
             )
             sanitized = [await self._sanitizer.sanitize_evidence(tenant_id, item) for item in items]
@@ -1479,9 +1482,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         )
 
         with tracer.start_as_current_span("AsyncEvidenceGateway.probe_api"):
-            await self._enforce_authorization(
-                tenant_id, "PROBE_API", application_id=application_id
-            )
+            await self._enforce_authorization(tenant_id, "PROBE_API", application_id=application_id)
             await self._validate_structured_output(request)
             if self._profile_repo is None:
                 raise ProviderNotConfiguredError(
@@ -1617,7 +1618,9 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         )
 
         with tracer.start_as_current_span("AsyncEvidenceGateway.resolve_code_ownership"):
-            await self._enforce_authorization(tenant_id, "QUERY_CODE_TOPOLOGY", file_path, application_id=application_id)
+            await self._enforce_authorization(
+                tenant_id, "QUERY_CODE_TOPOLOGY", file_path, application_id=application_id
+            )
             if self._repository_registry is None or self._failure_attribution_service is None:
                 raise TopologyNotConfiguredError(
                     f"No topology provider configured for tenant={tenant_id}",

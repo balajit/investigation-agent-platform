@@ -167,7 +167,5 @@ def error_envelope(
 ) -> McpErrorEnvelope:
     """Build the tool-result envelope for a failure (logs unexpected ones)."""
     return McpErrorEnvelope(
-        error=map_exception_to_error(
-            exc, tenant_id=tenant_id, investigation_id=investigation_id
-        )
+        error=map_exception_to_error(exc, tenant_id=tenant_id, investigation_id=investigation_id)
     )

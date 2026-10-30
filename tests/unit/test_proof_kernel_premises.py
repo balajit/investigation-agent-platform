@@ -36,6 +36,7 @@ def _baseline(filename: str, fixture_id: str) -> dict[str, Any]:
             return record["inputs"]
     raise AssertionError(f"missing fixture {fixture_id} in {filename}")
 
+
 REV_A = "a" * 40
 REV_B = "b" * 40
 SHA_A = "sha256:" + "a" * 64
@@ -169,9 +170,15 @@ def test_callsite_positive_shape() -> None:
 
 def test_runtime_positive_shapes() -> None:
     assert RuntimeObservationFact.model_validate(_runtime()).observed_value == 200
-    assert RuntimeObservationFact.model_validate(_runtime(observed_value="ok")).observed_value == "ok"
-    assert RuntimeObservationFact.model_validate(_runtime(observed_value=True)).observed_value is True
-    assert RuntimeObservationFact.model_validate(_runtime(observed_value=None)).observed_value is None
+    assert (
+        RuntimeObservationFact.model_validate(_runtime(observed_value="ok")).observed_value == "ok"
+    )
+    assert (
+        RuntimeObservationFact.model_validate(_runtime(observed_value=True)).observed_value is True
+    )
+    assert (
+        RuntimeObservationFact.model_validate(_runtime(observed_value=None)).observed_value is None
+    )
 
 
 def test_mapping_positive_shape() -> None:
@@ -206,7 +213,9 @@ def test_unknown_field_rejected() -> None:
 def test_unknown_nested_scope_key_rejected() -> None:
     with pytest.raises(ValidationError):
         AbsenceCoverageFact.model_validate(
-            _coverage(scope={"repository": "s", "revision": REV_B, "path_scope": "src/", "extra": "x"})
+            _coverage(
+                scope={"repository": "s", "revision": REV_B, "path_scope": "src/", "extra": "x"}
+            )
         )
 
 

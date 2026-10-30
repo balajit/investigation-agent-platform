@@ -129,6 +129,7 @@ async def _driver_session(external: Any | None) -> AsyncIterator[Any]:
     finally:
         await driver.close()
 
+
 # Retrieval-only search types permitted for enrichment reads. Any
 # ``*_COMPLETION`` variant is unreachable by construction (see
 # ``assert_retrieval_only``) — LLM-written strings never become evidence.
@@ -298,7 +299,9 @@ class CogneeTopologyAdapter:
     from ``TopologyConfig`` when the live pipeline lands.
     """
 
-    def __init__(self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None) -> None:
+    def __init__(
+        self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None
+    ) -> None:
         if not enabled:
             raise TopologyNotConfiguredError("Cognee pilot is disabled (IAP_COGNEE_ENABLED=false)")
         if not dataset_salt:
@@ -429,7 +432,9 @@ class CogneeAttributionReader:
 
     _PROJECTION_NS = __import__("uuid").NAMESPACE_URL
 
-    def __init__(self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None) -> None:
+    def __init__(
+        self, *, enabled: bool, dataset_salt: str, neo4j_driver: Any | None = None
+    ) -> None:
         if not enabled:
             raise TopologyNotConfiguredError("Cognee pilot is disabled (IAP_COGNEE_ENABLED=false)")
         if not dataset_salt:

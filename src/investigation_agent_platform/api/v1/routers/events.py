@@ -53,7 +53,9 @@ async def _signal_workflow(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; cannot signal investigation"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; cannot signal investigation",
         )
     workflow_id = f"wf-investigation-{investigation_id}"
     try:
@@ -71,7 +73,9 @@ async def _signal_workflow(
             extra={"workflow_id": workflow_id, "signal": signal_name, "error": str(exc)},
         )
         raise ApiError(
-            code="WORKFLOW_SIGNAL_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message=f"Failed to deliver '{signal_name}' signal to workflow"
+            code="WORKFLOW_SIGNAL_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message=f"Failed to deliver '{signal_name}' signal to workflow",
         ) from exc
 
 
@@ -93,29 +97,41 @@ async def pause_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     if investigation.status in _TERMINAL_STATUSES:
         raise ApiError(
-            code="INVESTIGATION_TERMINAL", http_status=status.HTTP_409_CONFLICT, message=f"Cannot pause investigation in terminal status {investigation.status.value}"
+            code="INVESTIGATION_TERMINAL",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Cannot pause investigation in terminal status {investigation.status.value}",
         )
     if investigation.status == InvestigationStatus.PAUSED:
         raise ApiError(
-            code="ALREADY_PAUSED", http_status=status.HTTP_409_CONFLICT, message="Investigation is already paused"
+            code="ALREADY_PAUSED",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Investigation is already paused",
         )
     if investigation.status == InvestigationStatus.CREATED:
         raise ApiError(
-            code="INVESTIGATION_NOT_STARTED", http_status=status.HTTP_409_CONFLICT, message="Cannot pause an investigation that was never started (status CREATED); no workflow exists to signal"
+            code="INVESTIGATION_NOT_STARTED",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Cannot pause an investigation that was never started (status CREATED); no workflow exists to signal",
         )
 
     await _signal_workflow(ctx, investigation_id, "pause")
@@ -175,25 +191,35 @@ async def resume_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     if investigation.status in _TERMINAL_STATUSES:
         raise ApiError(
-            code="INVESTIGATION_TERMINAL", http_status=status.HTTP_409_CONFLICT, message=f"Cannot resume investigation in terminal status {investigation.status.value}"
+            code="INVESTIGATION_TERMINAL",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Cannot resume investigation in terminal status {investigation.status.value}",
         )
     if investigation.status != InvestigationStatus.PAUSED:
         raise ApiError(
-            code="INVESTIGATION_NOT_PAUSED", http_status=status.HTTP_409_CONFLICT, message=f"Only PAUSED investigations can be resumed (status is {investigation.status.value})"
+            code="INVESTIGATION_NOT_PAUSED",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Only PAUSED investigations can be resumed (status is {investigation.status.value})",
         )
 
     await _signal_workflow(ctx, investigation_id, "resume")
@@ -259,21 +285,29 @@ async def approve_action(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     if investigation.status == InvestigationStatus.CREATED:
         raise ApiError(
-            code="INVESTIGATION_NOT_STARTED", http_status=status.HTTP_409_CONFLICT, message="Cannot approve an action on an investigation that was never started (status CREATED); no workflow exists to signal"
+            code="INVESTIGATION_NOT_STARTED",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Cannot approve an action on an investigation that was never started (status CREATED); no workflow exists to signal",
         )
 
     signal_name = "action_approval_response"
@@ -285,7 +319,9 @@ async def approve_action(
             extra={"investigation_id": investigation_id},
         )
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; approval signal was not sent"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; approval signal was not sent",
         )
     await _signal_workflow(ctx, investigation_id, signal_name, payload)
 
@@ -308,4 +344,9 @@ async def approve_action(
             "tenant_id": x_tenant_id,
         },
     )
-    return ApproveActionAck(investigation_id=investigation_id, action_id=action_id, approved=approved, status=investigation.status.value)
+    return ApproveActionAck(
+        investigation_id=investigation_id,
+        action_id=action_id,
+        approved=approved,
+        status=investigation.status.value,
+    )

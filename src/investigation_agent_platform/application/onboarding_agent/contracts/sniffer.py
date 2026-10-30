@@ -259,7 +259,5 @@ def validate_sniffer_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload.get(key), str) or not payload[key]:
             raise ValueError(f"sniffer payload missing required envelope field: {key}")
     if payload.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
-            f"unsupported sniffer schema version: {payload.get('schema_version')!r}"
-        )
+        raise ValueError(f"unsupported sniffer schema version: {payload.get('schema_version')!r}")
     return payload

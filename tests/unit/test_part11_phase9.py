@@ -57,9 +57,7 @@ def _record(index: int, app: str = "app-1", **overrides) -> BatchIntakeRecord:
 
 
 def _profile(app_id: str = "app-1", schema: dict | None = None):
-    investigation = _DEFAULT_PROFILE.investigation.model_copy(
-        update={"parameters_schema": schema}
-    )
+    investigation = _DEFAULT_PROFILE.investigation.model_copy(update={"parameters_schema": schema})
     return _DEFAULT_PROFILE.model_copy(update={"id": app_id, "investigation": investigation})
 
 

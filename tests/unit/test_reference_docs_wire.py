@@ -71,9 +71,7 @@ class TestReferenceDocsGolden:
     def test_search_empty_pins_explicit_null(self, monkeypatch, tmp_path: Path) -> None:
         client, ctx = _client(monkeypatch)
         _seed(ctx, tmp_path)
-        resp = client.get(
-            "/api/v1/reference-docs/search", headers=_auth(), params={"q": "timeout"}
-        )
+        resp = client.get("/api/v1/reference-docs/search", headers=_auth(), params={"q": "timeout"})
         assert resp.status_code == 200
         # next_cursor:null must be PRESENT (not dropped by exclusion settings).
         assert resp.json() == {"items": [], "next_cursor": None, "has_more": False}
@@ -109,9 +107,7 @@ class TestReferenceDocsGolden:
             params={"application_id": "app-1"},
         ).json()
         source_id = sources["items"][0]["source_id"]
-        resp = client.delete(
-            f"/api/v1/reference-docs/sources/{source_id}", headers=_auth()
-        )
+        resp = client.delete(f"/api/v1/reference-docs/sources/{source_id}", headers=_auth())
         assert resp.status_code == 200
         body = resp.json()
         assert body["source_id"] == source_id

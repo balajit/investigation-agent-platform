@@ -242,8 +242,7 @@ async def insert_conclusion_record(
     ).scalar_one_or_none()
     if not conclusion_rewrite_allowed(current, new_status):
         raise ConcurrencyError(
-            f"Conclusion verdict {current} already recorded; "
-            f"refusing overwrite with {new_status}"
+            f"Conclusion verdict {current} already recorded; refusing overwrite with {new_status}"
         )
     values = {
         "tenant_id": tenant_id,
@@ -286,13 +285,7 @@ async def insert_conclusion_record(
             InvestigationConclusionORM.tenant_id == tenant_id,
             InvestigationConclusionORM.investigation_id == investigation_id,
         )
-        .values(
-            **{
-                k: v
-                for k, v in values.items()
-                if k not in ("tenant_id", "investigation_id")
-            }
-        )
+        .values(**{k: v for k, v in values.items() if k not in ("tenant_id", "investigation_id")})
         .returning(InvestigationConclusionORM.id)
     )
     row_id = result.scalar_one_or_none()

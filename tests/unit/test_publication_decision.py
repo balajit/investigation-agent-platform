@@ -80,9 +80,7 @@ def test_unadjudicated_conflict_denies() -> None:
 
 
 def test_stale_context_denies_k8_k15() -> None:
-    decision, reason = _decide(
-        certificate_context_id="ctx-old", expected_context_id="ctx-new"
-    )
+    decision, reason = _decide(certificate_context_id="ctx-old", expected_context_id="ctx-new")
     assert decision == PublicationDecision.DENY
     assert reason == DenyReason.STALE_CONTEXT.value
 

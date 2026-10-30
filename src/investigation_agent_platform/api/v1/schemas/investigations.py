@@ -97,7 +97,9 @@ class FulfillInputBody(BaseModel):
         ..., ge=1, description="Optimistic-concurrency version of the pending requirement"
     )
     data: dict[str, Any] = Field(
-        ..., max_length=200, description="Fulfillment payload validated against the requirement JSON Schema"
+        ...,
+        max_length=200,
+        description="Fulfillment payload validated against the requirement JSON Schema",
     )
 
 
@@ -183,28 +185,61 @@ class StackFrame(BaseModel):
 
     file: str | None = Field(default=None, max_length=1024, description="Source file for the frame")
     line: int | None = Field(default=None, ge=1, description="1-indexed line number")
-    function: str | None = Field(default=None, max_length=1024, description="Function/method for the frame")
+    function: str | None = Field(
+        default=None, max_length=1024, description="Function/method for the frame"
+    )
 
 
 class ErrorIntakeBody(BaseModel):
     """POST /intake/errors request body. Tenant NEVER comes from the body — it is
     derived exclusively from verified authentication (D8 merge safety)."""
 
-    application_id: str = Field(..., min_length=1, max_length=128, description="Target application profile identifier")
-    error_class: str = Field(..., min_length=1, max_length=1024, description="Exception class name of the forwarded error")
-    repository: str = Field(default="", max_length=512, description="Source repository of the failing code")
-    revision: str = Field(default="", max_length=128, description="Source revision of the failing code")
+    application_id: str = Field(
+        ..., min_length=1, max_length=128, description="Target application profile identifier"
+    )
+    error_class: str = Field(
+        ...,
+        min_length=1,
+        max_length=1024,
+        description="Exception class name of the forwarded error",
+    )
+    repository: str = Field(
+        default="", max_length=512, description="Source repository of the failing code"
+    )
+    revision: str = Field(
+        default="", max_length=128, description="Source revision of the failing code"
+    )
     failing_symbol: str = Field(default="", max_length=1024, description="Failing code symbol")
-    caller_symbol: str | None = Field(default=None, max_length=1024, description="Calling code symbol when known")
-    top_frame_file: str | None = Field(default=None, max_length=1024, description="Top stack-frame file when known")
-    problem_description: str = Field(default="", max_length=8000, description="Human description of the observed failure")
-    session_id: str | None = Field(default=None, max_length=256, description="Optional telemetry session correlation ID")
-    severity: IncidentSeverity = Field(default=IncidentSeverity.ERROR, description="Error severity label")
-    log_refs: list[str] = Field(default_factory=list, max_length=50, description="Log references attached to the error")
-    trace_refs: list[str] = Field(default_factory=list, max_length=50, description="Trace references attached to the error")
-    frames: list[StackFrame] = Field(default_factory=list, max_length=20, description="Parsed stack frames, outermost first")
-    expected: dict[str, Any] = Field(default_factory=dict, description="Golden expected output (silent-failure comparison)")
-    actual: dict[str, Any] = Field(default_factory=dict, description="Observed actual output (silent-failure comparison)")
+    caller_symbol: str | None = Field(
+        default=None, max_length=1024, description="Calling code symbol when known"
+    )
+    top_frame_file: str | None = Field(
+        default=None, max_length=1024, description="Top stack-frame file when known"
+    )
+    problem_description: str = Field(
+        default="", max_length=8000, description="Human description of the observed failure"
+    )
+    session_id: str | None = Field(
+        default=None, max_length=256, description="Optional telemetry session correlation ID"
+    )
+    severity: IncidentSeverity = Field(
+        default=IncidentSeverity.ERROR, description="Error severity label"
+    )
+    log_refs: list[str] = Field(
+        default_factory=list, max_length=50, description="Log references attached to the error"
+    )
+    trace_refs: list[str] = Field(
+        default_factory=list, max_length=50, description="Trace references attached to the error"
+    )
+    frames: list[StackFrame] = Field(
+        default_factory=list, max_length=20, description="Parsed stack frames, outermost first"
+    )
+    expected: dict[str, Any] = Field(
+        default_factory=dict, description="Golden expected output (silent-failure comparison)"
+    )
+    actual: dict[str, Any] = Field(
+        default_factory=dict, description="Observed actual output (silent-failure comparison)"
+    )
 
 
 class CancelAck(BaseModel):

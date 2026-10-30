@@ -90,9 +90,9 @@ def _expected_sanitized():
                 "s3": None,
                 "schema_name": None,
                 "tenants": [],
-            "relationships": [],
-            "session_entity": None,
-            "session_key": None,
+                "relationships": [],
+                "session_entity": None,
+                "session_key": None,
             }
         ],
         "derivation": None,
@@ -324,12 +324,10 @@ class TestGenerateMinimalContract:
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "A.java").write_text(
             "package a;\nimport org.springframework.web.bind.annotation.*;\n"
-            "@RestController\n@RequestMapping(\"api\")\npublic class A {\n"
+            '@RestController\n@RequestMapping("api")\npublic class A {\n'
             '    @GetMapping("/ping")\n    public String ping() { return "ok"; }\n}\n'
         )
-        monkeypatch.setattr(
-            gen, "clone_repo", lambda url, branch="": tmp_path
-        )
+        monkeypatch.setattr(gen, "clone_repo", lambda url, branch="": tmp_path)
         # list_files on tmp_path directly.
         _, client = _client()
         resp = client.post(
@@ -344,7 +342,9 @@ class TestGenerateMinimalContract:
         endpoints = body["profile"]["services"][0]["probeable_endpoints"]
         assert any(e["path_template"] == "/api/ping" for e in endpoints)
 
-    def test_deprecated_explicit_fields(self, _restore_context: None, tmp_path, monkeypatch) -> None:
+    def test_deprecated_explicit_fields(
+        self, _restore_context: None, tmp_path, monkeypatch
+    ) -> None:
         import investigation_agent_platform.integrations.profile_gen.generate as gen
 
         (tmp_path / "pom.xml").write_text("<project/>")

@@ -27,7 +27,10 @@ def hub_orientation_block(hubs: list[dict], associations: list[dict] | None = No
     """Reason orientation block: hub list + association notes beside refdoc orientation."""
     return {
         "type": "hub_orientation",
-        "hubs": [{"name": h.get("name"), "score": h.get("score"), "witnesses": h.get("witnesses", [])} for h in hubs],
+        "hubs": [
+            {"name": h.get("name"), "score": h.get("score"), "witnesses": h.get("witnesses", [])}
+            for h in hubs
+        ],
         "associations": list(associations or [])[:5],
     }
 

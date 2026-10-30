@@ -239,8 +239,7 @@ class SpringConfigClient:
         safe_properties = {
             key: value
             for key, value in merged.items()
-            if is_allowed_property(key, self.allowed_property_patterns)
-            and not looks_sensitive(key)
+            if is_allowed_property(key, self.allowed_property_patterns) and not looks_sensitive(key)
         }
 
         # Do not log the response body, properties, tokens, or source values.
@@ -310,15 +309,11 @@ class SpringConfigClient:
         if status_code == 404:
             raise ConfigNotFoundError("Requested configuration was not found")
         if status_code == 429:
-            raise ConfigRateLimitError(
-                "Config Server rate limit exceeded", retry_after=retry_after
-            )
+            raise ConfigRateLimitError("Config Server rate limit exceeded", retry_after=retry_after)
         if status_code is not None and status_code >= 500:
             raise ConfigServerError("Config Server returned a server error")
         if status_code != 200:
-            raise ConfigClientError(
-                f"Unexpected Config Server HTTP status: {status_code}"
-            )
+            raise ConfigClientError(f"Unexpected Config Server HTTP status: {status_code}")
         try:
             parsed = json.loads(raw_body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:

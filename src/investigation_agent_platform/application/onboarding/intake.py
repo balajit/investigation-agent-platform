@@ -15,9 +15,7 @@ from investigation_agent_platform.application.onboarding_agent.contracts.linkage
 )
 
 _PROVIDER_KEY = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-_REPOSITORY_ID = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
-)
+_REPOSITORY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$")
 _URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SECRET_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
@@ -110,7 +108,9 @@ class SourceReference(BaseModel):
     provider_key: str = Field(min_length=1, max_length=32)
     resource_id: str = Field(min_length=1, max_length=256)
     access_mode: Literal["READ_ONLY"] = "READ_ONLY"
-    secret_references: tuple[IntakeSecretReference, ...] = Field(default_factory=tuple, max_length=16)
+    secret_references: tuple[IntakeSecretReference, ...] = Field(
+        default_factory=tuple, max_length=16
+    )
 
     @field_validator("provider_key")
     @classmethod
@@ -153,7 +153,9 @@ class TenantIntakeV1(BaseModel):
     ) -> tuple[RepositoryReference, ...]:
         for repository in values:
             if repository.provider_key not in PROVISIONAL_V01_PROVIDER_KEYS:
-                raise ValueError("repository provider key is not in the provisional v0.1 provider set")
+                raise ValueError(
+                    "repository provider key is not in the provisional v0.1 provider set"
+                )
         return values
 
     @field_validator("sources")

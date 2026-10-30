@@ -219,9 +219,7 @@ class TestCommitSubjectRoundTrip:
             evidence_type="COMMIT_HISTORY",
             attributes={"discovery_only": False, "match_count": 3},
             provenance=SimpleNamespace(
-                source_location=SimpleNamespace(
-                    file_path="src/orders.py", revision="abc1234def"
-                )
+                source_location=SimpleNamespace(file_path="src/orders.py", revision="abc1234def")
             ),
             summary="Fix filter edge case",
         )
@@ -887,6 +885,7 @@ class TestDirectiveTriggerC:
             is None
         )
 
+
 class TestStoredScopeDispatch:
     """Finding C: the stored scope rides the ledger budget key as "scope";
     the SEARCH_CODE handler must map its path-prefix form onto the
@@ -909,9 +908,7 @@ class TestStoredScopeDispatch:
             save_batch=AsyncMock(return_value=None),
             save=AsyncMock(return_value=None),
         )
-        ctx.profile_repo = SimpleNamespace(
-            get_by_application_id=AsyncMock(return_value=None)
-        )
+        ctx.profile_repo = SimpleNamespace(get_by_application_id=AsyncMock(return_value=None))
 
         async def _search_code(tenant_id, investigation_id, application_id, req):
             seen.append(req)

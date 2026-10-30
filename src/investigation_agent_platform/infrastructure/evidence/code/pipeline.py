@@ -53,16 +53,12 @@ class CodebaseGraphPipeline:
         # silently producing garbage symbols.
         extensions = sorted({ext for ext, lang in EXT_TO_LANGUAGE.items() if lang == language})
         if not extensions:
-            logger.error(
-                "Unsupported language for repository graph mining: %s", language
-            )
+            logger.error("Unsupported language for repository graph mining: %s", language)
             return self.builder.graph
         file_paths: list[Path] = []
         for ext in extensions:
             file_paths.extend(repo_root.rglob(f"*{ext}"))
-        logger.info(
-            "Starting AST parsing for %d files via TreeSitterParser...", len(file_paths)
-        )
+        logger.info("Starting AST parsing for %d files via TreeSitterParser...", len(file_paths))
 
         table_names: list[str] = []
         if ddl_paths:
@@ -77,9 +73,7 @@ class CodebaseGraphPipeline:
                         ddl_path,
                     )
                 except Exception:
-                    logger.exception(
-                        "Failed to ingest schema file %s", ddl_path
-                    )
+                    logger.exception("Failed to ingest schema file %s", ddl_path)
 
         locations_by_table: dict[str, list[CodeLocation]] = defaultdict(list)
 

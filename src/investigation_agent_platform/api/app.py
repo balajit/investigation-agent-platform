@@ -405,10 +405,7 @@ def create_app(
                 nonlocal captured_len
                 try:
                     async for chunk in original_iterator:
-                        if (
-                            isinstance(chunk, (bytes, bytearray))
-                            and captured_len < cap
-                        ):
+                        if isinstance(chunk, (bytes, bytearray)) and captured_len < cap:
                             take = bytes(chunk[: cap - captured_len])
                             captured.append(take)
                             captured_len += len(take)

@@ -36,18 +36,24 @@ async def list_timeline(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     all_events = await ctx.timeline_repo.find_by_investigation_id(x_tenant_id, investigation_uuid)

@@ -197,12 +197,15 @@ class ApiSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    environment: str = Field(default_factory=lambda: os.environ.get("IAP_ENVIRONMENT", "development"))
+    environment: str = Field(
+        default_factory=lambda: os.environ.get("IAP_ENVIRONMENT", "development")
+    )
     # F-065: docs are opt-in. The app factory additionally forces docs off in
     # production unless IAP_ENABLE_DOCS=true is set explicitly.
     enable_docs: bool = Field(
-        default_factory=lambda: os.environ.get("IAP_ENABLE_DOCS", "").lower()
-        in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.environ.get("IAP_ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+        )
     )
     # F-064: CORS allow-list (comma-separated origins). Empty = no CORS.
     cors_allow_origins: str = Field(default_factory=_cors_origins_from_env)
@@ -656,9 +659,7 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
             revisions.setdefault(pointer.version, pointer)
         return [revisions[v] for v in sorted(revisions, reverse=True)]
 
-    async def list(
-        self, tenant_id: str, status: str | None = None
-    ) -> list[ApplicationProfile]:
+    async def list(self, tenant_id: str, status: str | None = None) -> list[ApplicationProfile]:
         items = [p for (t, _), p in self._profiles.items() if t == tenant_id]
         if status is not None:
             items = [p for p in items if p.status.value == status]
@@ -691,9 +692,7 @@ class InMemoryApplicationProfileRepository(ApplicationProfileRepository):
             return 0
         revisions = self._revisions.get(key, {})
         pointer = self._profiles.get(key)
-        if wanted not in revisions and (
-            pointer is None or pointer.version != wanted
-        ):
+        if wanted not in revisions and (pointer is None or pointer.version != wanted):
             return 0
         revisions.pop(wanted, None)
         if pointer is not None and pointer.version == wanted:
@@ -746,9 +745,7 @@ class InMemoryEvidenceRepository(EvidenceRepository):
                 and owner_inv != investigation_id
                 and self._scope_of(evidence) == "reference"
             ):
-                self._interest.setdefault((tenant_id, investigation_id), set()).add(
-                    str(canonical)
-                )
+                self._interest.setdefault((tenant_id, investigation_id), set()).add(str(canonical))
                 return "shared"
             return "deduplicated"
         self._store[evidence.evidence_id] = evidence
@@ -803,11 +800,7 @@ class InMemoryEvidenceRepository(EvidenceRepository):
             except (ValueError, TypeError, AttributeError):
                 continue
             ev = self._store.get(canonical)
-            if (
-                ev is not None
-                and ev.tenant_id == tenant_id
-                and ev.evidence_id not in seen
-            ):
+            if ev is not None and ev.tenant_id == tenant_id and ev.evidence_id not in seen:
                 shared.append(ev)
                 seen.add(ev.evidence_id)
         return owned + shared
@@ -954,9 +947,7 @@ class InMemoryContradictionRepository:
             investigation_id,
         )
 
-    async def find_by_investigation_id(
-        self, tenant_id: str, investigation_id: Any
-    ) -> list[Any]:
+    async def find_by_investigation_id(self, tenant_id: str, investigation_id: Any) -> list[Any]:
         rows = [
             c
             for (t, _), (c, iid) in self._store.items()
@@ -984,9 +975,7 @@ class InMemoryLogExemplarRepository:
                 inserted += 1
         return inserted
 
-    async def list_by_investigation(
-        self, tenant_id: str, investigation_id: Any
-    ) -> list[Any]:
+    async def list_by_investigation(self, tenant_id: str, investigation_id: Any) -> list[Any]:
         rows = [
             e
             for (t, _), e in self._store.items()

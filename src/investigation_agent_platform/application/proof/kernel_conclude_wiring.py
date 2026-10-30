@@ -70,7 +70,9 @@ def select_policy(tenant_id: str) -> DecisionPolicy | None:
         return None
     authorities = tuple(
         dict.fromkeys(
-            part.strip() for part in str(os.environ.get(POLICY_AUTHORITIES_ENV_VAR, "") or "").split(",") if part.strip()
+            part.strip()
+            for part in str(os.environ.get(POLICY_AUTHORITIES_ENV_VAR, "") or "").split(",")
+            if part.strip()
         )
     )
     return DecisionPolicy(
@@ -108,7 +110,17 @@ def mappable_definition_rows(rows: list[Any]) -> tuple[list[Any], list[dict[str,
     for row in rows:
         try:
             evidence_id = str(getattr(row, "evidence_id", "") or "")
-            if str(getattr(getattr(row, "evidence_type", ""), "value", getattr(row, "evidence_type", "")) or "") != "SOURCE_CODE":
+            if (
+                str(
+                    getattr(
+                        getattr(row, "evidence_type", ""),
+                        "value",
+                        getattr(row, "evidence_type", ""),
+                    )
+                    or ""
+                )
+                != "SOURCE_CODE"
+            ):
                 skips.append({"evidence_id": evidence_id, "reason": "unmapped-kind"})
                 continue
             fact = _resolution_v2(row)
@@ -117,7 +129,9 @@ def mappable_definition_rows(rows: list[Any]) -> tuple[list[Any], list[dict[str,
                 continue
             symbol = str(fact.get("subject_identity") or fact.get("declaring_type") or "").strip()
             location = fact.get("declaration_location") or {}
-            file_path = str(location.get("file_path") or "").strip() if isinstance(location, dict) else ""
+            file_path = (
+                str(location.get("file_path") or "").strip() if isinstance(location, dict) else ""
+            )
             revision = str(fact.get("revision") or "").strip()
             window = _row_window(row)
             if not symbol or not file_path:
@@ -148,7 +162,9 @@ def mappable_definition_rows(rows: list[Any]) -> tuple[list[Any], list[dict[str,
                 evidence_id = str(getattr(row, "evidence_id", "") or "?")
             except Exception:
                 evidence_id = "?"
-            skips.append({"evidence_id": evidence_id, "reason": f"adapter-error:{type(exc).__name__}"})
+            skips.append(
+                {"evidence_id": evidence_id, "reason": f"adapter-error:{type(exc).__name__}"}
+            )
     return mappable, skips
 
 
@@ -185,13 +201,20 @@ def _definition_bundle(item: dict[str, Any], repository: str) -> dict[str, Any]:
         "target": {"symbol": item["symbol"], "file_path": item["file_path"]},
         "scope": {"revision": item["revision"]},
     }
-    art = {k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")}
-    digest = "sha256:" + _hashlib.sha256(
-        _json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
+    art = {
+        k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")
+    }
+    digest = (
+        "sha256:"
+        + _hashlib.sha256(
+            _json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+    )
     rule = get_rule("definition/v1")
     manifest = build_manifest(
-        [record["evidence_id"]], {record["evidence_id"]: digest}, premise_types={record["evidence_id"]: "RANGE_READ_FACT"}
+        [record["evidence_id"]],
+        {record["evidence_id"]: digest},
+        premise_types={record["evidence_id"]: "RANGE_READ_FACT"},
     )
     inputs = EvaluationInputs(
         proposition=dict(proposition),
@@ -202,7 +225,14 @@ def _definition_bundle(item: dict[str, Any], repository: str) -> dict[str, Any]:
         implementation_digest=rule.implementation_digest,
     )
     cert = certify(inputs, [dict(record, content_hash=digest)], {record["evidence_id"]: art})
-    return {"record": record, "proposition": proposition, "manifest": manifest, "cert": cert, "digest": digest, "artifact": art}
+    return {
+        "record": record,
+        "proposition": proposition,
+        "manifest": manifest,
+        "cert": cert,
+        "digest": digest,
+        "artifact": art,
+    }
 
 
 def evaluate_conclusion_kernel(
@@ -234,7 +264,9 @@ def evaluate_conclusion_kernel(
     for item in mappable:
         key = (item["symbol"], item["file_path"])
         if key in seen_symbols:
-            report["skips"].append({"evidence_id": item["evidence_id"], "reason": "duplicate-symbol"})
+            report["skips"].append(
+                {"evidence_id": item["evidence_id"], "reason": "duplicate-symbol"}
+            )
             continue
         seen_symbols.add(key)
         try:
@@ -421,7 +453,9 @@ async def kernel_gate_for_conclusion(
             # verify anything — misconfiguration must deny, never pass.
             return False, ["kernel-no-policy"]
         if denied:
-            blockers = [f"kernel-denied:{c.get('symbol', '?')}:{c.get('reason', '')}" for c in denied]
+            blockers = [
+                f"kernel-denied:{c.get('symbol', '?')}:{c.get('reason', '')}" for c in denied
+            ]
             return False, blockers
         return True, []
     except Exception as exc:

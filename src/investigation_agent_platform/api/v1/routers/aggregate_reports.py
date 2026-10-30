@@ -84,7 +84,9 @@ async def build_report(
     """Start one aggregate-report background job (idempotent)."""
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     canonical = json.dumps(body.model_dump(mode="json"), sort_keys=True)
@@ -127,7 +129,9 @@ async def build_report(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; report was not started"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; report was not started",
         )
     try:
         from investigation_agent_platform.application.worker.workflows import (
@@ -157,7 +161,9 @@ async def build_report(
             extra=sanitize_extra({"job_id": str(job.id), "event": "report.dispatch_failed"}),
         )
         raise ApiError(
-            code="REPORT_DISPATCH_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start report workflow; report was not started"
+            code="REPORT_DISPATCH_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to start report workflow; report was not started",
         ) from exc
 
     try:
@@ -210,7 +216,9 @@ async def get_latest_report(
     store = getattr(ctx, "artifact_store", None)
     if store is None:
         raise ApiError(
-            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
+            code="ARTIFACT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Artifact store is unavailable",
         )
     latest = await read_latest(store, x_tenant_id)
     if latest is None:
@@ -247,7 +255,9 @@ async def get_report_history(
     store = getattr(ctx, "artifact_store", None)
     if store is None:
         raise ApiError(
-            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
+            code="ARTIFACT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Artifact store is unavailable",
         )
     page = await list_history(store, x_tenant_id, cursor, limit)
     return CursorEnvelope[ArtifactRef].model_validate(
@@ -279,12 +289,16 @@ async def purge_reports(
     store = getattr(ctx, "artifact_store", None)
     if store is None:
         raise ApiError(
-            code="ARTIFACT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Artifact store is unavailable"
+            code="ARTIFACT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Artifact store is unavailable",
         )
     latest = await read_latest(store, x_tenant_id)
     if latest is not None and latest.metadata.get("legal_hold") == "true":
         raise ApiError(
-            code="REPORT_LEGAL_HOLD", http_status=status.HTTP_409_CONFLICT, message="Legal hold is set; purge refused"
+            code="REPORT_LEGAL_HOLD",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Legal hold is set; purge refused",
         )
     scope = report_scope(x_tenant_id)
     scope_id = scope_id_for_tenant(x_tenant_id)

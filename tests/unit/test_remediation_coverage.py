@@ -732,9 +732,7 @@ class TestCodeAccessScope:
         svc = SimpleNamespace(code=code, name="r")
         profile = SimpleNamespace(services=[svc], primary_service=svc)
         adapter = PyGit2Adapter(repo_base_path=str(tmp_path))
-        evidence = await adapter.get_source(
-            "tenant-a", uuid.uuid4(), "big.py", profile
-        )
+        evidence = await adapter.get_source("tenant-a", uuid.uuid4(), "big.py", profile)
         assert len(evidence.content_snippet or "") <= 4096
         assert evidence.evidence_type.value == "SOURCE_CODE"
 

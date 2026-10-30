@@ -337,7 +337,10 @@ class TreeSitterCodeIntelligenceProvider:
                 if not repo_path.is_dir():
                     continue
                 matched = False
-                source_roots = [*getattr(code, "source_roots", []), *getattr(code, "paths", [])] or ["."]
+                source_roots = [
+                    *getattr(code, "source_roots", []),
+                    *getattr(code, "paths", []),
+                ] or ["."]
                 for sr in source_roots:
                     if not sr or sr.startswith("/") or sr.startswith("~"):
                         continue
@@ -520,18 +523,10 @@ class TreeSitterCodeIntelligenceProvider:
         # P1-2: honor language + path_prefix request filters.
         if language:
             wanted = language.strip().lower()
-            files = [
-                f
-                for f in files
-                if (self._language_for_file(f) or "").lower() == wanted
-            ]
+            files = [f for f in files if (self._language_for_file(f) or "").lower() == wanted]
         if path_prefix:
             prefix = path_prefix.strip().strip("/")
-            files = [
-                f
-                for f in files
-                if prefix in str(f).replace("\\", "/")
-            ]
+            files = [f for f in files if prefix in str(f).replace("\\", "/")]
         query_lower = query.lower()
         scored: list[tuple[int, Evidence]] = []
         now = datetime.now(UTC)
@@ -568,7 +563,10 @@ class TreeSitterCodeIntelligenceProvider:
                 score = 0
             elif query_lower in rel_lower:
                 score = 1
-            elif match_line.startswith(("def ", "class ", "async def ")) and query_lower in match_line:
+            elif (
+                match_line.startswith(("def ", "class ", "async def "))
+                and query_lower in match_line
+            ):
                 score = 2
             else:
                 score = 3
@@ -621,7 +619,11 @@ class TreeSitterCodeIntelligenceProvider:
                         freshness=EvidenceFreshness(observed_at=now, retrieved_at=now_item),
                         classification=ClassificationLevel.INTERNAL,
                         fingerprint=fingerprint,
-                        attributes={"file_path": rel, "line_number": line_no, "column_number": col_no},
+                        attributes={
+                            "file_path": rel,
+                            "line_number": line_no,
+                            "column_number": col_no,
+                        },
                     ),
                 )
             )
@@ -681,7 +683,9 @@ class TreeSitterCodeIntelligenceProvider:
                     results.append(s)
         return results
 
-    def _find_callers_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CallGraphNode]:
+    def _find_callers_sync(
+        self, symbol_name: str, profile: ApplicationProfile
+    ) -> list[CallGraphNode]:
         # Fast path: Check Rustworkx PyDiGraph artifact
         graph = self._load_graphify_graph(profile)
         if graph is not None:
@@ -766,7 +770,9 @@ class TreeSitterCodeIntelligenceProvider:
                             "function"
                         ) or node.child_by_field_name("name")
                         if func_node is not None:
-                            callee_text = self._byte_slice(code, func_node.start_byte, func_node.end_byte).strip()
+                            callee_text = self._byte_slice(
+                                code, func_node.start_byte, func_node.end_byte
+                            ).strip()
                             # handle dotted: take last part
                             if "." in callee_text:
                                 callee_text = callee_text.split(".")[-1]
@@ -792,7 +798,9 @@ class TreeSitterCodeIntelligenceProvider:
                                 if parent.type in SYMBOL_NODE_TYPES:
                                     n = parent.child_by_field_name("name")
                                     if n is not None:
-                                        caller = self._byte_slice(code, n.start_byte, n.end_byte).strip()
+                                        caller = self._byte_slice(
+                                            code, n.start_byte, n.end_byte
+                                        ).strip()
                                         break
                                 parent = parent.parent
                             nodes.append(
@@ -823,7 +831,9 @@ class TreeSitterCodeIntelligenceProvider:
                 visited_children = True
         return nodes
 
-    def _find_callees_sync(self, symbol_name: str, profile: ApplicationProfile) -> list[CallGraphNode]:
+    def _find_callees_sync(
+        self, symbol_name: str, profile: ApplicationProfile
+    ) -> list[CallGraphNode]:
         # Fast path: Check Rustworkx PyDiGraph artifact
         graph = self._load_graphify_graph(profile)
         if graph is not None:
@@ -927,9 +937,9 @@ class TreeSitterCodeIntelligenceProvider:
                     and node.end_byte <= end_byte
                     and node.type in CALL_NODE_TYPES
                 ):
-                    func_node = node.child_by_field_name(
-                        "function"
-                    ) or node.child_by_field_name("name")
+                    func_node = node.child_by_field_name("function") or node.child_by_field_name(
+                        "name"
+                    )
                     callee = ""
                     if func_node is not None:
                         callee = (
@@ -942,10 +952,10 @@ class TreeSitterCodeIntelligenceProvider:
                     elif node.children:
                         callee = (
                             self._byte_slice(
-                                        def_code,
-                                        node.children[0].start_byte,
-                                        node.children[0].end_byte,
-                                    )
+                                def_code,
+                                node.children[0].start_byte,
+                                node.children[0].end_byte,
+                            )
                             .strip()
                             .split(".")[-1]
                             .split("(")[0]

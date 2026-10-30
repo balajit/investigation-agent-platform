@@ -90,12 +90,7 @@ def _no_applied_wording(result) -> None:
 
 def test_bean_declaration_resolves_with_location():
     evidence = _source_evidence(
-        "class AppConfig {\n"
-        "  @Bean\n"
-        "  public Foo foo() {\n"
-        "    return new Foo();\n"
-        "  }\n"
-        "}"
+        "class AppConfig {\n  @Bean\n  public Foo foo() {\n    return new Foo();\n  }\n}"
     )
     result = resolve_java_framework_boundary(evidence, "foo")
     assert result.status == CodeFactStatus.RESOLVED
@@ -109,12 +104,7 @@ def test_bean_declaration_resolves_with_location():
 
 
 def test_value_config_key_resolves_declared_key():
-    evidence = _source_evidence(
-        "class DbConfig {\n"
-        '  @Value("${db.url}")\n'
-        "  String url;\n"
-        "}"
-    )
+    evidence = _source_evidence('class DbConfig {\n  @Value("${db.url}")\n  String url;\n}')
     result = resolve_java_framework_boundary(evidence, "url")
     assert result.status == CodeFactStatus.RESOLVED
     binding = result.structured_fact["bindings"][0]
@@ -125,10 +115,7 @@ def test_value_config_key_resolves_declared_key():
 
 def test_configuration_properties_resolves_prefix():
     evidence = _source_evidence(
-        "class AppConfig {\n"
-        '  @ConfigurationProperties(prefix = "app")\n'
-        "  static class Props {}\n"
-        "}"
+        'class AppConfig {\n  @ConfigurationProperties(prefix = "app")\n  static class Props {}\n}'
     )
     result = resolve_java_framework_boundary(evidence, "Props")
     assert result.status == CodeFactStatus.RESOLVED
@@ -138,11 +125,7 @@ def test_configuration_properties_resolves_prefix():
 
 def test_injection_point_resolves_with_qualifier_note():
     evidence = _source_evidence(
-        "class Orders {\n"
-        "  @Autowired\n"
-        '  @Qualifier("primary")\n'
-        "  OrderRepo repo;\n"
-        "}"
+        'class Orders {\n  @Autowired\n  @Qualifier("primary")\n  OrderRepo repo;\n}'
     )
     result = resolve_java_framework_boundary(evidence, "repo")
     assert result.status == CodeFactStatus.RESOLVED
@@ -154,10 +137,7 @@ def test_injection_point_resolves_with_qualifier_note():
 
 def test_route_declaration_resolves():
     evidence = _source_evidence(
-        "class Health {\n"
-        '  @GetMapping("/health")\n'
-        "  String check() { return \"ok\"; }\n"
-        "}"
+        'class Health {\n  @GetMapping("/health")\n  String check() { return "ok"; }\n}'
     )
     result = resolve_java_framework_boundary(evidence, "check")
     assert result.status == CodeFactStatus.RESOLVED
@@ -169,12 +149,7 @@ def test_route_declaration_resolves():
 
 def test_declaration_never_claims_applied_behavior():
     evidence = _source_evidence(
-        "class AppConfig {\n"
-        "  @Bean\n"
-        "  public Foo foo() {\n"
-        "    return new Foo();\n"
-        "  }\n"
-        "}"
+        "class AppConfig {\n  @Bean\n  public Foo foo() {\n    return new Foo();\n  }\n}"
     )
     result = resolve_java_framework_boundary(evidence, "foo")
     assumptions = " ".join(result.assumptions).lower()
@@ -216,25 +191,14 @@ def test_proxy_yields_named_partial():
 
 
 def test_lombok_annotation_yields_named_partial():
-    evidence = _source_evidence(
-        "import lombok.Data;\n"
-        "@Data\n"
-        "class User {\n"
-        "  String name;\n"
-        "}"
-    )
+    evidence = _source_evidence("import lombok.Data;\n@Data\nclass User {\n  String name;\n}")
     result = resolve_java_framework_boundary(evidence, "User")
     assert result.status == CodeFactStatus.PARTIAL
     assert "lombok_generated_code" in result.limitation_codes
 
 
 def test_bare_value_annotation_is_lombok_not_config_key():
-    evidence = _source_evidence(
-        "class User {\n"
-        "  @Value\n"
-        "  String name;\n"
-        "}"
-    )
+    evidence = _source_evidence("class User {\n  @Value\n  String name;\n}")
     result = resolve_java_framework_boundary(evidence, "name")
     assert result.status == CodeFactStatus.PARTIAL
     assert "lombok_generated_code" in result.limitation_codes
@@ -256,7 +220,7 @@ def test_annotation_processing_yields_named_partial():
 def test_generated_source_yields_named_partial():
     evidence = _source_evidence(
         "class Mapper {\n"
-        "  @jakarta.annotation.Generated(\"dagger\")\n"
+        '  @jakarta.annotation.Generated("dagger")\n'
         "  Object graph() { return null; }\n"
         "}"
     )
@@ -267,12 +231,7 @@ def test_generated_source_yields_named_partial():
 
 def test_transactional_outcome_requires_runtime():
     evidence = _source_evidence(
-        "class Orders {\n"
-        "  @Transactional\n"
-        "  public void save() {\n"
-        "    store.put(\"a\");\n"
-        "  }\n"
-        "}"
+        'class Orders {\n  @Transactional\n  public void save() {\n    store.put("a");\n  }\n}'
     )
     result = resolve_java_framework_boundary(evidence, "save")
     assert result.status == CodeFactStatus.PARTIAL
@@ -300,76 +259,92 @@ def test_kafka_listener_names_binding_but_stays_partial():
     ("source", "symbol", "code"),
     [
         (
-            ("class Repo {\n"
-             "  void save(String name) throws Exception {\n"
-             "    java.sql.Connection c = open();\n"
-             "  }\n"
-             "}"),
+            (
+                "class Repo {\n"
+                "  void save(String name) throws Exception {\n"
+                "    java.sql.Connection c = open();\n"
+                "  }\n"
+                "}"
+            ),
             "save",
             "jdbc_runtime_boundary",
         ),
         (
-            ("class Client {\n"
-             "  org.springframework.web.client.RestTemplate rest;\n"
-             "  String get(String url) {\n"
-             "    return rest.getForObject(url, String.class);\n"
-             "  }\n"
-             "}"),
+            (
+                "class Client {\n"
+                "  org.springframework.web.client.RestTemplate rest;\n"
+                "  String get(String url) {\n"
+                "    return rest.getForObject(url, String.class);\n"
+                "  }\n"
+                "}"
+            ),
             "get",
             "http_client_runtime_boundary",
         ),
         (
-            ("class Cache {\n"
-             "  @Cacheable(\"items\")\n"
-             "  String find(String id) { return load(id); }\n"
-             "}"),
+            (
+                "class Cache {\n"
+                '  @Cacheable("items")\n'
+                "  String find(String id) { return load(id); }\n"
+                "}"
+            ),
             "find",
             "cache_runtime_boundary",
         ),
         (
-            ("class Codec {\n"
-             "  com.fasterxml.jackson.databind.ObjectMapper mapper;\n"
-             "  String write(Object o) throws Exception {\n"
-             "    return mapper.writeValueAsString(o);\n"
-             "  }\n"
-             "}"),
+            (
+                "class Codec {\n"
+                "  com.fasterxml.jackson.databind.ObjectMapper mapper;\n"
+                "  String write(Object o) throws Exception {\n"
+                "    return mapper.writeValueAsString(o);\n"
+                "  }\n"
+                "}"
+            ),
             "write",
             "serialization_runtime_boundary",
         ),
         (
-            ("class Clock {\n"
-             "  String stamp() {\n"
-             "    return java.time.Instant.now().toString();\n"
-             "  }\n"
-             "}"),
+            (
+                "class Clock {\n"
+                "  String stamp() {\n"
+                "    return java.time.Instant.now().toString();\n"
+                "  }\n"
+                "}"
+            ),
             "stamp",
             "time_dependence_requires_runtime",
         ),
         (
-            ("class Labels {\n"
-             "  String name() {\n"
-             "    return java.util.ResourceBundle.getBundle(\"m\").getString(\"k\");\n"
-             "  }\n"
-             "}"),
+            (
+                "class Labels {\n"
+                "  String name() {\n"
+                '    return java.util.ResourceBundle.getBundle("m").getString("k");\n'
+                "  }\n"
+                "}"
+            ),
             "name",
             "locale_dependence_requires_runtime",
         ),
         (
-            ("class Dice {\n"
-             "  int roll() {\n"
-             "    return java.util.concurrent.ThreadLocalRandom.current().nextInt(6);\n"
-             "  }\n"
-             "}"),
+            (
+                "class Dice {\n"
+                "  int roll() {\n"
+                "    return java.util.concurrent.ThreadLocalRandom.current().nextInt(6);\n"
+                "  }\n"
+                "}"
+            ),
             "roll",
             "randomness_requires_runtime",
         ),
         (
-            ("class Jobs {\n"
-             "  java.util.concurrent.Executor pool;\n"
-             "  void run(Runnable task) {\n"
-             "    pool.execute(task);\n"
-             "  }\n"
-             "}"),
+            (
+                "class Jobs {\n"
+                "  java.util.concurrent.Executor pool;\n"
+                "  void run(Runnable task) {\n"
+                "    pool.execute(task);\n"
+                "  }\n"
+                "}"
+            ),
             "run",
             "async_boundary",
         ),
@@ -399,11 +374,7 @@ def test_synchronized_abstains_nondeterministic():
 
 def test_plain_method_has_no_binding_declaration():
     evidence = _source_evidence(
-        "class Plain {\n"
-        "  int add(int a, int b) {\n"
-        "    return a + b;\n"
-        "  }\n"
-        "}"
+        "class Plain {\n  int add(int a, int b) {\n    return a + b;\n  }\n}"
     )
     result = resolve_java_framework_boundary(evidence, "add")
     assert result.status == CodeFactStatus.UNRESOLVED
@@ -412,12 +383,7 @@ def test_plain_method_has_no_binding_declaration():
 
 def test_binding_hint_filters_and_miss_abstains():
     evidence = _source_evidence(
-        "class AppConfig {\n"
-        "  @Bean\n"
-        "  public Foo foo() {\n"
-        "    return new Foo();\n"
-        "  }\n"
-        "}"
+        "class AppConfig {\n  @Bean\n  public Foo foo() {\n    return new Foo();\n  }\n}"
     )
     matched = resolve_java_framework_boundary(evidence, "foo", binding_hint="bean")
     assert matched.status == CodeFactStatus.RESOLVED
@@ -427,9 +393,7 @@ def test_binding_hint_filters_and_miss_abstains():
 
 
 def test_boundary_provenance_fail_closed():
-    evidence = _source_evidence(
-        "class Plain {\n  void run() {}\n}", revision="UNPINNED"
-    )
+    evidence = _source_evidence("class Plain {\n  void run() {}\n}", revision="UNPINNED")
     result = resolve_java_framework_boundary(evidence, "run")
     assert result.status == CodeFactStatus.UNRESOLVED
     assert "missing_immutable_source_provenance" in result.limitation_codes

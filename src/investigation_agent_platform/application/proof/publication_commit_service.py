@@ -198,7 +198,9 @@ class ProofPublicationService:
                         "checker_outcome": outcome,
                         "checker_reasons": reasons,
                         "manifest_dump": route.manifest.model_dump(mode="json"),
-                        "artifact_map": {str(k): dict(v) for k, v in (route.artifacts or {}).items()},
+                        "artifact_map": {
+                            str(k): dict(v) for k, v in (route.artifacts or {}).items()
+                        },
                     }
                 )
         except (CertificationError, Exception) as exc:

@@ -20,8 +20,7 @@ from investigation_agent_platform.application.worker.activities.lifecycle import
 )
 
 GENERIC = (
-    "Bind supporting evidence and a cited causal "
-    "chain to a candidate hypothesis, then re-verify."
+    "Bind supporting evidence and a cited causal chain to a candidate hypothesis, then re-verify."
 )
 
 
@@ -66,9 +65,7 @@ class TestCollectHypothesisGateReasons:
     async def test_blank_reasons_skipped(self) -> None:
         from unittest.mock import AsyncMock
 
-        repo = SimpleNamespace(
-            find_by_investigation_id=AsyncMock(return_value=[_hyp("", "  ")])
-        )
+        repo = SimpleNamespace(find_by_investigation_id=AsyncMock(return_value=[_hyp("", "  ")]))
         ctx = SimpleNamespace(hypothesis_repo=repo)
         assert await _collect_hypothesis_gate_reasons(ctx, "t", uuid4()) == []
 
@@ -80,9 +77,7 @@ class TestRouteTerminalCheck:
         assert "re-verify" in routed
 
     def test_ordinary_prose_keeps_generic(self) -> None:
-        assert (
-            _route_terminal_check(["cited by CALL_EDGE claim"], GENERIC) == GENERIC
-        )
+        assert _route_terminal_check(["cited by CALL_EDGE claim"], GENERIC) == GENERIC
         assert _route_terminal_check(["recent change"], GENERIC) == GENERIC
 
     def test_empty_reasons_keep_generic(self) -> None:
@@ -99,19 +94,14 @@ class TestRouteTerminalCheck:
     def test_targeted_resolve_reason_routes(self) -> None:
         # Router-literal shape ("item(s)"): the targeted "Resolve the ..."
         # row fires and survives the passthrough net.
-        routed = _route_terminal_check(
-            ["3 refuting evidence item(s) bound to rival"], GENERIC
-        )
+        routed = _route_terminal_check(["3 refuting evidence item(s) bound to rival"], GENERIC)
         assert routed != GENERIC
         assert routed.startswith("Resolve the 3 refuting")
 
     def test_passthrough_shaped_prose_ignored(self) -> None:
         # An unrecognized reason that happens to look like the fallback
         # must not slip through: the closed set drops it pre-router.
-        assert (
-            _route_terminal_check(["Resolve 'x', then re-verify."], GENERIC)
-            == GENERIC
-        )
+        assert _route_terminal_check(["Resolve 'x', then re-verify."], GENERIC) == GENERIC
 
     def test_router_fallback_format_pinned(self) -> None:
         # Coupling pin: _route_terminal_check's passthrough template must
@@ -122,8 +112,6 @@ class TestRouteTerminalCheck:
         )
 
         assert (
-            VerificationEngine.next_check_for_abstention(
-                "unverified", ["zzz unrecognized prose"]
-            )
+            VerificationEngine.next_check_for_abstention("unverified", ["zzz unrecognized prose"])
             == "Resolve 'zzz unrecognized prose', then re-verify."
         )

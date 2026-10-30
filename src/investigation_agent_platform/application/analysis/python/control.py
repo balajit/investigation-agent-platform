@@ -40,18 +40,63 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
     if reason:
         return (None, None, repository, revision or "", evidence_ids, reason, None, b"")
     if location is None:
-        return (None, None, repository, revision or "", evidence_ids, "missing_source_location", None, b"")
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            evidence_ids,
+            "missing_source_location",
+            None,
+            b"",
+        )
     if not source_path.lower().endswith(".py"):
-        return (None, None, repository, revision or "", evidence_ids, "not_a_python_source_file", None, b"")
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            evidence_ids,
+            "not_a_python_source_file",
+            None,
+            b"",
+        )
     if not repository:
-        return (None, None, repository, revision or "", evidence_ids, "repository_identity_unavailable", None, b"")
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            evidence_ids,
+            "repository_identity_unavailable",
+            None,
+            b"",
+        )
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        return (None, None, repository, revision or "", evidence_ids, f"python_parser_unavailable:{type(exc).__name__}", None, b"")
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            evidence_ids,
+            f"python_parser_unavailable:{type(exc).__name__}",
+            None,
+            b"",
+        )
     if _p.has_syntax_error(tree.root_node):
-        return (None, None, repository, revision or "", evidence_ids, "python_syntax_error_or_incomplete_source_window", None, b"")
+        return (
+            None,
+            None,
+            repository,
+            revision or "",
+            evidence_ids,
+            "python_syntax_error_or_incomplete_source_window",
+            None,
+            b"",
+        )
     return (lines, location, repository, revision, evidence_ids, "", tree, source_bytes)
 
 
@@ -155,7 +200,11 @@ def resolve_python_write_sites_fact(
                 cur = node.parent
                 enclosing = ""
                 while cur is not None:
-                    if cur.type in {"function_definition", "async_function_definition", "class_definition"}:
+                    if cur.type in {
+                        "function_definition",
+                        "async_function_definition",
+                        "class_definition",
+                    }:
                         nm = cur.child_by_field_name("name")
                         enclosing = _p.node_text(nm, source_bytes).strip() if nm is not None else ""
                         break
@@ -180,7 +229,9 @@ def resolve_python_write_sites_fact(
         semantic_stage=SemanticStage.LATER_MUTATION,
         declaring_type=(class_scope or scope) or None,
         field_name=subject.rsplit(".", 1)[-1],
-        subject_identity=f"{class_scope}.{subject}" if class_scope else (f"{scope_label}.{subject}" if scope_label else subject),
+        subject_identity=f"{class_scope}.{subject}"
+        if class_scope
+        else (f"{scope_label}.{subject}" if scope_label else subject),
         value_semantics=CodeValueSemantics.LATER_MUTABLE,
         language_version=version_label,
         analysis_method="tree-sitter-range-v1",
@@ -292,16 +343,29 @@ def resolve_python_control_fact(
                 returns.append(f"return<void>@{line_no}")
             else:
                 value, limitation = _expr.evaluate(kids[0], source_bytes)
-                label = _expr.format_value(value) if limitation is None and value else _p.node_text(kids[0], source_bytes).strip()[:60]
+                label = (
+                    _expr.format_value(value)
+                    if limitation is None and value
+                    else _p.node_text(kids[0], source_bytes).strip()[:60]
+                )
                 returns.append(f"return {label}@{line_no}")
         elif node.type == "raise_statement":
             line_no = lines[0].number + node.start_point[0]
             raises.append(f"raise@{line_no}")
-        elif node.type in {"if_statement", "while_statement", "for_statement", "try_statement", "with_statement", "match_statement"}:
+        elif node.type in {
+            "if_statement",
+            "while_statement",
+            "for_statement",
+            "try_statement",
+            "with_statement",
+            "match_statement",
+        }:
             line_no = lines[0].number + node.start_point[0]
             cond = ""
             for child in node.children:
-                if child.type == "condition" or (child.is_named and node.type in {"if_statement", "while_statement"}):
+                if child.type == "condition" or (
+                    child.is_named and node.type in {"if_statement", "while_statement"}
+                ):
                     cond = _p.node_text(child, source_bytes).strip()[:80]
                     break
             branches.append(f"{node.type}@{line_no}:{cond}")

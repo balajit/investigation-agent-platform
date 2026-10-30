@@ -103,7 +103,9 @@ class TestHomeFlows:
         assert op.cmd_init(_args(home)) == 0
         sdir = _scope_home(home)
         cred = sdir / "oracle.yaml"
-        cred.write_text("app: demo\nenvironment: local\ndatabases:\n  a.b.c:\n    user_name: u\n    password: p\n    jdbcUrl: j\n")
+        cred.write_text(
+            "app: demo\nenvironment: local\ndatabases:\n  a.b.c:\n    user_name: u\n    password: p\n    jdbcUrl: j\n"
+        )
         cred.chmod(0o644)
         assert op.cmd_doctor(_args(home)) == 1
         cred.chmod(0o600)

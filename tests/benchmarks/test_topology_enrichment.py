@@ -355,9 +355,7 @@ async def test_fallback_on_vs_off_gate(tmp_path: Path) -> None:
     # forbidden strings to enforce the rule).
     source_lines = Path(__file__).read_text(encoding="utf-8").splitlines()
     live_imports = [
-        line
-        for line in source_lines
-        if line.strip().startswith(("import cognee", "from cognee"))
+        line for line in source_lines if line.strip().startswith(("import cognee", "from cognee"))
     ]
     assert live_imports == [], f"live cognee imports forbidden in gate arms: {live_imports}"
 
@@ -446,7 +444,9 @@ async def test_fallback_on_vs_off_gate(tmp_path: Path) -> None:
                 candidate_count=int(query["candidate_count"]),
                 problem=str(query["problem"]),
             )
-            assert miss is query["expected_miss"], f"{query['name']}: {miss} != {query['expected_miss']}"
+            assert miss is query["expected_miss"], (
+                f"{query['name']}: {miss} != {query['expected_miss']}"
+            )
             expected = set(query["expected_verified"])
             if not fallback_on:
                 # Pure deterministic recall: exact hits resolve, misses abstain.
@@ -502,7 +502,9 @@ async def test_fallback_on_vs_off_gate(tmp_path: Path) -> None:
     kept_cross_revision, discarded_cross_revision = verify_fuzzy_candidates(
         [charge_id], authority, tenant, rid_pay, sha_b
     )
-    kept_malformed, _ = verify_fuzzy_candidates(["not-a-uuid"], {"not-a-uuid": object()}, tenant, rid_pay, sha_a)
+    kept_malformed, _ = verify_fuzzy_candidates(
+        ["not-a-uuid"], {"not-a-uuid": object()}, tenant, rid_pay, sha_a
+    )
     leakage_kept = len(kept_cross_tenant) + len(kept_cross_revision) + len(kept_malformed)
     assert kept_cross_tenant == [], f"cross-tenant candidates leaked: {kept_cross_tenant}"
     assert kept_cross_revision == [], f"cross-revision candidates leaked: {kept_cross_revision}"
@@ -547,7 +549,10 @@ async def test_fallback_on_vs_off_gate(tmp_path: Path) -> None:
         "latency_ms": {"off": off["latency_ms"], "on": on_first["latency_ms"]},
         "cost": {
             "off": {"search_calls": off["search_calls"], "candidates_seen": off["candidates_seen"]},
-            "on": {"search_calls": on_first["search_calls"], "candidates_seen": on_first["candidates_seen"]},
+            "on": {
+                "search_calls": on_first["search_calls"],
+                "candidates_seen": on_first["candidates_seen"],
+            },
         },
         "cross_tenant_leakage": {
             "kept": leakage_kept,

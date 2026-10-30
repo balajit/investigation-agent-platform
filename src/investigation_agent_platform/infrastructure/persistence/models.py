@@ -151,7 +151,9 @@ class EvidenceORM(Base):
     # G6: lifecycle scope — observational rows belong to their investigation
     # (cascade purge); reference rows (code/history) belong to the repo and
     # outlive readers (bank-interest hydration, scope-aware purge).
-    lifecycle_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="observational")
+    lifecycle_scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="observational"
+    )
     # TO_DO-023: retention class for the core-table purge.
     retention_class: Mapped[str] = mapped_column(
         String(64), nullable=False, default="evidence", server_default="evidence"
@@ -876,8 +878,12 @@ class BackgroundJobORM(Base):
     input_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     result_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    quota_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default", server_default="default")
-    retention_class: Mapped[str] = mapped_column(String(64), nullable=False, default="default", server_default="default")
+    quota_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="default", server_default="default"
+    )
+    retention_class: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="default", server_default="default"
+    )
     stages_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
@@ -1325,9 +1331,7 @@ class EvidenceBankInterestORM(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
-    __table_args__ = (
-        Index("idx_bank_interest_evidence_key", "tenant_id", "evidence_key"),
-    )
+    __table_args__ = (Index("idx_bank_interest_evidence_key", "tenant_id", "evidence_key"),)
 
 
 class TenantRegistryORM(Base):
@@ -1342,9 +1346,14 @@ class TenantRegistryORM(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="RESERVED", server_default="RESERVED"
     )
-    lifecycle_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    lifecycle_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1398,7 +1407,10 @@ class OnboardingGrantORM(Base):
     revocation_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -1433,7 +1445,10 @@ class OnboardingGrantAuditORM(Base):
     approval_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -1459,7 +1474,10 @@ class SupportRegistryORM(Base):
     evidence_requirements: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     owner: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1507,7 +1525,10 @@ class CoverageReportORM(Base):
     model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     report_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1562,7 +1583,10 @@ class OnboardingCoverageFilingAuditORM(Base):
     report_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(16), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -1607,7 +1631,10 @@ class OnboardingDispatchAuditORM(Base):
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -1621,10 +1648,21 @@ class OnboardingDispatchAuditORM(Base):
             "action IN ('CLAIM', 'RENEW', 'RELEASE', 'STALE_FENCE')",
             name="ck_onboarding_dispatch_audit_action",
         ),
-        CheckConstraint("length(worker_id) > 0", name="ck_onboarding_dispatch_audit_worker_nonempty"),
-        CheckConstraint("length(database_role) > 0", name="ck_onboarding_dispatch_audit_role_nonempty"),
-        CheckConstraint("fencing_token >= 0", name="ck_onboarding_dispatch_audit_token_nonnegative"),
-        Index("ix_onboarding_dispatch_audit_tenant_dispatch", "tenant_id", "dispatch_id", "occurred_at"),
+        CheckConstraint(
+            "length(worker_id) > 0", name="ck_onboarding_dispatch_audit_worker_nonempty"
+        ),
+        CheckConstraint(
+            "length(database_role) > 0", name="ck_onboarding_dispatch_audit_role_nonempty"
+        ),
+        CheckConstraint(
+            "fencing_token >= 0", name="ck_onboarding_dispatch_audit_token_nonnegative"
+        ),
+        Index(
+            "ix_onboarding_dispatch_audit_tenant_dispatch",
+            "tenant_id",
+            "dispatch_id",
+            "occurred_at",
+        ),
     )
 
 
@@ -1658,9 +1696,14 @@ class OnboardingRequestORM(Base):
     state: Mapped[str] = mapped_column(
         String(32), nullable=False, default="DRAFT", server_default="DRAFT"
     )
-    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    state_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1677,9 +1720,13 @@ class OnboardingRequestORM(Base):
             ondelete="RESTRICT",
             name="fk_onboarding_request_tenant_job",
         ),
-        UniqueConstraint("tenant_id", "request_id", "revision", name="uq_onboarding_request_revision"),
+        UniqueConstraint(
+            "tenant_id", "request_id", "revision", name="uq_onboarding_request_revision"
+        ),
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_onboarding_request_idempotency"),
-        UniqueConstraint("tenant_id", "request_id", "content_hash", name="uq_onboarding_request_content"),
+        UniqueConstraint(
+            "tenant_id", "request_id", "content_hash", name="uq_onboarding_request_content"
+        ),
         CheckConstraint("revision >= 1", name="ck_onboarding_request_revision_positive"),
         CheckConstraint("state_version >= 1", name="ck_onboarding_request_state_version_positive"),
         CheckConstraint(
@@ -1716,7 +1763,10 @@ class OnboardingRequestAuditORM(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -1730,10 +1780,14 @@ class OnboardingRequestAuditORM(Base):
             ondelete="RESTRICT",
             name="fk_onboarding_request_audit_revision",
         ),
-        CheckConstraint("action IN ('CREATE', 'ACCEPT')", name="ck_onboarding_request_audit_action"),
+        CheckConstraint(
+            "action IN ('CREATE', 'ACCEPT')", name="ck_onboarding_request_audit_action"
+        ),
         CheckConstraint("revision >= 1", name="ck_onboarding_request_audit_revision_positive"),
         CheckConstraint("length(actor_sub) > 0", name="ck_onboarding_request_audit_actor_nonempty"),
-        CheckConstraint("length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"),
+        CheckConstraint(
+            "length(database_role) > 0", name="ck_onboarding_request_audit_role_nonempty"
+        ),
         Index("ix_onboarding_request_audit_revision", "tenant_id", "request_id", "revision"),
     )
 
@@ -1752,9 +1806,7 @@ class OnboardingDispatchORM(Base):
     event_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, unique=True)
     request_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    job_id: Mapped[PyUUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
-    )
+    job_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     workflow_id: Mapped[str] = mapped_column(String(256), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(
@@ -1763,13 +1815,22 @@ class OnboardingDispatchORM(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    lease_fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    execution_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    lease_fencing_token: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     temporal_run_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1806,8 +1867,12 @@ class OnboardingDispatchORM(Base):
             name="fk_onboarding_dispatch_request_revision",
         ),
         CheckConstraint("revision >= 1", name="ck_onboarding_dispatch_revision_positive"),
-        CheckConstraint("execution_generation >= 1", name="ck_onboarding_dispatch_generation_positive"),
-        CheckConstraint("lease_fencing_token >= 0", name="ck_onboarding_dispatch_fencing_nonnegative"),
+        CheckConstraint(
+            "execution_generation >= 1", name="ck_onboarding_dispatch_generation_positive"
+        ),
+        CheckConstraint(
+            "lease_fencing_token >= 0", name="ck_onboarding_dispatch_fencing_nonnegative"
+        ),
         CheckConstraint("attempts >= 0", name="ck_onboarding_dispatch_attempts_nonnegative"),
         CheckConstraint(
             "state IN ('PENDING', 'CLAIMED', 'ACCEPTED', 'RETRYABLE', 'TERMINAL')",
@@ -1930,9 +1995,15 @@ class OnboardingStoreRegistryORM(Base):
     store_type: Mapped[str] = mapped_column(String(64), nullable=False)
     adapter_version: Mapped[str] = mapped_column(String(32), nullable=False)
     registry_version: Mapped[str] = mapped_column(String(32), nullable=False)
-    required_for_deletion: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    capabilities_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    required_for_deletion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    capabilities_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -1964,7 +2035,10 @@ class OnboardingDeletionManifestORM(Base):
     requester_id: Mapped[str] = mapped_column(String(256), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
@@ -2002,13 +2076,14 @@ class OnboardingDeletionApprovalORM(Base):
     purge_job_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     dispatch_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "manifest_id", "nonce", name="uq_onboarding_approval_nonce"
-        ),
+        UniqueConstraint("tenant_id", "manifest_id", "nonce", name="uq_onboarding_approval_nonce"),
         Index("ix_onboarding_approval_manifest", "tenant_id", "manifest_id", "consumed_at"),
     )
 
@@ -2029,7 +2104,10 @@ class OnboardingDeletionOutcomeORM(Base):
     completion_evidence_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     residual_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
 
     __table_args__ = (

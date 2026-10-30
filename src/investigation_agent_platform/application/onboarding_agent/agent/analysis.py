@@ -116,8 +116,10 @@ def draft_dispositions(
                     capability=capability,
                     status=DraftStatus.UNMAPPED,
                     reasons=[
-                        ("no support-registry entry for this capability; "
-                        "requires an explicit registry-gap finding")
+                        (
+                            "no support-registry entry for this capability; "
+                            "requires an explicit registry-gap finding"
+                        )
                     ],
                 )
             )
@@ -128,9 +130,7 @@ def draft_dispositions(
                 reasons.append(f"registry limits: {entry.limits}")
             reasons.append(f"trust state {entry.trust_state.value}")
             if entry.evidence_requirements:
-                reasons.append(
-                    f"evidence requirements: {entry.evidence_requirements}"
-                )
+                reasons.append(f"evidence requirements: {entry.evidence_requirements}")
             drafts.append(
                 DispositionDraft(
                     capability=capability,
@@ -175,9 +175,7 @@ def needs_gap_names(drafts: list[DispositionDraft]) -> list[str]:
 
 def _require_pin(name: str, value: str) -> None:
     if not value.strip():
-        raise ReportAssemblyError(
-            AssemblyErrorCode.MISSING_PIN, f"pin {name!r} is empty"
-        )
+        raise ReportAssemblyError(AssemblyErrorCode.MISSING_PIN, f"pin {name!r} is empty")
 
 
 def _sniffer_hashes(
@@ -195,17 +193,14 @@ def _sniffer_hashes(
     return hashes
 
 
-def _check_evidence_resolves(
-    verdicts: list[ServiceVerdict], known_hashes: set[str]
-) -> None:
+def _check_evidence_resolves(verdicts: list[ServiceVerdict], known_hashes: set[str]) -> None:
     unresolved: list[str] = []
     for verdict in verdicts:
         for claim in verdict.claims:
             for pointer in claim.evidence:
                 if pointer.output_hash not in known_hashes:
                     unresolved.append(
-                        f"{verdict.service}:{pointer.output_hash}:"
-                        f"{pointer.field_path}"
+                        f"{verdict.service}:{pointer.output_hash}:{pointer.field_path}"
                     )
     if unresolved:
         raise ReportAssemblyError(
@@ -220,9 +215,7 @@ def _check_unmapped_named_in_gaps(
 ) -> None:
     if not unmapped_capabilities:
         return
-    haystacks = [
-        f"{gap.title}\n{gap.scoped_ask}".casefold() for gap in gaps
-    ]
+    haystacks = [f"{gap.title}\n{gap.scoped_ask}".casefold() for gap in gaps]
     unnamed = [
         name
         for name in unmapped_capabilities
@@ -231,8 +224,7 @@ def _check_unmapped_named_in_gaps(
     if unnamed:
         raise ReportAssemblyError(
             AssemblyErrorCode.UNMAPPED_WITHOUT_GAP,
-            "capabilities without an explicit gap finding: "
-            + ", ".join(sorted(unnamed)),
+            "capabilities without an explicit gap finding: " + ", ".join(sorted(unnamed)),
         )
 
 

@@ -72,7 +72,9 @@ class TestFileLogging:
         from investigation_agent_platform.infrastructure.telemetry import logging as logpipe
 
         target = tmp_path / "exc.log"
-        active = logpipe.configure_logging(yaml_path=tmp_path / "missing.yaml", log_file=str(target))
+        active = logpipe.configure_logging(
+            yaml_path=tmp_path / "missing.yaml", log_file=str(target)
+        )
         probe = logging.getLogger("iap.wave4.probe")
         try:
             raise ValueError("boom")

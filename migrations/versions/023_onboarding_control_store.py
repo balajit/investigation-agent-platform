@@ -72,9 +72,7 @@ def _enable_tenant_rls(table_name: str, tenant_column: str = "tenant_id") -> Non
         # CURRENT_USER is intentional v0.1 behavior, not role discovery.
         # Production must run migrations as the runtime application role.
         op.execute(
-            sa.text(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table_name} TO CURRENT_USER"
-            )
+            sa.text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table_name} TO CURRENT_USER")
         )
 
 
@@ -86,8 +84,12 @@ def upgrade() -> None:
         sa.Column("display_slug", sa.String(128), nullable=False, unique=True),
         sa.Column("owner", sa.String(256), nullable=False, server_default=""),
         sa.Column("status", sa.String(16), nullable=False, server_default="RESERVED"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.CheckConstraint(
             "status IN ('RESERVED', 'ACTIVE', 'SUSPENDED', 'RETIRED')",
             name="ck_tenant_registry_status",
@@ -169,17 +171,25 @@ def upgrade() -> None:
         ),
         sa.Column("state", sa.String(32), nullable=False, server_default="DRAFT"),
         sa.Column("state_version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.UniqueConstraint(
             "tenant_id", "request_id", "revision", name="uq_onboarding_request_revision"
         ),
         sa.UniqueConstraint(
             "tenant_id", "idempotency_key", name="uq_onboarding_request_idempotency"
         ),
-        sa.UniqueConstraint("tenant_id", "request_id", "content_hash", name="uq_onboarding_request_content"),
+        sa.UniqueConstraint(
+            "tenant_id", "request_id", "content_hash", name="uq_onboarding_request_content"
+        ),
         sa.CheckConstraint("revision >= 1", name="ck_onboarding_request_revision_positive"),
-        sa.CheckConstraint("state_version >= 1", name="ck_onboarding_request_state_version_positive"),
+        sa.CheckConstraint(
+            "state_version >= 1", name="ck_onboarding_request_state_version_positive"
+        ),
         sa.CheckConstraint(
             "state IN ('DRAFT', 'VALIDATING', 'AWAITING_APPROVAL', 'QUEUED', "
             "'PROVISIONING', 'READINESS_CHECK', 'ACTIVE', 'FAILED_RETRYABLE', "
@@ -287,17 +297,23 @@ def upgrade() -> None:
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("temporal_run_id", sa.String(256), nullable=True),
         sa.Column("last_error_code", sa.String(64), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(
             ["tenant_id", "request_id", "revision"],
-            ["onboarding_requests.tenant_id", "onboarding_requests.request_id", "onboarding_requests.revision"],
+            [
+                "onboarding_requests.tenant_id",
+                "onboarding_requests.request_id",
+                "onboarding_requests.revision",
+            ],
             ondelete="RESTRICT",
             name="fk_onboarding_dispatch_request_revision",
         ),
-        sa.UniqueConstraint(
-            "tenant_id", "workflow_id", name="uq_onboarding_dispatch_workflow"
-        ),
+        sa.UniqueConstraint("tenant_id", "workflow_id", name="uq_onboarding_dispatch_workflow"),
         sa.CheckConstraint("revision >= 1", name="ck_onboarding_dispatch_revision_positive"),
         sa.CheckConstraint("attempts >= 0", name="ck_onboarding_dispatch_attempts_nonnegative"),
         sa.CheckConstraint(

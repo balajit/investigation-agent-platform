@@ -90,7 +90,9 @@ def _real_hash(artifact: dict[str, Any]) -> str:
 
 
 def _strip_envelope(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")}
+    return {
+        k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -624,9 +626,7 @@ def test_monotonicity_extra_premise_rejects_absence() -> None:
         "premise_type": "RANGE_READ_FACT",
     }
     premises = _absence_premises() + [wrong_type]
-    outcome, _ = apply_rule(
-        get_rule("absence/v1"), _absence_claim(), premises, _absence_manifest()
-    )
+    outcome, _ = apply_rule(get_rule("absence/v1"), _absence_claim(), premises, _absence_manifest())
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
     entries = [
         _checker_entry("ev-coverage-001", "ABSENCE_COVERAGE_FACT", SHA_B),
@@ -772,9 +772,7 @@ def test_absence_multi_coverage_rejects() -> None:
         content_hash=SHA_C,
     )
     premises = _absence_premises() + [second]
-    outcome, _ = apply_rule(
-        get_rule("absence/v1"), _absence_claim(), premises, _absence_manifest()
-    )
+    outcome, _ = apply_rule(get_rule("absence/v1"), _absence_claim(), premises, _absence_manifest())
     assert outcome == RuleOutcome.INADMISSIBLE_PREMISE
     entries = [
         _checker_entry("ev-coverage-001", "ABSENCE_COVERAGE_FACT", SHA_B),
@@ -927,25 +925,19 @@ def test_removal_behavior_code_typed() -> None:
     _assert_checker_empty_premises_missing("behavior/v1")
     _, _, golden_premises, golden_artifacts = _behavior_setup()
     kept = [p for p in golden_premises if p["premise_type"] != "RANGE_READ_FACT"]
-    kept_artifacts = {
-        pid: art for pid, art in golden_artifacts.items() if pid != "ev-code-001"
-    }
+    kept_artifacts = {pid: art for pid, art in golden_artifacts.items() if pid != "ev-code-001"}
     _assert_certify_refuses("behavior/v1", kept, kept_artifacts)
     _assert_withdrawn_artifact_unavailable("behavior/v1", "ev-code-001")
 
 
 def test_removal_behavior_runtime_typed() -> None:
-    premises = [
-        p for p in _behavior_premises() if p["premise_type"] != "RUNTIME_OBSERVATION_FACT"
-    ]
+    premises = [p for p in _behavior_premises() if p["premise_type"] != "RUNTIME_OBSERVATION_FACT"]
     outcome, _ = apply_rule(get_rule("behavior/v1"), _behavior_claim(), premises)
     assert outcome == RuleOutcome.MISSING_PREMISE
     _assert_checker_empty_premises_missing("behavior/v1")
     _, _, golden_premises, golden_artifacts = _behavior_setup()
     kept = [p for p in golden_premises if p["premise_type"] != "RUNTIME_OBSERVATION_FACT"]
-    kept_artifacts = {
-        pid: art for pid, art in golden_artifacts.items() if pid != "ev-runtime-001"
-    }
+    kept_artifacts = {pid: art for pid, art in golden_artifacts.items() if pid != "ev-runtime-001"}
     _assert_certify_refuses("behavior/v1", kept, kept_artifacts)
     _assert_withdrawn_artifact_unavailable("behavior/v1", "ev-runtime-001")
 
@@ -965,9 +957,7 @@ def test_removal_behavior_mapping_typed() -> None:
 
 
 def test_removal_absence_coverage_typed() -> None:
-    outcome, _ = apply_rule(
-        get_rule("absence/v1"), _absence_claim(), [], _absence_manifest()
-    )
+    outcome, _ = apply_rule(get_rule("absence/v1"), _absence_claim(), [], _absence_manifest())
     assert outcome == RuleOutcome.MISSING_PREMISE
     _assert_checker_empty_premises_missing("absence/v1")
     _assert_certify_refuses("absence/v1", [], {})
@@ -1331,9 +1321,7 @@ def _all_labeled_graphs() -> list[tuple[int, int, dict[str, Any]]]:
     """All labeled DAGs with n <= 4 nodes; index sequential from 0 per n."""
     graphs: list[tuple[int, int, dict[str, Any]]] = []
     for size in (1, 2, 3, 4):
-        pairs = sorted(
-            (a, b) for a in range(size) for b in range(size) if a != b
-        )
+        pairs = sorted((a, b) for a in range(size) for b in range(size) if a != b)
         index = 0
         for mask in range(1 << len(pairs)):
             deps: dict[str, list[str]] = {f"d{a}": [] for a in range(size)}
@@ -1360,9 +1348,7 @@ def _graph_cases() -> list[tuple[int, int, str, dict[str, Any], set[str], set[st
             for pid in node.premise_ids:
                 owned[pid] = nid
         roots = [nid for nid, node in nodes.items() if not node.depends_on]
-        root_evidence = {
-            pid for pid, nid in owned.items() if nid in set(roots)
-        }
+        root_evidence = {pid for pid, nid in owned.items() if nid in set(roots)}
         all_evidence = set(owned)
         cases.append((size, index, "a", nodes, root_evidence, {"evidence.content"}))
         cases.append((size, index, "b", nodes, set(root_evidence), {"budget"}))
@@ -1470,9 +1456,7 @@ def test_authority_withdrawal_rechecks_unsupported() -> None:
     approved = _check_request(cert, proposition, manifest, artifacts)
     outcome, _ = check_certificate(approved)
     assert outcome == CheckerOutcome.VALID
-    withdrawn = _check_request(
-        cert, proposition, manifest, artifacts, mapping_authority=None
-    )
+    withdrawn = _check_request(cert, proposition, manifest, artifacts, mapping_authority=None)
     outcome, reasons = check_certificate(withdrawn)
     assert outcome == CheckerOutcome.UNSUPPORTED_CONSTRUCT
     assert any("authority" in reason for reason in reasons)
@@ -1503,11 +1487,7 @@ def test_missing_premise_revision_inadmissible_when_claim_pinned() -> None:
 
 
 def test_unpinned_claim_keeps_legacy_discharge() -> None:
-    outcome, _ = apply_rule(
-        get_rule("definition/v1"), _definition_claim(), [_definition_premise()]
-    )
+    outcome, _ = apply_rule(get_rule("definition/v1"), _definition_claim(), [_definition_premise()])
     assert outcome == RuleOutcome.DISCHARGED
-    outcome, _ = apply_rule(
-        get_rule("call_edge/v1"), _call_edge_claim(), [_call_edge_premise()]
-    )
+    outcome, _ = apply_rule(get_rule("call_edge/v1"), _call_edge_claim(), [_call_edge_premise()])
     assert outcome == RuleOutcome.DISCHARGED

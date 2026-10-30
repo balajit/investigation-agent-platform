@@ -141,7 +141,9 @@ async def create_investigation(
         investigation = await service.execute(request, tenant_id=x_tenant_id)
         response_payload = _response_for(investigation)
         await ctx.idempotency_store.complete(
-            x_tenant_id, x_idempotency_key, response_payload.model_dump(mode="json", exclude_unset=True)
+            x_tenant_id,
+            x_idempotency_key,
+            response_payload.model_dump(mode="json", exclude_unset=True),
         )
         return response_payload
 
@@ -170,18 +172,24 @@ async def start_investigation_workflow(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
@@ -218,7 +226,9 @@ async def _dispatch_workflow(
             revisions = []
         if revisions and revisions[0].status.value in ("DEPRECATED", "ARCHIVED"):
             raise ApiError(
-                code="PROFILE_RETIRED", http_status=status.HTTP_409_CONFLICT, message=f"Application profile is {revisions[0].status.value}; new starts are blocked"
+                code="PROFILE_RETIRED",
+                http_status=status.HTTP_409_CONFLICT,
+                message=f"Application profile is {revisions[0].status.value}; new starts are blocked",
             )
 
     # Persist RUNNING before dispatch so the status is real (D14), not a
@@ -239,7 +249,9 @@ async def _dispatch_workflow(
             )
         except InvalidLifecycleTransitionException as exc:
             raise ApiError(
-                code="INVESTIGATION_NOT_STARTABLE", http_status=status.HTTP_409_CONFLICT, message=str(exc)
+                code="INVESTIGATION_NOT_STARTABLE",
+                http_status=status.HTTP_409_CONFLICT,
+                message=str(exc),
             ) from exc
         try:
             await ctx.investigation_repo.save(tenant_id, running, investigation.version)
@@ -250,7 +262,9 @@ async def _dispatch_workflow(
         investigation = running
     elif investigation.status != InvestigationStatus.RUNNING:
         raise ApiError(
-            code="INVESTIGATION_NOT_STARTABLE", http_status=status.HTTP_409_CONFLICT, message=f"Only CREATED, FAILED, or RUNNING investigations can be started (status is {investigation.status.value})"
+            code="INVESTIGATION_NOT_STARTABLE",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Only CREATED, FAILED, or RUNNING investigations can be started (status is {investigation.status.value})",
         )
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
@@ -266,7 +280,9 @@ async def _dispatch_workflow(
             ),
         )
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; investigation was not started"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; investigation was not started",
         )
 
     # Fail loud when the worker could never load this investigation: the API
@@ -288,7 +304,9 @@ async def _dispatch_workflow(
             ),
         )
         raise ApiError(
-            code="STORE_NOT_SHARED", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Investigation state is process-local (set IAP_BUFFER_ENABLED=true and restart API and worker so both share Postgres); investigation was not started"
+            code="STORE_NOT_SHARED",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Investigation state is process-local (set IAP_BUFFER_ENABLED=true and restart API and worker so both share Postgres); investigation was not started",
         )
 
     # Propagate correlation_id to Temporal via workflow memo/headers.
@@ -309,9 +327,7 @@ async def _dispatch_workflow(
         max_iterations: int | None = None
         try:
             if revisions:
-                effective_limits = overlay_evidence_budget(
-                    InvestigationLimits(), revisions[0]
-                )
+                effective_limits = overlay_evidence_budget(InvestigationLimits(), revisions[0])
                 max_iterations = int(effective_limits.max_iterations)
         except Exception:
             max_iterations = None
@@ -326,7 +342,9 @@ async def _dispatch_workflow(
             # on the aggregate — the direct getattr always yielded None, so
             # every workflow ran with description=None (blind reason-loop
             # helpers and refdoc recall). Prefer request, fall back direct.
-            description=getattr(getattr(investigation, "request", None), "problem_description", None)
+            description=getattr(
+                getattr(investigation, "request", None), "problem_description", None
+            )
             or getattr(investigation, "problem_description", None),
             correlation_id=correlation_id,
             investigation_id=investigation_id,
@@ -387,7 +405,9 @@ async def _dispatch_workflow(
             ),
         )
         raise ApiError(
-            code="WORKFLOW_START_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to start workflow execution; investigation was not started"
+            code="WORKFLOW_START_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to start workflow execution; investigation was not started",
         ) from exc
 
     logger.info(
@@ -433,7 +453,9 @@ async def intake_error(
     """
     if principal_id not in _intake_service_principals():
         raise ApiError(
-            code="INTAKE_FORBIDDEN", http_status=status.HTTP_403_FORBIDDEN, message="Intake requires an authorized service principal"
+            code="INTAKE_FORBIDDEN",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Intake requires an authorized service principal",
         )
     ctx = get_app_context()
     correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
@@ -464,10 +486,14 @@ async def intake_error(
 
         if isinstance(exc, DomainException):
             raise ApiError(
-                code=getattr(exc, "error_code", "DOMAIN_ERROR"), http_status=exc.http_status_code, message=exc.message
+                code=getattr(exc, "error_code", "DOMAIN_ERROR"),
+                http_status=exc.http_status_code,
+                message=exc.message,
             ) from exc
         raise ApiError(
-            code="INTAKE_FAILED", http_status=status.HTTP_500_INTERNAL_SERVER_ERROR, message="Intake failed"
+            code="INTAKE_FAILED",
+            http_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Intake failed",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(
@@ -475,7 +501,9 @@ async def intake_error(
     )
     if investigation is None:  # pragma: no cover - defensive; intake just created it
         raise ApiError(
-            code="INTAKE_INVESTIGATION_NOT_FOUND", http_status=status.HTTP_500_INTERNAL_SERVER_ERROR, message="Intake recorded but investigation not found"
+            code="INTAKE_INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Intake recorded but investigation not found",
         )
     dispatch = await _dispatch_workflow(
         ctx, investigation, x_tenant_id, str(result.investigation_id), correlation_id
@@ -509,18 +537,24 @@ async def get_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     # Part 11.5: surface pending input requirements when suspended, so
@@ -585,7 +619,9 @@ async def fulfill_input_requirement(
 
     if not x_idempotency_key:
         raise ApiError(
-            code="IDEMPOTENCY_KEY_REQUIRED", http_status=status.HTTP_400_BAD_REQUEST, message="X-Idempotency-Key header is required"
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="X-Idempotency-Key header is required",
         )
     ctx = get_app_context()
     try:
@@ -593,27 +629,37 @@ async def fulfill_input_requirement(
         requirement_uuid = UUID(requirement_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_ID_FORMAT", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid id format"
+            code="INVALID_ID_FORMAT",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     if investigation.status != InvestigationStatus.AWAITING_INPUT:
         raise ApiError(
-            code="INVESTIGATION_NOT_AWAITING_INPUT", http_status=status.HTTP_409_CONFLICT, message=f"Investigation is not awaiting input (status {investigation.status.value})"
+            code="INVESTIGATION_NOT_AWAITING_INPUT",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Investigation is not awaiting input (status {investigation.status.value})",
         )
 
     canonical = json.dumps(body.data, sort_keys=True, separators=(",", ":"))
     if len(canonical.encode("utf-8")) > MAX_FULFILLMENT_BYTES:
         raise ApiError(
-            code="FULFILLMENT_TOO_LARGE", http_status=status.HTTP_422_UNPROCESSABLE_ENTITY, message=f"Fulfillment payload exceeds {MAX_FULFILLMENT_BYTES} bytes"
+            code="FULFILLMENT_TOO_LARGE",
+            http_status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message=f"Fulfillment payload exceeds {MAX_FULFILLMENT_BYTES} bytes",
         )
     request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -640,20 +686,28 @@ async def fulfill_input_requirement(
     input_repo = getattr(ctx, "input_repo", None)
     if input_repo is None:
         raise ApiError(
-            code="INPUT_STORE_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Input requirement store is unavailable"
+            code="INPUT_STORE_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Input requirement store is unavailable",
         )
     requirement = await input_repo.get_by_id(x_tenant_id, requirement_uuid)
     if requirement is None or requirement.investigation_id != investigation_uuid:
         raise ApiError(
-            code="INPUT_REQUIREMENT_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Input requirement not found"
+            code="INPUT_REQUIREMENT_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Input requirement not found",
         )
     if requirement.state != RequirementState.PENDING:
         raise ApiError(
-            code="REQUIREMENT_NOT_PENDING", http_status=status.HTTP_409_CONFLICT, message=f"Input requirement is {requirement.state.value}, not PENDING"
+            code="REQUIREMENT_NOT_PENDING",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Input requirement is {requirement.state.value}, not PENDING",
         )
     if requirement.requirement_version != body.requirement_version:
         raise ApiError(
-            code="STALE_REQUIREMENT_VERSION", http_status=status.HTTP_409_CONFLICT, message="Stale requirement version; reload pending requirements"
+            code="STALE_REQUIREMENT_VERSION",
+            http_status=status.HTTP_409_CONFLICT,
+            message="Stale requirement version; reload pending requirements",
         )
     if requirement.json_schema:
         import jsonschema  # type: ignore[import-untyped]
@@ -662,7 +716,9 @@ async def fulfill_input_requirement(
             jsonschema.validate(body.data, requirement.json_schema)
         except Exception as exc:
             raise ApiError(
-                code="FULFILLMENT_SCHEMA_INVALID", http_status=status.HTTP_422_UNPROCESSABLE_ENTITY, message=f"Fulfillment data failed requirement schema: {exc}"
+                code="FULFILLMENT_SCHEMA_INVALID",
+                http_status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=f"Fulfillment data failed requirement schema: {exc}",
             ) from exc
 
     fulfillment = InputFulfillment(
@@ -690,7 +746,9 @@ async def fulfill_input_requirement(
     temporal_client = getattr(ctx, "temporal_client", None)
     if temporal_client is None:
         raise ApiError(
-            code="TEMPORAL_UNAVAILABLE", http_status=status.HTTP_503_SERVICE_UNAVAILABLE, message="Workflow execution engine is unavailable; cannot deliver input"
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; cannot deliver input",
         )
     try:
         handle = temporal_client.get_workflow_handle(f"wf-investigation-{investigation_id}")
@@ -707,7 +765,9 @@ async def fulfill_input_requirement(
         # Temporal delivery failures to HTTP semantics.
         if "no pending input requirement" in message or "stale or unknown" in message:
             raise ApiError(
-                code="FULFILL_DELIVERY_CONFLICT", http_status=status.HTTP_409_CONFLICT, message=message
+                code="FULFILL_DELIVERY_CONFLICT",
+                http_status=status.HTTP_409_CONFLICT,
+                message=message,
             ) from exc
         logger.exception(
             "Failed to deliver fulfill_input update",
@@ -720,7 +780,9 @@ async def fulfill_input_requirement(
             ),
         )
         raise ApiError(
-            code="FULFILL_DELIVERY_FAILED", http_status=status.HTTP_502_BAD_GATEWAY, message="Failed to deliver input to workflow"
+            code="FULFILL_DELIVERY_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message="Failed to deliver input to workflow",
         ) from exc
 
     response_payload = FulfillAck(
@@ -757,7 +819,9 @@ async def list_investigations(
         "Omit for open investigations only.",
     ),
     application_id: str | None = Query(
-        default=None, min_length=1, max_length=128,
+        default=None,
+        min_length=1,
+        max_length=128,
         description="Restrict to one application profile id.",
     ),
 ) -> ListEnvelope[InvestigationListItemView]:
@@ -778,11 +842,15 @@ async def list_investigations(
             ]
         except ValueError as exc:
             raise ApiError(
-                code="INVALID_STATUS_FILTER", http_status=status.HTTP_400_BAD_REQUEST, message=f"Unknown status in filter: {status_filter!r}"
+                code="INVALID_STATUS_FILTER",
+                http_status=status.HTTP_400_BAD_REQUEST,
+                message=f"Unknown status in filter: {status_filter!r}",
             ) from exc
         if not statuses:
             raise ApiError(
-                code="INVALID_STATUS_FILTER", http_status=status.HTTP_400_BAD_REQUEST, message=f"Unknown status in filter: {status_filter!r}"
+                code="INVALID_STATUS_FILTER",
+                http_status=status.HTTP_400_BAD_REQUEST,
+                message=f"Unknown status in filter: {status_filter!r}",
             )
     if statuses is None and application_id is None:
         ids = await ctx.investigation_repo.list_open_ids(x_tenant_id)
@@ -805,7 +873,9 @@ async def list_investigations(
                 updated_at=inv.updated_at.isoformat() if inv.updated_at else None,
             )
         )
-    return ListEnvelope[InvestigationListItemView](items=items, total=len(items), offset=0, limit=limit)
+    return ListEnvelope[InvestigationListItemView](
+        items=items, total=len(items), offset=0, limit=limit
+    )
 
 
 @router.get(
@@ -825,18 +895,24 @@ async def get_conclusion(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     conclusion = getattr(investigation, "conclusion", None)
@@ -879,17 +955,23 @@ async def list_findings(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     finding_repo = getattr(ctx, "finding_repo", None)
@@ -927,22 +1009,30 @@ async def retry_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
     if investigation.status != InvestigationStatus.FAILED:
         raise ApiError(
-            code="INVESTIGATION_NOT_RETRYABLE", http_status=status.HTTP_409_CONFLICT, message=f"Only FAILED investigations can be retried (status is {investigation.status.value})"
+            code="INVESTIGATION_NOT_RETRYABLE",
+            http_status=status.HTTP_409_CONFLICT,
+            message=f"Only FAILED investigations can be retried (status is {investigation.status.value})",
         )
 
     correlation_id = getattr(request.state, "correlation_id", None) or request.headers.get(
@@ -989,7 +1079,9 @@ async def reprocess_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     service = ReprocessInvestigationService(
@@ -1019,7 +1111,9 @@ async def reprocess_investigation(
         ) from exc
     except DomainException as exc:
         raise ApiError(
-            code=getattr(exc, "error_code", "DOMAIN_ERROR"), http_status=exc.http_status_code, message=exc.message
+            code=getattr(exc, "error_code", "DOMAIN_ERROR"),
+            http_status=exc.http_status_code,
+            message=exc.message,
         ) from exc
 
     effective = (new_investigation.metadata or {}).get("effective_limits") or {}
@@ -1037,7 +1131,8 @@ async def reprocess_investigation(
 
 
 @router.post(
-    "/investigations/{investigation_id}/cancel",    response_model=CancelAck,
+    "/investigations/{investigation_id}/cancel",
+    response_model=CancelAck,
     response_model_by_alias=True,
     response_model_exclude_unset=True,
     responses=COMMON_ERROR_RESPONSES,
@@ -1056,18 +1151,24 @@ async def cancel_investigation(
         investigation_uuid = UUID(investigation_id)
     except ValueError as exc:
         raise ApiError(
-            code="INVALID_INVESTIGATION_ID", http_status=status.HTTP_400_BAD_REQUEST, message="Invalid investigation id format"
+            code="INVALID_INVESTIGATION_ID",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            message="Invalid investigation id format",
         ) from exc
 
     investigation = await ctx.get_investigation_service().execute(x_tenant_id, investigation_uuid)
     if not investigation:
         raise ApiError(
-            code="INVESTIGATION_NOT_FOUND", http_status=status.HTTP_404_NOT_FOUND, message="Investigation not found"
+            code="INVESTIGATION_NOT_FOUND",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="Investigation not found",
         )
 
     if getattr(investigation, "tenant_id", x_tenant_id) != x_tenant_id:
         raise ApiError(
-            code="TENANT_MISMATCH", http_status=status.HTTP_403_FORBIDDEN, message="Tenant authorization mismatch"
+            code="TENANT_MISMATCH",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Tenant authorization mismatch",
         )
 
     await ctx.cancel_investigation_service().execute(x_tenant_id, investigation_uuid, reason=reason)

@@ -62,9 +62,7 @@ class TestCodeQualification:
         assert qual.qualified is False
 
     def test_failure_rows_never_qualify(self):
-        qual = qualify_code_row(
-            _code_row(attributes={"miss_reason": "timeout"})
-        )
+        qual = qualify_code_row(_code_row(attributes={"miss_reason": "timeout"}))
         assert qual.qualified is False
 
 
@@ -179,7 +177,6 @@ class TestRuntimeQualification:
         assert qual.qualified is False
         assert "window" in qual.reason
 
-
     def test_scope_match_is_exact_casefold(self):
         row = _row(
             "COMMIT_HISTORY",
@@ -189,9 +186,7 @@ class TestRuntimeQualification:
         # Case differs, exact after casefold → qualifies.
         assert qualify_absence_proof(row, "REPO@TIP:SRC/A.JAVA").qualified is True
         # Superstring scope no longer covers (verifier demands equality).
-        assert (
-            qualify_absence_proof(row, "repo@tip:src/A.java:extra").qualified is False
-        )
+        assert qualify_absence_proof(row, "repo@tip:src/A.java:extra").qualified is False
 
 
 class TestContrastEndpoints:
@@ -242,9 +237,7 @@ class TestContrastReadiness:
 
     def test_one_boundary_row_cannot_be_both_contrast_halves(self):
         items = [self._stamped("2026-10-29T10:00:00Z")]
-        ready, _, _ = s4_ready(
-            "log", [], window=(_G, _T), items=items, t_anchored=False
-        )
+        ready, _, _ = s4_ready("log", [], window=(_G, _T), items=items, t_anchored=False)
         assert ready is False
 
     def test_unanchored_onset_counts_in_window_new_side(self):

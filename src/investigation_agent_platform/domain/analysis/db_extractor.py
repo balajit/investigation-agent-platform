@@ -14,10 +14,10 @@ import json
 def oracle_fk_sql(schema: str) -> str:
     s = schema.replace("'", "''")
     return (
-        'SELECT c.constraint_name, cc.column_name, c.table_name child_table, '
-        'cc2.table_name parent_table, cc2.column_name parent_column '
-        f'FROM ALL_CONSTRAINTS c JOIN ALL_CONS_COLUMNS cc ON c.constraint_name = cc.constraint_name '
-        f'JOIN ALL_CONS_COLUMNS cc2 ON c.r_constraint_name = cc2.constraint_name '
+        "SELECT c.constraint_name, cc.column_name, c.table_name child_table, "
+        "cc2.table_name parent_table, cc2.column_name parent_column "
+        f"FROM ALL_CONSTRAINTS c JOIN ALL_CONS_COLUMNS cc ON c.constraint_name = cc.constraint_name "
+        f"JOIN ALL_CONS_COLUMNS cc2 ON c.r_constraint_name = cc2.constraint_name "
         f"WHERE c.constraint_type = 'R' AND c.owner = '{s}' "
         "ORDER BY c.constraint_name, cc.position"
     )
@@ -52,7 +52,11 @@ def postgres_table_rows_sql(schema: str) -> str:
 
 def extractor_fingerprint(table_counts: dict[str, int], constraint_hash: str) -> str:
     """Fingerprint (COUNT map + constraint hash) for rebuild gating."""
-    canonical = json.dumps({"counts": dict(sorted(table_counts.items())), "constraints": constraint_hash}, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        {"counts": dict(sorted(table_counts.items())), "constraints": constraint_hash},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
 

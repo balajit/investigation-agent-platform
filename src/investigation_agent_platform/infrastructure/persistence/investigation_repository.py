@@ -393,9 +393,7 @@ class SqlAlchemyInvestigationRepository:
         limit: int,
     ) -> list[UUID]:
         async with rls_session(self._session_factory, tenant_id) as session:
-            stmt = select(InvestigationORM.id).where(
-                InvestigationORM.tenant_id == tenant_id
-            )
+            stmt = select(InvestigationORM.id).where(InvestigationORM.tenant_id == tenant_id)
             if statuses:
                 stmt = stmt.where(InvestigationORM.status.in_(statuses))
             if application_id is not None:

@@ -102,38 +102,44 @@ class SqlAlchemyOnboardingAcceptanceRepository:
         }
         async with rls_session(self._session_factory, tenant_id) as session:
             rows = (
-                await session.execute(
-                    text(
-                        "SELECT id, tenant_id, request_id, revision, "
-                        "idempotency_key, content_hash, schema_version, "
-                        "policy_version, catalog_version, state, state_version "
-                        "FROM onboarding_requests WHERE tenant_id = :tenant_id "
-                        "AND request_id = :request_id AND revision = :revision "
-                        "FOR UPDATE"
-                    ),
-                    coords,
+                (
+                    await session.execute(
+                        text(
+                            "SELECT id, tenant_id, request_id, revision, "
+                            "idempotency_key, content_hash, schema_version, "
+                            "policy_version, catalog_version, state, state_version "
+                            "FROM onboarding_requests WHERE tenant_id = :tenant_id "
+                            "AND request_id = :request_id AND revision = :revision "
+                            "FOR UPDATE"
+                        ),
+                        coords,
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             if not rows:
-                raise AcceptanceStaleError(
-                    "no such onboarding request revision to accept"
-                )
+                raise AcceptanceStaleError("no such onboarding request revision to accept")
             row = rows[0]
             if row["state"] in ("CANCEL_REQUESTED", "CANCELED"):
                 raise AcceptanceStaleError("canceled requests cannot be accepted")
 
             existing = (
-                await session.execute(
-                    text(
-                        "SELECT id, tenant_id, request_id, revision, "
-                        "execution_generation, job_id, workflow_id, state "
-                        "FROM onboarding_dispatches WHERE tenant_id = :tenant_id "
-                        "AND request_id = :request_id AND revision = :revision "
-                        "ORDER BY execution_generation DESC"
-                    ),
-                    coords,
+                (
+                    await session.execute(
+                        text(
+                            "SELECT id, tenant_id, request_id, revision, "
+                            "execution_generation, job_id, workflow_id, state "
+                            "FROM onboarding_dispatches WHERE tenant_id = :tenant_id "
+                            "AND request_id = :request_id AND revision = :revision "
+                            "ORDER BY execution_generation DESC"
+                        ),
+                        coords,
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
 
             if execution_generation is None:
                 if existing:
@@ -144,18 +150,14 @@ class SqlAlchemyOnboardingAcceptanceRepository:
                     (
                         existing_row
                         for existing_row in existing
-                        if existing_row["execution_generation"]
-                        == execution_generation
+                        if existing_row["execution_generation"] == execution_generation
                     ),
                     None,
                 )
                 if match is not None:
                     return self._accepted_from(match)
                 latest = max(
-                    (
-                        existing_row["execution_generation"]
-                        for existing_row in existing
-                    ),
+                    (existing_row["execution_generation"] for existing_row in existing),
                     default=0,
                 )
                 if execution_generation != latest + 1:
@@ -170,8 +172,7 @@ class SqlAlchemyOnboardingAcceptanceRepository:
                     )
                     if latest_row["state"] not in TERMINAL_DISPATCH_STATES:
                         raise AcceptanceGenerationError(
-                            "a new execution generation requires the latest "
-                            "dispatch to be terminal"
+                            "a new execution generation requires the latest dispatch to be terminal"
                         )
                 generation = execution_generation
 
@@ -234,9 +235,7 @@ class SqlAlchemyOnboardingAcceptanceRepository:
                 if cas is None:
                     # Lost a race with a concurrent accept: the winner holds
                     # the row lock, so re-reading sees the committed dispatch.
-                    winner = await self._read_dispatch(
-                        session, coords, generation
-                    )
+                    winner = await self._read_dispatch(session, coords, generation)
                     if winner is not None:
                         await session.execute(
                             text("DELETE FROM background_jobs WHERE id = :job_id"),
@@ -313,9 +312,7 @@ class SqlAlchemyOnboardingAcceptanceRepository:
             return self._accepted_from(stored)
 
     @staticmethod
-    async def _read_dispatch(
-        session: Any, coords: dict[str, Any], generation: int
-    ) -> Any | None:
+    async def _read_dispatch(session: Any, coords: dict[str, Any], generation: int) -> Any | None:
         rows = (
             await session.execute(
                 text(

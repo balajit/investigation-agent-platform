@@ -247,12 +247,8 @@ def upgrade() -> None:
                 nullable=False,
                 server_default=sa.func.now(),
             ),
-            sa.CheckConstraint(
-                "revision >= 1", name="ck_coverage_report_revision_positive"
-            ),
-            sa.CheckConstraint(
-                "generation >= 1", name="ck_coverage_report_generation_positive"
-            ),
+            sa.CheckConstraint("revision >= 1", name="ck_coverage_report_revision_positive"),
+            sa.CheckConstraint("generation >= 1", name="ck_coverage_report_generation_positive"),
             sa.ForeignKeyConstraint(
                 ["tenant_id", "request_id", "revision"],
                 [

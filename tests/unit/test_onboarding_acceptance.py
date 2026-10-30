@@ -63,9 +63,7 @@ class FakeSession:
     async def rollback(self) -> None:
         return None
 
-    async def execute(
-        self, statement: Any, params: dict[str, Any] | None = None
-    ) -> FakeResult:
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> FakeResult:
         sql = str(statement)
         bound = dict(params or {})
         self.owner.statements.append(sql)
@@ -181,9 +179,7 @@ class FakeSession:
             self.owner.dispatches.append(row)
             return FakeResult([{"id": row["id"]}])
         if "record_onboarding_request_audit" in sql:
-            self.owner.audits.append(
-                {**bound, "action": "ACCEPT", "database_role": "iap_app"}
-            )
+            self.owner.audits.append({**bound, "action": "ACCEPT", "database_role": "iap_app"})
             return FakeResult()
         if "FROM onboarding_dispatches WHERE" in sql:
             normalized = {
@@ -257,9 +253,7 @@ async def test_accept_happy_path_persists_all_four_records() -> None:
     )
     assert accepted.state == "PENDING"
     assert accepted.execution_generation == 1
-    assert accepted.workflow_id == deterministic_workflow_id(
-        "tenant-a", draft["request_id"], 1, 1
-    )
+    assert accepted.workflow_id == deterministic_workflow_id("tenant-a", draft["request_id"], 1, 1)
     assert draft["state"] == "QUEUED"
     assert len(factory.jobs) == 1
     assert factory.jobs[0]["workflow_id"] == accepted.workflow_id

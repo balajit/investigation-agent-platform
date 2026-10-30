@@ -128,7 +128,12 @@ def _in_comprehension(node: Any) -> bool:
     while current is not None:
         if current.type in _COMPREHENSION_TYPES:
             return True
-        if current.type in {"function_definition", "async_function_definition", "class_definition", "module"}:
+        if current.type in {
+            "function_definition",
+            "async_function_definition",
+            "class_definition",
+            "module",
+        }:
             return False
         current = current.parent
     return False
@@ -193,15 +198,28 @@ def _collect_rebindings(root: Any, source: bytes, symbol: str) -> list[tuple[Any
     for node in _p.walk(root):
         if node.type == "augmented_assignment":
             named = [c for c in node.children if c.is_named]
-            if named and named[0].type == "identifier" and _p.node_text(named[0], source).strip() == symbol:
+            if (
+                named
+                and named[0].type == "identifier"
+                and _p.node_text(named[0], source).strip() == symbol
+            ):
                 found.append((node, "augmented"))
         elif node.type == "for_statement":
             seen_for, seen_in = False, False
             for child in node.children:
-                if not seen_for and not child.is_named and _p.node_text(child, source).strip() == "for":
+                if (
+                    not seen_for
+                    and not child.is_named
+                    and _p.node_text(child, source).strip() == "for"
+                ):
                     seen_for = True
                     continue
-                if seen_for and not seen_in and not child.is_named and _p.node_text(child, source).strip() == "in":
+                if (
+                    seen_for
+                    and not seen_in
+                    and not child.is_named
+                    and _p.node_text(child, source).strip() == "in"
+                ):
                     seen_in = True
                     break
                 if seen_for and not seen_in and child.is_named:
@@ -214,7 +232,11 @@ def _collect_rebindings(root: Any, source: bytes, symbol: str) -> list[tuple[Any
             for sub in _p.walk(node):
                 if sub.type == "as_pattern_target":
                     for leaf in sub.children:
-                        if leaf.is_named and leaf.type == "identifier" and _p.node_text(leaf, source).strip() == symbol:
+                        if (
+                            leaf.is_named
+                            and leaf.type == "identifier"
+                            and _p.node_text(leaf, source).strip() == symbol
+                        ):
                             found.append((node, "context_target"))
                             break
                     break
@@ -228,7 +250,11 @@ def _collect_deletions(root: Any, source: bytes, symbol: str) -> list[tuple[Any,
         if node.type != "delete_statement":
             continue
         for child in node.children:
-            if child.is_named and child.type == "identifier" and _p.node_text(child, source).strip() == symbol:
+            if (
+                child.is_named
+                and child.type == "identifier"
+                and _p.node_text(child, source).strip() == symbol
+            ):
                 found.append((node, _is_conditional(node)))
     return found
 
@@ -260,7 +286,9 @@ def _collect_assignments(
             continue
         left = named[0]
         # annotated `x: int` without value has only identifier + type children
-        has_equals = any((not c.is_named and _p.node_text(c, source).strip() == "=") for c in node.children)
+        has_equals = any(
+            (not c.is_named and _p.node_text(c, source).strip() == "=") for c in node.children
+        )
         if not has_equals:
             # Bare annotation: record as no-binding candidate.
             if left.type == "identifier" and _p.node_text(left, source).strip() == symbol:
@@ -281,7 +309,11 @@ def _collect_assignments(
         if symbol in targets:
             if len(targets) > 1:
                 # Unpacked: pair positionally with RHS expression_list.
-                rhs_items = [c for c in value.children if c.is_named] if value.type in {"expression_list", "tuple"} else [value]
+                rhs_items = (
+                    [c for c in value.children if c.is_named]
+                    if value.type in {"expression_list", "tuple"}
+                    else [value]
+                )
                 idx = targets.index(symbol)
                 if value.type in {"expression_list", "tuple"} and len(rhs_items) == len(targets):
                     found.append((node, rhs_items[idx], scope_label(node), "unpacked"))
@@ -319,24 +351,56 @@ def resolve_python_value_fact(
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
 
     if reason:
-        return _unresolved(repository, revision or None, symbol, reason, evidence_ids, version_label)
+        return _unresolved(
+            repository, revision or None, symbol, reason, evidence_ids, version_label
+        )
     assert location is not None
     if not symbol or not symbol.strip() or not _lit.is_valid_name(symbol.strip()):
-        return _unresolved(repository, revision or None, symbol, "missing_symbol_name", evidence_ids, version_label)
+        return _unresolved(
+            repository, revision or None, symbol, "missing_symbol_name", evidence_ids, version_label
+        )
     symbol = symbol.strip()
     if not source_path.lower().endswith(".py"):
-        return _unresolved(repository, revision or None, symbol, "not_a_python_source_file", evidence_ids, version_label)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "not_a_python_source_file",
+            evidence_ids,
+            version_label,
+        )
     if not repository:
-        return _unresolved(repository, revision or None, symbol, "repository_identity_unavailable", evidence_ids, version_label)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "repository_identity_unavailable",
+            evidence_ids,
+            version_label,
+        )
 
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        bad = _unresolved(repository, revision or None, symbol, f"python_parser_unavailable:{type(exc).__name__}", evidence_ids, version_label)
+        bad = _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            f"python_parser_unavailable:{type(exc).__name__}",
+            evidence_ids,
+            version_label,
+        )
         return bad
     if _p.has_syntax_error(tree.root_node):
-        return _unresolved(repository, revision or None, symbol, "python_syntax_error_or_incomplete_source_window", evidence_ids, version_label)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "python_syntax_error_or_incomplete_source_window",
+            evidence_ids,
+            version_label,
+        )
 
     # global/nonlocal for this name anywhere in window forces scope caution.
     for node in _p.walk(tree.root_node):
@@ -349,7 +413,15 @@ def resolve_python_value_fact(
                         "line_end": lines[0].number + node.end_point[0],
                     }
                 )
-                return _partial(repository, revision, symbol, "global_nonlocal_scope_boundary", evidence_ids, version_label, loc)
+                return _partial(
+                    repository,
+                    revision,
+                    symbol,
+                    "global_nonlocal_scope_boundary",
+                    evidence_ids,
+                    version_label,
+                    loc,
+                )
 
     candidates = _collect_assignments(tree.root_node, source_bytes, symbol)
     if scope:
@@ -364,7 +436,14 @@ def resolve_python_value_fact(
             (n, c) for n, c in deletions_all if _p.matches_scope(_scope_of(n, source_bytes), scope)
         ]
     if not candidates and not rebindings and not deletions_all:
-        return _unresolved(repository, revision or None, symbol, "symbol_not_in_window", evidence_ids, version_label)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "symbol_not_in_window",
+            evidence_ids,
+            version_label,
+        )
     valued = [(n, v, s, k) for n, v, s, k in candidates if v is not None]
     # Source-order deletion analysis: an unconditional `del` positioned
     # after the last write removes the binding; anything else (conditional
@@ -373,10 +452,19 @@ def resolve_python_value_fact(
         n.start_point for n, _ in rebindings
     ]
     latest_write = max(write_positions) if write_positions else (-1, -1)
-    killer = [n for n, conditional in deletions_all if not conditional and tuple(n.start_point) > tuple(latest_write)]
+    killer = [
+        n
+        for n, conditional in deletions_all
+        if not conditional and tuple(n.start_point) > tuple(latest_write)
+    ]
     maybe = [n for n, conditional in deletions_all if conditional]
     # annotation-only with no value anywhere
-    if candidates and all(v is None for _, v, _, _ in candidates) and not rebindings and not deletions_all:
+    if (
+        candidates
+        and all(v is None for _, v, _, _ in candidates)
+        and not rebindings
+        and not deletions_all
+    ):
         loc = location.model_copy(
             update={
                 "line_start": lines[0].number + candidates[0][0].start_point[0],
@@ -399,6 +487,7 @@ def resolve_python_value_fact(
             limitation_codes=("annotation_without_assignment",),
             parser_version=_p.parser_version(),
         )
+
     def _loc(node: Any) -> Any:
         return location.model_copy(
             update={
@@ -430,18 +519,36 @@ def resolve_python_value_fact(
         anchor = maybe[0] if not valued else valued[0][0]
         raw = _p.node_text(valued[0][1], source_bytes).strip() if valued else None
         return _partial(
-            repository, revision, symbol, "possible_deletion",
-            evidence_ids, version_label, _loc(anchor), raw=raw,
+            repository,
+            revision,
+            symbol,
+            "possible_deletion",
+            evidence_ids,
+            version_label,
+            _loc(anchor),
+            raw=raw,
         )
     if rebindings and not valued:
         # Only augmented/loop/context writes: no baseline value to report.
         return _partial(
-            repository, revision, symbol, "rebinding_without_baseline",
-            evidence_ids, version_label, _loc(rebindings[0][0]),
+            repository,
+            revision,
+            symbol,
+            "rebinding_without_baseline",
+            evidence_ids,
+            version_label,
+            _loc(rebindings[0][0]),
         )
     scopes = {s for _, _, s, _ in valued}
     if len(scopes) > 1 and not scope:
-        return _unresolved(repository, revision or None, symbol, "ambiguous_target_identity", evidence_ids, version_label)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "ambiguous_target_identity",
+            evidence_ids,
+            version_label,
+        )
     if any(k == "unpacked_arity_mismatch" for _, _, _, k in valued):
         node = next(n for n, _, _, k in valued if k == "unpacked_arity_mismatch")
         loc = location.model_copy(
@@ -450,7 +557,15 @@ def resolve_python_value_fact(
                 "line_end": lines[0].number + node.end_point[0],
             }
         )
-        return _partial(repository, revision, symbol, "unpacked_arity_mismatch", evidence_ids, version_label, loc)
+        return _partial(
+            repository,
+            revision,
+            symbol,
+            "unpacked_arity_mismatch",
+            evidence_ids,
+            version_label,
+            loc,
+        )
     if any(k == "complex_target" for _, _, _, k in valued):
         node = next(n for n, _, _, k in valued if k == "complex_target")
         loc = location.model_copy(
@@ -459,7 +574,15 @@ def resolve_python_value_fact(
                 "line_end": lines[0].number + node.end_point[0],
             }
         )
-        return _partial(repository, revision, symbol, "complex_assignment_target", evidence_ids, version_label, loc)
+        return _partial(
+            repository,
+            revision,
+            symbol,
+            "complex_assignment_target",
+            evidence_ids,
+            version_label,
+            loc,
+        )
     if len(valued) > 1 or (len(valued) == 1 and rebindings):
         # Multiple writes (plain, augmented, loop, or context rebinding):
         # possible overwrite; report first value as PARTIAL.
@@ -471,7 +594,16 @@ def resolve_python_value_fact(
                 "line_end": lines[0].number + node.end_point[0],
             }
         )
-        return _partial(repository, revision, symbol, "multiple_write_sites", evidence_ids, version_label, loc, raw=raw)
+        return _partial(
+            repository,
+            revision,
+            symbol,
+            "multiple_write_sites",
+            evidence_ids,
+            version_label,
+            loc,
+            raw=raw,
+        )
     node, value_node, _, _ = valued[0]
     raw = _p.node_text(value_node, source_bytes).strip()
     evaluated, limitation = _expr.evaluate(value_node, source_bytes)
@@ -482,7 +614,16 @@ def resolve_python_value_fact(
         }
     )
     if limitation is not None or evaluated is None:
-        return _partial(repository, revision, symbol, limitation or "unsupported_expression", evidence_ids, version_label, loc, raw=raw)
+        return _partial(
+            repository,
+            revision,
+            symbol,
+            limitation or "unsupported_expression",
+            evidence_ids,
+            version_label,
+            loc,
+            raw=raw,
+        )
     return CodeFactResolutionV2(
         status=CodeFactStatus.RESOLVED,
         repository=repository,
@@ -562,43 +703,106 @@ def resolve_python_param_default_fact(
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
 
     if reason:
-        return _unresolved(repository, revision or None, symbol, reason, evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            reason,
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     assert location is not None
     if not symbol or not symbol.strip():
-        return _unresolved(repository, revision or None, symbol, "missing_symbol_name", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "missing_symbol_name",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     symbol = symbol.strip()
     if not function_scope or not function_scope.strip():
-        return _unresolved(repository, revision or None, symbol, "missing_function_scope", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "missing_function_scope",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     if not source_path.lower().endswith(".py"):
-        return _unresolved(repository, revision or None, symbol, "not_a_python_source_file", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "not_a_python_source_file",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     if not repository:
-        return _unresolved(repository, revision or None, symbol, "repository_identity_unavailable", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "repository_identity_unavailable",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
 
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        return _unresolved(repository, revision or None, symbol, f"python_parser_unavailable:{type(exc).__name__}", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            f"python_parser_unavailable:{type(exc).__name__}",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     if _p.has_syntax_error(tree.root_node):
-        return _unresolved(repository, revision or None, symbol, "python_syntax_error_or_incomplete_source_window", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "python_syntax_error_or_incomplete_source_window",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
 
     matches = list(_function_nodes(tree.root_node, source_bytes, function_scope.strip()))
     if len(matches) != 1:
         code = "function_not_found" if not matches else "ambiguous_function_definition"
-        return _unresolved(repository, revision or None, symbol, code, evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            code,
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     func = matches[0]
     params = next((c for c in func.children if c.type == "parameters"), None)
     if params is None:
-        return _unresolved(repository, revision or None, symbol, "parameter_not_found", evidence_ids, version_label,
-                            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+        return _unresolved(
+            repository,
+            revision or None,
+            symbol,
+            "parameter_not_found",
+            evidence_ids,
+            version_label,
+            semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+        )
     for child in params.children:
         if child.type in {"default_parameter", "typed_default_parameter"}:
             name = child.child_by_field_name("name")
@@ -609,8 +813,15 @@ def resolve_python_param_default_fact(
                 named = [c for c in child.children if c.is_named]
                 value_node = named[-1] if named else None
             if value_node is None:
-                return _unresolved(repository, revision or None, symbol, "parameter_default_missing", evidence_ids, version_label,
-                                    semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+                return _unresolved(
+                    repository,
+                    revision or None,
+                    symbol,
+                    "parameter_default_missing",
+                    evidence_ids,
+                    version_label,
+                    semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+                )
             raw = _p.node_text(value_node, source_bytes).strip()
             evaluated, limitation = _expr.evaluate(value_node, source_bytes)
             loc = location.model_copy(
@@ -620,9 +831,17 @@ def resolve_python_param_default_fact(
                 }
             )
             if limitation is not None or evaluated is None:
-                return _partial(repository, revision, f"{function_scope}.{symbol}", limitation or "unsupported_expression",
-                                evidence_ids, version_label, loc,
-                                semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION, raw=raw)
+                return _partial(
+                    repository,
+                    revision,
+                    f"{function_scope}.{symbol}",
+                    limitation or "unsupported_expression",
+                    evidence_ids,
+                    version_label,
+                    loc,
+                    semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+                    raw=raw,
+                )
             assumptions: tuple[str, ...] = ()
             if evaluated[0] in {"list", "dict", "set"}:
                 assumptions = ("mutable_default_shared",)
@@ -671,5 +890,12 @@ def resolve_python_param_default_fact(
                 limitation_codes=("parameter_has_no_default",),
                 parser_version=_p.parser_version(),
             )
-    return _unresolved(repository, revision or None, symbol, "parameter_not_found", evidence_ids, version_label,
-                        semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION)
+    return _unresolved(
+        repository,
+        revision or None,
+        symbol,
+        "parameter_not_found",
+        evidence_ids,
+        version_label,
+        semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+    )

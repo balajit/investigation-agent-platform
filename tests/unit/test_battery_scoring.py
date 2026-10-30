@@ -792,9 +792,7 @@ class TestCachedPrimary:
             return 200, {
                 "investigation": {
                     "status": "CANCELLED",
-                    "metadata": {
-                        "disposition": {"action": "duplicate", "primary_target_id": pid}
-                    },
+                    "metadata": {"disposition": {"action": "duplicate", "primary_target_id": pid}},
                 }
             }
 

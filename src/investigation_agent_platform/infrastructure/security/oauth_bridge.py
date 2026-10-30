@@ -75,9 +75,7 @@ def build_oauth_provider_from_env() -> tuple[str, Any] | None:
         client_secret_env=os.environ.get("IAP_OAUTH_CLIENT_SECRET_ENV", "IAP_OAUTH_CLIENT_SECRET"),
         scope=os.environ.get("IAP_OAUTH_SCOPE", ""),
         allowed_hosts=frozenset(
-            h.strip()
-            for h in os.environ.get("IAP_OAUTH_ALLOWED_HOSTS", "").split(",")
-            if h.strip()
+            h.strip() for h in os.environ.get("IAP_OAUTH_ALLOWED_HOSTS", "").split(",") if h.strip()
         ),
     )
     return provider_id, OAuth2ClientCredentialsProvider(config=config)

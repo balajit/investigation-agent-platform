@@ -44,7 +44,9 @@ _JDBC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-_CRED_PREFIX_RE = re.compile(r"^(?P<prefix>jdbc:[^:]+:(?:thin:)?(?:@(?://)?|//))(?P<creds>[^@/]*@)?")
+_CRED_PREFIX_RE = re.compile(
+    r"^(?P<prefix>jdbc:[^:]+:(?:thin:)?(?:@(?://)?|//))(?P<creds>[^@/]*@)?"
+)
 
 
 def parse_jdbc_url(url: str) -> tuple[str, str | None, str | None]:
@@ -305,7 +307,9 @@ def derive_profile(
         )
     if take_any("eureka.client.") or take_any("spring.cloud.discovery."):
         needs_review.append("services[].dependencies (registry entries)")
-        notes.append("Discovery/registry entries seen; dependency candidates need review (inferred).")
+        notes.append(
+            "Discovery/registry entries seen; dependency candidates need review (inferred)."
+        )
 
     # -- leftovers: sensitivity recheck, then unmapped ------------------------
     for key in sorted(props):

@@ -53,8 +53,12 @@ def _ev(provider, etype, operation="SEARCH_CODE", path="src/a.py"):
                 provider_type="test", operation=operation, normalized_query_hash="h"
             ),
             source_location=SourceLocation(
-                system="git", identifier="x", file_path=path,
-                line_start=1, line_end=5, revision="abc123",
+                system="git",
+                identifier="x",
+                file_path=path,
+                line_start=1,
+                line_end=5,
+                revision="abc123",
             ),
         ),
         freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
@@ -77,7 +81,10 @@ def _hyp(statement, supporting=()):
 def _chain(ids):
     return [
         CausalRelationship(
-            cause="c", mechanism="m", effect="e", confidence=0.7,
+            cause="c",
+            mechanism="m",
+            effect="e",
+            confidence=0.7,
             evidence_ids=list(ids),
         )
     ]
@@ -88,17 +95,28 @@ def test_gate_zero_unsupported_verified_on_negatives():
     policy = RootCauseVerificationPolicy()
     items = [_ev("a", EvidenceType.LOG), _ev("b", EvidenceType.DATABASE_STATE)]
     # Insufficient: no bound evidence.
-    assert engine.evaluate_hypothesis(
-        _hyp("x causes y"), [], [], [], policy
-    ).status == VerificationStatus.INCONCLUSIVE
+    assert (
+        engine.evaluate_hypothesis(_hyp("x causes y"), [], [], [], policy).status
+        == VerificationStatus.INCONCLUSIVE
+    )
     # Concession.
-    assert engine.evaluate_hypothesis(
-        _hyp("could not determine x"), items, [], _chain([i.evidence_id for i in items]), policy
-    ).status == VerificationStatus.INCONCLUSIVE
+    assert (
+        engine.evaluate_hypothesis(
+            _hyp("could not determine x"), items, [], _chain([i.evidence_id for i in items]), policy
+        ).status
+        == VerificationStatus.INCONCLUSIVE
+    )
     # Definition without range read.
-    assert engine.evaluate_hypothesis(
-        _hyp("widget is defined in src/a.py"), items, [], _chain([i.evidence_id for i in items]), policy
-    ).status == VerificationStatus.INCONCLUSIVE
+    assert (
+        engine.evaluate_hypothesis(
+            _hyp("widget is defined in src/a.py"),
+            items,
+            [],
+            _chain([i.evidence_id for i in items]),
+            policy,
+        ).status
+        == VerificationStatus.INCONCLUSIVE
+    )
     # Contradicted.
     contradiction = Contradiction(
         tenant_id="t",
@@ -107,12 +125,21 @@ def test_gate_zero_unsupported_verified_on_negatives():
         severity=ContradictionSeverity.HIGH,
         resolution_status="UNRESOLVED",
     )
-    assert engine.evaluate_hypothesis(
-        _hyp("x causes y"), items, [contradiction], _chain([i.evidence_id for i in items]),
-        policy,
-    ) is not None
+    assert (
+        engine.evaluate_hypothesis(
+            _hyp("x causes y"),
+            items,
+            [contradiction],
+            _chain([i.evidence_id for i in items]),
+            policy,
+        )
+        is not None
+    )
     result = engine.evaluate_hypothesis(
-        _hyp("x causes y"), items, [contradiction], _chain([i.evidence_id for i in items]),
+        _hyp("x causes y"),
+        items,
+        [contradiction],
+        _chain([i.evidence_id for i in items]),
         policy,
     )
     # Contradiction tested separately below; this path must not VERIFY either.

@@ -44,14 +44,13 @@ RETRY_OF = "RETRY_OF"
 POSSIBLY_RELATED = "POSSIBLY_RELATED"
 RELATES_TO = "RELATES_TO"
 
+
 # Node-ID shape for investigation-level links in `evidence_relationships`.
 def investigation_node(investigation_id: UUID | str) -> str:
     return f"investigation:{investigation_id}"
 
 
-def _conclusion_tenant(
-    args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> Any | None:
+def _conclusion_tenant(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any | None:
     """Tenant lives on the conclusion object for re-verification."""
     try:
         conclusion = kwargs.get("conclusion")
@@ -168,7 +167,62 @@ def log_retention_days() -> int:
 
 
 _STOPWORDS = frozenset(
-    ["a", "an", "the", "and", "or", "for", "with", "from", "that", "this", "these", "those", "are", "was", "were", "has", "have", "had", "not", "but", "also", "when", "what", "which", "there", "their", "they", "them", "then", "than", "into", "over", "under", "again", "once", "here", "how", "why", "can", "will", "just", "about", "after", "before", "during", "while", "where", "error", "failed", "failure", "issue", "problem", "check", "please"]
+    [
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "are",
+        "was",
+        "were",
+        "has",
+        "have",
+        "had",
+        "not",
+        "but",
+        "also",
+        "when",
+        "what",
+        "which",
+        "there",
+        "their",
+        "they",
+        "them",
+        "then",
+        "than",
+        "into",
+        "over",
+        "under",
+        "again",
+        "once",
+        "here",
+        "how",
+        "why",
+        "can",
+        "will",
+        "just",
+        "about",
+        "after",
+        "before",
+        "during",
+        "while",
+        "where",
+        "error",
+        "failed",
+        "failure",
+        "issue",
+        "problem",
+        "check",
+        "please",
+    ]
 )
 
 _PATH_RE = re.compile(r"(?<![\w])/(?:[\w.\-]+/)*[\w.\-]+")
@@ -267,7 +321,9 @@ def decide(candidates: list[SimilarMatch]) -> Disposition:
             )
         # Case G: proceed with the run, link POSSIBLY_RELATED to the best weak match.
         best = max(weak, key=lambda c: (c.score, c.created_at.isoformat()))
-        others = tuple(c.investigation_id for c in weak if c.investigation_id != best.investigation_id)[:4]
+        others = tuple(
+            c.investigation_id for c in weak if c.investigation_id != best.investigation_id
+        )[:4]
         return Disposition(
             action=DispositionAction.POSSIBLY_RELATED,
             start_run=True,
@@ -291,9 +347,7 @@ def decide(candidates: list[SimilarMatch]) -> Disposition:
         # Case A: mark duplicate of the running one; never start a second run.
         primary = actives[-1]
         others = tuple(
-            c.investigation_id
-            for c in strong
-            if c.investigation_id != primary.investigation_id
+            c.investigation_id for c in strong if c.investigation_id != primary.investigation_id
         )[:4]
         return Disposition(
             action=DispositionAction.DUPLICATE,
@@ -401,7 +455,9 @@ def apply_declined(disposition: Disposition) -> Disposition:
     )
 
 
-def with_verdict(disposition: Disposition, verdict: dict[str, Any], seed: dict[str, Any]) -> Disposition:
+def with_verdict(
+    disposition: Disposition, verdict: dict[str, Any], seed: dict[str, Any]
+) -> Disposition:
     """§2.2 case B: fold the §2.3 re-verification verdict into the disposition."""
     if verdict.get("verdict") == "CONFIRMED":
         return Disposition(
@@ -476,7 +532,10 @@ async def reverify_conclusion(
             decayed.append({"evidence_id": str(eid), "reason": "evidence row no longer present"})
 
     for eid, ev in rows.items():
-        etype = str(getattr(getattr(ev, "evidence_type", ""), "value", getattr(ev, "evidence_type", "")) or "").upper()
+        etype = str(
+            getattr(getattr(ev, "evidence_type", ""), "value", getattr(ev, "evidence_type", ""))
+            or ""
+        ).upper()
         snippet = str(getattr(ev, "content_snippet", "") or "")
         if etype in _CODE_EVIDENCE_TYPES:
             checked.append(f"code:{eid}")
@@ -486,10 +545,14 @@ async def reverify_conclusion(
             try:
                 live = await code_reader(ev)
             except Exception as exc:
-                decayed.append({"evidence_id": str(eid), "reason": f"code citation unresolvable: {exc}"})
+                decayed.append(
+                    {"evidence_id": str(eid), "reason": f"code citation unresolvable: {exc}"}
+                )
                 continue
             if live is None:
-                skipped.append({"evidence_id": str(eid), "reason": "code reader returned no content"})
+                skipped.append(
+                    {"evidence_id": str(eid), "reason": "code reader returned no content"}
+                )
             elif excerpt_hash(live) != excerpt_hash(snippet):
                 decayed.append({"evidence_id": str(eid), "reason": "cited range content changed"})
         elif etype in _LOG_EVIDENCE_TYPES:
@@ -501,7 +564,9 @@ async def reverify_conclusion(
                 horizon = datetime.now(UTC) - timedelta(days=log_retention_days())
                 obs = observed if observed.tzinfo else observed.replace(tzinfo=UTC)
                 if obs < horizon:
-                    decayed.append({"evidence_id": str(eid), "reason": "log window aged out of retention"})
+                    decayed.append(
+                        {"evidence_id": str(eid), "reason": "log window aged out of retention"}
+                    )
         elif etype in _PROBE_EVIDENCE_TYPES:
             checked.append(f"probe:{eid}")
             if probe_runner is None:
@@ -513,16 +578,25 @@ async def reverify_conclusion(
                 decayed.append({"evidence_id": str(eid), "reason": f"probe re-issue failed: {exc}"})
                 continue
             if outcome is False:
-                decayed.append({"evidence_id": str(eid), "reason": "probe status/shape differs from recorded excerpt"})
+                decayed.append(
+                    {
+                        "evidence_id": str(eid),
+                        "reason": "probe status/shape differs from recorded excerpt",
+                    }
+                )
         else:
             checked.append(f"present:{eid}")
 
     # Step 5: new HIGH/CRITICAL contradictions since the conclusion.
     try:
         generated_at = getattr(conclusion, "generated_at", None)
-        contradictions = await contradiction_repo.find_by_investigation_id(tenant_id, prior_investigation_id)
+        contradictions = await contradiction_repo.find_by_investigation_id(
+            tenant_id, prior_investigation_id
+        )
         for c in contradictions or []:
-            severity = str(getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", "")) or "").upper()
+            severity = str(
+                getattr(getattr(c, "severity", ""), "value", getattr(c, "severity", "")) or ""
+            ).upper()
             if severity not in ("HIGH", "CRITICAL"):
                 continue
             if getattr(c, "resolution_status", "UNRESOLVED") != "UNRESOLVED":
@@ -599,7 +673,9 @@ async def find_similar(
             rows = await code_issue_index.sessions_for_fingerprint(fingerprint)
             for row in rows or []:
                 try:
-                    inv_id = row[1] if isinstance(row, (tuple, list)) else row.get("investigation_id")
+                    inv_id = (
+                        row[1] if isinstance(row, (tuple, list)) else row.get("investigation_id")
+                    )
                     inv_id = inv_id if isinstance(inv_id, UUID) else UUID(str(inv_id))
                     if inv_id not in exact_ids:
                         exact_ids.append(inv_id)
@@ -615,7 +691,9 @@ async def find_similar(
         matches.append(
             SimilarMatch(
                 investigation_id=inv.id,
-                status=str(getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))),
+                status=str(
+                    getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))
+                ),
                 conclusion_status=await _conclusion_status_async(inv),
                 created_at=getattr(inv, "created_at", datetime.now(UTC)),
                 matched_by="fingerprint",
@@ -657,7 +735,9 @@ async def find_similar(
             matches.append(
                 SimilarMatch(
                     investigation_id=uid,
-                    status=str(getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))),
+                    status=str(
+                        getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))
+                    ),
                     conclusion_status=await _conclusion_status_async(inv),
                     created_at=created or datetime.now(UTC),
                     matched_by="fingerprint",
@@ -675,7 +755,9 @@ async def find_similar(
         matches.append(
             SimilarMatch(
                 investigation_id=uid,
-                status=str(getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))),
+                status=str(
+                    getattr(getattr(inv, "status", ""), "value", getattr(inv, "status", ""))
+                ),
                 conclusion_status=await _conclusion_status_async(inv),
                 created_at=created or datetime.now(UTC),
                 matched_by="entity" if shared_entities else "text",
@@ -756,15 +838,29 @@ async def disposition_for_request(
             code_issue_index=code_issue_index,
         )
         disposition = decide(matches)
-        if disposition.action == DispositionAction.FOLLOW_UP and disposition.primary_target_id is not None:
+        if (
+            disposition.action == DispositionAction.FOLLOW_UP
+            and disposition.primary_target_id is not None
+        ):
             # Provisional case B: run the §2.3 verification pass.
-            verdict: dict[str, Any] = {"verdict": "STALE", "checked": [], "decayed": [], "skipped": []}
+            verdict: dict[str, Any] = {
+                "verdict": "STALE",
+                "checked": [],
+                "decayed": [],
+                "skipped": [],
+            }
             seed: dict[str, Any] = {}
             try:
                 prior = await investigation_repo.get_by_id(tenant_id, disposition.primary_target_id)
                 conc = getattr(prior, "conclusion", None) if prior is not None else None
-                if conc is None and finding_repo is not None and hasattr(finding_repo, "get_conclusion"):
-                    conc = await finding_repo.get_conclusion(tenant_id, disposition.primary_target_id)
+                if (
+                    conc is None
+                    and finding_repo is not None
+                    and hasattr(finding_repo, "get_conclusion")
+                ):
+                    conc = await finding_repo.get_conclusion(
+                        tenant_id, disposition.primary_target_id
+                    )
                 if conc is None:
                     verdict = {
                         "verdict": "STALE",

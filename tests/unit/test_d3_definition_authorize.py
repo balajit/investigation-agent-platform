@@ -257,9 +257,7 @@ def test_d3p_n13_exact_tuple_association_admitted_satisfaction_refused() -> None
     assert decision.declaration_requirement_satisfied is False
     assert requires_declaration_proof(decision) is False
     assert "no-authorized" not in decision.reason_code  # reason names admissibility, not proof
-    assert "no AUTHORIZED" not in repr(decision) and "AUTHORIZED" not in str(
-        decision.stage1.value
-    )
+    assert "no AUTHORIZED" not in repr(decision) and "AUTHORIZED" not in str(decision.stage1.value)
 
 
 def test_d3p_n13b_fully_valid_still_insufficient() -> None:
@@ -390,7 +388,11 @@ def test_d3p_n19a_no_authorized_literal_in_shadow_modules() -> None:
         "ABSTAINED",
         "UNAVAILABLE",
     }
-    assert {m.value for m in ShadowOutcome} == {"OBSERVATION_ADMISSIBLE", "ABSTAINED", "UNAVAILABLE"}
+    assert {m.value for m in ShadowOutcome} == {
+        "OBSERVATION_ADMISSIBLE",
+        "ABSTAINED",
+        "UNAVAILABLE",
+    }
 
 
 def test_d3p_n19b_no_consumer_outside_definition_modules() -> None:
@@ -414,9 +416,7 @@ def test_d3p_n19b_no_consumer_outside_definition_modules() -> None:
     consumers: list[str] = []
     root = Path(defmod.__file__).resolve().parents[4]
     src = root / "src" / "investigation_agent_platform"
-    for path in list((src / "application").rglob("*.py")) + list(
-        (src / "domain").rglob("*.py")
-    ):
+    for path in list((src / "application").rglob("*.py")) + list((src / "domain").rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         rel = str(path.relative_to(root))
@@ -464,7 +464,8 @@ def test_d3p_n19b_flags_have_no_src_consumers() -> None:
         except (OSError, UnicodeDecodeError):
             continue
         if "shadow_typed_definitions_enabled" in text or (
-            "typed_definitions_enabled" in text and "shadow_" not in text.split("typed_definitions_enabled")[0][-80:]
+            "typed_definitions_enabled" in text
+            and "shadow_" not in text.split("typed_definitions_enabled")[0][-80:]
         ):
             hits.append(str(path))
     # tests/ may reference them; src/ readers are limited to the
@@ -475,7 +476,11 @@ def test_d3p_n19b_flags_have_no_src_consumers() -> None:
     src_hits = [h for h in hits if "/src/" in h]
     allowed = {"definition_shadow.py", "activities.py"}
     assert all(Path(h).name in allowed for h in src_hits), src_hits
-    forbidden = [h for h in src_hits if "/application/investigation/" in h or "/domain/" in h and "proof" not in h]
+    forbidden = [
+        h
+        for h in src_hits
+        if "/application/investigation/" in h or "/domain/" in h and "proof" not in h
+    ]
     assert forbidden == [], forbidden
 
 

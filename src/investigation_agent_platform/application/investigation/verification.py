@@ -3622,9 +3622,7 @@ class VerificationEngine:
         if target is not None and target.commit_id:
             want = str(target.commit_id).strip().casefold()
             reads = [
-                i
-                for i in reads
-                if VerificationEngine._item_revision(i).strip().casefold() == want
+                i for i in reads if VerificationEngine._item_revision(i).strip().casefold() == want
             ]
             if not reads:
                 return (False, f"no range read at cited revision {target.commit_id}")
@@ -7665,9 +7663,7 @@ class VerificationEngine:
         if kind_gate is None:
             _typed_kind = getattr(hypothesis, "claim_kind", None)
             try:
-                _typed_kind = (
-                    ClaimKind(_typed_kind) if _typed_kind is not None else None
-                )
+                _typed_kind = ClaimKind(_typed_kind) if _typed_kind is not None else None
             except ValueError:
                 _typed_kind = None
             if _typed_kind is None:

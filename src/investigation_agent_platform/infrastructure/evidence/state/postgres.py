@@ -74,7 +74,9 @@ class AsyncPostgresStateAdapter:
         profile: ApplicationProfile,
         correlation_id: str | None = None,
     ) -> EvidenceQueryResult:
-        with tracer.start_as_current_span("AsyncPostgresStateAdapter.get_application_state") as span:
+        with tracer.start_as_current_span(
+            "AsyncPostgresStateAdapter.get_application_state"
+        ) as span:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("template_id", request.template_id)
             if correlation_id:

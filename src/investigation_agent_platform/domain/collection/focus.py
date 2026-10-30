@@ -92,9 +92,7 @@ def focus_from_reason_data(reason_data: dict[str, Any] | None) -> FocusPoint | N
         return None
 
 
-def detect_shift(
-    prev: FocusPoint | None, curr: FocusPoint | None
-) -> FocusShift:
+def detect_shift(prev: FocusPoint | None, curr: FocusPoint | None) -> FocusShift:
     """Name the movement from prev focus to curr focus.
 
     No previous focus means nothing to pivot from (NONE, not PIVOTED —

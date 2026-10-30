@@ -58,7 +58,9 @@ def _policy(**over: Any) -> DecisionPolicy:
 
 
 def _strip(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")}
+    return {
+        k: v for k, v in record.items() if k not in ("evidence_id", "content_hash", "premise_type")
+    }
 
 
 def _assemble(
@@ -70,9 +72,12 @@ def _assemble(
     premises: list[dict[str, Any]] = []
     for record in records:
         art = _strip(record)
-        digest = "sha256:" + hashlib.sha256(
-            json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ).hexdigest()
+        digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(art, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+        )
         pid = str(record["evidence_id"])
         artifacts[pid] = art
         hashes[pid] = digest
@@ -130,11 +135,19 @@ def _bindings_for(records: list[dict[str, Any]], rule_id: str) -> list[dict[str,
         art = asm["artifacts"][pid]
         scope = art.get("scope") if isinstance(art.get("scope"), dict) else {}
         repo = str(art.get("repository") or scope.get("repository") or "")
-        out.append({"evidence_id": pid, "content_digest": str(premise["content_hash"]), "repository_id": repo})
+        out.append(
+            {
+                "evidence_id": pid,
+                "content_digest": str(premise["content_hash"]),
+                "repository_id": repo,
+            }
+        )
     return out
 
 
-def _evidence_bytes(rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any) -> tuple[bytes, dict[str, Any]]:
+def _evidence_bytes(
+    rule_id: str, records: list[dict[str, Any]], proposition: dict[str, Any], **manifest_kw: Any
+) -> tuple[bytes, dict[str, Any]]:
     from investigation_agent_platform.domain.proof.certificate import certify
 
     asm = _assemble(rule_id, records, proposition, **manifest_kw)
@@ -146,7 +159,11 @@ def _evidence_bytes(rule_id: str, records: list[dict[str, Any]], proposition: di
         "manifest": manifest_to_json(asm["manifest"]),
         "artifacts": asm["artifacts"],
     }
-    return encode_evidence_bytes(payload), {"cert": cert, "manifest": asm["manifest"], "artifacts": asm["artifacts"]}
+    return encode_evidence_bytes(payload), {
+        "cert": cert,
+        "manifest": asm["manifest"],
+        "artifacts": asm["artifacts"],
+    }
 
 
 def manifest_to_json(manifest: Any) -> dict[str, Any]:
@@ -210,9 +227,19 @@ def test_expand_counts_and_ids_per_kind() -> None:
 def test_expand_unknown_kind_unsupported_without_checker(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
     monkeypatch.setattr(
-        obligations_mod, "check_certificate", lambda *a, **k: called.append("checker") or (CheckerOutcome.VALID, [])
+        obligations_mod,
+        "check_certificate",
+        lambda *a, **k: called.append("checker") or (CheckerOutcome.VALID, []),
     )
-    evidence = encode_evidence_bytes({"rule_id": "causal/v1", "proposition": {}, "certificate": None, "manifest": {}, "artifacts": {}})
+    evidence = encode_evidence_bytes(
+        {
+            "rule_id": "causal/v1",
+            "proposition": {},
+            "certificate": None,
+            "manifest": {},
+            "artifacts": {},
+        }
+    )
     trusted = _trusted_bytes([], None)
     decision, reason = decide_guarded_promotion(_policy(), evidence, trusted)
     assert decision == PublicationDecision.DENY
@@ -285,7 +312,9 @@ def test_open_call_edge_unpinned_denies() -> None:
 
 def test_policy_wrong_repository_denies() -> None:
     evidence, trusted, _ = _guarded_definition()
-    decision, reason = decide_guarded_promotion(_policy(repositories=("other/repo",)), evidence, trusted)
+    decision, reason = decide_guarded_promotion(
+        _policy(repositories=("other/repo",)), evidence, trusted
+    )
     assert decision == PublicationDecision.DENY
     assert reason.startswith(f"{DenyReason.POLICY_DENIED.value}:policy-scope:")
 
@@ -295,12 +324,15 @@ def test_policy_prefix_repo_does_not_authorize() -> None:
     bindings = [
         {
             "evidence_id": "ev-ob-definition-0",
-            "content_digest": parts["artifacts"]["ev-ob-definition-0"] and _digest_of(parts, "ev-ob-definition-0"),
+            "content_digest": parts["artifacts"]["ev-ob-definition-0"]
+            and _digest_of(parts, "ev-ob-definition-0"),
             "repository_id": REPO,
         }
     ]
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
-    decision, _ = decide_guarded_promotion(_policy(repositories=(REPO + "-suffix",)), evidence, trusted)
+    decision, _ = decide_guarded_promotion(
+        _policy(repositories=(REPO + "-suffix",)), evidence, trusted
+    )
     assert decision == PublicationDecision.DENY
 
 
@@ -366,7 +398,9 @@ def test_policy_extra_binding_denies() -> None:
     evidence, _, parts = _guarded_definition()
     record = _definition_record()
     bindings = _bindings_for([record], "definition/v1")
-    bindings.append({"evidence_id": "ev-extra", "content_digest": "sha256:" + "ff" * 32, "repository_id": REPO})
+    bindings.append(
+        {"evidence_id": "ev-extra", "content_digest": "sha256:" + "ff" * 32, "repository_id": REPO}
+    )
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
     decision, reason = decide_guarded_promotion(_policy(), evidence, trusted)
     assert decision == PublicationDecision.DENY
@@ -378,7 +412,9 @@ def test_policy_artifact_repository_mismatch_denies() -> None:
     proposition = _definition_proposition()
     evidence, parts = _evidence_bytes("definition/v1", [record], proposition)
     digest = str(parts["cert"]["premises"][0]["content_hash"])
-    bindings = [{"evidence_id": "ev-ob-definition-0", "content_digest": digest, "repository_id": REPO}]
+    bindings = [
+        {"evidence_id": "ev-ob-definition-0", "content_digest": digest, "repository_id": REPO}
+    ]
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
     policy = _policy(repositories=("other/repo", REPO))
     decision, reason = decide_guarded_promotion(policy, evidence, trusted)
@@ -395,7 +431,9 @@ def test_policy_scope_repository_must_join_trusted_premise() -> None:
     forged = encode_evidence_bytes(payload)
     bindings = _bindings_for([_definition_record()], "definition/v1")
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
-    decision, reason = decide_guarded_promotion(_policy(repositories=(REPO, "other/repo")), forged, trusted)
+    decision, reason = decide_guarded_promotion(
+        _policy(repositories=(REPO, "other/repo")), forged, trusted
+    )
     assert decision == PublicationDecision.DENY
     assert reason.startswith(f"{DenyReason.POLICY_DENIED.value}:scope-binding-mismatch")
 
@@ -415,7 +453,9 @@ def test_guarded_entry_has_no_checker_outcome_field() -> None:
 def test_envelope_rule_id_mismatch_denies_before_checker(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
     monkeypatch.setattr(
-        obligations_mod, "check_certificate", lambda *a, **k: called.append("checker") or (CheckerOutcome.VALID, [])
+        obligations_mod,
+        "check_certificate",
+        lambda *a, **k: called.append("checker") or (CheckerOutcome.VALID, []),
     )
     record = _definition_record()
     proposition = _definition_proposition()
@@ -477,7 +517,9 @@ def test_internal_check_denial_skips_evaluation(monkeypatch: pytest.MonkeyPatch)
 
 def test_evaluator_exception_denies_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        obligations_mod, "evaluate_obligations", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        obligations_mod,
+        "evaluate_obligations",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     evidence, trusted, _ = _guarded_definition()
     decision, reason = decide_guarded_promotion(_policy(), evidence, trusted)
@@ -512,7 +554,9 @@ def test_snapshot_duplicate_keys_deny() -> None:
     bindings = _bindings_for([_definition_record()], "definition/v1")
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
     text = bytes(evidence).decode()
-    duped = text.replace('"rule_id":"definition/v1"', '"rule_id":"definition/v1","rule_id":"definition/v1"', 1)
+    duped = text.replace(
+        '"rule_id":"definition/v1"', '"rule_id":"definition/v1","rule_id":"definition/v1"', 1
+    )
     assert duped != text, "duplicate-key injection must alter the payload"
     decision, reason = decide_guarded_promotion(_policy(), duped.encode(), trusted)
     assert decision == PublicationDecision.DENY
@@ -595,7 +639,9 @@ def _behavior_parts() -> tuple[bytes, bytes]:
             "environment": "test",
         },
     }
-    evidence, parts = _evidence_bytes("behavior/v1", records, proposition, retrieval_config={"scope": REPO})
+    evidence, parts = _evidence_bytes(
+        "behavior/v1", records, proposition, retrieval_config={"scope": REPO}
+    )
     bindings = _bindings_for(records, "behavior/v1")
     trusted = _trusted_bytes(bindings, str(parts["cert"].get("context_id") or ""))
     return evidence, trusted
@@ -677,16 +723,25 @@ def test_absence_obligation_rejects_retrieval_config_mismatch() -> None:
         "scope": {"repository": REPO, "revision": REV_B, "path_scope": "src/"},
     }
     evidence, parts = _evidence_bytes(
-        "absence/v1", [record], proposition,
+        "absence/v1",
+        [record],
+        proposition,
         retrieval_config={"scope": UNIVERSE, "search_config_digest": SEARCH_CONFIG},
         coverage=ManifestCoverage.COMPLETE_EMPTY,
         coverage_evidence_id="ev-ob-absence-config-0",
         coverage_evidence={k: v for k, v in record.items() if k != "evidence_id"},
     )
     manifest = parts["manifest"].model_copy(
-        update={"retrieval_config": {"scope": UNIVERSE, "search_config_digest": "sha256:" + "ff" * 32}}
+        update={
+            "retrieval_config": {"scope": UNIVERSE, "search_config_digest": "sha256:" + "ff" * 32}
+        }
     )
-    obligations = expand_obligations("absence/v1", parts["cert"]["inference_instance"]["bindings"], parts["cert"]["premises"], parts["cert"]["derivation_id"])
+    obligations = expand_obligations(
+        "absence/v1",
+        parts["cert"]["inference_instance"]["bindings"],
+        parts["cert"]["premises"],
+        parts["cert"]["derivation_id"],
+    )
     resolved = evaluate_obligations(
         obligations,
         parts["cert"],
@@ -779,8 +834,12 @@ def test_missing_certificate_denies_absent() -> None:
 def test_no_public_scalar_promotion_symbol() -> None:
     import investigation_agent_platform.domain.proof.publication as publication_mod
 
-    assert not hasattr(publication_mod, "decide_publication"), "public scalar promotion entry still exists"
-    assert not hasattr(publication_mod, "PublicationRequest"), "caller-supplied request shape still exists"
+    assert not hasattr(publication_mod, "decide_publication"), (
+        "public scalar promotion entry still exists"
+    )
+    assert not hasattr(publication_mod, "PublicationRequest"), (
+        "caller-supplied request shape still exists"
+    )
 
 
 def test_service_uses_guarded_entry_only() -> None:

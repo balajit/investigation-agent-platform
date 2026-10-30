@@ -38,6 +38,8 @@ def _handoff_from_row(row: Any) -> "S7Handoff | None":
     except Exception:
         return None
     return None
+
+
 from investigation_agent_platform.infrastructure.persistence.models import (
     FindingORM,
     InvestigationConclusionORM,
@@ -277,9 +279,7 @@ class SqlAlchemyFindingConclusionRepository:
                     "status": conclusion.status.value,
                     "root_cause": conclusion.root_cause,
                     "confidence": conclusion.confidence,
-                    "supporting_evidence_ids": [
-                        str(e) for e in conclusion.supporting_evidence_ids
-                    ],
+                    "supporting_evidence_ids": [str(e) for e in conclusion.supporting_evidence_ids],
                     "supporting_hypothesis_ids": [
                         str(h) for h in conclusion.supporting_hypothesis_ids
                     ],
@@ -292,7 +292,9 @@ class SqlAlchemyFindingConclusionRepository:
                     "best_reason": getattr(conclusion, "best_reason", "") or None,
                     "against_evidence": list(getattr(conclusion, "against_evidence", []) or []),
                     "provisional": bool(getattr(conclusion, "provisional", False)),
-                    "ranked_alternatives": list(getattr(conclusion, "ranked_alternatives", []) or []),
+                    "ranked_alternatives": list(
+                        getattr(conclusion, "ranked_alternatives", []) or []
+                    ),
                     "next_check": getattr(conclusion, "next_check", None),
                     "proven_callers": list(getattr(conclusion, "proven_callers", []) or []),
                     "unresolved_callers": list(getattr(conclusion, "unresolved_callers", []) or []),
@@ -317,7 +319,13 @@ class SqlAlchemyFindingConclusionRepository:
                             InvestigationConclusionORM.investigation_id
                             == conclusion.investigation_id,
                         )
-                        .values(**{k: v for k, v in values.items() if k not in ("tenant_id", "investigation_id")})
+                        .values(
+                            **{
+                                k: v
+                                for k, v in values.items()
+                                if k not in ("tenant_id", "investigation_id")
+                            }
+                        )
                     )
                     if result.rowcount != 1:
                         raise ConcurrencyError("Conclusion row lost under lock")

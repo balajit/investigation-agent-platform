@@ -20,6 +20,7 @@ from investigation_agent_platform.ports.persistence.repositories import (
 
 logger = logging.getLogger(__name__)
 
+
 def _correlation_extra(graph: Any) -> dict[str, Any]:
     """Graph size counts (never node contents)."""
     try:
@@ -34,6 +35,8 @@ def _correlation_extra(graph: Any) -> dict[str, Any]:
         return extra
     except Exception:
         return {}
+
+
 tracer = trace.get_tracer(__name__)
 
 
@@ -85,9 +88,7 @@ class EphemeralCorrelationEngine(CorrelationExpander):
         root_str_ids = [str(rid) for rid in root_evidence_ids]
         # F-038: effective budget is the tightest of caller-supplied and engine defaults.
         node_cap = (
-            min(max_nodes, self._max_node_limit)
-            if max_nodes is not None
-            else self._max_node_limit
+            min(max_nodes, self._max_node_limit) if max_nodes is not None else self._max_node_limit
         )
         edge_cap = max_edges if max_edges is not None else self._max_node_limit * 4
         depth_cap = max(0, max_depth)
