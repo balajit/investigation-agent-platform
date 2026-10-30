@@ -180,6 +180,37 @@ def _symbol_evidence_packets(
     return packets
 
 
+def _claim_identity_key(
+    statement: str, kind: str, target: dict[str, Any]
+) -> tuple[str, str, str, str, str, str]:
+    """Persistence identity of one typed claim (pure).
+
+    Positions 0-4 keep their long-standing meaning (statement, kind,
+    counterpart, commit, file path); position 5 is the fingerprint of the
+    WHOLE normalized target (symbol, scope, lines, claimed value, ...),
+    shared with verification via ``target_group_key``. Without it two
+    sibling claims that differ only in symbol or claimed value collapsed
+    onto one key at persistence and the first claim - with its cited
+    evidence - was silently overwritten (review H2). Never raises.
+    """
+    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+        target_group_key,
+    )
+
+    try:
+        target_key = target_group_key(target)[0]
+    except Exception:
+        target_key = "NO_TARGET"
+    return (
+        statement,
+        kind,
+        str(target.get("counterpart") or "").strip().casefold(),
+        str(target.get("commit_id") or "").strip().casefold(),
+        str(target.get("file_path") or "").replace("\\", "/").strip().casefold(),
+        target_key,
+    )
+
+
 def _with_read_mode(item: Any, *, ranged: bool) -> Any:
     """Stamp a banked ``gateway.get_source`` row with its read mode (pure).
 
@@ -805,7 +836,7 @@ async def execute_action_activity(
         # still persisted. Same statement with different kinds stays
         # Caller edges and history commits for one statement also remain
         # distinct so each keeps its own citation binding.
-        proposed_claims: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        proposed_claims: dict[tuple[str, ...], dict[str, Any]] = {}
         for raw_claim in (data.get("claims", []) or [])[:20]:
             if not isinstance(raw_claim, dict):
                 continue
@@ -839,18 +870,9 @@ async def execute_action_activity(
             for claim_variant in claim_variants:
                 variant_target = claim_variant.get("target")
                 variant_target = variant_target if isinstance(variant_target, dict) else {}
-                proposed_claims[
-                    (
-                        claim_text,
-                        claim_kind_key,
-                        str(variant_target.get("counterpart") or "").strip().casefold(),
-                        str(variant_target.get("commit_id") or "").strip().casefold(),
-                        str(variant_target.get("file_path") or "")
-                        .replace("\\", "/")
-                        .strip()
-                        .casefold(),
-                    )
-                ] = claim_variant
+                proposed_claims[_claim_identity_key(claim_text, claim_kind_key, variant_target)] = (
+                    claim_variant
+                )
                 if claim_text not in proposed_hypotheses:
                     proposed_hypotheses.append(claim_text)
         for candidate in proposed_caller_candidates:
@@ -862,12 +884,17 @@ async def execute_action_activity(
             if candidate_statement not in proposed_hypotheses:
                 proposed_hypotheses.append(candidate_statement)
             proposed_claims.setdefault(
-                (
+                _claim_identity_key(
                     candidate_statement,
                     "CALL_EDGE",
-                    caller.casefold(),
-                    str(candidate.get("revision", "") or "").casefold(),
-                    str(candidate.get("file_path", "") or "").replace("\\", "/").casefold(),
+                    {
+                        "symbol": callee,
+                        "counterpart": caller,
+                        "commit_id": candidate.get("revision"),
+                        "file_path": candidate.get("file_path"),
+                        "line_start": candidate.get("line_start"),
+                        "line_end": candidate.get("line_end"),
+                    },
                 ),
                 {
                     "statement": candidate_statement,
@@ -4051,7 +4078,7 @@ async def execute_action_activity(
                     # A typed claim carries ONLY its own binding — the
                     # batch-wide list is dropped, never merged.
                     claim_cited = []
-                claim_binding_ids: dict[tuple[str, str, str, str, str], list[UUID]] = {}
+                claim_binding_ids: dict[tuple[str, ...], list[UUID]] = {}
                 caller_obligations: list[tuple[Any, dict[str, Any], list[UUID]]] = []
                 for claim_key, typed in typed_list:
                     typed_cited: list[Any] = []

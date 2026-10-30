@@ -1662,6 +1662,36 @@ async def _gate_conclusion_or_fail(
             ),
             _conclude_repairs,
         )
+    # Review H3/H4: whichever path produced the verdict (fast path or the
+    # general branch), it must hold for every checkable claim group. A
+    # withdrawn verdict clears every fast-path flag so the gate cannot
+    # re-approve it through a *_validated shortcut, and denies it as
+    # INCONCLUSIVE. NOT_CHECKABLE siblings ride as a limitation only.
+    try:
+        if getattr(verification, "status", None) == VerificationStatus.VERIFIED:
+            _conjoined = engine.enforce_group_conjunction(
+                candidate, verification, bound, contradictions, causal_chain, policy
+            )
+            if getattr(_conjoined, "status", None) != VerificationStatus.VERIFIED:
+                caller_edge_validated = False
+                location_answered = False
+                code_value_answered = False
+                history_answered = False
+                doc_answered = False
+                state_answered = False
+            verification = _conjoined
+    except Exception:
+        # Fail closed: an unverifiable multi-claim verdict must not publish.
+        try:
+            verification = engine._fault_inconclusive(candidate)
+        except Exception:
+            pass
+        caller_edge_validated = False
+        location_answered = False
+        code_value_answered = False
+        history_answered = False
+        doc_answered = False
+        state_answered = False
     gate = ConclusionGate()
     decision = await gate.evaluate(
         tenant_id,

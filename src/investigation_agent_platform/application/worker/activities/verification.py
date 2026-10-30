@@ -1070,6 +1070,28 @@ async def verify_root_cause_activity(
                     result = VerificationEngine.attach_repairs(result, list(_verify_repairs or []))
                 except Exception:
                     pass
+            # Review H3/H4: the taken verdict must hold for EVERY checkable
+            # claim group, not just the first assessment's. Runs for every
+            # claim-binding version (it is a soundness rule, not a binding
+            # feature) and fails closed: a fault must never leave an
+            # unchecked VERIFIED standing on a multi-claim hypothesis.
+            from investigation_agent_platform.application.investigation.verification import (
+                VerificationStatus as _GroupVerifyStatus,
+            )
+
+            if (
+                result is not None
+                and getattr(result, "status", None) == _GroupVerifyStatus.VERIFIED
+            ):
+                try:
+                    result = engine.enforce_group_conjunction(
+                        candidate, result, bound, contradictions, causal_chain, policy
+                    )
+                except Exception:
+                    try:
+                        result = engine._fault_inconclusive(candidate)
+                    except Exception:
+                        pass
             # Phase 4 (claim binding): smallest-fetch gap feed. Built from
             # the candidate plus the post-repair enforcement's cited_groups
             # — the only scope where both coexist. Faulted enforcement or

@@ -429,6 +429,14 @@ class LimitationCode(str, Enum):
     # ruling-out evidence — the causal verdict publishes as likely, never
     # established. Additive member, same frozen-enum discipline.
     RIVAL_UNBEATEN = "RIVAL_UNBEATEN"
+    # Review H3: a verdict published on one claim group while another
+    # checkable (kind, target) group behind the same hypothesis did not
+    # verify over the rows it cites. The verdict is withdrawn (INCONCLUSIVE).
+    UNVERIFIED_CLAIM_GROUP = "UNVERIFIED_CLAIM_GROUP"
+    # Review H4: NOT_CHECKABLE claims behind a verified hypothesis were
+    # excluded from verification. They ship as this limitation and are never
+    # part of what the verdict certifies.
+    NOT_CHECKABLE_EXCLUDED = "NOT_CHECKABLE_EXCLUDED"
 
 
 class VerificationLimitation(BaseModel):
@@ -7294,6 +7302,179 @@ class VerificationEngine:
                 contradiction_penalty=0.0,
             ),
         )
+
+    @staticmethod
+    def typed_claim_groups(hypothesis: Any) -> tuple[dict[tuple[str, str], list[Any]], int]:
+        """Checkable assessments grouped by (claim kind, target fingerprint) (pure).
+
+        Returns ``(groups, not_checkable_count)``. NOT_CHECKABLE assessments
+        are counted, never grouped; untyped assessments are ignored. The
+        target fingerprint is the one verification already uses
+        (``target_group_key``), so identities agree across layers.
+        """
+        groups: dict[tuple[str, str], list[Any]] = {}
+        not_checkable = 0
+        try:
+            assessments = list(getattr(hypothesis, "assessments", None) or [])
+        except Exception:
+            assessments = []
+        for asm in assessments:
+            kind = getattr(asm, "claim_kind", None)
+            if kind is None:
+                continue
+            if kind == ClaimKind.NOT_CHECKABLE:
+                not_checkable += 1
+                continue
+            try:
+                key = (str(kind.value), target_group_key(getattr(asm, "claim_target", None))[0])
+            except Exception:
+                key = (str(getattr(kind, "value", kind)), "NO_TARGET")
+            groups.setdefault(key, []).append(asm)
+        return groups, not_checkable
+
+    def _group_verifies(
+        self,
+        view: Any,
+        kind: str,
+        rows: list[Any],
+        contradictions: list[Any],
+        causal_chain: list[Any],
+        policy: RootCauseVerificationPolicy,
+    ) -> bool:
+        """Verify ONE claim group with the validator for its kind (H3).
+
+        DEFINITION / CALL_EDGE use the location proof, HISTORY the commit
+        proof, and BEHAVIOR / ABSENCE / CAUSAL the general verdict - each over
+        a hypothesis view holding only this group's assessments.
+        """
+        try:
+            if kind in (ClaimKind.DEFINITION.value, ClaimKind.CALL_EDGE.value):
+                verdict = self.validate_location_claim(view, rows, contradictions)
+            elif kind == ClaimKind.HISTORY.value:
+                verdict = self.validate_history_claim(view, rows, contradictions)
+            elif kind in (
+                ClaimKind.BEHAVIOR.value,
+                ClaimKind.ABSENCE.value,
+                ClaimKind.CAUSAL.value,
+            ):
+                verdict = self.evaluate_hypothesis(view, rows, contradictions, causal_chain, policy)
+            else:
+                return False
+            return verdict is not None and verdict.status == VerificationStatus.VERIFIED
+        except Exception:
+            return False
+
+    def enforce_group_conjunction(
+        self,
+        hypothesis: Any,
+        result: VerificationResult,
+        evidence_items: list[Any],
+        contradictions: list[Any],
+        causal_chain: list[Any],
+        policy: RootCauseVerificationPolicy,
+    ) -> VerificationResult:
+        """A VERIFIED verdict must hold for EVERY checkable claim group (H3/H4).
+
+        The fast paths decide from the first assessment's kind and target, so
+        a hypothesis like ``[DEFINITION(grounded), CAUSAL(no evidence)]``
+        verified on the definition alone and published the causal statement
+        with it. Here every distinct checkable (kind, target) group is
+        re-verified over the rows IT cites; if any group fails, the verdict is
+        withdrawn to INCONCLUSIVE with an UNVERIFIED_CLAIM_GROUP limitation.
+        Hypotheses with a single checkable group are returned unchanged (the
+        existing proof already covers them). When the verdict stands and
+        NOT_CHECKABLE claims were excluded, a NOT_CHECKABLE_EXCLUDED
+        limitation records that they are not certified. Pure.
+        """
+        if getattr(result, "status", None) != VerificationStatus.VERIFIED:
+            return result
+        groups, not_checkable = VerificationEngine.typed_claim_groups(hypothesis)
+        if len(groups) > 1:
+            by_id = {str(getattr(e, "evidence_id", "")): e for e in evidence_items or []}
+            failures: list[str] = []
+            for (kind, target_key), asms in groups.items():
+                cited: list[str] = []
+                for asm in asms:
+                    evidence_id = getattr(asm, "evidence_id", None)
+                    if evidence_id is not None and str(evidence_id) not in cited:
+                        cited.append(str(evidence_id))
+                own_rows = [by_id[c] for c in cited if c in by_id]
+                needs_cited_rows = kind in (
+                    ClaimKind.DEFINITION.value,
+                    ClaimKind.CALL_EDGE.value,
+                )
+                if own_rows:
+                    rows = own_rows
+                elif needs_cited_rows:
+                    failures.append(f"{kind}|{target_key}: cites no bound row")
+                    continue
+                else:
+                    # Behavior/absence/causal/history proofs can rest on the
+                    # causal chain or a scoped empty search rather than a
+                    # row cited per assessment; evaluate over the bound set.
+                    rows = list(evidence_items or [])
+                try:
+                    cited_ids = [
+                        getattr(by_id[c], "evidence_id", None) for c in cited if c in by_id
+                    ]
+                    view = hypothesis.model_copy(
+                        update={
+                            "assessments": list(asms),
+                            "supporting_evidence_ids": [e for e in cited_ids if e is not None],
+                        }
+                    )
+                except Exception:
+                    failures.append(f"{kind}|{target_key}: group view unavailable")
+                    continue
+                if not self._group_verifies(view, kind, rows, contradictions, causal_chain, policy):
+                    failures.append(f"{kind}|{target_key}: not verified over its cited rows")
+            if failures:
+                try:
+                    hid = getattr(hypothesis, "id", None) or result.hypothesis_id
+                except Exception:
+                    hid = result.hypothesis_id
+                return VerificationResult(
+                    hypothesis_id=hid,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=(
+                        "Verified on one claim, but "
+                        f"{len(failures)} other checkable claim group(s) did not "
+                        "verify over the rows they cite; the verdict is withdrawn."
+                    ),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                    limitations=[
+                        VerificationLimitation(
+                            code=LimitationCode.UNVERIFIED_CLAIM_GROUP,
+                            detail="; ".join(failures)[:500],
+                        )
+                    ],
+                )
+        if not_checkable > 0:
+            try:
+                existing = list(getattr(result, "limitations", None) or [])
+                if not any(
+                    getattr(lim, "code", None) == LimitationCode.NOT_CHECKABLE_EXCLUDED
+                    for lim in existing
+                ):
+                    existing.append(
+                        VerificationLimitation(
+                            code=LimitationCode.NOT_CHECKABLE_EXCLUDED,
+                            detail=(
+                                f"{not_checkable} NOT_CHECKABLE claim(s) were excluded from "
+                                "verification; this verdict does not certify them."
+                            ),
+                        )
+                    )
+                    result = result.model_copy(update={"limitations": existing})
+            except Exception:
+                pass
+        return result
 
     def enforce_claim_binding(
         self,
