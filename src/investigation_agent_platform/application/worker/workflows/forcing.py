@@ -65,9 +65,9 @@ with workflow.unsafe.imports_passed_through():
 
 
 #: Advisory emission bounds (2b step 3): the cascade consumes at most
-#: one marker and one gap per turn; advisory emission records a bounded
-#: lookahead so the frontier has something to rank in step 4.
-MAX_ADVISORY_REQUERIES = 5
+#: one gap per turn; advisory emission records a bounded lookahead so
+#: the frontier has something to rank. (Step 5 retired the marker
+#: branch — REQUERY orders arrive via carriers, not emission.)
 MAX_ADVISORY_GAP_FILLS = 8
 
 
@@ -388,15 +388,23 @@ def _should_force_pivot_recollect(
         return None
 
 
-def _carry_ledger_directive(verify_data: dict | None, iteration: int) -> dict | None:
-    """G3 directive marker to append to action_history, or None.
+def _carry_requery_order(verify_data: dict | None, iteration: int) -> dict | None:
+    """G3 order carrier to append to action_history, or None (2b step 5).
 
-    Pure carry step (D3 lifecycle step 2): validates the verify result's
-    ``ledger_requery`` dict minimally (non-empty query, known retryable
-    action type) and returns the ONE new history entry. Never merges
-    into an existing entry. Strictly additive — None for anything
-    unexpected, so a malformed directive never breaks the loop here;
-    full validation happens at convert time. Pure — workflow-safe.
+    Replaces the ``ledger_requery_directive`` marker dict: validates the
+    verify result's ``ledger_requery`` dict minimally (non-empty query,
+    known retryable action type) and returns ONE new history entry whose
+    ``order`` payload is a PENDING REQUERY WorkOrder. The G3 cascade
+    slot dispatches from carried orders newest-first; the workflow
+    stamps the dispatched carrier consumed in place, exactly as it did
+    markers. Strictly additive — None for anything unexpected, so a
+    malformed directive never breaks the loop here. Pure.
+
+    The carrier keeps the flat claim accounting fields
+    (claim_ref/query/scope/turn_issued/max_attempts) beside the order
+    payload so attempt-budget matching (``directive_consumed``) works
+    unchanged. Order IDs are deterministic per turn so replays rebuild
+    identical carriers.
     """
     try:
         data = verify_data if isinstance(verify_data, dict) else {}
@@ -409,44 +417,65 @@ def _carry_ledger_directive(verify_data: dict | None, iteration: int) -> dict | 
         action_type = str(directive.get("action_type") or "").upper()
         if action_type not in RETRYABLE_ACTIONS:
             return None
+        params = _flat_scalar_params(directive.get("action_parameters"))
+        if params is None:
+            return None
         try:
-            attempt_index = int(directive.get("attempt_index", 0))
-        except (TypeError, ValueError):
-            attempt_index = 0
-        try:
-            max_attempts = int(directive.get("max_attempts", WP_A3_DEFAULT_MAX_ATTEMPTS))
+            max_attempts = max(1, int(directive.get("max_attempts", WP_A3_DEFAULT_MAX_ATTEMPTS)))
         except (TypeError, ValueError):
             max_attempts = WP_A3_DEFAULT_MAX_ATTEMPTS
+        claim_ref = str(directive.get("claim_ref") or "")
+        scope = _normalize_scope(directive.get("scope"))
+        turn = int(iteration)
+        order_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"requery-order|{claim_ref}|{query}|{scope}|{turn}",
+        )
         return {
-            "kind": "ledger_requery_directive",
-            "iteration": int(iteration),
-            "claim_ref": str(directive.get("claim_ref") or ""),
+            "kind": "work_order",
+            "order_kind": WorkOrderKind.REQUERY.value,
+            "iteration": turn,
+            "turn_issued": turn,
+            "claim_ref": claim_ref,
             "query": query,
-            "scope": _normalize_scope(directive.get("scope")),
-            "action_type": action_type,
-            "action_parameters": dict(directive.get("action_parameters") or {}),
-            "attempt_index": attempt_index,
-            "max_attempts": max(1, max_attempts),
-            "turn_issued": int(iteration),
+            "scope": scope,
+            "max_attempts": max_attempts,
             "consumed": False,
+            "order": {
+                "work_order_id": str(order_id),
+                "kind": WorkOrderKind.REQUERY.value,
+                "action_type": action_type,
+                "action_parameters": params,
+                "addresses": {
+                    "triage_route": "UNKNOWN",
+                    "claim_kind": "untyped",
+                    "has_unbeaten_rival": False,
+                },
+                "cost_estimate": 1,
+                "max_attempts": max_attempts,
+                "seed_source": f"verify:{turn}",
+                "status": WorkOrderStatus.PENDING.value,
+            },
         }
     except Exception:
         return None
 
 
-def _should_force_ledger_requery(
+def _should_force_order_requery(
     action_history: list | None,
     recorded_summaries: list | None,
 ) -> dict | None:
-    """G3 ledger forcing decision (D3 lifecycle step 3: convert).
+    """G3 order forcing decision (2b step 5: dispatch from carriers).
 
-    Returns the typed override (``action_type``, ``action_parameters``,
-    ``marker_index``) when an unconsumed directive marker fires, or
-    ``{"mark_consumed": reason, "marker_index": index}`` when the newest
-    unconsumed marker must be retired without dispatch (malformed
-    directive or exhausted budget), or None when the turn proceeds
-    unchanged. Reads only workflow history plus same-turn summaries —
-    never the process-local ledger. Pure — workflow-safe.
+    Replaces ``_should_force_ledger_requery``: returns the typed
+    override (``action_type``, ``action_parameters``, ``order_index``)
+    for the newest unconsumed, budget-satisfying carried REQUERY order,
+    or ``{"mark_consumed": "budget-exhausted", "order_index": index}``
+    when the newest unconsumed carrier budgeted out, or None when the
+    turn proceeds unchanged. Attempt-budget matching is unchanged
+    (same stamps, same summaries) — only the carrier shape changed
+    from marker dict to order entry. Reads only workflow history plus
+    same-turn summaries. Pure — workflow-safe.
 
     Precedence is enforced by the caller: stack-walk suppresses
     evaluation entirely, and every later override stands down once
@@ -465,7 +494,9 @@ def _should_force_ledger_requery(
         entry = entries[index]
         if not isinstance(entry, dict):
             continue
-        if entry.get("kind") != "ledger_requery_directive":
+        if entry.get("kind") != "work_order":
+            continue
+        if entry.get("order_kind") != WorkOrderKind.REQUERY.value:
             continue
         if entry.get("consumed"):
             continue
@@ -473,30 +504,24 @@ def _should_force_ledger_requery(
         break
     if candidate_index is None:
         return None
-    marker = entries[candidate_index]
+    carrier = entries[candidate_index]
     try:
-        consumed = directive_consumed(marker, entries, recorded)
+        consumed = directive_consumed(carrier, entries, recorded)
     except Exception:
         return None
     if consumed:
-        return {"mark_consumed": "budget-exhausted", "marker_index": candidate_index}
-    query = str(marker.get("query") or "").strip()
-    action_type = str(marker.get("action_type") or "").upper()
-    parameters = marker.get("action_parameters")
-    if (
-        not query
-        or action_type not in RETRYABLE_ACTIONS
-        or not isinstance(parameters, dict)
-        or not all(
-            isinstance(k, str) and (v is None or isinstance(v, (str, int, float, bool)))
-            for k, v in parameters.items()
-        )
-    ):
-        return {"mark_consumed": "invalid-directive", "marker_index": candidate_index}
+        return {"mark_consumed": "budget-exhausted", "order_index": candidate_index}
+    try:
+        payload = carrier.get("order")
+        order = WorkOrder.model_validate(payload) if isinstance(payload, dict) else None
+    except Exception:
+        order = None
+    if order is None or order.status != WorkOrderStatus.PENDING:
+        return {"mark_consumed": "budget-exhausted", "order_index": candidate_index}
     return {
-        "action_type": action_type,
-        "action_parameters": dict(parameters),
-        "marker_index": candidate_index,
+        "action_type": order.action_type,
+        "action_parameters": dict(order.action_parameters or {}),
+        "order_index": candidate_index,
     }
 
 
@@ -1872,11 +1897,11 @@ def _order_id(kind: str, action: str, params: dict[str, Any], seed_source: str) 
 
 
 def _flat_scalar_params(params: Any) -> dict[str, Any] | None:
-    """Ledger-shaped parameters: a dict of JSON scalars only (pure).
+    """Carry-shaped parameters: a dict of JSON scalars only (pure).
 
-    Mirrors the shape check in _should_force_ledger_requery so advisory
-    REQUERY orders carry exactly what the cascade could dispatch.
-    Returns the params dict, or None when the shape is not dispatchable.
+    Mirrors the shape check the G3 slot enforces so carried REQUERY
+    orders carry exactly what the cascade can dispatch. Returns the
+    params dict, or None when the shape is not dispatchable.
     Never raises.
     """
     try:
@@ -1902,13 +1927,12 @@ def orders_from_cascade_signals(
     Converts what the loop already banks into the typed layer without
     changing dispatch — candidate lifecycle stays separate from order
     consumption (steps 4+):
-    - unconsumed, valid ledger-requery markers → REQUERY (newest first,
-      bounded; mirrors the cascade's shape checks plus the staleness
-      check, minus budget enforcement which stays a dispatch concern);
     - the latest claim-gap feed's gaps → GAP_FILL (one per gap, bounded);
     - a fired pivot recollect → FETCH_SEED for the new surface.
-    Deterministic IDs (content-addressed); PENDING status throughout;
-    never raises.
+    REQUERY orders are no longer emitted here: since step 5 the verify
+    turn carries them directly (``_carry_requery_order``) and the G3
+    slot dispatches from the carriers. Deterministic IDs
+    (content-addressed); PENDING status throughout; never raises.
     """
     orders: list[WorkOrder] = []
     try:
@@ -1926,56 +1950,6 @@ def orders_from_cascade_signals(
         except Exception:
             kind = "UNTYPED"
         return FailureCharacter(triage_route=route[:32], claim_kind=kind[:64])
-
-    # Ledger markers → REQUERY (newest first, bounded).
-    try:
-        recorded = recorded_attempt_summaries(entries)
-    except Exception:
-        recorded = []
-    try:
-        for index in range(len(entries) - 1, -1, -1):
-            if len(orders) >= MAX_ADVISORY_REQUERIES:
-                break
-            try:
-                marker = entries[index]
-                if not isinstance(marker, dict):
-                    continue
-                if marker.get("kind") != "ledger_requery_directive":
-                    continue
-                if marker.get("consumed"):
-                    continue
-                try:
-                    if directive_consumed(marker, entries, recorded or []):
-                        continue
-                except Exception:
-                    continue
-                query = str(marker.get("query") or "").strip()
-                action_type = str(marker.get("action_type") or "").upper()
-                params = _flat_scalar_params(marker.get("action_parameters"))
-                if not query or action_type not in RETRYABLE_ACTIONS or params is None:
-                    continue
-                try:
-                    max_attempts = max(1, int(marker.get("max_attempts", 1) or 1))
-                except (TypeError, ValueError):
-                    max_attempts = 1
-                seed_source = f"ledger:{index}"
-                orders.append(
-                    WorkOrder(
-                        work_order_id=_order_id("REQUERY", action_type, params, seed_source),
-                        kind=WorkOrderKind.REQUERY,
-                        action_type=action_type,
-                        action_parameters=params,
-                        addresses=_character(),
-                        cost_estimate=1,
-                        max_attempts=max_attempts,
-                        seed_source=seed_source,
-                        status=WorkOrderStatus.PENDING,
-                    )
-                )
-            except Exception:
-                continue
-    except Exception:
-        pass
 
     # Latest claim-gap feed → GAP_FILL (one per gap, bounded).
     try:
@@ -2224,8 +2198,9 @@ class PostReasonCascadeState:
     formulated_count: int = 0
     tenant_id: str = ""
     investigation_id: str = ""
-    ledger_marker_ref: dict | None = None
-    invalid_directive: dict | None = None
+    #: Carrier entry of the dispatched G3 requery order (2b step 5),
+    #: for the workflow's consumed stamp. None when no order fired.
+    consumed_order_ref: dict | None = None
     #: Advisory work orders as JSON dicts (2b step 3): recorded only,
     #: never dispatched by the cascade.
     advisory_orders: list = field(default_factory=list)
@@ -2300,52 +2275,48 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             _reason_data["next_action"] = "WALK_STACK"
             _reason_data["action_parameters"] = _walk_params
             _reason_data["forced_walk_stack"] = True
-        # G3: ledger-requery forcing — a bounded re-retrieval for an
-        # unsatisfied claim outranks the remaining gathering rules
-        # but never stack-walk (evaluated only when no walk-stack
-        # force fired this cascade). Same-turn summaries ride from
-        # history entries via recorded_attempt_summaries, which
-        # carries each entry's top-level attempt_id into the attempt
-        # dict — without that stamp, a summary and its persisted
-        # marker count as two attempts and the budget exhausts early.
-        _ledger_marker_ref: dict | None = None
-        # G3 precedence: a fired stack-walk suppresses ledger
-        # evaluation — the ledger never overwrites it.
+        # G3: order-driven requery forcing (2b step 5) — a bounded
+        # re-retrieval for an unsatisfied claim outranks the remaining
+        # gathering rules but never stack-walk (evaluated only when no
+        # walk-stack force fired this cascade). Carried REQUERY orders
+        # are consumed newest-first with the same attempt-budget
+        # matching markers used (same stamps, same summaries); only the
+        # carrier changed. Same-turn summaries ride from history entries
+        # via recorded_attempt_summaries, which carries each entry's
+        # top-level attempt_id into the attempt dict.
+        _consumed_order_ref: dict | None = None
+        # G3 precedence: a fired stack-walk suppresses order
+        # evaluation — carried orders never overwrite it.
         if (
             not _reason_data.get("forced_walk_stack")
             and not _d6_fired
             and not _reason_data.get("forced_pivot_recollect")
         ):
             _recorded_summaries = recorded_attempt_summaries(_history or []) or []
-            _ledger_override = _should_force_ledger_requery(_history, _recorded_summaries)
-            if _ledger_override is not None and _ledger_override.get("mark_consumed"):
-                _mark_idx = _ledger_override.get("marker_index")
+            _order_override = _should_force_order_requery(_history, _recorded_summaries)
+            if _order_override is not None and _order_override.get("mark_consumed"):
+                _mark_idx = _order_override.get("order_index")
                 try:
                     _mark_entry = (_history or [])[_mark_idx]
                     if isinstance(_mark_entry, dict):
                         _mark_entry["consumed"] = True
-                        _ledger_marker_ref = None
+                        _consumed_order_ref = None
                 except (TypeError, IndexError, KeyError):
                     pass
-                if _ledger_override.get("mark_consumed") == "invalid-directive":
-                    try:
-                        state.invalid_directive = {"marker_index": _mark_idx}
-                    except Exception:
-                        pass
-                _ledger_override = None
-            if _ledger_override is not None:
+                _order_override = None
+            if _order_override is not None:
                 _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _ledger_override["action_type"]
-                _reason_data["action_parameters"] = _ledger_override["action_parameters"]
+                _reason_data["next_action"] = _order_override["action_type"]
+                _reason_data["action_parameters"] = _order_override["action_parameters"]
                 _reason_data["forced_requery"] = True
                 try:
-                    _ledger_marker_ref = (_history or [])[
-                        _ledger_override["marker_index"]
+                    _consumed_order_ref = (_history or [])[
+                        _order_override["order_index"]
                     ]
                 except (TypeError, IndexError, KeyError):
-                    _ledger_marker_ref = None
-                if not isinstance(_ledger_marker_ref, dict):
-                    _ledger_marker_ref = None
+                    _consumed_order_ref = None
+                if not isinstance(_consumed_order_ref, dict):
+                    _consumed_order_ref = None
         # Evidence floor — a committal proposal (formulate/verify/
         # conclude) on fewer than 3 banked rows for a code-shaped
         # incident gathers first instead of committing to a thin
@@ -2666,7 +2637,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         except Exception:
             state.advisory_ranking = {}
         state.reason_data = _reason_data
-        state.ledger_marker_ref = _ledger_marker_ref
+        state.consumed_order_ref = _consumed_order_ref
         return state
     except Exception:
         return state

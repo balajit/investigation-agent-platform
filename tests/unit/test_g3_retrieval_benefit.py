@@ -314,98 +314,108 @@ def _directive_result(**overrides: object) -> dict:
     return {"ledger_requery": data}
 
 
-def test_ledger_forcing_emits_typed_action() -> None:
+def _carrier(**overrides: object) -> dict:
+    """Carried REQUERY order entry (2b step 5 carrier shape)."""
+    entry: dict = {
+        "kind": "work_order",
+        "order_kind": "REQUERY",
+        "iteration": 1,
+        "turn_issued": 1,
+        "claim_ref": "abc",
+        "query": "q",
+        "scope": "",
+        "max_attempts": 3,
+        "consumed": False,
+        "order": {
+            "work_order_id": "00000000-0000-0000-0000-000000000001",
+            "kind": "REQUERY",
+            "action_type": "SEARCH_CODE",
+            "action_parameters": {},
+            "addresses": {
+                "triage_route": "BUG",
+                "claim_kind": "untyped",
+                "has_unbeaten_rival": False,
+            },
+            "cost_estimate": 1,
+            "max_attempts": 3,
+            "seed_source": "test:carrier",
+            "status": "PENDING",
+        },
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_order_forcing_emits_typed_action() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _carry_ledger_directive,
-        _should_force_ledger_requery,
+        _carry_requery_order,
+        _should_force_order_requery,
     )
 
-    marker = _carry_ledger_directive(_directive_result(), 3)
-    assert marker is not None
-    assert marker["kind"] == "ledger_requery_directive"
-    assert marker["turn_issued"] == 3 == marker["iteration"]
-    assert marker["consumed"] is False
-    assert marker["scope"] == "repo@HEAD:/:query=q"
-    history = [{"iteration": 0, "action": "SEARCH_LOGS"}, marker]
-    override = _should_force_ledger_requery(history, [])
+    carrier = _carry_requery_order(_directive_result(), 3)
+    assert carrier is not None
+    assert carrier["kind"] == "work_order"
+    assert carrier["order_kind"] == "REQUERY"
+    assert carrier["turn_issued"] == 3 == carrier["iteration"]
+    assert carrier["consumed"] is False
+    assert carrier["scope"] == "repo@HEAD:/:query=q"
+    assert carrier["order"]["action_type"] == "SEARCH_CODE"
+    assert carrier["order"]["status"] == "PENDING"
+    history = [{"iteration": 0, "action": "SEARCH_LOGS"}, carrier]
+    override = _should_force_order_requery(history, [])
     assert override is not None
     assert override["action_type"] == "SEARCH_CODE"
     assert override["action_parameters"] == {"path_prefix": "/"}
-    assert override["marker_index"] == 1
+    assert override["order_index"] == 1
 
 
-def test_ledger_verify_result_carried_to_next_cascade() -> None:
+def test_order_verify_result_carried_to_next_cascade() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _carry_ledger_directive,
-        _should_force_ledger_requery,
+        _carry_requery_order,
+        _should_force_order_requery,
     )
 
-    marker = _carry_ledger_directive(_directive_result(scope=None), 2)
-    assert marker is not None
-    assert marker["scope"] == ""
-    history = [marker]
-    fired = _should_force_ledger_requery(history, [])
+    carrier = _carry_requery_order(_directive_result(scope=None), 2)
+    assert carrier is not None
+    assert carrier["scope"] == ""
+    history = [carrier]
+    fired = _should_force_order_requery(history, [])
     assert fired is not None and "action_type" in fired
-    # Dispatched turn stamps the entry and retires the marker; a later
+    # Dispatched turn stamps the entry and retires the carrier; a later
     # turn sees the stamp and does not re-fire.
-    marker["consumed"] = True
+    carrier["consumed"] = True
     history.append(
         {
             "iteration": 3,
             "action": fired["action_type"],
             "forced_requery": {
-                "claim_ref": marker["claim_ref"],
-                "query": marker["query"],
-                "scope": marker["scope"],
+                "claim_ref": carrier["claim_ref"],
+                "query": carrier["query"],
+                "scope": carrier["scope"],
                 "turn": 3,
                 "outcome_status": "EMPTY",
             },
         }
     )
-    assert _should_force_ledger_requery(history, []) is None
+    assert _should_force_order_requery(history, []) is None
 
 
-def test_ledger_forcing_consumed_no_repeat() -> None:
+def test_order_forcing_consumed_no_repeat() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _should_force_ledger_requery,
+        _should_force_order_requery,
     )
 
-    marker = {
-        "kind": "ledger_requery_directive",
-        "iteration": 1,
-        "claim_ref": "abc",
-        "query": "q",
-        "scope": "",
-        "action_type": "SEARCH_CODE",
-        "action_parameters": {},
-        "attempt_index": 0,
-        "max_attempts": 3,
-        "turn_issued": 1,
-        "consumed": True,
-    }
-    assert _should_force_ledger_requery([marker], []) is None
+    assert _should_force_order_requery([_carrier(consumed=True)], []) is None
 
 
-def test_ledger_failed_dispatch_stays_consumed() -> None:
+def test_order_failed_dispatch_stays_consumed() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _should_force_ledger_requery,
+        _should_force_order_requery,
     )
 
-    marker = {
-        "kind": "ledger_requery_directive",
-        "iteration": 1,
-        "claim_ref": "abc",
-        "query": "q",
-        "scope": "s",
-        "action_type": "SEARCH_CODE",
-        "action_parameters": {},
-        "attempt_index": 0,
-        "max_attempts": 3,
-        "turn_issued": 1,
-        "consumed": False,
-    }
+    carrier = _carrier(scope="s")
     history = [
-        marker,
+        carrier,
         {
             "iteration": 2,
             "action": "SEARCH_CODE",
@@ -418,73 +428,58 @@ def test_ledger_failed_dispatch_stays_consumed() -> None:
             },
         },
     ]
-    result = _should_force_ledger_requery(history, [])
+    result = _should_force_order_requery(history, [])
     assert result is None or "action_type" not in result
 
 
-def test_ledger_forcing_budget_exhausted_no_repeat() -> None:
+def test_order_forcing_budget_exhausted_no_repeat() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _should_force_ledger_requery,
+        _should_force_order_requery,
     )
 
-    marker = {
-        "kind": "ledger_requery_directive",
-        "iteration": 1,
-        "claim_ref": "abc",
-        "query": "q",
-        "scope": "s",
-        "action_type": "SEARCH_CODE",
-        "action_parameters": {},
-        "attempt_index": 2,
-        "max_attempts": 3,
-        "turn_issued": 1,
-        "consumed": False,
-    }
     recorded = [
         (["row-1"], {"search_query": "q", "scope": "s", "attempt_id": "id-1"}),
         (["row-2"], {"search_query": "q", "scope": "s", "attempt_id": "id-2"}),
         (["row-3"], {"search_query": "q", "scope": "s", "attempt_id": "id-3"}),
     ]
-    result = _should_force_ledger_requery([marker], recorded)
+    result = _should_force_order_requery([_carrier(scope="s")], recorded)
     assert result is None or "action_type" not in result
 
 
-def test_ledger_forcing_rejects_malformed_directive() -> None:
+def test_order_carry_rejects_malformed_directive() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _carry_ledger_directive,
-        _should_force_ledger_requery,
+        _carry_requery_order,
+        _should_force_order_requery,
     )
 
-    assert _carry_ledger_directive(_directive_result(action_type="NOPE"), 1) is None
-    assert _carry_ledger_directive(_directive_result(query="  "), 1) is None
-    assert _carry_ledger_directive({"ledger_requery": "prose"}, 1) is None
-    marker = {
-        "kind": "ledger_requery_directive",
-        "iteration": 1,
-        "claim_ref": "abc",
-        "query": "q",
-        "scope": "",
-        "action_type": "SEARCH_CODE",
-        "action_parameters": {"path_prefix": {"nested": "no-scalars"}},
-        "attempt_index": 0,
-        "max_attempts": 3,
-        "turn_issued": 1,
-        "consumed": False,
-    }
-    result = _should_force_ledger_requery([marker], [])
+    assert _carry_requery_order(_directive_result(action_type="NOPE"), 1) is None
+    assert _carry_requery_order(_directive_result(query="  "), 1) is None
+    assert _carry_requery_order({"ledger_requery": "prose"}, 1) is None
+    assert (
+        _carry_requery_order(
+            _directive_result(
+                action_parameters={"path_prefix": {"nested": "no-scalars"}}
+            ),
+            1,
+        )
+        is None
+    )
+    # A corrupt carrier payload never dispatches — retired as exhausted.
+    corrupt = _carrier(order={"kind": "REQUERY"})
+    result = _should_force_order_requery([corrupt], [])
     assert result is not None
-    assert result.get("mark_consumed") == "invalid-directive"
+    assert result.get("mark_consumed") == "budget-exhausted"
     assert "action_type" not in result
 
 
-def test_ledger_scope_normalization() -> None:
+def test_order_scope_normalization() -> None:
     from investigation_agent_platform.application.worker.workflows import (
-        _carry_ledger_directive,
+        _carry_requery_order,
     )
 
-    assert _carry_ledger_directive(_directive_result(scope=None), 0)["scope"] == ""
+    assert _carry_requery_order(_directive_result(scope=None), 0)["scope"] == ""
     assert (
-        _carry_ledger_directive(_directive_result(scope="  s  "), 0)["scope"] == "s"
+        _carry_requery_order(_directive_result(scope="  s  "), 0)["scope"] == "s"
     )
 
 

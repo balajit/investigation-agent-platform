@@ -227,7 +227,7 @@ class TestSeamRanking:
         assert out.reason_data["forced_pivot_recollect"] is True
         assert "advisory" not in json.dumps(out.reason_data)
 
-    def test_gap_and_marker_turn_ranks_both(self) -> None:
+    def test_gap_turn_ranks_gap_while_order_dispatches(self) -> None:
         feed = {
             "kind": "claim_gap_feed",
             "iteration": 2,
@@ -239,31 +239,43 @@ class TestSeamRanking:
                 }
             ],
         }
-        marker = {
-            "kind": "ledger_requery_directive",
+        carrier = {
+            "kind": "work_order",
+            "order_kind": "REQUERY",
+            "iteration": 1,
+            "turn_issued": 1,
+            "claim_ref": "c1",
             "query": "order filter",
             "scope": "",
-            "action_type": "SEARCH_CODE",
-            "action_parameters": {"query": "order filter"},
-            "claim_ref": "c1",
-            "turn_issued": 1,
             "max_attempts": 3,
+            "consumed": False,
+            "order": {
+                "work_order_id": "00000000-0000-0000-0000-000000000001",
+                "kind": "REQUERY",
+                "action_type": "GET_CODE",
+                "action_parameters": {"file_path": "svc/req.py"},
+                "addresses": {
+                    "triage_route": "BUG",
+                    "claim_kind": "untyped",
+                    "has_unbeaten_rival": False,
+                },
+                "cost_estimate": 1,
+                "seed_source": "test:carrier",
+                "status": "PENDING",
+            },
         }
         state = self._base_state(
             reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
             prev_focus=None,
             evidence_banked_total=9,
-            action_history=[marker, feed],
+            action_history=[carrier, feed],
             formulated_count=1,
         )
         out = apply_post_reason_cascade(state)
-        kinds = sorted(o["kind"] for o in out.advisory_orders)
-        assert kinds == ["GAP_FILL", "REQUERY"]
-        ranked_sources = sorted(r["seed_source"] for r in out.advisory_ranking["ranked"])
-        # The query-only REQUERY has no file identity → skipped, recorded.
-        assert ranked_sources == ["gap:g1"]
-        assert out.advisory_ranking["skipped"] != []
-        # Legacy dispatch untouched by the ranking: the valid marker wins
-        # the cascade (ledger outranks smallest-fetch) exactly as before.
+        # Emission no longer emits REQUERY; the carrier dispatches from
+        # the G3 slot (order outranks smallest-fetch) exactly as before.
+        kinds = [o["kind"] for o in out.advisory_orders]
+        assert kinds == ["GAP_FILL"]
         assert out.reason_data.get("forced_requery") is True
         assert out.reason_data.get("forced_smallest_fetch") is not True
+        assert out.consumed_order_ref is carrier

@@ -83,7 +83,7 @@ from .forcing import (
     _absence_disconfirmation_target,
     _callsite_target,
     _carry_claim_gap_feed,
-    _carry_ledger_directive,
+    _carry_requery_order,
     _caused_by_idempotency_wedge,
     _classify_failure,
     _degraded_empty_result,
@@ -759,7 +759,7 @@ class RunInvestigationWorkflow:
             )
             _reason_data = dict(_cascade_state.reason_data or {})
             _prev_focus = _cascade_state.prev_focus
-            _ledger_marker_ref = _cascade_state.ledger_marker_ref
+            _consumed_order_ref = _cascade_state.consumed_order_ref
             try:
                 _cc = _cascade_state.counts if isinstance(_cascade_state.counts, dict) else {}
                 forced_walk_stack_count = int(_cc.get("walk_stack", 0) or 0)
@@ -777,21 +777,6 @@ class RunInvestigationWorkflow:
                 forced_smallest_fetch_causal_count = int(_cc.get("smallest_fetch_causal", 0) or 0)
             except (TypeError, ValueError):
                 pass
-            if _cascade_state.invalid_directive is not None:
-                workflow.logger.warning(
-                    "ledger directive refused (malformed); marker consumed-as-invalid",
-                    extra={
-                        "tenant_id": tenant_id,
-                        "investigation_id": inv_id,
-                        "event": "workflow ledger directive refused",
-                        "comp": COMP_WFLW,
-                        "func": "RunInvestigationWorkflow._run_inner",
-                        "stage": "force",
-                        "step": "requery",
-                        "outcome": OUTCOME_SKIPPED,
-                        "reason": "invalid-directive",
-                    },
-                )
             # Debug story: forcing cascade outcome. Compares the model's
             # pre-override proposal (_shadow_proposal) with the post-cascade
             # dispatch (_reason_data). Deterministic: both derive from
@@ -1137,16 +1122,16 @@ class RunInvestigationWorkflow:
                         "banked_count": _exec_banked,
                     }
                 )
-                # G3: stamp the dispatched turn and retire the marker in
+                # G3: stamp the dispatched turn and retire the order in
                 # place (exactly once). A failed/degraded dispatch still
-                # stamps — the marker stays consumed, recovery waits for a
+                # stamps — the carrier stays consumed, recovery waits for a
                 # fresh evaluation, never a tight retry loop.
-                if _reason_data.get("forced_requery") and isinstance(_ledger_marker_ref, dict):
-                    _ledger_marker_ref["consumed"] = True
+                if _reason_data.get("forced_requery") and isinstance(_consumed_order_ref, dict):
+                    _consumed_order_ref["consumed"] = True
                     action_history[-1]["forced_requery"] = {
-                        "claim_ref": str(_ledger_marker_ref.get("claim_ref") or ""),
-                        "query": str(_ledger_marker_ref.get("query") or ""),
-                        "scope": str(_ledger_marker_ref.get("scope") or ""),
+                        "claim_ref": str(_consumed_order_ref.get("claim_ref") or ""),
+                        "query": str(_consumed_order_ref.get("query") or ""),
+                        "scope": str(_consumed_order_ref.get("scope") or ""),
                         "turn": int(iteration),
                         "outcome_status": _outcome.get("status"),
                     }
@@ -1232,17 +1217,18 @@ class RunInvestigationWorkflow:
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=retry_policy,
             )
-            # G3: carry the verify-issued re-retrieval directive (D3
-            # lifecycle step 2). ONE new history entry per directive —
-            # never merged into action_history[-1], which the
-            # post-execution update owns. The next turn's cascade reads
-            # the full history (never the truncated recent_actions view).
-            _ledger_marker = _carry_ledger_directive(
+            # G3: carry the verify-issued re-retrieval as a work
+            # order (D3 lifecycle step 2, 2b step 5). ONE new history
+            # entry per directive — never merged into
+            # action_history[-1], which the post-execution update owns.
+            # The next turn's cascade dispatches from the carriers
+            # (never the truncated recent_actions view).
+            _requery_order = _carry_requery_order(
                 verify_res.data if isinstance(verify_res.data, dict) else {},
                 iteration,
             )
-            if _ledger_marker is not None:
-                action_history.append(_ledger_marker)
+            if _requery_order is not None:
+                action_history.append(_requery_order)
             # Phase 4 (claim binding): carry the verify-issued claim-gap
             # feed (D2 carrier). ONE new history entry per feed — never
             # merged into action_history[-1]. The next turn's cascade

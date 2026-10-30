@@ -1,10 +1,11 @@
 # tests/unit/test_work_order_emission.py
-"""2b step 3: typed work orders emitted from legacy signals, advisory only.
+"""2b step 3/5: typed work orders emitted from legacy signals, advisory only.
 
-Pins the emission mapping (ledger markers → REQUERY, gap feeds →
-GAP_FILL, pivot → FETCH_SEED), determinism, bounds, and lifecycle
-separation (orders stay PENDING; the cascade dispatches the legacy
-path unchanged).
+Pins the emission mapping (gap feeds → GAP_FILL, pivot → FETCH_SEED),
+determinism, bounds, and lifecycle separation (orders stay PENDING; the
+cascade dispatches unchanged). Since step 5 REQUERY orders arrive via
+carried order entries (``_carry_requery_order``) and dispatch from the
+G3 slot — emission ignores carriers and never emits REQUERY.
 """
 
 import json
@@ -16,16 +17,31 @@ from investigation_agent_platform.application.worker.workflows.forcing import (
 )
 
 
-def _marker(**over):  # type: ignore[no-untyped-def]
+def _carrier(**over):  # type: ignore[no-untyped-def]
     base = {
-        "kind": "ledger_requery_directive",
+        "kind": "work_order",
+        "order_kind": "REQUERY",
+        "iteration": 1,
+        "turn_issued": 1,
+        "claim_ref": "c1",
         "query": "order filter",
         "scope": "",
-        "action_type": "SEARCH_CODE",
-        "action_parameters": {"query": "order filter"},
-        "claim_ref": "c1",
-        "turn_issued": 1,
         "max_attempts": 3,
+        "consumed": False,
+        "order": {
+            "work_order_id": "00000000-0000-0000-0000-000000000001",
+            "kind": "REQUERY",
+            "action_type": "SEARCH_CODE",
+            "action_parameters": {"query": "order filter"},
+            "addresses": {
+                "triage_route": "BUG",
+                "claim_kind": "untyped",
+                "has_unbeaten_rival": False,
+            },
+            "cost_estimate": 1,
+            "seed_source": "test:carrier",
+            "status": "PENDING",
+        },
     }
     base.update(over)
     return base
@@ -47,34 +63,21 @@ def _feed(*gaps):  # type: ignore[no-untyped-def]
 
 
 class TestRequeryEmission:
-    def test_valid_marker_emits_requery(self) -> None:
-        orders = orders_from_cascade_signals([_marker()], None, "BUG")
-        assert len(orders) == 1
-        order = orders[0]
-        assert order.kind.value == "REQUERY"
-        assert order.action_type == "SEARCH_CODE"
-        assert order.action_parameters == {"query": "order filter"}
-        assert order.status.value == "PENDING"
-        assert order.max_attempts == 3
-        assert order.seed_source == "ledger:0"
+    def test_carriers_emit_nothing_from_emission(self) -> None:
+        # REQUERY orders arrive via carriers and dispatch from the G3
+        # slot; emission ignores them (consumed or not).
+        assert orders_from_cascade_signals([_carrier()], None, "BUG") == []
+        assert orders_from_cascade_signals([_carrier(consumed=True)], None, "BUG") == []
 
-    def test_consumed_and_invalid_markers_emit_nothing(self) -> None:
-        history = [
-            _marker(consumed=True),
-            _marker(query=""),
-            _marker(action_type="NOPE"),
-            _marker(action_parameters={"nested": {"a": 1}}),
-        ]
-        assert orders_from_cascade_signals(history, None, "BUG") == []
-
-    def test_bounded_newest_first(self) -> None:
-        history = [
-            _marker(query=f"q{i}", action_parameters={"query": f"q{i}"}) for i in range(6)
-        ]
-        orders = orders_from_cascade_signals(history, None, "BUG")
-        assert len(orders) == 5
-        assert orders[0].seed_source == "ledger:5"
-        assert orders[-1].seed_source == "ledger:1"
+    def test_stale_marker_dicts_emit_nothing(self) -> None:
+        # Pre-step-5 marker dicts are dead shapes — never resurrected.
+        stale = {
+            "kind": "ledger_requery_directive",
+            "query": "order filter",
+            "action_type": "SEARCH_CODE",
+            "action_parameters": {"query": "order filter"},
+        }
+        assert orders_from_cascade_signals([stale], None, "BUG") == []
 
 
 class TestGapFillEmission:
@@ -137,7 +140,7 @@ class TestFetchSeedEmission:
 
 class TestEmissionProperties:
     def test_deterministic_ids(self) -> None:
-        history = [_marker(), _feed(_gap())]
+        history = [_feed(_gap())]
         pivot = {
             "surface": "svc/new.py",
             "surface_kind": "file",
@@ -152,7 +155,7 @@ class TestEmissionProperties:
         ]
 
     def test_json_serializable(self) -> None:
-        history = [_marker(), _feed(_gap())]
+        history = [_feed(_gap())]
         orders = orders_from_cascade_signals(history, None, "BUG")
         json.dumps([o.model_dump(mode="json") for o in orders])
 
@@ -200,17 +203,17 @@ class TestSeamIntegration:
         assert kinds == ["FETCH_SEED"]
         assert out.advisory_orders[0]["seed_source"] == "pivot:file:svc/new.py"
 
-    def test_marker_and_gap_recorded_while_pivot_dispatches(self) -> None:
+    def test_carrier_and_gap_recorded_while_pivot_dispatches(self) -> None:
         state = self._base_state(
-            action_history=[_marker(), _feed(_gap(gap_id="g9"))],
+            action_history=[_carrier(), _feed(_gap(gap_id="g9"))],
         )
         out = apply_post_reason_cascade(state)
-        # Dispatch is the legacy path (pivot wins, no requery/smallest flags).
+        # Dispatch is the pivot path (pivot wins, no requery/smallest flags).
         assert out.reason_data["forced_pivot_recollect"] is True
         assert out.reason_data.get("forced_requery") is not True
         assert out.reason_data.get("forced_smallest_fetch") is not True
         kinds = sorted(o["kind"] for o in out.advisory_orders)
-        assert kinds == ["FETCH_SEED", "GAP_FILL", "REQUERY"]
+        assert kinds == ["FETCH_SEED", "GAP_FILL"]
 
     def test_gap_only_turn_records_without_interference(self) -> None:
         state = self._base_state(

@@ -104,40 +104,74 @@ class TestCompetingRules:
         assert out.reason_data["forced_pivot_recollect"] is True
         assert out.reason_data.get("forced_formulate") is not True
 
-    def test_pivot_beats_valid_ledger_marker(self) -> None:
-        marker = {
-            "kind": "ledger_requery_directive",
+    def test_pivot_beats_valid_carried_order(self) -> None:
+        carrier = {
+            "kind": "work_order",
+            "order_kind": "REQUERY",
+            "iteration": 1,
+            "turn_issued": 1,
+            "claim_ref": "c1",
             "query": "order filter",
             "scope": "",
-            "action_type": "SEARCH_CODE",
-            "action_parameters": {"query": "order filter"},
-            "claim_ref": "c1",
-            "turn_issued": 1,
             "max_attempts": 3,
+            "consumed": False,
+            "order": {
+                "work_order_id": "00000000-0000-0000-0000-000000000001",
+                "kind": "REQUERY",
+                "action_type": "SEARCH_CODE",
+                "action_parameters": {"query": "order filter"},
+                "addresses": {
+                    "triage_route": "BUG",
+                    "claim_kind": "untyped",
+                    "has_unbeaten_rival": False,
+                },
+                "cost_estimate": 1,
+                "seed_source": "test:carrier",
+                "status": "PENDING",
+            },
         }
-        state = _state(action_history=[marker])
+        state = _state(action_history=[carrier])
         out = apply_post_reason_cascade(state)
         assert out.reason_data["forced_pivot_recollect"] is True
         assert out.reason_data.get("forced_requery") is not True
-        assert marker.get("consumed") is not True
+        assert carrier.get("consumed") is not True
+        assert out.consumed_order_ref is None
 
-    def test_invalid_directive_consumed_and_reported(self) -> None:
-        marker = {
-            "kind": "ledger_requery_directive",
-            "query": "",
-            "action_type": "SEARCH_CODE",
-            "action_parameters": {},
-            "marker_index": 0,
+    def test_carried_order_dispatches_and_reports_ref(self) -> None:
+        carrier = {
+            "kind": "work_order",
+            "order_kind": "REQUERY",
+            "iteration": 1,
+            "turn_issued": 1,
+            "claim_ref": "c1",
+            "query": "order filter",
+            "scope": "",
+            "max_attempts": 3,
+            "consumed": False,
+            "order": {
+                "work_order_id": "00000000-0000-0000-0000-000000000001",
+                "kind": "REQUERY",
+                "action_type": "SEARCH_CODE",
+                "action_parameters": {"query": "order filter"},
+                "addresses": {
+                    "triage_route": "BUG",
+                    "claim_kind": "untyped",
+                    "has_unbeaten_rival": False,
+                },
+                "cost_estimate": 1,
+                "seed_source": "test:carrier",
+                "status": "PENDING",
+            },
         }
         state = _state(
             reason_data={"next_action": "GET_CODE", "action_parameters": {"file_path": "svc/old.py"}},
             prev_focus=None,
-            action_history=[marker],
+            action_history=[carrier],
         )
         out = apply_post_reason_cascade(state)
-        assert out.reason_data.get("forced_pivot_recollect") is not True
-        assert marker.get("consumed") is True
-        assert out.invalid_directive == {"marker_index": 0}
+        assert out.reason_data.get("forced_requery") is True
+        assert out.reason_data["action_parameters"] == {"query": "order filter"}
+        assert out.consumed_order_ref is carrier
 
     def test_pivot_beats_callsite(self) -> None:
         state = _state(
@@ -299,7 +333,7 @@ class TestDeterminism:
         assert first.reason_data == second.reason_data
         assert first.prev_focus == second.prev_focus
         assert first.counts == second.counts
-        assert first.invalid_directive == second.invalid_directive
+        assert first.consumed_order_ref == second.consumed_order_ref
 
     def test_focus_state_chains_across_turns(self) -> None:
         turn1 = apply_post_reason_cascade(_state())

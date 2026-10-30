@@ -576,7 +576,7 @@ class TestFastPathPredicate:
         # flag set by the D6 block itself — both asserted below.
         assert len(guards) == 9, f"D6 guard count changed: {len(guards)}"
         walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
-        ledger_at = next(i for i, l in enumerate(region) if "G3: ledger-requery forcing" in l)
+        ledger_at = next(i for i, l in enumerate(region) if "G3: order-driven requery forcing" in l)
         walk_block = region[walk_at:ledger_at]
         assert any("or _d6_fired" in l for l in walk_block), (
             "walk-stack must keep its D6 suppression"
@@ -593,7 +593,7 @@ class TestFastPathPredicate:
         forced_pivot_recollect is set — otherwise the cascade gathers on
         the stale focus the pivot just left. Walk-stack is the intended
         exception (explicit intake frames outrank everything). Counts are
-        structural: ledger, formulate, synthesis, call-site, log search,
+        structural: order-requery, formulate, synthesis, call-site, log search,
         replan, smallest-fetch."""
         import pathlib
 
@@ -617,7 +617,7 @@ class TestFastPathPredicate:
             f"pivot guard count changed: {len(pivot_guards)}"
         )
         walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
-        ledger_at = next(i for i, l in enumerate(region) if "G3: ledger-requery forcing" in l)
+        ledger_at = next(i for i, l in enumerate(region) if "G3: order-driven requery forcing" in l)
         walk_block = region[walk_at:ledger_at]
         assert not any("forced_pivot_recollect" in l for l in walk_block), (
             "walk-stack must keep winning over pivot (intake frames first)"
