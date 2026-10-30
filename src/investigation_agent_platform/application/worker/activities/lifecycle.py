@@ -1761,6 +1761,8 @@ async def _gate_conclusion_or_fail(
     # limitations plus the single next check persist on the conclusion.
     from investigation_agent_platform.application.investigation.verification import (
         VerificationEngine as _VerificationEngine,
+        VerificationLimitation as _VerificationLimitation,
+        LimitationCode as _LimitationCode,
     )
 
     _unmapped: list[str] = []
@@ -1789,7 +1791,7 @@ async def _gate_conclusion_or_fail(
     _eliminated_rivals: list = []
     try:
         _eliminated_rivals = _VerificationEngine.elimination_record(
-            candidate, list(hypotheses or [])
+            candidate, list(hypotheses or []), list(evidence_by_id.values())
         )
     except Exception:
         _eliminated_rivals = []
@@ -1802,7 +1804,19 @@ async def _gate_conclusion_or_fail(
         _would_establish = (
             _vstatus == "VERIFIED"
             and _tier != "likely"
-            and not (location_answered or code_value_answered or doc_answered)
+            # P3 rival bar scopes to causal conclusions only: every
+            # fast-path answer shape (location, code-value, doc, history,
+            # state, caller-edge) is excluded, not just the first three.
+            # History/state/caller-edge answers are verifier-confirmed on
+            # their own shape; they are never causal verdicts.
+            and not (
+                location_answered
+                or code_value_answered
+                or doc_answered
+                or history_answered
+                or state_answered
+                or caller_edge_validated
+            )
         )
         if _would_establish and not _eliminated_rivals:
             _rival_bar_failed = True
@@ -1827,8 +1841,26 @@ async def _gate_conclusion_or_fail(
             pass
     _next_check: str | None = None
     try:
+        # P3 rival bar: the demotion must feed next-check construction,
+        # which reads typed limitations — not the formatted strings.
+        # Without this the demoted likely conclusion carries no follow-up
+        # telling the investigator to test and eliminate a rival.
+        _conclude_limitations = list(getattr(verification, "limitations", None) or [])
+        if _rival_bar_failed:
+            try:
+                _conclude_limitations = list(_conclude_limitations) + [
+                    _VerificationLimitation(
+                        code=_LimitationCode.RIVAL_UNBEATEN,
+                        detail=(
+                            "no ruled-out rival with ruling-out evidence recorded; "
+                            "causal verdict publishes as likely, never established."
+                        ),
+                    )
+                ]
+            except Exception:
+                pass
         _next_check = _VerificationEngine.next_check_for(
-            getattr(verification, "limitations", None) or [],
+            _conclude_limitations,
             _untested_rivals,
             _unmapped,
         )

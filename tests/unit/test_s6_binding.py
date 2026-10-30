@@ -159,7 +159,8 @@ class TestEliminationRecord:
     def test_rejected_with_evidence_counts(self):
         cand = _hyp("winner")
         sib = self._sibling("loser", HypothesisStatus.REJECTED, ["e1", "e2"])
-        record = VerificationEngine.elimination_record(cand, [cand, sib])
+        bank = [{"evidence_id": "e1"}, {"evidence_id": "e2"}]
+        record = VerificationEngine.elimination_record(cand, [cand, sib], bank)
         assert len(record) == 1
         assert record[0].statement == "loser"
         assert record[0].status == "REJECTED"
@@ -168,7 +169,20 @@ class TestEliminationRecord:
     def test_rejected_without_evidence_excluded(self):
         cand = _hyp("winner")
         sib = self._sibling("loser", HypothesisStatus.REJECTED, [])
+        assert VerificationEngine.elimination_record(cand, [cand, sib], []) == []
+
+    def test_stale_ids_excluded(self):
+        # Refuting IDs that resolve against nothing banked satisfy nothing.
+        cand = _hyp("winner")
+        sib = self._sibling("loser", HypothesisStatus.REJECTED, ["ghost-1"])
+        bank = [{"evidence_id": "e1"}]
+        assert VerificationEngine.elimination_record(cand, [cand, sib], bank) == []
+
+    def test_no_bank_means_no_record(self):
+        cand = _hyp("winner")
+        sib = self._sibling("loser", HypothesisStatus.REJECTED, ["e1"])
         assert VerificationEngine.elimination_record(cand, [cand, sib]) == []
+        assert VerificationEngine.elimination_record(cand, [cand, sib], None) == []
 
     def test_live_rivals_excluded(self):
         cand = _hyp("winner")
@@ -176,12 +190,14 @@ class TestEliminationRecord:
             self._sibling("live one", HypothesisStatus.UNDER_INVESTIGATION, ["e1"]),
             self._sibling("supported one", HypothesisStatus.SUPPORTED, ["e1"]),
         ]
-        assert VerificationEngine.elimination_record(cand, [cand, *sibs]) == []
+        bank = [{"evidence_id": "e1"}]
+        assert VerificationEngine.elimination_record(cand, [cand, *sibs], bank) == []
 
     def test_contradicted_counts(self):
         cand = _hyp("winner")
         sib = self._sibling("wrong", HypothesisStatus.CONTRADICTED, ["e9"])
-        record = VerificationEngine.elimination_record(cand, [cand, sib])
+        bank = [{"evidence_id": "e9"}]
+        record = VerificationEngine.elimination_record(cand, [cand, sib], bank)
         assert len(record) == 1 and record[0].status == "CONTRADICTED"
 
     def test_record_round_trips_through_conclusion(self):
@@ -206,3 +222,34 @@ class TestEliminationRecord:
         )
 
         assert _limitation_kind("RIVAL_UNBEATEN: no ruled-out rival") == "RIVAL_UNBEATEN"
+
+    def test_rival_unbeaten_directs_rival_testing(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            LimitationCode,
+            VerificationLimitation,
+        )
+
+        directive = VerificationEngine.next_check_for(
+            [VerificationLimitation(code=LimitationCode.RIVAL_UNBEATEN, detail="x")],
+            [],
+            [],
+        )
+        assert directive is not None
+        assert "rival" in directive.lower()
+
+    def test_untested_rival_takes_priority_over_unbeaten(self):
+        from investigation_agent_platform.application.investigation.verification import (
+            LimitationCode,
+            VerificationLimitation,
+        )
+
+        directive = VerificationEngine.next_check_for(
+            [
+                VerificationLimitation(code=LimitationCode.RIVAL_UNTESTED, detail="x"),
+                VerificationLimitation(code=LimitationCode.RIVAL_UNBEATEN, detail="y"),
+            ],
+            ["live rival statement"],
+            [],
+        )
+        assert directive is not None
+        assert "live rival statement" in directive

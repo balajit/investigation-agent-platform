@@ -5472,18 +5472,38 @@ class VerificationEngine:
 
     @staticmethod
     def elimination_record(
-        candidate: Any, siblings: list[Any] | None
+        candidate: Any,
+        siblings: list[Any] | None,
+        evidence_bank: list[Any] | None = None,
     ) -> list["EliminatedRival"]:
         """Ruled-out rivals with their ruling-out evidence (S5/S6 rival bar).
 
         A REJECTED or CONTRADICTED sibling counts only with non-empty
-        refuting evidence IDs — a status without the evidence that earned
-        it proves nothing. The candidate itself is excluded. Never raises.
+        refuting evidence IDs that resolve against the banked evidence —
+        a stale or unresolved ID satisfies nothing. Without a bank to
+        check against the record stays empty (fail closed: a ruling-out
+        claim that cannot be grounded is not recorded). The candidate
+        itself is excluded. Never raises.
         """
         from investigation_agent_platform.domain.finding.models import EliminatedRival
 
         out: list[EliminatedRival] = []
         try:
+            banked: set[str] = set()
+            if evidence_bank is not None:
+                for row in evidence_bank:
+                    try:
+                        if isinstance(row, dict):
+                            eid = row.get("evidence_id", "")
+                        else:
+                            eid = getattr(row, "evidence_id", "")
+                        eid = str(eid or "").strip()
+                        if eid:
+                            banked.add(eid)
+                    except Exception:
+                        continue
+            else:
+                return []
             candidate_id = getattr(candidate, "id", None)
             for sib in siblings or []:
                 try:
@@ -5497,7 +5517,7 @@ class VerificationEngine:
                     ruled_out_by = [
                         str(e)
                         for e in (getattr(sib, "refuting_evidence_ids", None) or [])[:20]
-                        if str(e or "").strip()
+                        if str(e or "").strip() and str(e) in banked
                     ]
                     if not ruled_out_by:
                         continue
@@ -6083,6 +6103,12 @@ class VerificationEngine:
             return f"Evaluate the untested rival hypothesis against evidence, then re-verify: {rivals[0][:300]}"
         if "RIVAL_UNTESTED" in codes:
             return "Evaluate every rival hypothesis against evidence, then re-verify."
+        if "RIVAL_UNBEATEN" in codes:
+            return (
+                "Rule out the strongest live rival with ruling-out evidence, "
+                "then re-verify: an established causal verdict requires a "
+                "recorded elimination."
+            )
         if "RELATION_UNDEMONSTRATED" in codes:
             return "Cite the code/log rows showing each causal step's mechanism, then re-verify."
         if "NO_RUNTIME_OBSERVATION" in codes:
