@@ -136,6 +136,7 @@ def work_orders_to_seeds(
     *,
     ttl_rounds: int = DEFAULT_CANDIDATE_TTL_ROUNDS,
     max_seeds: int = MAX_WORK_ORDER_SEEDS,
+    candidate_ids: dict[str, UUID] | None = None,
 ) -> tuple[list[FrontierCandidate], list[UUID]]:
     """Translate pending work orders into frontier candidates (DES §4).
 
@@ -144,6 +145,10 @@ def work_orders_to_seeds(
     (LOCAL_COMPLETE), over-cap overflow, and non-pending status all fail
     closed, and the caller records the skip. Cost is carried, never
     re-estimated — pricing stays in one place with the exit rule.
+
+    ``candidate_ids`` optionally pins FrontierCandidate IDs by order-ID
+    hex (advisory ranking needs deterministic tie-breaks; omitted IDs
+    fall back to random as before).
     """
     dimension: FrontierDimension | None = character.spread_dimension(evidence_state)
     if dimension is None:
@@ -161,8 +166,20 @@ def work_orders_to_seeds(
         locator = order.action_parameters.get("file_path")
         target = str(locator)[:1024] if locator is not None else order.action_type
         try:
+            pinned_id: UUID | None = None
+            try:
+                if isinstance(candidate_ids, dict):
+                    raw = candidate_ids.get(order.work_order_id.hex)
+                    pinned_id = UUID(str(raw)) if raw is not None else None
+            except (ValueError, AttributeError, TypeError):
+                pinned_id = None
             seeded.append(
                 FrontierCandidate(
+                    **(
+                        {"candidate_id": pinned_id}
+                        if pinned_id is not None
+                        else {}
+                    ),
                     file_path=identity["file_path"],
                     span=identity["span"],
                     commit=identity["commit"],

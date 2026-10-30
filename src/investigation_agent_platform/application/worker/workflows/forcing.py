@@ -47,12 +47,20 @@ with workflow.unsafe.imports_passed_through():
         focus_from_reason_data,
         pivot_can_pay_off,
     )
+    from investigation_agent_platform.domain.collection.frontier import (
+        EvidenceState as FrontierEvidenceState,
+    )
+    from investigation_agent_platform.domain.collection.frontier import (
+        order_candidates,
+    )
     from investigation_agent_platform.domain.collection.work_orders import (
+        MAX_WORK_ORDER_SEEDS,
         WORK_ORDER_VERSION_CURRENT,
         FailureCharacter,
         WorkOrder,
         WorkOrderKind,
         WorkOrderStatus,
+        work_orders_to_seeds,
     )
 
 
@@ -2059,6 +2067,137 @@ def orders_from_cascade_signals(
     return orders
 
 
+def rank_advisory_orders(
+    orders: list[WorkOrder] | None,
+    history: list | None,
+    banked_total: int,
+) -> dict[str, Any]:
+    """Rank advisory work orders best-first without dispatching (2b step 4, pure).
+
+    Translates each PENDING order to frontier seeds with its own
+    addresses as the failure character, then orders by base_score ×
+    novelty. The novelty baseline derives from banked GET reads in
+    history (attempted-but-unbanked rows do not count — advisory novelty
+    is conservative by construction). Evidence state is coarse
+    (row-count only; the loop owns richer bank state in step 5+).
+
+    Deterministic: candidate IDs derive from order IDs, so ties break
+    identically every turn. Returns ``{"evidence_state", "ranked",
+    "skipped"}`` — ranked entries carry rank/identity/fetch/dimension/
+    base_score; skipped holds order-ID hexes translation refused
+    (unlocatable, over-cap, non-pending). Never raises.
+    """
+    ranked: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    try:
+        pending = [o for o in (orders or []) if isinstance(o, WorkOrder)]
+    except Exception:
+        return {"evidence_state": "UNKNOWN", "ranked": ranked, "skipped": skipped}
+    try:
+        banked = int(banked_total or 0)
+    except (TypeError, ValueError):
+        banked = 0
+    evidence_state = (
+        FrontierEvidenceState.NO_ROWS if banked <= 0 else FrontierEvidenceState.ROWS_WITHOUT_MATCH
+    )
+    try:
+        collected: list[tuple[str | None, str | None]] = []
+        for entry in history or []:
+            try:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("action", "") or "").upper() not in ("GET_CODE", "GET_SOURCE"):
+                    continue
+                if int(entry.get("evidence_added", 0) or 0) <= 0:
+                    continue
+                params = entry.get("parameters") or {}
+                if not isinstance(params, dict):
+                    continue
+                file_path = str(params.get("file_path") or "").strip() or None
+                try:
+                    start = int(params.get("start_line") or 0) or None
+                except (TypeError, ValueError):
+                    start = None
+                try:
+                    end = int(params.get("end_line") or 0) or None
+                except (TypeError, ValueError):
+                    end = None
+                span: str | None = None
+                if start is not None and end is not None:
+                    span = f"{start}-{end}"
+                elif start is not None:
+                    span = str(start)
+                collected.append((file_path, span))
+            except Exception:
+                continue
+    except Exception:
+        collected = []
+    try:
+        remaining = int(MAX_WORK_ORDER_SEEDS)
+    except Exception:
+        remaining = 8
+    seeds_all: list[Any] = []
+    order_of: dict[str, str] = {}
+    try:
+        for order in pending:
+            try:
+                if remaining <= 0:
+                    skipped.append(order.work_order_id.hex)
+                    continue
+                pinned = {
+                    order.work_order_id.hex: uuid.uuid5(
+                        uuid.NAMESPACE_URL, f"frontier-candidate|{order.work_order_id.hex}"
+                    )
+                }
+                seeds, order_skipped = work_orders_to_seeds(
+                    [order],
+                    order.addresses,
+                    evidence_state,
+                    max_seeds=remaining,
+                    candidate_ids=pinned,
+                )
+                skipped.extend(
+                    [s.hex if hasattr(s, "hex") else str(s) for s in order_skipped]
+                )
+                remaining -= len(seeds)
+                for seed in seeds:
+                    order_of[seed.candidate_id.hex] = order.work_order_id.hex
+                seeds_all.extend(seeds)
+            except Exception:
+                try:
+                    skipped.append(order.work_order_id.hex)
+                except Exception:
+                    pass
+                continue
+    except Exception:
+        pass
+    try:
+        ordered = order_candidates(seeds_all, collected)
+    except Exception:
+        ordered = []
+    try:
+        for position, seed in enumerate(ordered, start=1):
+            try:
+                ranked.append(
+                    {
+                        "rank": position,
+                        "order_id": order_of.get(seed.candidate_id.hex, ""),
+                        "seed_source": seed.seed_source,
+                        "file_path": seed.file_path,
+                        "span": seed.span,
+                        "fetch_kind": seed.seed_fetch.fetch_kind,
+                        "target": seed.seed_fetch.target,
+                        "dimension": str(seed.dimension.value),
+                        "base_score": seed.base_score,
+                    }
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"evidence_state": str(evidence_state.value), "ranked": ranked, "skipped": skipped}
+
+
 @dataclass
 class PostReasonCascadeState:
     """Inputs and outputs of the post-reason gathering cascade (2b seam).
@@ -2090,6 +2229,9 @@ class PostReasonCascadeState:
     #: Advisory work orders as JSON dicts (2b step 3): recorded only,
     #: never dispatched by the cascade.
     advisory_orders: list = field(default_factory=list)
+    #: Advisory frontier ranking (2b step 4): recorded only, never
+    #: dispatched by the cascade.
+    advisory_ranking: dict = field(default_factory=dict)
 
 
 def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascadeState:
@@ -2502,14 +2644,24 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                     "next_action": str(_pivot_override.get("next_action") or ""),
                     "action_parameters": _pivot_override.get("action_parameters"),
                 }
-            state.advisory_orders = [
-                order.model_dump(mode="json")
-                for order in orders_from_cascade_signals(
-                    _history, _pivot_surface, state.triage_route
-                )
-            ]
+            _advisory_models = orders_from_cascade_signals(
+                _history, _pivot_surface, state.triage_route
+            )
+            state.advisory_orders = [order.model_dump(mode="json") for order in _advisory_models]
         except Exception:
+            _advisory_models = []
             state.advisory_orders = []
+        # 2b step 4: advisory frontier ranking — translate the recorded
+        # orders to seeds and order them AFTER the cascade, recording the
+        # recommendation without changing dispatch.
+        try:
+            state.advisory_ranking = rank_advisory_orders(
+                _advisory_models,
+                _history,
+                int(state.evidence_banked_total or 0),
+            )
+        except Exception:
+            state.advisory_ranking = {}
         state.reason_data = _reason_data
         state.ledger_marker_ref = _ledger_marker_ref
         return state
