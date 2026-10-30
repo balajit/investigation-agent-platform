@@ -11,7 +11,9 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    pass
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_CURRENT,
+    )
 
 with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.application.worker.activities import (
@@ -99,6 +101,7 @@ from .forcing import (
     _should_force_synthesis,
     _should_force_walk_stack,
     apply_post_reason_cascade,
+    dispatched_parameters,
 )
 
 
@@ -120,6 +123,10 @@ class RunInvestigationInput:
     # limits (global defaults plus the profile evidence_budget overlay).
     # None (legacy callers) means the local guard default.
     max_iterations: int | None = None
+    # Loop-semantics pin recorded on the investigation at creation and
+    # resolved by the API at dispatch (domain.investigation.loop_version).
+    # None (legacy callers / tests) means the current semantics.
+    loop_version: str | None = None
 
 
 @dataclass
@@ -140,6 +147,11 @@ class RunInvestigationWorkflow:
         # table; this memory is just the wait gate.
         self._pending_requirement: dict[str, Any] | None = None
         self._fulfilled_input: dict[str, Any] | None = None
+        # T1: set the moment conclude_investigation_activity returns. From
+        # then on the aggregate is in its terminal state and the conclusion
+        # is durable; no later failure may rewrite it to FAILED.
+        self._conclusion_persisted = False
+        self._requested_final_status = ""
 
     @workflow.signal
     async def pause(self) -> None:
@@ -189,6 +201,44 @@ class RunInvestigationWorkflow:
         ):
             raise ApplicationError("stale or unknown input requirement", non_retryable=True)
 
+    async def _post_conclude_best_effort(
+        self,
+        activity_fn: Any,
+        activity_input: Any,
+        timeout: timedelta,
+        policy: RetryPolicy,
+        step: str,
+    ) -> bool:
+        """Run a post-conclude activity; log and swallow its failure (T1).
+
+        Returns True on success. Cancellation (``asyncio.CancelledError``) is
+        a ``BaseException`` and still propagates.
+        """
+        try:
+            await workflow.execute_activity(
+                activity_fn,
+                activity_input,
+                start_to_close_timeout=timeout,
+                retry_policy=policy,
+            )
+            return True
+        except Exception as exc:
+            workflow.logger.warning(
+                "post-conclude step failed after durable conclusion: %s (%s)",
+                step,
+                type(exc).__name__,
+                extra={
+                    "event": "post conclude step failed",
+                    "comp": COMP_WFLW,
+                    "func": "RunInvestigationWorkflow._post_conclude_best_effort",
+                    "stage": "conclude",
+                    "step": step,
+                    "outcome": OUTCOME_FAILED,
+                    "error": type(exc).__name__,
+                },
+            )
+            return False
+
     @workflow.run
     async def run(self, input_data: RunInvestigationInput) -> RunInvestigationResult:
         """Entry point: reconcile-then-report wrapper around the main loop.
@@ -220,6 +270,20 @@ class RunInvestigationWorkflow:
                     "error": type(exc).__name__,
                 },
             )
+            if self._conclusion_persisted:
+                # T1: the conclusion is already durable (the aggregate is
+                # COMPLETED or otherwise terminal). Transitioning it to
+                # FAILED would rewrite a published verdict; report the
+                # post-conclude fault on the execution result only.
+                workflow.logger.warning(
+                    "post-conclude error after durable conclusion; not reconciling to FAILED: %s",
+                    type(exc).__name__,
+                )
+                return RunInvestigationResult(
+                    investigation_id=input_data.investigation_id or "",
+                    status=self._requested_final_status or "COMPLETED",
+                    error=f"post_conclude_error:{type(exc).__name__}",
+                )
             # Surface the proximate activity cause (type + message only, no
             # payloads) so the failure record is diagnosable via the API.
             cause = getattr(exc, "cause", None)
@@ -755,6 +819,7 @@ class RunInvestigationWorkflow:
                     formulated_count=formulated_count,
                     tenant_id=tenant_id,
                     investigation_id=str(inv_id),
+                    loop_version=input_data.loop_version or LOOP_VERSION_CURRENT,
                 )
             )
             _reason_data = dict(_cascade_state.reason_data or {})
@@ -1051,7 +1116,9 @@ class RunInvestigationWorkflow:
             if action_history:
                 _exec_data = execute_res.data or {}
                 _outcome = _exec_data.get("action_outcome") or {}
-                _params = dict(reason_res.data.get("action_parameters", {}) or {})
+                # F1: record what was DISPATCHED (post-cascade), not the
+                # model's pre-override proposal.
+                _params = dispatched_parameters(_reason_data)
                 # G3: same-turn retrieval summary for the verify-time
                 # fallback (actions not yet flushed to the timeline table)
                 # and the cascade-time budget re-check. All JSON scalars,
@@ -1429,6 +1496,7 @@ class RunInvestigationWorkflow:
             if last_error is None:
                 last_error = "verification_failed_or_limit_reached"
 
+        self._requested_final_status = final_status
         await workflow.execute_activity(
             conclude_investigation_activity,
             ConcludeInvestigationInput(
@@ -1503,22 +1571,26 @@ class RunInvestigationWorkflow:
             retry_policy=retry_policy,
         )
 
+        self._conclusion_persisted = True
+
         # Part 6 Slice 0: distill concluded state into knowledge envelopes.
-        # Capture failures never fail the investigation.
-        await workflow.execute_activity(
+        # Capture and publish run AFTER the conclusion is durable, so their
+        # failures are logged and never fail (or rewrite) the investigation.
+        await self._post_conclude_best_effort(
             capture_knowledge_activity,
             CaptureKnowledgeInput(tenant_id=tenant_id, investigation_id=inv_id),
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=retry_policy,
+            timedelta(seconds=60),
+            retry_policy,
+            "capture_knowledge",
         )
-
-        await workflow.execute_activity(
+        await self._post_conclude_best_effort(
             publish_event_activity,
             PublishEventInput(
                 tenant_id=tenant_id, investigation_id=inv_id, event="INVESTIGATION_FINISHED"
             ),
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=retry_policy,
+            timedelta(seconds=30),
+            retry_policy,
+            "publish_event",
         )
 
         return RunInvestigationResult(

@@ -661,8 +661,15 @@ class TestFastPathPredicate:
         walk_at = next(i for i, l in enumerate(region) if "stack-walk forcing first" in l)
         ledger_at = next(i for i, l in enumerate(region) if "G3: order-driven requery forcing" in l)
         walk_block = region[walk_at:ledger_at]
-        assert not any("forced_pivot_recollect" in l for l in walk_block), (
-            "walk-stack must keep winning over pivot (intake frames first)"
+        # Walk-stack must never be GUARDED by the pivot flag (intake frames
+        # outrank it). It may only CLEAR the flag when it overwrites a
+        # pivot dispatch (review F5): the pivot did not run.
+        assert not any(
+            'get("forced_pivot_recollect")' in l or "if _reason_data" in l and "pivot" in l
+            for l in walk_block
+        ), "walk-stack must keep winning over pivot (intake frames first)"
+        assert any('["forced_pivot_recollect"] = False' in l for l in walk_block), (
+            "walk-stack winning over a pivot must clear the pivot flag"
         )
 
     def test_pivot_disjoint_from_floor_and_reread(self):

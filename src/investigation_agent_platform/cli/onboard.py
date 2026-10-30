@@ -504,7 +504,7 @@ def cmd_verify_telemetry(args: argparse.Namespace, transport: Transport | None) 
     except PlatformConfigurationError as exc:
         print(f"error: {exc}")
         return 2
-    except Exception as exc:  # noqa: BLE001 — probe tool: loud message, no traceback
+    except Exception as exc:
         print(f"error: verification failed: {exc}")
         return 1
     if args.json:

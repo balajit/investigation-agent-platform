@@ -52,9 +52,10 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -554,7 +555,7 @@ class TelemetryEndpoint(BaseModel):
         return str(path)
 
     @model_validator(mode="after")
-    def validate_auth_coherence(self) -> "TelemetryEndpoint":
+    def validate_auth_coherence(self) -> TelemetryEndpoint:
         oauth_fields = [
             self.oauth_token_url,
             self.oauth_client_id,
@@ -591,7 +592,7 @@ class TelemetryEndpoint(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_tls_coherence(self) -> "TelemetryEndpoint":
+    def validate_tls_coherence(self) -> TelemetryEndpoint:
         if not self.verify_certs and self.ca_certs is not None:
             raise ValueError(
                 "ca_certs is set while verify_certs is false: pinning a CA "

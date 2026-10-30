@@ -4,10 +4,12 @@
 Identity is derived exclusively from a cryptographically verified JWT
 (signature, issuer, audience, expiry, algorithm allow-list all checked).
 ``X-Tenant-ID`` is accepted only as an optional consistency check against the
-verified tenant claim — it is never treated as authority. In non-production
-environments where no JWKS/issuer is configured, ``X-Tenant-ID`` may be used
-alone as a development convenience, but this path is refused entirely when
-``IAP_ENVIRONMENT=production`` (see F-003 in the adversarial review).
+verified tenant claim — it is never treated as authority. ``X-Tenant-ID`` may
+be used alone only in an explicitly named development environment
+(``DEV_ENVIRONMENTS``) AND only while no JWKS/issuer is configured. Every other
+environment name (``production``, ``prod``, ``staging``, ``live``, a typo) takes
+the strict verified-token path, and configuring JWT verification turns the
+header-only path off in every environment (F-003; review R3).
 """
 
 from __future__ import annotations
@@ -27,6 +29,12 @@ from investigation_agent_platform.api.errors import ApiError
 logger = logging.getLogger(__name__)
 
 
+# Environments where a bare X-Tenant-ID header may identify the caller. An
+# allowlist, not a "production" denylist: any other value - including
+# spellings like "prod" or "live" - is treated as production-grade.
+DEV_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
+
+
 class AuthConfigurationError(RuntimeError):
     """Raised when production authentication cannot be safely configured."""
 
@@ -40,12 +48,16 @@ class AuthSettings:
     algorithms: tuple[str, ...]
 
     @property
-    def is_production(self) -> bool:
-        return self.environment.lower() == "production"
-
-    @property
     def jwt_verification_enabled(self) -> bool:
         return bool(self.jwks_url and self.issuer)
+
+    @property
+    def header_auth_allowed(self) -> bool:
+        """True only for a named dev environment with JWT verification off."""
+        return (
+            self.environment.strip().lower() in DEV_ENVIRONMENTS
+            and not self.jwt_verification_enabled
+        )
 
 
 def _load_auth_settings() -> AuthSettings:
@@ -155,11 +167,14 @@ async def _resolve_verified_identity(
     if authorization and authorization.lower().startswith("bearer "):
         bearer_token = authorization[len("bearer ") :].strip() or None
 
-    if settings.is_production:
-        # Production must never authenticate off an unverified header alone.
+    if not settings.header_auth_allowed:
+        # Anything that is not a named dev environment without JWT
+        # verification must authenticate with a verified token and never
+        # from an unverified header alone.
         if not settings.jwt_verification_enabled:
             raise AuthConfigurationError(
-                "Production requires IAP_AUTH_JWKS_URL and IAP_AUTH_ISSUER to be configured"
+                f"Environment {settings.environment!r} requires IAP_AUTH_JWKS_URL and "
+                "IAP_AUTH_ISSUER to be configured (header-only auth is dev-only)"
             )
         if not bearer_token:
             raise ApiError(
@@ -201,36 +216,8 @@ async def _resolve_verified_identity(
             )
         return VerifiedIdentity(tenant_id=tenant, principal_id=principal.strip())
 
-    # Non-production: prefer verified JWT when JWKS is configured; otherwise
-    # fall back to X-Tenant-ID as a development convenience only.
-    if bearer_token and settings.jwt_verification_enabled:
-        try:
-            claims = _verify_jwt(bearer_token, settings)
-        except jwt.PyJWTError as exc:
-            raise ApiError(
-                code="AUTH_TOKEN_INVALID",
-                http_status=status.HTTP_401_UNAUTHORIZED,
-                message="Invalid authentication token",
-            ) from exc
-        tenant = _tenant_claim(claims) or header_tenant
-        principal = claims.get("sub")
-        if tenant is None:
-            raise ApiError(
-                code="AUTH_TENANT_REQUIRED",
-                http_status=status.HTTP_401_UNAUTHORIZED,
-                message="Missing tenant",
-            )
-        if header_tenant is not None and header_tenant != tenant:
-            raise ApiError(
-                code="TENANT_MISMATCH",
-                http_status=status.HTTP_403_FORBIDDEN,
-                message="Tenant mismatch between X-Tenant-ID and verified token",
-            )
-        return VerifiedIdentity(
-            tenant_id=tenant,
-            principal_id=str(principal).strip() if principal else "dev-principal",
-        )
-
+    # Named dev environment with JWT verification off: the header alone
+    # identifies the caller (development convenience only).
     if header_tenant is None:
         raise ApiError(
             code="AUTH_TENANT_REQUIRED",

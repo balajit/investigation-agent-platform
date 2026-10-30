@@ -178,9 +178,9 @@ class DefinitionObservation(BaseModel):
     observation_id: str = Field(..., min_length=1, max_length=256)
     variant: DefinitionVariant = Field(...)
     record_version: str = Field(default=DEFINITION_RECORD_VERSION, max_length=32)
-    payload: (
-        ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload
-    ) = Field(...)
+    payload: ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload = (
+        Field(...)
+    )
 
 
 def _definition_payload_dict(payload: BaseModel) -> dict[str, Any]:
@@ -214,9 +214,7 @@ def _check_missing_taxonomy(missing: list[str], codes: list[LimitationCode]) -> 
     for value in missing:
         allowed = _MISSING_CODE_MAP.get(value)
         if allowed is None:
-            raise EdgeError(
-                EdgeErrorCode.NOT_RESOLVED, f"missing outside closed list: {value!r}"
-            )
+            raise EdgeError(EdgeErrorCode.NOT_RESOLVED, f"missing outside closed list: {value!r}")
     code_values = {c.value for c in codes}
     for value in missing:
         if not (code_values & _MISSING_CODE_MAP[value]):
@@ -286,9 +284,7 @@ def _check_definition_lineage(
 
 
 def _check_definition_variant(
-    payload: (
-        ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload
-    ),
+    payload: (ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload),
     variant: DefinitionVariant,
 ) -> None:
     """Per-variant contracts + cross-field invariants (design §2.2a)."""
@@ -304,9 +300,7 @@ def _check_definition_variant(
         _check_definition_lineage(payload.lineage.sources, payload.repository)
     elif variant == DefinitionVariant.PARTIAL_OBSERVATION:
         if not isinstance(payload, PartialDefinitionPayload):
-            raise EdgeError(
-                EdgeErrorCode.NOT_RESOLVED, "PARTIAL_OBSERVATION needs partial payload"
-            )
+            raise EdgeError(EdgeErrorCode.NOT_RESOLVED, "PARTIAL_OBSERVATION needs partial payload")
         if not payload.limitation_codes:
             raise EdgeError(
                 EdgeErrorCode.NOT_RESOLVED, "PARTIAL_OBSERVATION without limitation codes"
@@ -343,9 +337,7 @@ def _check_definition_variant(
 
 def compute_definition_id(
     variant: DefinitionVariant,
-    payload: (
-        ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload
-    ),
+    payload: (ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload),
 ) -> str:
     """Content hash over the canonical preimage (never self-referential).
 
@@ -366,9 +358,7 @@ def compute_definition_id(
 
 def make_definition_observation(
     variant: DefinitionVariant,
-    payload: (
-        ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload
-    ),
+    payload: (ResolvedDefinitionPayload | PartialDefinitionPayload | UnresolvedDefinitionPayload),
 ) -> DefinitionObservation:
     """Build a well-formed observation (id computed, never supplied)."""
     return DefinitionObservation(
@@ -445,11 +435,7 @@ def adjudicate_target_binding(n_candidates: int, has_usable_ref: bool) -> Target
     PARTIAL/AMBIGUOUS_TARGET. Negative counts are malformed input, never
     "zero candidates". No best-effort pick, ever.
     """
-    if (
-        not isinstance(n_candidates, int)
-        or isinstance(n_candidates, bool)
-        or n_candidates < 0
-    ):
+    if not isinstance(n_candidates, int) or isinstance(n_candidates, bool) or n_candidates < 0:
         raise EdgeError(EdgeErrorCode.BAD_RANGE, f"n_candidates: {n_candidates!r}")
     if n_candidates == 1:
         return TargetAdjudication(variant=DefinitionVariant.RESOLVED_TARGET_BINDING)

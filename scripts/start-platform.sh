@@ -103,21 +103,42 @@ command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 2; 
 
 mkdir -p tmp
 
+# Rotate (never truncate) the application logs before each launch so a
+# --restart cannot destroy the evidence of the run that just ended. The
+# previous log is kept as tmp/<name>.<UTC timestamp>.log; the newest
+# IAP_LOG_KEEP rotated files per name are retained (default 10).
+rotate_logs() {
+  local name ts keep="${IAP_LOG_KEEP:-10}"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  for name in "$@"; do
+    if [[ -s "tmp/${name}.log" ]]; then
+      mv "tmp/${name}.log" "tmp/${name}.${ts}.log"
+    fi
+    # Timestamped names sort chronologically; drop all but the newest $keep.
+    # shellcheck disable=SC2012
+    { ls -1 "tmp/${name}".*.log 2>/dev/null || true; } | sort -r | tail -n +"$((keep + 1))" | while read -r old; do
+      rm -f -- "$old"
+    done
+  done
+}
+
 # --restart: bounce the application processes only. Infrastructure
 # (compose services) and migrations are left untouched.
 if [[ "$RESTART_ONLY" == true ]]; then
   echo "Restarting application (API/worker)..."
   stop_app
   sleep 2
+  [[ "$RUN_API" == true ]] && rotate_logs api
+  [[ "$RUN_WORKER" == true ]] && rotate_logs worker
   if [[ "$RUN_API" == true ]]; then
     echo "Starting API on :$PORT ..."
-    nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" > tmp/api.log 2>&1 &
+    nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
     echo $! > tmp/api.pid
     echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
   fi
   if [[ "$RUN_WORKER" == true ]]; then
     echo "Starting Temporal worker ..."
-    nohup uv run python -u -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
+    nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
     echo $! > tmp/worker.pid
     echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
   fi
@@ -157,15 +178,17 @@ echo "Infrastructure ready."
 echo "Running migrations..."
 uv run alembic upgrade head
 
+[[ "$RUN_API" == true ]] && rotate_logs api
+[[ "$RUN_WORKER" == true ]] && rotate_logs worker
 if [[ "$RUN_API" == true ]]; then
   echo "Starting API on :$PORT ..."
-  nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" > tmp/api.log 2>&1 &
+  nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
   echo $! > tmp/api.pid
   echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
 fi
 if [[ "$RUN_WORKER" == true ]]; then
   echo "Starting Temporal worker ..."
-  nohup uv run python -u -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
+  nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
   echo $! > tmp/worker.pid
   echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
 fi

@@ -3,7 +3,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +46,9 @@ from investigation_agent_platform.domain.hypothesis.models import (
     HypothesisStatus,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
+
+if TYPE_CHECKING:
+    from investigation_agent_platform.domain.finding.models import EliminatedRival
 
 
 def _record_gate_note(observer: Callable[[dict], None] | None, note: dict[str, Any]) -> None:
@@ -2197,6 +2200,19 @@ class VerificationEngine:
         if malformed or not candidates:
             return None
         resolved = [item for item in candidates if item.status == CodeFactStatus.RESOLVED]
+        # J2: two RESOLVED field-value facts for one subject that disagree
+        # are an ambiguity, not a tie to break by insertion order. Picking
+        # the first would verify or refute a claim on an arbitrary one.
+        # (Guarded-return facts legitimately yield several values per
+        # subject - one per guard - so only field values are compared.)
+        field_values: dict[str, set[str]] = {}
+        for item in resolved:
+            if item.field_name is not None and item.subject_identity:
+                field_values.setdefault(str(item.subject_identity), set()).add(
+                    str(item.resolved_value)
+                )
+        if any(len(values) > 1 for values in field_values.values()):
+            return None
         return resolved[0] if resolved else candidates[0]
 
     @staticmethod
@@ -3140,7 +3156,12 @@ class VerificationEngine:
             attributes = getattr(item, "attributes", None) or {}
             if not isinstance(attributes, dict):
                 attributes = {}
-            if attributes.get("read_mode") == "path_only" or attributes.get("discovery_only"):
+            # J7 residual: a provenance window alone proves nothing - a
+            # provider records the ACTUAL lines it returned even for an
+            # un-ranged read (the bounded file head is lines 1..N). Only a
+            # row whose requester labeled it ``read_mode == "range"`` is a
+            # range read; unlabeled, path-only and discovery rows are not.
+            if attributes.get("read_mode") != "range" or attributes.get("discovery_only"):
                 return False
             return VerificationEngine._item_window(item) is not None
         except Exception:

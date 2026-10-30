@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -86,6 +87,65 @@ def poll(base: str, tenant: str, iid: str, timeout: int) -> dict:
         if time.time() - t0 > timeout:
             raise TimeoutError(f"{iid} not terminal after {timeout}s")
         time.sleep(15)
+
+
+# Operator-side measurement stamp. The pin travels on the investigation
+# entity (metadata["claim_binding_version"]) exactly as the repo contract
+# requires; it is written directly by the operator between create and start
+# rather than through a public API field, so no tenant can choose its own
+# verification semantics.
+CLAIM_BINDING_STAMP_SQL = (
+    "UPDATE investigations "
+    "SET metadata_json = coalesce(metadata_json, '{}'::jsonb) "
+    "|| jsonb_build_object('claim_binding_version', $1::text) "
+    "WHERE id = $2::uuid AND tenant_id = $3 AND status = 'CREATED'"
+)
+
+
+def known_claim_binding_versions() -> list[str]:
+    from investigation_agent_platform.application.investigation.verification import (
+        KNOWN_CLAIM_BINDING_VERSIONS,
+    )
+
+    return sorted(KNOWN_CLAIM_BINDING_VERSIONS)
+
+
+def stamp_claim_binding_version(tenant: str, iid: str, version: str) -> bool:
+    """Pin ``version`` on a CREATED investigation. True when exactly one row changed.
+
+    Needs IAP_DATABASE_URI (operator environment; never printed). A run the
+    disposition already closed (status != CREATED) is not stamped and
+    returns False.
+    """
+    import asyncio
+
+    import asyncpg
+
+    uri = os.environ.get("IAP_DATABASE_URI", "")
+    dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", uri)
+    if not dsn:
+        raise RuntimeError("IAP_DATABASE_URI is required to stamp --claim-binding-version")
+
+    async def _run() -> bool:
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant)
+            result = await conn.execute(CLAIM_BINDING_STAMP_SQL, version, iid, tenant)
+            return str(result).endswith(" 1")
+        finally:
+            await conn.close()
+
+    return asyncio.run(_run())
+
+
+def pinned_claim_binding_version(base: str, tenant: str, iid: str) -> str:
+    """The claim-binding pin recorded on a graded investigation, or 'unknown'."""
+    try:
+        _, data = api(base, tenant, "GET", f"/api/v1/investigations/{iid}")
+        meta = (data.get("investigation") or {}).get("metadata") or {}
+        return str(meta.get("claim_binding_version") or "unmarked")
+    except Exception:
+        return "unknown"
 
 
 def _rows_by_id(evidence: dict) -> dict:
@@ -302,7 +362,7 @@ def _proven_absence_insufficient(expect: dict, root: str, hyps: dict, evidence: 
         # Abstention conclusions carry root_cause=None, so the subject may
         # live in the hypothesis statement that drove the scoped search.
         texts = [root]
-        for hyp in ((hyps or {}).get("items") or []):
+        for hyp in (hyps or {}).get("items") or []:
             try:
                 texts.append(str(hyp.get("statement") or ""))
             except Exception:
@@ -438,6 +498,104 @@ def score_supported(
     return ("PASS", "conclusion supported by cited evidence")
 
 
+# A next_fetch that names a target: a file path / file name, or a retrieval
+# action. The handoff builder's template sentences ("Bind supporting evidence
+# and a cited causal chain ...") name neither, and counted as handoffs in the
+# first G1 cut - so a non-empty string is not enough.
+_ACTION_TOKEN = re.compile(
+    r"\b(GET_CODE|SEARCH_CODE|FIND_SYMBOL|SEARCH_LOGS|QUERY_STATE|WALK_STACK|TRACE_LOGIC|"
+    r"GET_HISTORY|SEARCH_HISTORY)\b"
+)
+_PATH_TOKEN = re.compile(r"[\w./-]*[\w-]\.(?:java|py|kt|xml|ya?ml|properties|sql|json)\b|[\w-]+/[\w./-]+")
+
+
+def _names_concrete_target(text: str) -> bool:
+    return bool(_ACTION_TOKEN.search(text) or _PATH_TOKEN.search(text))
+
+
+def _concrete_handoff(concl: dict) -> tuple[bool, str]:
+    """True when an abstention names a concrete next step or a ruled-out rival.
+
+    Concrete means: a non-empty ``handoff.next_fetch`` that is not the
+    ``n/a`` placeholder, OR a non-empty ``eliminated_rivals`` record. State
+    labels and ``next_check`` template prose do not
+    count - the review (T2) found that counting them made every abstention
+    a "handoff". The handoff model carries no numeric price, so "priced"
+    here means "names what to fetch next or what was eliminated".
+    """
+    handoff = concl.get("handoff") or {}
+    fetch = str((handoff.get("next_fetch") if isinstance(handoff, dict) else "") or "").strip()
+    if fetch and fetch.lower() != "n/a":
+        if _names_concrete_target(fetch):
+            return (True, f"next_fetch: {fetch[:80]}")
+        return (False, f"next_fetch is generic template text: {fetch[:60]}")
+    rivals = concl.get("eliminated_rivals") or []
+    if isinstance(rivals, list) and rivals:
+        return (True, f"{len(rivals)} eliminated rival(s)")
+    return (False, "no next_fetch and no eliminated rivals")
+
+
+def score_g1(conclusion: dict | None, evidence: dict | None) -> tuple[bool, str, str]:
+    """G1: bound-or-priced-handoff, per case. Pure on API-shaped dicts.
+
+    Returns (satisfied, kind, detail) where kind is ``bound``, ``handoff``,
+    or ``miss``.
+
+    - ``bound``: an answered conclusion with at least one cited
+      ``supporting_evidence_ids`` entry that resolves to a returned evidence
+      row, none of which is an infrastructure-failure row. Evidence reached
+      only through a linked hypothesis does NOT count (T8: abstention prose
+      and hypothesis links are unverified).
+    - ``handoff``: an abstention that names a concrete next fetch or an
+      elimination record (see ``_concrete_handoff``).
+    - ``miss``: anything else, including a missing conclusion, an answered
+      conclusion with no resolvable citation, and filler-only abstentions.
+    """
+    concl = conclusion or {}
+    status = str(concl.get("status", "") or "")
+    if not status:
+        return (False, "miss", "no conclusion")
+    if status in ANSWERED_SET:
+        by_id = _rows_by_id(evidence or {})
+        cited = [
+            by_id[str(eid)]
+            for eid in (concl.get("supporting_evidence_ids") or [])
+            if str(eid) in by_id
+        ]
+        if not cited:
+            return (False, "miss", "answered with no resolvable cited row")
+        ok, reason = _check_no_failure(cited)
+        if not ok:
+            return (False, "miss", f"bound only by failure row ({reason})")
+        return (True, "bound", f"{len(cited)} cited row(s)")
+    if status in ABSTAIN_SET:
+        ok, detail = _concrete_handoff(concl)
+        return (ok, "handoff" if ok else "miss", detail)
+    return (False, "miss", f"status={status}")
+
+
+def g1_for_investigation(base: str, tenant: str, iid: str) -> tuple[bool, str, str]:
+    """Fetch the conclusion and cited evidence for one run and score G1."""
+    _, conclusion = api(base, tenant, "GET", f"/api/v1/investigations/{iid}/conclusion")
+    _, evidence = api(base, tenant, "GET", f"/api/v1/investigations/{iid}/evidence?limit=100")
+    return score_g1(conclusion.get("conclusion") or {}, evidence)
+
+
+def g1_summary(g1_rows: list[tuple[str, bool, str, str]]) -> dict:
+    """Aggregate per-case G1 rows (case_id, ok, kind, detail) into a rate."""
+    total = len(g1_rows)
+    kinds: dict[str, int] = {}
+    for _, _, kind, _ in g1_rows:
+        kinds[kind] = kinds.get(kind, 0) + 1
+    satisfied = sum(1 for _, ok, _, _ in g1_rows if ok)
+    return {
+        "satisfied": satisfied,
+        "total": total,
+        "rate": (satisfied / total) if total else 0.0,
+        "kinds": kinds,
+    }
+
+
 def _follow_primary(base: str, tenant: str, case: dict, inv: dict, timeout: int) -> tuple | None:
     """Grade a CANCELLED duplicate via its primary (P0 create-race fix).
 
@@ -488,10 +646,22 @@ def main() -> int:
     ap.add_argument("--tenant", default="n-a")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--only", default="", help="Comma-separated case IDs, e.g. L1,L4")
+    ap.add_argument(
+        "--claim-binding-version",
+        default=None,
+        choices=known_claim_binding_versions(),
+        help=(
+            "Pin this claim-binding version on each new investigation before it starts "
+            "(operator DB stamp; needs IAP_DATABASE_URI). Default: leave the server default."
+        ),
+    )
     args = ap.parse_args()
     only = {c.strip() for c in args.only.split(",") if c.strip()}
     results = []
     skipped = []
+    g1_rows: list[tuple[str, bool, str, str]] = []
+    # case id -> (graded investigation id, recorded claim-binding pin)
+    pins: dict[str, tuple[str, str]] = {}
     for case in CASES:
         if only and case["id"] not in only:
             continue
@@ -515,13 +685,18 @@ def main() -> int:
         if not iid:
             print(f"  CREATE FAILED: {st} {str(data)[:200]}")
             results.append((case["id"], "FAIL", "create failed", "-"))
+            g1_rows.append((case["id"], False, "miss", "create failed"))
             continue
+        if args.claim_binding_version:
+            stamped = stamp_claim_binding_version(args.tenant, iid, args.claim_binding_version)
+            print(f"  pin {args.claim_binding_version}: {'stamped' if stamped else 'NOT stamped'}")
         api(args.api_base, args.tenant, "POST", f"/api/v1/investigations/{iid}/start")
         try:
             inv = poll(args.api_base, args.tenant, iid, args.timeout)
         except TimeoutError as exc:
             print(f"  {exc}")
             results.append((case["id"], "FAIL", "timeout", iid))
+            g1_rows.append((case["id"], False, "miss", "timeout"))
             continue
         if inv.get("status") == "CANCELLED":
             # P0 create-race fix: a duplicate-of-active close must follow
@@ -531,17 +706,31 @@ def main() -> int:
                 pid, verdict, detail = followed
                 print(f"  {verdict}: followed primary {pid[:8]}: {detail} ({iid[:8]})")
                 results.append((case["id"], verdict, detail, iid))
+                pins[case["id"]] = (
+                    pid,
+                    pinned_claim_binding_version(args.api_base, args.tenant, pid),
+                )
+                g1_ok, g1_kind, g1_detail = g1_for_investigation(args.api_base, args.tenant, pid)
+                g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
                 continue
             results.append((case["id"], "FAIL", "run CANCELLED, no followable primary", iid))
+            g1_rows.append((case["id"], False, "miss", "run CANCELLED, no followable primary"))
             print(f"  run CANCELLED, no followable primary {iid}")
             continue
         if inv.get("status") == "FAILED":
             results.append((case["id"], "FAIL", "run FAILED", iid))
+            g1_rows.append((case["id"], False, "miss", "run FAILED"))
             print(f"  run FAILED {iid}")
             continue
         verdict, detail = score_case(args.api_base, args.tenant, case, inv)
         print(f"  {verdict}: {detail} ({iid[:8]})")
         results.append((case["id"], verdict, detail, iid))
+        pins[case["id"]] = (
+            iid,
+            pinned_claim_binding_version(args.api_base, args.tenant, iid),
+        )
+        g1_ok, g1_kind, g1_detail = g1_for_investigation(args.api_base, args.tenant, iid)
+        g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
     print("\nTranche B scoreboard (tenant n-a, app spring-sample-service):")
     for cid, verdict, detail, iid in results:
         print(f"  {cid}: {verdict} — {detail} [{iid[:8] if len(iid) > 8 else iid}]")
@@ -549,6 +738,20 @@ def main() -> int:
     for _, verdict, _, _ in results:
         counts[verdict] = counts.get(verdict, 0) + 1
     print(f"Totals: {counts} (skipped offline-only: {skipped})")
+    g1 = g1_summary(g1_rows)
+    print(
+        f"G1 (bound-or-concrete-handoff): {g1['satisfied']}/{g1['total']} "
+        f"= {g1['rate']:.0%}  kinds={g1['kinds']}"
+    )
+    for cid, ok, kind, detail in g1_rows:
+        print(f"  G1 {cid}: {'OK ' if ok else 'MISS'} [{kind}] {detail}")
+    if pins:
+        print("Claim-binding pin of each GRADED investigation:")
+        for cid, (gid, pin) in pins.items():
+            flag = ""
+            if args.claim_binding_version and pin != args.claim_binding_version:
+                flag = f"  <-- MISMATCH (wanted {args.claim_binding_version}; run was reused or not stamped)"
+            print(f"  {cid}: {pin} [{gid[:8]}]{flag}")
     print("Note: L6 (logs) / L7 (refdocs) N/A — code-only application by design.")
     # PARTIAL never counts as pass: a right answer on wrong evidence is a
     # grading failure, not a near-miss.

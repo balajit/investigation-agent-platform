@@ -852,6 +852,10 @@ async def _gate_conclusion_or_fail(
     # before the timeline read below runs).
     _conclude_recorded: list[Any] | None = None
     _conclude_enforcement = None
+    # H9: the abstention closure reads ``candidate``; the early fail-closed
+    # paths (version pin / repo read) abstain before a candidate is selected,
+    # so it must be bound (to None) before any call site can run.
+    candidate: Any = None
 
     async def _persist_abstention(
         kind: str, limitations: list[str], hypothesis_id: Any = None
@@ -863,7 +867,8 @@ async def _gate_conclusion_or_fail(
             return
         _proven_callers, _unresolved_callers, _caller_coverage = (
             VerificationEngine.caller_edge_diagnostics(candidate)
-            if VerificationEngine.resolve_claim_kind(
+            if candidate is not None
+            and VerificationEngine.resolve_claim_kind(
                 candidate,
                 strict=claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3),
             )
@@ -1035,7 +1040,7 @@ async def _gate_conclusion_or_fail(
             _cb_inv = await _cb_repo.get_by_id(tenant_id, investigation_id)
         except Exception as exc:
             await _persist_abstention(
-                "refuted",
+                "insufficient",
                 [
                     f"claim binding version unavailable: repository read failed ({type(exc).__name__})"
                 ],
@@ -1043,7 +1048,7 @@ async def _gate_conclusion_or_fail(
             return InvestigationStatus.FAILED
         if _cb_inv is None:
             await _persist_abstention(
-                "refuted", ["claim binding version unavailable: investigation not found"]
+                "insufficient", ["claim binding version unavailable: investigation not found"]
             )
             return InvestigationStatus.FAILED
         try:
@@ -1051,7 +1056,7 @@ async def _gate_conclusion_or_fail(
                 getattr(_cb_inv, "metadata", None)
             )
         except (UnknownVerifierVersion, VerifierVersionUnavailable) as exc:
-            await _persist_abstention("refuted", [f"claim binding version unavailable: {exc}"])
+            await _persist_abstention("insufficient", [f"claim binding version unavailable: {exc}"])
             return InvestigationStatus.FAILED
         _inv = _cb_inv
     engine = VerificationEngine(
@@ -1596,13 +1601,17 @@ async def _gate_conclusion_or_fail(
                 )
             except Exception:
                 _enf_status = ""
-                if _enf_status != VerificationStatus.VERIFIED.value:
-                    caller_edge_validated = False
-                    location_answered = False
-                    code_value_answered = False
-                    history_answered = False
-                    doc_answered = False
-                    state_answered = False
+            # H10: this reset used to sit inside the ``except`` above, so it
+            # only ran when status parsing failed. An enforced non-VERIFIED
+            # verdict must clear every taken fast-path flag so the general
+            # branch re-evaluates and the gate never sees a stale validation.
+            if _enf_status != VerificationStatus.VERIFIED.value:
+                caller_edge_validated = False
+                location_answered = False
+                code_value_answered = False
+                history_answered = False
+                doc_answered = False
+                state_answered = False
         except Exception:
             # Fail closed (NEW-1): an enforcement fault must never leave a
             # taken fast-path VERIFIED standing. Force the abstention path

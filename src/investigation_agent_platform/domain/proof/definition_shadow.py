@@ -221,7 +221,9 @@ def compute_currency(
       corroboration is impossible in Phase 0 and is not claimed);
       unknown iff absent.
     """
-    present_revs = sorted({r for r in provenance_revisions if r} | ({claim_commit_id} if claim_commit_id else set()))
+    present_revs = sorted(
+        {r for r in provenance_revisions if r} | ({claim_commit_id} if claim_commit_id else set())
+    )
     claim_side_present = claim_commit_id is not None and claim_commit_id != ""
     rows_present = any(provenance_revisions)
     if len(set(present_revs)) > 1:
@@ -466,27 +468,31 @@ def evaluate_definition_shadow(
         raise ShadowError("UNAPPROVED_BUNDLE", "no approved bundles at evaluation")
     if bundle.bundle_digest != compute_bundle_digest(bundle):
         trace.append("bundle-digest-mismatch")
-        return decide(DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE,
-                      "unavailable-input", trace)
+        return decide(
+            DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE, "unavailable-input", trace
+        )
     if "definition-claim" in bundle.unavailable:
         trace.append("not-a-definition-claim")
-        return decide(DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE,
-                      "not-a-definition-claim", trace)
+        return decide(
+            DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE, "not-a-definition-claim", trace
+        )
     if "bound-rows" in bundle.unavailable or not bundle.bound_rows:
         trace.append("no-candidate-rows")
-        return decide(DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE,
-                      "no-candidate-rows", trace)
+        return decide(
+            DefinitionStage.UNAVAILABLE, ShadowOutcome.UNAVAILABLE, "no-candidate-rows", trace
+        )
     if bundle.currency.revision == CurrencyProperty.MISMATCH:
         trace.append("revision-mismatch")
-        return decide(DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED,
-                      "stale-or-unknown-context", trace)
+        return decide(
+            DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED, "stale-or-unknown-context", trace
+        )
     if bundle.currency.scope == CurrencyProperty.UNKNOWN:
         trace.append("scope-unknown")
-        return decide(DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED,
-                      "stale-or-unknown-context", trace)
+        return decide(
+            DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED, "stale-or-unknown-context", trace
+        )
     trace.append("repository-unbound")
-    return decide(DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED,
-                  "unbound-repository", trace)
+    return decide(DefinitionStage.ABSTAINED, ShadowOutcome.ABSTAINED, "unbound-repository", trace)
 
 
 # --- Trust verification (package §3; pure functions over explicit inputs) -----
@@ -768,7 +774,7 @@ def build_correlation_envelope(
     protocol_id: str = PROTOCOL_ID,
     amendment_id: str = AMENDMENT_ID,
 ) -> dict[str, Any]:
-    """    Workflow-stamped correlation envelope (C1 layer 2, C3 receipt pairing).
+    """Workflow-stamped correlation envelope (C1 layer 2, C3 receipt pairing).
 
     The activity never mutates the observation: the workflow copies it
     into the envelope and digests (observation + iteration +

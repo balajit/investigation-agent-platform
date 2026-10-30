@@ -50,6 +50,7 @@ def _code_row(path, snippet, revision="abc123"):
         title="t",
         summary="s",
         content_snippet=snippet,
+        attributes={"read_mode": "range"},
         observed_at=now,
         retrieved_at=now,
         provenance=EvidenceProvenance(

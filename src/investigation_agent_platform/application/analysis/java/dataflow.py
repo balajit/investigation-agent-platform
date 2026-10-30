@@ -261,6 +261,26 @@ def resolve_java_data_flow(
             level_text,
             partial=True,
         )
+    # J3: this resolver has no control-flow graph. A definition nested in a
+    # branch, loop, try or switch that the declaration is NOT also inside runs
+    # only on some paths, so "definitely assigned" and "the last textual
+    # definition reaches the use" are both unsound. Abstain with a typed code
+    # instead of reporting an established fact.
+    declaration_context = set(binding.control_context)
+    if any(
+        event.kind in {"assignment", "compound_assignment", "update"}
+        and set(event.control_context) - declaration_context
+        for event in method_events
+    ):
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "control_flow_not_modeled",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
     definite = bool(definitions)
     if definitions:
         first_def = (definitions[0]["line_start"], definitions[0]["col_start"])

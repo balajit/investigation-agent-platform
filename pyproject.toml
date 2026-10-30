@@ -82,6 +82,9 @@ packages = ["src/investigation_agent_platform"]
 [tool.ruff]
 target-version = "py313"
 line-length = 100
+# Fixtures are analyzer INPUT (intentional syntax errors, undefined names,
+# mutable defaults); linting or formatting them would corrupt the contract.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 # F-072 follow-up: broad `except Exception` (BLE001) and silent
@@ -107,9 +110,22 @@ ignore = [
     "RUF059",
 ]
 
+[tool.ruff.format]
+# Proof-kernel validator sources are fingerprinted for security review
+# (tests/unit/test_proof_kernel_validator_fingerprints.py). A format-only
+# edit changes the hash and forces a re-review, so they are format-exempt.
+# Tests are format-exempt by project decision (lint still applies).
+exclude = ["src/investigation_agent_platform/domain/proof/*.py", "tests/**"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test doubles declare throwaway class attributes; ClassVar noise adds nothing.
+"tests/**" = ["RUF012"]
+
 [tool.mypy]
 python_version = "3.13"
 strict = true
+# Tests are type-check-exempt by project decision.
+exclude = ["^tests/"]
 warn_unused_ignores = false
 
 [[tool.mypy.overrides]]

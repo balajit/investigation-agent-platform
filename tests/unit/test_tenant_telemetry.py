@@ -30,9 +30,9 @@ from investigation_agent_platform.infrastructure.evidence.runtime.elastic import
 )
 from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
     ResolvedTenantEndpoint,
+    TelemetryEndpoint,
     TenantTelemetryConfig,
     TenantTelemetryRouter,
-    TelemetryEndpoint,
     build_tenant_router,
     endpoint_index_allowed,
     load_tenant_telemetry_configs,
@@ -476,7 +476,6 @@ def test_evidence_config_carries_telemetry_dir():  # type: ignore[no-untyped-def
 
 
 def _auth_endpoint(**overrides):  # type: ignore[no-untyped-def]
-    from pydantic import SecretStr
 
     from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
         TelemetryEndpoint as _TE,
@@ -647,22 +646,21 @@ def test_fernet_via_env_override(tmp_path, monkeypatch):  # type: ignore[no-unty
 
 # --- oauth client-credentials ------------------------------------------------
 
-import asyncio as _asyncio  # noqa: E402
-import time as _time  # noqa: E402
+import asyncio as _asyncio
 
-from investigation_agent_platform.domain.common.exceptions import (  # noqa: E402
+from investigation_agent_platform.domain.common.exceptions import (
     ExecutionError as _ExecutionError,
 )
-from investigation_agent_platform.domain.common.exceptions import (  # noqa: E402
+from investigation_agent_platform.domain.common.exceptions import (
     ProviderUnavailableException as _ProviderUnavailable,
 )
-from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (  # noqa: E402
+from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
     OAuthBearerClient as _OAuthBearerClient,
 )
-from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (  # noqa: E402
+from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
     OAuthSettings as _OAuthSettings,
 )
-from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (  # noqa: E402
+from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
     OAuthTokenProvider as _OAuthTokenProvider,
 )
 

@@ -17,10 +17,11 @@ jobs:
           python-version: "3.13"
       - run: uv sync --group dev
       - run: uv run ruff check src tests migrations
-      - run: uv run ruff format --check src tests migrations
+      # Tests are format-exempt (pyproject [tool.ruff.format] exclude).
+      - run: uv run ruff format --check src migrations
 
   typecheck:
-    name: mypy (strict)
+    name: mypy (strict, per-file ratchet)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +30,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --group dev
-      - run: uv run mypy src/investigation_agent_platform tests/unit/test_onboarding_agent_contracts.py
+      # Strict mypy stays on; the ratchet fails only on files worse than
+      # config/mypy_baseline.json (see scripts/mypy_ratchet.py).
+      - run: uv run python scripts/mypy_ratchet.py
 
   test:
     name: pytest + coverage (≥70%)

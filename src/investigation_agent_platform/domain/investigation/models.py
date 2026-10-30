@@ -470,8 +470,7 @@ def derive_working_window(
         assumed.append("last_good")
     elif not anchors.last_good_given:
         assumed.append("last_good")
-    if start > end:
-        start = end
+    start = min(start, end)
     return start, end, tuple(assumed)
 
 

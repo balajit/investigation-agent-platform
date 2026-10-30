@@ -61,7 +61,10 @@ def _ev(
         fingerprint=f"fp-{uuid4()}",
         observed_at=now,
         retrieved_at=now,
-        attributes=dict(attrs or {}),
+        attributes={
+            **({"read_mode": "range"} if operation in ("GET_SOURCE", "GET_CODE") and line_start is not None else {}),
+            **dict(attrs or {}),
+        },
         provenance=EvidenceProvenance(
             tenant_id="n-batt",
             investigation_id=iid,

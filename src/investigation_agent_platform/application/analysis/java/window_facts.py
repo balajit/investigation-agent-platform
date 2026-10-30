@@ -40,14 +40,22 @@ from investigation_agent_platform.domain.code.models import (
 MAX_WINDOW_RECORDS = 25
 
 
-def _declaration_subtree_clean(tree: Any, node_type: str, line_start: int, line_end: int) -> bool:
-    """True when the declaration spanning those window-relative lines parses clean."""
+def _declaration_subtree_clean(tree: Any, node_type: str, span: Any) -> bool:
+    """True when the declaration at exactly ``span`` parses clean.
+
+    The declaration is matched by its tree-sitter start and end points
+    (row and byte column), which identify one node. Matching by line range
+    alone let a clean declaration that shares a line span with a broken one
+    vouch for it (e.g. two methods on one line).
+    """
     try:
+        start = (int(span.line_start) - 1, int(span.col_start))
+        end = (int(span.line_end) - 1, int(span.col_end))
         for node in _p.walk(tree.root_node):
             if (
                 node.type == node_type
-                and int(node.start_point[0]) + 1 == line_start
-                and int(node.end_point[0]) + 1 == line_end
+                and (int(node.start_point[0]), int(node.start_point[1])) == start
+                and (int(node.end_point[0]), int(node.end_point[1])) == end
             ):
                 return not bool(getattr(node, "has_error", False))
         return False
@@ -117,9 +125,12 @@ def enumerate_java_window_facts(
             )
             if host is None or host.is_constructor:
                 continue
-            if not _declaration_subtree_clean(
-                tree, "method_declaration", host.span.line_start, host.span.line_end
-            ):
+            # J1/J2: a method of an anonymous class has no stable named
+            # owner (its nearest named class is the outer one), so it is not
+            # emitted rather than attributed to a method that does not exist.
+            if host.declared_in == "anonymous_class_body":
+                continue
+            if not _declaration_subtree_clean(tree, "method_declaration", host.span):
                 continue
             class_name = host.nearest_class or host.enclosing_class or class_fallback
             qualified = (
@@ -151,9 +162,7 @@ def enumerate_java_window_facts(
         for field in code_model.fields:
             if field.declared_in != "class_declaration" or not field.has_declared_type:
                 continue
-            if not _declaration_subtree_clean(
-                tree, "field_declaration", field.span.line_start, field.span.line_end
-            ):
+            if not _declaration_subtree_clean(tree, "field_declaration", field.span):
                 continue
             raw_initializer = field.raw_initializer
             if raw_initializer is None:

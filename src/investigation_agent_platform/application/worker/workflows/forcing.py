@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from temporalio import workflow
+
+logger = logging.getLogger(__name__)
 
 with workflow.unsafe.imports_passed_through():
     pass
@@ -37,6 +40,11 @@ with workflow.unsafe.imports_passed_through():
         _normalize_scope,
         directive_consumed,
         recorded_attempt_summaries,
+    )
+
+with workflow.unsafe.imports_passed_through():
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_CURRENT,
     )
 
 with workflow.unsafe.imports_passed_through():
@@ -283,6 +291,22 @@ _WALK_STACK_CAP_ACTIONS = frozenset(
         "CORRELATE",
     }
 )
+
+
+def dispatched_parameters(reason_data: dict[str, Any] | None) -> dict[str, Any]:
+    """Parameters of the action the cascade actually dispatched (pure).
+
+    History must record what was dispatched, not what the model proposed:
+    forced overrides (pivot, walk-stack, requery, floor, ...) rewrite
+    ``action_parameters`` on the post-cascade ``reason_data``. Reading the
+    pre-cascade proposal made forced reads invisible to dedupe/damping and
+    let never-fetched proposals count as collected. Never raises.
+    """
+    try:
+        params = (reason_data or {}).get("action_parameters")
+        return dict(params) if isinstance(params, dict) else {}
+    except Exception:
+        return {}
 
 
 def _should_force_walk_stack(
@@ -1015,6 +1039,7 @@ def _explore_floor_target(
     description: str | None,
     seed: dict[str, Any] | None,
     forced_count: int,
+    history: list[Any] | None = None,
 ) -> dict[str, Any] | None:
     """Discriminating gather action before thin terminal proposals, or None.
 
@@ -1023,6 +1048,10 @@ def _explore_floor_target(
     L1#2 died after a single path-only read: the absence branch it took
     can never verify, so the loop must read first instead of letting the
     run commit to a one-row theory. Bounded (max 2 per run); pure.
+
+    ``history`` dedupes targets: a file already read, a symbol already
+    resolved, or a query already searched is never re-dispatched, so the
+    floor cannot burn its cap re-fetching what is already banked.
     """
     try:
         data_action = str((reason_data or {}).get("next_action", "") or "").upper()
@@ -1088,6 +1117,7 @@ def _explore_floor_target(
             # default template applies (fail-open gather, may miss); the
             # bound (max 2/run) caps the cost of a blind probe.
             return {"next_action": "QUERY_STATE", "action_parameters": {}}
+        seen_files, seen_symbols, seen_queries = _floor_seen_targets(history)
         haystacks = [str(description or "")]
         try:
             for key in ("top_frame_file", "failing_symbol", "caller_symbol"):
@@ -1100,7 +1130,7 @@ def _explore_floor_target(
             try:
                 for match in re.finditer(_REREAD_PATH_TOKEN_RE, text):
                     token = match.group(0).strip().strip(".,;:)]}'\"").lstrip("./")
-                    if "/" in token and len(token) >= 3:
+                    if "/" in token and len(token) >= 3 and token not in seen_files:
                         return {
                             "next_action": "GET_CODE",
                             "action_parameters": {"file_path": token},
@@ -1110,7 +1140,7 @@ def _explore_floor_target(
         for key in ("failing_symbol", "caller_symbol"):
             try:
                 symbol = str(seed.get(key, "") or "").strip()
-                if symbol:
+                if symbol and symbol not in seen_symbols:
                     return {
                         "next_action": "FIND_SYMBOL",
                         "action_parameters": {"symbol_name": symbol},
@@ -1120,12 +1150,48 @@ def _explore_floor_target(
         keywords = _description_keywords(description)
         if not keywords:
             return None
+        query = " ".join(keywords[:3])
+        if query in seen_queries:
+            return None
         return {
             "next_action": "SEARCH_CODE",
-            "action_parameters": {"query": " ".join(keywords[:3])},
+            "action_parameters": {"query": query},
         }
     except Exception:
         return None
+
+
+def _floor_seen_targets(history: list[Any] | None) -> tuple[set[str], set[str], set[str]]:
+    """Files read, symbols resolved, and queries searched so far (pure).
+
+    Paths are normalised (backslashes, leading ``./``) so ``./a/B.java`` and
+    ``a/B.java`` dedupe. Reads only the recorded ``parameters`` of dispatched
+    turns; carrier entries have none and are ignored. Never raises.
+    """
+    files: set[str] = set()
+    symbols: set[str] = set()
+    queries: set[str] = set()
+    try:
+        for entry in history or []:
+            if not isinstance(entry, dict):
+                continue
+            params = entry.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            path = str(params.get("file_path") or "").strip().replace("\\", "/")
+            while path.startswith("./"):
+                path = path[2:]
+            if path:
+                files.add(path)
+            symbol = str(params.get("symbol_name") or "").strip()
+            if symbol:
+                symbols.add(symbol)
+            query = str(params.get("query") or "").strip()
+            if query:
+                queries.add(query)
+    except Exception:
+        pass
+    return files, symbols, queries
 
 
 def _should_force_replan(
@@ -2171,6 +2237,10 @@ class PostReasonCascadeState:
     formulated_count: int = 0
     tenant_id: str = ""
     investigation_id: str = ""
+    #: Loop-semantics pin recorded on the investigation (see
+    #: ``domain.investigation.loop_version``). Routes version-pinned
+    #: rule changes; unmarked callers get the current semantics.
+    loop_version: str = LOOP_VERSION_CURRENT
     #: Carrier entry of the dispatched G3 requery order (2b step 5),
     #: for the workflow's consumed stamp. None when no order fired.
     consumed_order_ref: dict | None = None
@@ -2200,7 +2270,12 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _d6_fired = bool(state.d6_fired)
         _absence_forced = bool(state.absence_forced)
         _reason_data = dict(state.reason_data or {})
-        _counts = state.counts if isinstance(state.counts, dict) else {}
+        # F7: work on a copy and commit once at the end. A fault in any rule
+        # must not leave counters burned (or carriers stamped consumed)
+        # without a dispatch, so every in-cascade write goes to these
+        # locals and reaches ``state`` only after the whole cascade ran.
+        _counts = dict(state.counts) if isinstance(state.counts, dict) else {}
+        _pending_consume: list[dict[str, Any]] = []
         _history = list(state.action_history or [])
 
         def _count(key: str) -> int:
@@ -2248,6 +2323,10 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             _reason_data["next_action"] = "WALK_STACK"
             _reason_data["action_parameters"] = _walk_params
             _reason_data["forced_walk_stack"] = True
+            # F5: walk-stack overwrote the pivot's dispatch, so the pivot did
+            # not happen; leaving the flag set would stamp history with a
+            # pivot that never ran and damp its target as already collected.
+            _reason_data["forced_pivot_recollect"] = False
         # G3: order-driven requery forcing (2b step 5) — a bounded
         # re-retrieval for an unsatisfied claim outranks the remaining
         # gathering rules but never stack-walk (evaluated only when no
@@ -2260,8 +2339,13 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _consumed_order_ref: dict | None = None
         # G3 precedence: a fired stack-walk suppresses order
         # evaluation — carried orders never overwrite it.
+        # F3: the slot stands down on defer and absence-disconfirmation
+        # turns, like every other gathering rule — overwriting those forced
+        # actions burned their budgets.
+        _requery_owns_turn = not _is_defer and not _absence_forced
         if (
-            not _reason_data.get("forced_walk_stack")
+            _requery_owns_turn
+            and not _reason_data.get("forced_walk_stack")
             and not _d6_fired
             and not _reason_data.get("forced_pivot_recollect")
         ):
@@ -2272,7 +2356,8 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 try:
                     _mark_entry = (_history or [])[_mark_idx]
                     if isinstance(_mark_entry, dict):
-                        _mark_entry["consumed"] = True
+                        # Stamp is committed only after the cascade succeeds.
+                        _pending_consume.append(_mark_entry)
                         _consumed_order_ref = None
                 except (TypeError, IndexError, KeyError):
                     pass
@@ -2312,6 +2397,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 state.description,
                 state.knowledge_seed,
                 _count("floor"),
+                history=_history,
             )
             if _floor:
                 _counts["floor"] = _count("floor") + 1
@@ -2600,8 +2686,27 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             )
         except Exception:
             state.advisory_ranking = {}
+        # F7 commit point: the whole cascade ran, so counters and consume
+        # stamps become visible together with the chosen dispatch.
+        for _stamped in _pending_consume:
+            _stamped["consumed"] = True
+        if isinstance(state.counts, dict):
+            state.counts.clear()
+            state.counts.update(_counts)
         state.reason_data = _reason_data
         state.consumed_order_ref = _consumed_order_ref
         return state
-    except Exception:
+    except Exception as exc:
+        # Never raises into the workflow, but never silently either: the
+        # proposal passes through untouched (counters/stamps uncommitted).
+        logger.warning(
+            "post-reason cascade fault; proposal passes through uncommitted: %s",
+            type(exc).__name__,
+            extra={
+                "event": "cascade fault",
+                "tenant_id": getattr(state, "tenant_id", ""),
+                "investigation_id": getattr(state, "investigation_id", ""),
+                "error": type(exc).__name__,
+            },
+        )
         return state

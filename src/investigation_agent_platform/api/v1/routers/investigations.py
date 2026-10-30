@@ -48,6 +48,7 @@ from investigation_agent_platform.domain.investigation.input_requirements import
     InputFulfillment,
     RequirementState,
 )
+from investigation_agent_platform.domain.investigation.loop_version import resolve_loop_version
 from investigation_agent_platform.domain.investigation.models import ActorType, InvestigationStatus
 
 logger = logging.getLogger(__name__)
@@ -349,6 +350,9 @@ async def _dispatch_workflow(
             correlation_id=correlation_id,
             investigation_id=investigation_id,
             max_iterations=max_iterations,
+            # Loop-semantics pin recorded at creation; unmarked rows resolve
+            # to the current version, an unknown pin fails the dispatch.
+            loop_version=resolve_loop_version(getattr(investigation, "metadata", None)),
         )
         memo = (
             {"correlation_id": correlation_id, "tenant_id": tenant_id} if correlation_id else None

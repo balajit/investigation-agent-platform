@@ -83,6 +83,9 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
         counts["resumed"] += 1
 
     # -- investigations ---------------------------------------------------
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_CURRENT,
+    )
     from investigation_agent_platform.domain.investigation.models import (
         Investigation,
         InvestigationContext,
@@ -123,7 +126,7 @@ async def seed_dev_tenant(ctx: object, tenant_id: str) -> dict[str, int]:
             # Phase 1 (claim binding): explicit behavior pin; unmarked
             # rows would resolve to CLAIM_BINDING_CURRENT identically,
             # but seeded rows carry the mark for audit clarity.
-            metadata={"claim_binding_version": "cbv1"},
+            metadata={"claim_binding_version": "cbv1", "loop_version": LOOP_VERSION_CURRENT},
         )
 
     showcase = _make_inv(

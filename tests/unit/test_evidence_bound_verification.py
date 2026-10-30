@@ -1003,6 +1003,11 @@ class TestDefinitionClaimRequiresRangeRead:
             title="t",
             summary="s",
             content_snippet="snippet",
+            attributes=(
+                {"read_mode": "range"}
+                if line_start is not None and operation in ("GET_SOURCE", "GET_CODE")
+                else {}
+            ),
             observed_at=now,
             retrieved_at=now,
             provenance=EvidenceProvenance(
@@ -1116,6 +1121,14 @@ def _code_evidence(operation="GET_SOURCE", with_location=True, etype=None):
         title="t",
         summary="s",
         content_snippet="snippet",
+        # A GET read with a located window is a labeled range read: real
+        # producers stamp read_mode, and the verifier no longer trusts the
+        # provenance window alone (review J7 residual).
+        attributes=(
+            {"read_mode": "range"}
+            if with_location and operation in ("GET_SOURCE", "GET_CODE")
+            else {}
+        ),
         observed_at=now,
         retrieved_at=now,
         provenance=EvidenceProvenance(

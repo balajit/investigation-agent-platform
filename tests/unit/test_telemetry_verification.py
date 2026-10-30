@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from investigation_agent_platform.application.onboarding.telemetry_verification import (
@@ -12,8 +10,8 @@ from investigation_agent_platform.application.onboarding.telemetry_verification 
     verify_tenant_telemetry_from_dir,
 )
 from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
-    TenantTelemetryConfig,
     TelemetryEndpoint,
+    TenantTelemetryConfig,
 )
 
 

@@ -52,10 +52,6 @@ from investigation_agent_platform.infrastructure.evidence.runtime.cursor import 
     CURSOR_VERSION,
     ElasticCursorCodec,
 )
-from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
-    TenantTelemetryRouter,
-    endpoint_index_allowed,
-)
 from investigation_agent_platform.infrastructure.evidence.runtime.projection import (
     ElasticEvidenceProjector,
     MalformedProviderRecord,
@@ -65,6 +61,10 @@ from investigation_agent_platform.infrastructure.evidence.runtime.query import (
     NormalizedRuntimeQuery,
     build_query_body,
     normalize_request,
+)
+from investigation_agent_platform.infrastructure.evidence.runtime.tenant_telemetry import (
+    TenantTelemetryRouter,
+    endpoint_index_allowed,
 )
 from investigation_agent_platform.infrastructure.evidence.runtime.validation import (
     ProviderCeilings,

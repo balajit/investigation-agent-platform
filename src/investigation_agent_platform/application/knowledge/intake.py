@@ -20,6 +20,7 @@ from investigation_agent_platform.domain.common.exceptions import (
     DomainValidationException,
 )
 from investigation_agent_platform.domain.common.utils import Clock, SystemClock
+from investigation_agent_platform.domain.investigation.loop_version import LOOP_VERSION_CURRENT
 from investigation_agent_platform.domain.investigation.models import (
     ActorType,
     Investigation,
@@ -435,6 +436,9 @@ class ErrorIntakeService:
         )
 
         metadata["claim_binding_version"] = CLAIM_BINDING_CBV1
+        # Loop-semantics pin (domain.investigation.loop_version): in-flight
+        # rows keep the loop behavior they started with.
+        metadata["loop_version"] = LOOP_VERSION_CURRENT
         # P1 (S1 anchors): error intake carries no onset/last-good signal,
         # so both bounds stamp explicit-unknown (never assumed-now); the
         # spread budget is the profile-overlaid envelope when resolvable

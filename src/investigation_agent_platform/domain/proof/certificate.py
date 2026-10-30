@@ -107,9 +107,7 @@ def _certificate_coverage(
     if not needs_coverage:
         return None
     resolved_universe = (
-        universe
-        or str((manifest.retrieval_config or {}).get("scope") or "").strip()
-        or None
+        universe or str((manifest.retrieval_config or {}).get("scope") or "").strip() or None
     )
     if not resolved_universe:
         raise CertificationError(
@@ -287,9 +285,7 @@ def certify(
                 "PREMISE_UNAVAILABLE", f"artifact not the manifested bytes: {pid}"
             )
         validator_inputs.append(_validator_premise(premise, artifact))
-    outcome, reason = apply_rule(
-        rule, claim, validator_inputs, manifest.model_dump(mode="json")
-    )
+    outcome, reason = apply_rule(rule, claim, validator_inputs, manifest.model_dump(mode="json"))
     if outcome != RuleOutcome.DISCHARGED:
         raise CertificationError("RULE_NOT_DISCHARGED", reason)
     # Single construction, used twice: the derivation binds exactly the
@@ -320,14 +316,20 @@ def certify(
         "implementation_digest": rule.implementation_digest,
         "inference_instance": inference_instance,
         "input_manifest_digest": derivation.manifest_digest,
-        "premises": [_premise_entry(p, rule.rule_id, artifacts.get(str(p.get("evidence_id") or ""))) for p in premises],
+        "premises": [
+            _premise_entry(p, rule.rule_id, artifacts.get(str(p.get("evidence_id") or "")))
+            for p in premises
+        ],
         "proof_classification": rule.soundness.value,
         "proposition_id": derivation.proposition_id,
         "rule_id": rule.rule_id,
         "rule_version": rule.rule_version,
         "schema_version": CERT_SCHEMA_VERSION,
         "scope": scope if isinstance(scope, dict) else {},
-        "validation": {"reasons": ["producer must not self-accept; checker decides"], "result": "REJECT"},
+        "validation": {
+            "reasons": ["producer must not self-accept; checker decides"],
+            "result": "REJECT",
+        },
     }
     return certificate
 
@@ -473,9 +475,7 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
             "evidence_manifest_digest": manifest_digest(request.manifest),
             "model_encoding": dict(request.model_encoding or {}),
             "proposition_scope": (
-                dict(proposition["scope"])
-                if isinstance(proposition.get("scope"), dict)
-                else {}
+                dict(proposition["scope"]) if isinstance(proposition.get("scope"), dict) else {}
             ),
             "reconciliation_state": request.reconciliation_state,
             "rule_bundle_version": request.rule_bundle_version,
@@ -606,9 +606,9 @@ def check_certificate(request: CheckRequest) -> tuple[CheckerOutcome, list[str]]
         "absence/v1": {"UNIVERSAL"},
         "history/v1": {"EXISTENTIAL"},
     }
-    if (form or None) not in admitted_forms.get(rule.rule_id, set()) or quantifier not in admitted_quantifiers.get(
+    if (form or None) not in admitted_forms.get(
         rule.rule_id, set()
-    ):
+    ) or quantifier not in admitted_quantifiers.get(rule.rule_id, set()):
         return _fail(
             CheckerOutcome.UNSUPPORTED_CONSTRUCT,
             f"rule {rule.rule_id} does not establish {form or '?'} claims",

@@ -17,8 +17,34 @@ except ImportError:
         ApplicationError as ApplicationFailure,  # type: ignore[assignment, no-redef]
     )
 
+
+def _authorization_infra_failure(exc: BaseException) -> ApplicationFailure:
+    """Map a non-policy authorization fault to a Temporal failure (R7).
+
+    A fault while *evaluating* authorization (profile-store timeout,
+    connection loss) says nothing about whether the action is allowed, so it
+    must not be reported as a denial. Retryable unless it is a programming
+    error (bad type/key/value), which a retry cannot fix. Bounded by the
+    workflow's activity retry policy.
+    """
+    programming_errors = (
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        LookupError,
+        AssertionError,
+    )
+    return ApplicationFailure(
+        str(exc),
+        type=exc.__class__.__name__,
+        non_retryable=isinstance(exc, programming_errors),
+    )
+
+
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.common.exceptions import SecurityPolicyViolationException
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 from .common import (
@@ -152,6 +178,31 @@ def _symbol_evidence_packets(
             )
         )
     return packets
+
+
+def _with_read_mode(item: Any, *, ranged: bool) -> Any:
+    """Stamp a banked ``gateway.get_source`` row with its read mode (pure).
+
+    A provider records the ACTUAL lines it returned even for an un-ranged
+    read (the bounded file head is lines 1..N), so provenance alone cannot
+    tell a head read from a requested window. The requester knows which it
+    asked for, so every bank site must label the row: an explicit line
+    range is ``range`` (decisive); anything else is ``path_only`` plus
+    ``discovery_only`` (it may not support a definition claim). Mirrors the
+    labels the GET_CODE handler applies. Never raises; unknown shapes pass
+    through unchanged.
+    """
+    try:
+        attrs = dict(getattr(item, "attributes", None) or {})
+        if ranged:
+            attrs["read_mode"] = "range"
+            attrs.pop("discovery_only", None)
+        else:
+            attrs["read_mode"] = "path_only"
+            attrs["discovery_only"] = True
+        return item.model_copy(update={"attributes": attrs})
+    except Exception:
+        return item
 
 
 def _with_fetch_reason(item: Any, fetch_reason: str) -> Any:
@@ -1163,11 +1214,15 @@ async def execute_action_activity(
                 principal_id,
                 application_id=application_id or None,
             )
-        except Exception as exc:
+        except SecurityPolicyViolationException as exc:
             # P0-2 BLOCKED: the action stays denied (fail-closed), but the
             # denial degrades to an EMPTY/BLOCKED outcome instead of killing
             # the investigation — the miss_reason steers the reasoner to
             # other capabilities rather than ending the run.
+            # R7: ONLY a policy denial degrades here. Infrastructure faults
+            # (profile store timeout, connection loss) are not denials; they
+            # raise below so Temporal retries instead of the tenant being
+            # marked "denied" for the rest of the run.
             from investigation_agent_platform.domain.investigation.models import (
                 ActionOutcome as _BlockedOutcome,
             )
@@ -1210,6 +1265,24 @@ async def execute_action_activity(
                     "action_outcome": blocked.model_dump(mode="json"),
                 },
             )
+        except Exception as exc:
+            story_log(
+                logger,
+                logging.ERROR,
+                "execute_action_activity authorization check failed (infrastructure); raising",
+                comp=COMP_ACTVTY,
+                func="execute_action_activity",
+                stage="force",
+                step="authorize",
+                outcome=OUTCOME_FAILED,
+                tenant_id=tenant_id,
+                investigation_id=inv_id_str,
+                event="execute_action_activity authorization infrastructure failure",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                action_type=action_type,
+            )
+            raise _authorization_infra_failure(exc) from exc
 
         # Dispatch via EvidenceGateway using an exhaustive enum-to-handler
         # registry (F-023) — unknown/unsupported actions are a hard failure,
@@ -3123,7 +3196,8 @@ async def execute_action_activity(
                         )
                         unresolved += 1
                         continue
-                    banked_rows.append(frame_read)
+                    # J7: an explicit single-line window is a real range read.
+                    banked_rows.append(_with_read_mode(frame_read, ranged=True))
                     banked_rows.append(
                         Evidence(
                             tenant_id=tenant_id,
@@ -3345,6 +3419,9 @@ async def execute_action_activity(
                             end_line=window_end,
                         ),
                     )
+                    # J7: label the read — with no anchor line the request
+                    # was un-ranged and the provider returned the file head.
+                    code = _with_read_mode(code, ranged=window_start is not None)
                     banked_rows.append(code)
                     if attributes:
                         lowered_attrs = [a.lower() for a in attributes]

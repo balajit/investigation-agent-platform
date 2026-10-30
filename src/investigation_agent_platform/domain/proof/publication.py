@@ -107,7 +107,9 @@ def build_commit(
     der = str(derivation_id or "")
     ctx = str(context_id or "")
     if not der or not ctx:
-        raise ValueError("BARE_VERDICT: commit needs derivation_id + context_id, never bare VERIFIED")
+        raise ValueError(
+            "BARE_VERDICT: commit needs derivation_id + context_id, never bare VERIFIED"
+        )
     if expected_context_id is None or ctx != str(expected_context_id):
         raise ValueError("STALE_CONTEXT: context moved since evaluation; reevaluate, never mutate")
     return PublicationCommit(derivation_id=der, context_id=ctx)

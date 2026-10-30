@@ -83,6 +83,7 @@ def _range_row(revision="abc123"):
     )
     return row.model_copy(
         update={
+            "attributes": {"read_mode": "range"},
             "provenance": row.provenance.model_copy(
                 update={
                     "query_fingerprint": row.provenance.query_fingerprint.model_copy(

@@ -1,0 +1,7 @@
+# Revisions that only reformat or lint-autofix code (no behavior change).
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub honors this file automatically.
+
+# ruff format over src, tests, migrations
+40870d2511512aa746d52b5602dc802fe699432f

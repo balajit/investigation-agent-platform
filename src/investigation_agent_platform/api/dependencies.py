@@ -2384,6 +2384,15 @@ _DEFAULT_PROFILE = ApplicationProfile(
         correlationDepth=2,
         maximumHypotheses=5,
     ),
+    # R4: an undeclared capability list is a denial, so the dev default names
+    # exactly the capabilities its four evidence types back.
+    allowed_capabilities=[
+        "SEARCH_LOGS",
+        "CORRELATE",
+        "QUERY_STATE",
+        "GET_CODE",
+        "GET_CODE_HISTORY",
+    ],
 )
 
 

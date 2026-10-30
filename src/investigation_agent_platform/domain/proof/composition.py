@@ -157,7 +157,7 @@ def detect_cycle(edges: Mapping[str, list[str]]) -> list[str]:
             if dep not in color:
                 color[dep] = WHITE
             if color.get(dep) == GRAY:
-                return stack[stack.index(dep):] + [dep]
+                return stack[stack.index(dep) :] + [dep]
             if color.get(dep) == WHITE:
                 found = visit(dep)
                 if found:

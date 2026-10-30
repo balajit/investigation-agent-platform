@@ -256,11 +256,9 @@ def classify_terminal_handoff(
         record.append(f"Ranked alternatives: {alternatives[0][:300]}")
     if fetch is not None:
         record.append(fetch[:500])
-    if not record:
-        record.append(
-            "Frontier exhausted: no ruled-out rival, ranked alternative, "
-            "or discriminating fetch was recorded."
-        )
+    # Review T2: no filler sentence. When no rival was ruled out, no
+    # alternative ranked and no fetch named, the handoff records nothing -
+    # a generic line here made every abstention look like a handoff.
     return S7Handoff(
         state=HandoffState.FRONTIER_EXHAUSTED,
         next_fetch=fetch,

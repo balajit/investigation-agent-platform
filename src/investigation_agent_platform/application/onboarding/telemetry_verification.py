@@ -23,9 +23,10 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID
 
 from investigation_agent_platform.application.evidence.selector import (
@@ -84,7 +85,7 @@ class _RecordingClient:
         self.searches.append(kwargs or {"args": args})
         return await self.real.search(*args, **kwargs)
 
-    def options(self, **kwargs: Any) -> "_RecordingClient":
+    def options(self, **kwargs: Any) -> _RecordingClient:
         """Mirror client.options(): shared transport, shared record list."""
         return _RecordingClient(self.real.options(**kwargs), self.searches)
 
@@ -139,7 +140,7 @@ async def _run_search_checks(
     home_service: str,
     expected_endpoint: str,
     expected_pattern: str,
-    recorded: list["_RecordingClient"],
+    recorded: list[_RecordingClient],
     record: Any,
     mapping_source_id: str | None = None,
 ) -> Any | None:
@@ -151,7 +152,7 @@ async def _run_search_checks(
             _probe_request(mapping_source_id=mapping_source_id),
             _probe_profile(tenant_id, home_service),
         )
-    except Exception as exc:  # noqa: BLE001 — probe tool: record, don't propagate
+    except Exception as exc:
         record("routed search returns rows", False, f"{type(exc).__name__}: {exc}")
         record("endpoint attributed", True, "SKIP: search did not return")
         record("home pattern used", True, "SKIP: search did not return")
@@ -277,7 +278,7 @@ async def verify_tenant_telemetry(
         info = getattr(info_raw, "body", info_raw)
         cluster = info.get("cluster_name", "?") if isinstance(info, dict) else "?"
         record("endpoint reachable and authenticated", True, f"cluster={cluster}")
-    except Exception as exc:  # noqa: BLE001 — probe tool: record, don't propagate
+    except Exception as exc:
         record("endpoint reachable and authenticated", False, f"{type(exc).__name__}: {exc}")
         record("pattern resolves to indices", True, "SKIP: endpoint not reached")
         record("routed search returns rows", True, "SKIP: endpoint not reached")
@@ -292,7 +293,7 @@ async def verify_tenant_telemetry(
             )
             resolved_indices = getattr(resolved_raw, "body", resolved_raw)
             names = sorted(resolved_indices.keys()) if isinstance(resolved_indices, dict) else []
-        except Exception as exc:  # noqa: BLE001 — probe tool: record, don't propagate
+        except Exception as exc:
             record("pattern resolves to indices", False, f"{type(exc).__name__}: {exc}")
             names = []
         else:
@@ -347,7 +348,7 @@ async def verify_tenant_telemetry(
                 "query": {"range": {"@timestamp": {"gte": window_start}}},
             },
         )
-    except Exception as exc:  # noqa: BLE001 — probe tool: record, don't propagate
+    except Exception as exc:
         record("fetch resolves home endpoint", False, f"{type(exc).__name__}: {exc}")
     if raw is not None:
         body = getattr(raw, "body", raw)
@@ -362,7 +363,7 @@ async def verify_tenant_telemetry(
                 fetched = await adapter.get_runtime_evidence(
                     tenant_id, iid, eid, "production", _EvidenceLookup(row)
                 )
-            except Exception as exc:  # noqa: BLE001 — probe tool: record, don't propagate
+            except Exception as exc:
                 record(
                     "fetch resolves home endpoint",
                     False,

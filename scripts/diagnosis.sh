@@ -211,16 +211,23 @@ asyncio.run(main())
 EOF
 fi
 
-echo "== log stage info (tmp/worker.log) =="
-LOG="$REPO_ROOT/tmp/worker.log"
-if [[ ! -f "$LOG" ]]; then
-  echo "no worker log at $LOG"
+echo "== log stage info (tmp/worker.log + rotated tmp/worker.*.log) =="
+# start-platform.sh rotates (never truncates) logs on restart: read the
+# rotated set oldest-first, then the live log, so a run that straddled a
+# restart is still visible.
+shopt -s nullglob
+LOGS=()
+for f in "$REPO_ROOT"/tmp/worker.*.log; do LOGS+=("$f"); done
+[[ -f "$REPO_ROOT/tmp/worker.log" ]] && LOGS+=("$REPO_ROOT/tmp/worker.log")
+shopt -u nullglob
+if [[ ${#LOGS[@]} -eq 0 ]]; then
+  echo "no worker log under $REPO_ROOT/tmp"
   exit 0
 fi
-IID="$IID" python3 - "$LOG" <<'EOF'
+IID="$IID" python3 - "${LOGS[@]}" <<'EOF'
 import json, sys, os
 iid = os.environ["IID"]
-path = sys.argv[1]
+paths = sys.argv[1:]
 turns = 0
 matched = 0
 # Two passes: completion lines carry the iteration number, decision
@@ -228,7 +235,8 @@ matched = 0
 # each decision to the next completion at or after its timestamp.
 completions = []
 raw = []
-with open(path, encoding="utf-8", errors="replace") as fh:
+for path in paths:
+  with open(path, encoding="utf-8", errors="replace") as fh:
     for line in fh:
         if iid[:8] not in line:
             continue
@@ -266,5 +274,5 @@ for ts, level, m, e in raw:
         print(f"{ts} {level} {m[:120]}" + (f" :: {detail}" if detail else ""))
 print(f"-- {turns} reason turns in log --")
 if matched == 0:
-    print("-- note: no lines matched; start-platform.sh --restart truncates tmp/*.log --")
+    print("-- note: no lines matched in the live or rotated worker logs --")
 EOF

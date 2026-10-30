@@ -16,6 +16,7 @@ from investigation_agent_platform.domain.events.base import InvestigationCancell
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceRelationship
 from investigation_agent_platform.domain.finding.models import Finding
 from investigation_agent_platform.domain.hypothesis.models import Hypothesis
+from investigation_agent_platform.domain.investigation.loop_version import LOOP_VERSION_CURRENT
 from investigation_agent_platform.domain.investigation.models import (
     ActorType,
     Fact,
@@ -263,6 +264,7 @@ class CreateInvestigationService:
                 "profile_version": profile.version,
                 "disposition": disposition.to_metadata(),
                 "claim_binding_version": "cbv1",
+                "loop_version": LOOP_VERSION_CURRENT,
                 # P1 (S1 anchors): onset T / last-good G (or explicit unknown)
                 # plus the spread budget drawn from the effective tool-call
                 # envelope (InvestigationLimits default overlaid by the profile

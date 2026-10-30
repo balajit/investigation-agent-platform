@@ -189,6 +189,10 @@ class DataflowBinding(BaseModel):
     kind: Literal["local", "parameter"]
     has_initializer: bool = False
     span: Span
+    # Start bytes of every control-flow construct enclosing the declaration
+    # (J3). Compared with an event's set to tell straight-line definitions
+    # from ones that run only on some paths.
+    control_context: tuple[int, ...] = ()
 
 
 class DataflowEvent(BaseModel):
@@ -210,6 +214,8 @@ class DataflowEvent(BaseModel):
     ]
     value_role: Literal["lvalue", "rvalue", "read_modify_write", "unknown"] = "unknown"
     span: Span
+    # Start bytes of every control-flow construct enclosing the event (J3).
+    control_context: tuple[int, ...] = ()
 
 
 class ValueStateRecord(BaseModel):
@@ -777,6 +783,73 @@ def coerce_evaluated(kind: str | None, value: str | float | bool | None) -> tupl
     return None
 
 
+# J3: constructs after which a definition may or may not have happened. The
+# dataflow resolver has no control-flow graph, so a definition nested in one
+# of these (relative to the declaration) cannot be called definite.
+_CONTROL_FLOW_TYPES = frozenset(
+    {
+        "if_statement",
+        "for_statement",
+        "enhanced_for_statement",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+        "switch_expression",
+        "try_statement",
+        "try_with_resources_statement",
+        "catch_clause",
+        "finally_clause",
+        "ternary_expression",
+    }
+)
+
+
+def _control_context(node: Any) -> tuple[int, ...]:
+    """Start bytes of the control-flow constructs enclosing ``node`` (pure)."""
+    context: list[int] = []
+    current = node.parent
+    while current is not None:
+        if current.type in _CONTROL_FLOW_TYPES:
+            context.append(int(current.start_byte))
+        current = current.parent
+    return tuple(context)
+
+
+# J1: nodes that open a NEW return/guard scope. A guard or return inside one
+# of these belongs to that scope (a lambda has no method identity; a nested
+# or anonymous class method is visited as its own method), never to the
+# enclosing method whose subtree merely contains it.
+_SCOPE_BOUNDARY_TYPES = frozenset(
+    {
+        "lambda_expression",
+        "class_body",
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "record_declaration",
+        "annotation_type_declaration",
+        "method_declaration",
+        "constructor_declaration",
+        "compact_constructor_declaration",
+    }
+)
+
+
+def _scope_walk(root: Any) -> Any:
+    """Yield descendants of ``root`` without crossing a new scope boundary.
+
+    ``root`` itself is not yielded and is never treated as a boundary, so
+    walking a method yields the nodes that belong to that method alone.
+    """
+    stack = list(reversed(root.children))
+    while stack:
+        node = stack.pop()
+        if node.type in _SCOPE_BOUNDARY_TYPES:
+            continue
+        yield node
+        stack.extend(reversed(node.children))
+
+
 def _branch_returns(consequence: Any, source: bytes, file_path: str) -> list[ReturnSite]:
     """Collect return statements of one guard branch.
 
@@ -792,7 +865,7 @@ def _branch_returns(consequence: Any, source: bytes, file_path: str) -> list[Ret
         while stack:
             current = stack.pop()
             for child in current.children:
-                if child.type == "if_statement":
+                if child.type == "if_statement" or child.type in _SCOPE_BOUNDARY_TYPES:
                     continue
                 if child.type == "return_statement":
                     found.append(child)
@@ -942,6 +1015,7 @@ def _build_dataflow_records(
                     kind="local",
                     has_initializer=node.child_by_field_name("value") is not None,
                     span=_span(node, file_path),
+                    control_context=_control_context(node),
                 )
             )
     # Phase 2: events. Bound names per scope drive attribution: a use or
@@ -990,6 +1064,7 @@ def _build_dataflow_records(
                             kind=kind,
                             value_role="lvalue" if kind == "assignment" else "read_modify_write",
                             span=_span(left, file_path),
+                            control_context=_control_context(node),
                         )
                     )
                     if kind == "compound_assignment":
@@ -1016,6 +1091,7 @@ def _build_dataflow_records(
                                     kind="update",
                                     value_role="read_modify_write",
                                     span=span,
+                                    control_context=_control_context(child),
                                 ),
                                 DataflowEvent(
                                     method_identity=scope_id,
@@ -1439,6 +1515,29 @@ def build_java_model(
                 if node_type == "class_declaration":
                     class_only.pop()
             return
+        if (
+            node_type == "class_body"
+            and node.parent is not None
+            and node.parent.type == "object_creation_expression"
+        ):
+            # J2: an anonymous class body is its own scope. Without it its
+            # fields and methods were credited to the outer class, so
+            # `A.retries` resolved to two declarations (one of them inner).
+            # It is not a named type: it is not added to ``classes`` and
+            # does not become a "nearest class".
+            outer = enclosing_class()
+            anonymous = (
+                f"{outer}.<anonymous@{node.start_byte}>"
+                if outer
+                else f"<anonymous@{node.start_byte}>"
+            )
+            class_stack.append(anonymous)
+            container_types.append("anonymous_class_body")
+            for child in node.children:
+                visit(child)
+            class_stack.pop()
+            container_types.pop()
+            return
         if node_type == "lambda_expression":
             lambda_depth += 1
             for child in node.children:
@@ -1519,7 +1618,7 @@ def build_java_model(
                 method_stack.append(qualified)
                 method_identity_stack.append(method_identity_for(qualified, key, node.start_byte))
                 bare_stack.append(name)
-                for sub in _p.walk(node):
+                for sub in _scope_walk(node):
                     if sub.type != "if_statement":
                         continue
                     consequence = sub.child_by_field_name("consequence")

@@ -1376,6 +1376,8 @@ class TestProfileBasedAuthorizer:
     def _profile_repo(self, profile: Any) -> MagicMock:
         repo = MagicMock()
         repo.get_by_application_id = AsyncMock(return_value=profile)
+        # R5: authorization resolves the newest ACTIVE revision.
+        repo.list_revisions = AsyncMock(return_value=[profile] if profile is not None else [])
         return repo
 
     @pytest.mark.asyncio

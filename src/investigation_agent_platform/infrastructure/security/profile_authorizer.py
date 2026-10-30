@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from investigation_agent_platform.domain.investigation.models import ActionType
+from investigation_agent_platform.domain.profile.models import ProfileStatus
 from investigation_agent_platform.ports.persistence.repositories import ApplicationProfileRepository
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,19 @@ class ProfileBasedActionAuthorizer:
     def __init__(self, profile_repo: ApplicationProfileRepository) -> None:
         self._profile_repo = profile_repo
 
+    async def _active_profile(self, tenant_id: str, application_id: str) -> Any:
+        """Newest ACTIVE revision for the application, or None (R5).
+
+        Authorization must never come from a DRAFT (unreviewed) revision that
+        merely has the highest version, nor from DEPRECATED/ARCHIVED ones.
+        Revisions arrive newest-first; the first ACTIVE one wins.
+        """
+        revisions = await self._profile_repo.list_revisions(tenant_id, application_id)
+        for revision in revisions:
+            if getattr(revision, "status", None) == ProfileStatus.ACTIVE:
+                return revision
+        return None
+
     async def authorize_action(
         self, tenant_id: str, action_type: str, target_resource: str, context: dict[str, Any]
     ) -> bool:
@@ -84,10 +98,10 @@ class ProfileBasedActionAuthorizer:
             )
             return False
 
-        profile = await self._profile_repo.get_by_application_id(tenant_id, str(application_id))
+        profile = await self._active_profile(tenant_id, str(application_id))
         if profile is None:
             logger.warning(
-                "Denying action: application profile not found",
+                "Denying action: no ACTIVE application profile revision",
                 extra={"tenant_id": tenant_id, "application_id": application_id},
             )
             return False
@@ -100,11 +114,17 @@ class ProfileBasedActionAuthorizer:
         enabled_types = set(profile.investigation.enabled_evidence_types)
         if required_type not in enabled_types:
             return False
-        # allowed_capabilities is enforced when non-empty; empty preserves
-        # the evidence-type gate alone so pre-capability profiles keep working.
+        # R4: an unset or empty capability list means "no capabilities
+        # declared", which is a denial. It used to fall back to the
+        # evidence-type gate alone, so a profile update that omitted the field
+        # silently widened access to everything its evidence types allow.
         allowed = set(profile.allowed_capabilities or [])
         if not allowed:
-            return True
+            logger.warning(
+                "Denying action: profile declares no allowed_capabilities",
+                extra={"tenant_id": tenant_id, "application_id": application_id},
+            )
+            return False
         capability_for_action = {
             ActionType.SEARCH_LOGS: "SEARCH_LOGS",
             ActionType.QUERY_STATE: "QUERY_STATE",

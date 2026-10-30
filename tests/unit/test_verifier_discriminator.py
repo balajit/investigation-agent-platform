@@ -43,7 +43,11 @@ def _row(
         evidence_type=EvidenceType.SOURCE_CODE,
         content_snippet=snippet,
         source="sample-repository",
-        attributes={},
+        attributes=(
+            {"read_mode": "range"}
+            if operation in ("GET_SOURCE", "GET_CODE") and line_start is not None
+            else {}
+        ),
         provenance=SimpleNamespace(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
