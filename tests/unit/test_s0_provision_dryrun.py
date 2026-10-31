@@ -140,6 +140,32 @@ async def test_s0_t05_script_runs_clean_on_disposable() -> None:
         assert not await _priv("iap_worker", "application_profiles", "INSERT")
         assert not await _priv("iap_app", "investigations", "TRUNCATE")
 
+        # S3 migrator-path prerequisites (040 runs as iap_migrator): migrator
+        # owns the tables it ALTERs (where present), holds directory
+        # membership for the function-owner handoff, and the directory role
+        # holds schema CREATE for that handoff.
+        async with engine.connect() as conn:
+            owner_of = (
+                await conn.execute(text(
+                    "SELECT tablename, tableowner FROM pg_tables "
+                    "WHERE schemaname='public' AND tablename IN "
+                    "('analyzer_files','analyzer_symbols','analyzer_edges',"
+                    "'analyzer_endpoints','alembic_version')"))
+            ).all()
+        for table, owner in owner_of:
+            assert owner == "iap_migrator", (table, owner)
+        async with engine.connect() as conn:
+            member = (await conn.execute(text(
+                "SELECT count(*) FROM pg_auth_members m "
+                "JOIN pg_roles a ON a.oid=m.roleid "
+                "JOIN pg_roles b ON b.oid=m.member "
+                "WHERE a.rolname='iap_tenant_directory' AND b.rolname='iap_migrator'"))
+            ).scalar()
+            assert member == 1
+            crea = await conn.execute(text(
+                "SELECT has_schema_privilege('iap_tenant_directory','public','CREATE')"))
+            assert crea.scalar() is True
+
         async with engine.connect() as conn:
             rows = (await conn.execute(text(
                 "SELECT rolname, rolsuper, rolbypassrls, rolcanlogin "

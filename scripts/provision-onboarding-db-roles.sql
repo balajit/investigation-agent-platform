@@ -24,6 +24,16 @@ REVOKE iap_app FROM iap_migrator, iap_worker, iap_registry_admin;
 REVOKE iap_worker FROM iap_migrator, iap_app, iap_registry_admin;
 REVOKE iap_registry_admin FROM iap_migrator, iap_app, iap_worker;
 
+-- The migrator must transfer the directory function to iap_tenant_directory
+-- (040 ALTER FUNCTION ... OWNER). Membership with NOINHERIT grants no
+-- automatic privilege; it only permits SET ROLE for the handoff.
+GRANT iap_tenant_directory TO iap_migrator;
+
+-- The directory role owns the lookup function (040 ALTER FUNCTION ... OWNER),
+-- and a new owner must hold CREATE on the schema. NOLOGIN; reachable only
+-- via the migrator handoff or the function's own definer context.
+GRANT USAGE, CREATE ON SCHEMA public TO iap_tenant_directory;
+
 -- The schema owner/migration role is assigned by deployment provisioning,
 -- not this repository script. Runtime roles receive no schema CREATE grant.
 REVOKE CREATE ON SCHEMA public FROM iap_app, iap_worker, iap_registry_admin;
@@ -65,6 +75,10 @@ END $$;
 -- Ownership transfer (IF EXISTS): iap_migrator owns the core tables it
 -- migrates, mirroring the onboarding transfer above. DDL under a forced-RLS
 -- table is unaffected by policies; data backfills need a per-tenant loop.
+-- alembic_version is included: the migrator must stamp its own version row.
+-- analyzer_* are included for DDL only: no repository reads or writes them,
+-- so they carry no runtime grants (matrix rule); sidecar/harness loads run
+-- as migrator/operator. They are tenant tables covered by 040 tenant_isolation.
 DO $$ DECLARE t text; BEGIN
     FOREACH t IN ARRAY ARRAY[
         'investigations', 'investigation_facts', 'investigation_checkpoints',
@@ -77,7 +91,9 @@ DO $$ DECLARE t text; BEGIN
         'input_requirements', 'input_fulfillments', 'finding_clusters',
         'finding_cluster_assignments', 'finding_embeddings', 'chat_sessions',
         'chat_messages', 'reference_document_chunks', 'reference_index_generations',
-        'batch_intake_records', 'proof_derivations', 'proof_publication_commits'
+        'batch_intake_records', 'proof_derivations', 'proof_publication_commits',
+        'alembic_version', 'analyzer_files', 'analyzer_symbols',
+        'analyzer_edges', 'analyzer_endpoints'
     ] LOOP
         IF to_regclass('public.' || t) IS NOT NULL THEN
             EXECUTE format('ALTER TABLE public.%I OWNER TO iap_migrator', t);
