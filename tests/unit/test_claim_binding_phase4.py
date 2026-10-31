@@ -589,17 +589,17 @@ class TestFastPathPredicate:
         assert 'final_status = "COMPLETED"' in tail
 
     def test_d6_fast_path_cascade_guards(self):
-        """F1 pin (rewritten for F8): every cascade override after the D6 fast
+        """F1 pin (rewritten for F8-D15): every cascade override after the D6 fast
         path must stand down on a D6 turn, so a later rule cannot clobber the
-        forced CONCLUDE while the flag stays set. The guards now live in the
-        forcing.RULES table behind forcing._stands_down; this pins that every
-        override site consults the table and that D6 (state or flag) is one fact.
-        The cascade lives in forcing.apply_post_reason_cascade (2b seam)."""
+        forced CONCLUDE while the flag stays set. The guards live in the
+        RULES table behind _stands_down; the loop consults the table once per
+        rule, in order. This pins the loop structure and that D6 (state or
+        flag) is one fact."""
         import pathlib
-        import re
 
         from investigation_agent_platform.application.worker.workflows.forcing import (
             RULES,
+            TRIGGERS,
             _stands_down,
         )
 
@@ -613,11 +613,10 @@ class TestFastPathPredicate:
             / "forcing.py"
         ).read_text()
         region = src[src.index("def apply_post_reason_cascade") :]
-        overrides = re.findall(r'_reason_data\["next_action"\] =', region)
-        assert len(overrides) == 11, f"cascade override count changed: {len(overrides)}"
-        consulted = re.findall(r'_down\(\s*"([a-z_]+)"\s*\)', region)
-        assert consulted == [r.name for r in RULES], "every override site must consult the table"
-        assert len(consulted) == len(overrides)
+        assert region.count('_down("') == 0
+        assert "for rule in RULES:" in region
+        assert "TRIGGERS[rule.name](ctx)" in region
+        assert set(TRIGGERS) == {r.name for r in RULES}
         for rule in RULES:
             assert _stands_down(
                 rule.name, {}, is_defer=False, absence_forced=False, d6_fired=True
@@ -635,7 +634,6 @@ class TestFastPathPredicate:
         construction (see test_pivot_disjoint_from_floor_and_reread). Now read from
         the forcing.RULES table: order-requery, formulate, synthesis, call-site,
         log search, replan, smallest-fetch."""
-        import pathlib
 
         from investigation_agent_platform.application.worker.workflows.forcing import (
             RULES,
@@ -654,26 +652,16 @@ class TestFastPathPredicate:
         }
         exempt = {r.name for r in RULES if Force.PIVOT_RECOLLECT in r.exempt}
         assert exempt == {"walk_stack", "floor", "reread"}
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src"
-            / "investigation_agent_platform"
-            / "application"
-            / "worker"
-            / "workflows"
-            / "forcing.py"
-        ).read_text()
-        region = src[src.index("def apply_post_reason_cascade") :]
-        walk_at = region.index("stack-walk forcing first")
-        ledger_at = region.index("G3: order-driven requery forcing")
-        walk_block = region[walk_at:ledger_at]
-        # Walk-stack must never be GUARDED by the pivot flag (intake frames
+        # F8-D15: precedence is RULES order (walk-stack before requery) and the
+        # F5 cancel is table data (walk-stack cancels the pivot flag it exempts).
+        # Walk-stack must never STAND DOWN on the pivot flag (intake frames
         # outrank it). It may only CLEAR the flag when it overwrites a
         # pivot dispatch (review F5): the pivot did not run.
-        assert 'get(Force.PIVOT_RECOLLECT' not in walk_block
-        assert "Force.PIVOT_RECOLLECT.value] = False" in walk_block, (
-            "walk-stack winning over a pivot must clear the pivot flag"
-        )
+        names = [r.name for r in RULES]
+        assert names.index("walk_stack") < names.index("requery")
+        walk = next(r for r in RULES if r.name == "walk_stack")
+        assert Force.PIVOT_RECOLLECT in walk.cancels
+        assert Force.PIVOT_RECOLLECT not in walk.stands_down_on
 
     def test_pivot_disjoint_from_floor_and_reread(self):
         """2b step-1 pin: floor and re-read need no pivot guard because

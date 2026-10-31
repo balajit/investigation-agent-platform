@@ -294,12 +294,16 @@ def test_the_cascade_holds_no_hand_written_flag_guards_or_flag_writes() -> None:
 
 
 def test_the_cascade_consults_the_table_once_per_rule_in_table_order() -> None:
-    names = re.findall(r'_down\(\s*"([a-z_]+)"\s*\)', _cascade_source())
-    assert names == [r.name for r in RULES]
+    source = _cascade_source()
+    assert source.count('_down("') == 0
+    assert "for rule in RULES:" in source
+    assert "TRIGGERS[rule.name](ctx)" in source
 
 
 def test_every_flag_the_cascade_writes_is_a_force_member() -> None:
-    written = set(re.findall(r"_reason_data\[Force\.([A-Z_]+)\.value\]", _cascade_source()))
+    source = _cascade_source()
+    assert "rule.force.value" in source
+    written = set(re.findall(r"Force\.([A-Z_]+)\.value", source))
     assert written, "premise: the cascade writes flags through Force"
     assert written <= {f.name for f in Force}
 

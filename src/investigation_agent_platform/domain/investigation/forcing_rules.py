@@ -60,6 +60,9 @@ class Rule:
     exempt: dict[Force, str] = field(default_factory=dict)
     #: Counter keys this rule increments; empty means a single counter named after the rule.
     counters: tuple[str, ...] = ()
+    #: Earlier forces this rule overwrites (F5 walk-stack-over-pivot cancel, F8-D17).
+    #: Must be a subset of ``exempt`` (checked by the contract).
+    cancels: frozenset[Force] = frozenset()
 
     @property
     def counter_keys(self) -> tuple[str, ...]:
@@ -85,6 +88,7 @@ RULES: tuple[Rule, ...] = (
                 "intake frames outrank every other gathering rule"
             )
         },
+        cancels=frozenset({Force.PIVOT_RECOLLECT}),
     ),
     Rule("requery", Force.REQUERY, frozenset({Force.WALK_STACK, Force.PIVOT_RECOLLECT})),
     Rule(
@@ -206,6 +210,8 @@ def check_rule_contract(rules: tuple[Rule, ...] | list[Rule]) -> list[str]:
                 problems.append(f"rule {rule.name} exempts {force.value} without a reason")
             if force not in earlier:
                 problems.append(f"rule {rule.name} exempts {force.value}, which is not earlier")
+        for force in sorted(rule.cancels - set(rule.exempt), key=lambda f: f.value):
+            problems.append(f"rule {rule.name} cancels {force.value} but does not exempt it")
         for force in sorted(rule.stands_down_on, key=lambda f: f.value):
             if force not in earlier and force not in PRE_CASCADE_FORCES:
                 problems.append(

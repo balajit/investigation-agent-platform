@@ -5,6 +5,7 @@ import hashlib
 import logging
 import re
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -2307,6 +2308,184 @@ class PostReasonCascadeState:
     order_events: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CascadeContext:
+    """Per-turn inputs one trigger may read (F8-D15, pure data)."""
+
+    state: PostReasonCascadeState
+    reason: dict[str, Any]  # current dispatch data; earlier rules may have rewritten it
+    counts: Mapping[str, int]
+    history: list[Any]
+    separate: bool  # lv6 carrier separation
+    pivot_v2: bool  # lv7 hardened pivot
+
+    def count(self, key: str) -> int:
+        try:
+            return int(self.counts.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+
+@dataclass(frozen=True)
+class Fire:
+    """What one rule did: an override, effects only (``next_action is None``), or both."""
+
+    next_action: str | None
+    action_parameters: dict[str, Any] | None = None
+    counter: str | None = None  # key in COUNTER_KEYS to bump
+    extra: Mapping[str, Any] = field(default_factory=dict)  # payload keys stamped on the reason data
+    consume: dict[str, Any] | None = None  # history entry stamped consumed at commit
+    consumed_ref: dict[str, Any] | None = None  # carrier the workflow stamps after dispatch
+
+
+def _entry_at(history: list[Any], index: Any) -> dict[str, Any] | None:
+    try:
+        entry = history[index]
+    except (TypeError, IndexError, KeyError):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _t_pivot(ctx: CascadeContext) -> Fire | None:
+    targets = _recent_collection_surfaces(ctx.history, separate_carriers=ctx.separate)
+    turns_left = int(ctx.state.max_iterations or 0) - int(ctx.state.iteration or 0)
+    out = _should_force_pivot_recollect(
+        ctx.state.prev_focus,
+        ctx.reason,
+        turns_left,
+        targets,
+        preserve_proposal=ctx.pivot_v2,
+        forced_count=ctx.count("pivot"),
+    )
+    if out is None:
+        return None
+    return Fire(out["next_action"], out["action_parameters"], counter="pivot" if ctx.pivot_v2 else None)
+
+
+def _t_walk_stack(ctx: CascadeContext) -> Fire | None:
+    params = _should_force_walk_stack(ctx.state.knowledge_seed, ctx.reason, ctx.history, ctx.count("walk_stack"))
+    return Fire("WALK_STACK", params, counter="walk_stack") if params else None
+
+
+def _t_requery(ctx: CascadeContext) -> Fire | None:
+    out = _should_force_order_requery(ctx.history, recorded_attempt_summaries(ctx.history or []) or [])
+    if out is None:
+        return None
+    entry = _entry_at(ctx.history, out.get("order_index"))
+    if out.get("mark_consumed"):  # budget-exhausted: retire the carrier, dispatch nothing
+        return Fire(None, consume=entry) if entry is not None else None
+    return Fire(out["action_type"], out["action_parameters"], consumed_ref=entry)
+
+
+def _t_floor(ctx: CascadeContext) -> Fire | None:
+    s = ctx.state
+    out = _explore_floor_target(
+        ctx.reason, int(s.evidence_banked_total or 0), s.triage_route, s.description,
+        s.knowledge_seed, ctx.count("floor"), history=ctx.history,
+    )
+    return Fire(out["next_action"], out["action_parameters"], counter="floor") if out else None
+
+
+def _t_formulate(ctx: CascadeContext) -> Fire | None:
+    s = ctx.state
+    if not _should_force_formulate(
+        int(s.iteration or 0), int(s.formulated_count or 0), ctx.reason.get("hypotheses_evaluated"),
+        int(s.evidence_banked_total or 0), ctx.count("formulate"),
+    ):
+        return None
+    return Fire("FORMULATE_HYPOTHESIS", {}, counter="formulate",
+               extra={ForcePayload.FORMULATE_RULE.value: "formulate"})
+
+
+def _t_synthesis(ctx: CascadeContext) -> Fire | None:
+    s = ctx.state
+    if not _should_force_synthesis(
+        ctx.history, int(s.evidence_banked_total or 0), int(s.formulated_count or 0),
+        ctx.count("synthesis"), ctx.reason,
+    ):
+        return None
+    return Fire("FORMULATE_HYPOTHESIS", {}, counter="synthesis",
+               extra={ForcePayload.FORMULATE_RULE.value: "synthesis"})
+
+
+def _t_reread(ctx: CascadeContext) -> Fire | None:
+    path = _reread_target(ctx.reason, ctx.history, ctx.count("reread"))
+    return Fire("GET_CODE", {"file_path": path}, counter="reread") if path else None
+
+
+def _t_callsite(ctx: CascadeContext) -> Fire | None:
+    out = _callsite_target(
+        ctx.reason, ctx.history, ctx.count("callsite"),
+        tenant_id=ctx.state.tenant_id, investigation_id=str(ctx.state.investigation_id),
+    )
+    return Fire(out["next_action"], out["action_parameters"], counter="callsite") if out else None
+
+
+def _t_log_search(ctx: CascadeContext) -> Fire | None:
+    params = _should_force_log_search(str(ctx.state.description or ""), ctx.reason, ctx.history, ctx.count("log_search"))
+    return Fire("SEARCH_LOGS", params, counter="log_search") if params else None
+
+
+def _t_replan(ctx: CascadeContext) -> Fire | None:
+    out = _should_force_replan(
+        str(ctx.state.description or ""), ctx.reason, ctx.history, ctx.count("replan"),
+        separate_carriers=ctx.separate,
+    )
+    return Fire(out["next_action"], out["action_parameters"], counter="replan") if out else None
+
+
+def _t_smallest_fetch(ctx: CascadeContext) -> Fire | None:
+    orders: list[dict[str, Any]] = []
+    for evt in reversed(ctx.history or []):  # newest feed carrier only (a tombstone supersedes older feeds)
+        if isinstance(evt, dict) and evt.get("kind") == "work_order_feed":
+            raw = evt.get("orders")
+            orders = [o for o in raw if isinstance(o, dict)] if isinstance(raw, list) else []
+            break
+    for kind in SMALLEST_FETCH_ORDER:
+        picked = _pick_gap_order(orders, kind=kind, history=ctx.history,
+                                 forced_count=ctx.count(f"smallest_fetch_{kind.lower()}"))
+        if picked is None:
+            continue
+        gap_id = str(picked.gap_id or "")
+        return Fire(
+            picked.action_type, dict(picked.action_parameters or {}),
+            counter=f"smallest_fetch_{kind.lower()}",
+            extra={
+                ForcePayload.SMALLEST_FETCH_KIND.value: kind,
+                ForcePayload.SMALLEST_FETCH_GAP_ID.value: gap_id,
+                "smallest_fetch_context": {"kind": kind, "gap_id": gap_id, "claim_ref": str(picked.claim_ref or "")},
+            },
+        )
+    return None
+
+
+Trigger = Callable[[CascadeContext], Fire | None]
+
+
+TRIGGERS: dict[str, Trigger] = {
+    "pivot": _t_pivot, "walk_stack": _t_walk_stack, "requery": _t_requery, "floor": _t_floor,
+    "formulate": _t_formulate, "synthesis": _t_synthesis, "reread": _t_reread,
+    "callsite": _t_callsite, "log_search": _t_log_search, "replan": _t_replan,
+    "smallest_fetch": _t_smallest_fetch,
+}
+
+
+def check_triggers(rules: tuple[Any, ...] | list[Any], triggers: Mapping[str, Any]) -> list[str]:
+    """Every rule has exactly one trigger and no trigger is orphaned (fail-closed at import)."""
+    problems = []
+    names = [r.name for r in rules]
+    for name in names:
+        if name not in triggers:
+            problems.append(f"rule {name} has no trigger")
+    for name in triggers:
+        if name not in names:
+            problems.append(f"trigger {name} has no rule")
+    return problems
+
+
+assert not check_triggers(RULES, TRIGGERS), check_triggers(RULES, TRIGGERS)
+
+
 def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascadeState:
     """Run the real post-reason gathering cascade (2b seam, pure).
 
@@ -2343,307 +2522,59 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             focus_from_reason_data(_reason_data) if _pivot_v2 and not _absence_forced else None
         )
 
-        def _count(key: str) -> int:
-            try:
-                return int(_counts.get(key, 0) or 0)
-            except (TypeError, ValueError):
-                return 0
-
         # F8: one definition of "this rule yields this turn". The D6 turn state
         # and its flag are one fact (production sets both together); each rule's
-        # stand-down set lives in RULES, not in a hand-written guard list.
+        # stand-down set lives in RULES. The loop below consults the table once
+        # per rule, in order (F8-T13 pins this structurally).
         _d6_fired = _d6_fired or bool(_reason_data.get(Force.NOT_CHECKABLE.value))
 
-        def _down(rule_name: str) -> bool:
-            return _stands_down(
-                rule_name,
-                _reason_data,
+        # F8-D15: one loop over RULES. Each rule's trigger adapter decides;
+        # the loop applies. Stand-down is checked before the trigger runs, so a
+        # yielding rule never evaluates its trigger. F7: everything is local
+        # until the commit point below; a raising trigger faults the whole
+        # cascade (proposal unrewritten, counters/stamps uncommitted, one log).
+        reason: dict[str, Any] = dict(_reason_data)
+        counts: dict[str, int] = dict(_counts)
+        pending_consume: list[dict[str, Any]] = []
+        consumed_ref: dict[str, Any] | None = None
+        fired_counter: dict[Any, str] = {}  # force -> counter bumped by the rule that wrote it
+        fired: dict[str, Fire] = {}
+        for rule in RULES:
+            if _stands_down(
+                rule.name,
+                reason,
                 is_defer=_is_defer,
                 absence_forced=_absence_forced,
                 d6_fired=_d6_fired,
-            )
-
-        # P6 2b-i: pivot recollect — the reasoner's point of focus
-        # moved surfaces, so go back to collection on the new focus
-        # instead of verifying or concluding on the stale one. Runs
-        # before the other gathering forces so they don't gather on
-        # the old focus; explicit-frame walk-stack below still wins
-        # (intake frames outrank everything). Skipped on
-        # defer/D6/absence turns, and the rule itself damps refires
-        # on recently collected surfaces. Budget-blind by design
-        # (agentic layers own budget); the turns-remaining gate is
-        # liveness, not budget.
-        _pivot_override = None
-        if not _down("pivot"):
-            _pivot_targets = _recent_collection_surfaces(_history, separate_carriers=_separate)
-            _pivot_override = _should_force_pivot_recollect(
-                state.prev_focus,
-                _reason_data,
-                int(state.max_iterations or 0) - int(state.iteration or 0),
-                _pivot_targets,
-                preserve_proposal=_pivot_v2,
-                forced_count=_count("pivot"),
-            )
-        if _pivot_override is not None:
-            _reason_data = dict(_reason_data)
-            _reason_data["next_action"] = _pivot_override["next_action"]
-            _reason_data["action_parameters"] = _pivot_override["action_parameters"]
-            _reason_data[Force.PIVOT_RECOLLECT.value] = True
-            if _pivot_v2:
-                _counts["pivot"] = _count("pivot") + 1
-        # D2: stack-walk forcing first — explicit intake frames outrank
-        # every other gathering rule.
-        _walk_params = (
-            None
-            if _down("walk_stack")
-            else _should_force_walk_stack(
-                state.knowledge_seed, _reason_data, _history, _count("walk_stack")
-            )
-        )
-        if _walk_params:
-            _counts["walk_stack"] = _count("walk_stack") + 1
-            _reason_data = dict(_reason_data)
-            _reason_data["next_action"] = "WALK_STACK"
-            _reason_data["action_parameters"] = _walk_params
-            _reason_data[Force.WALK_STACK.value] = True
-            # F5: walk-stack overwrote the pivot's dispatch, so the pivot did
-            # not happen; leaving the flag set would stamp history with a
-            # pivot that never ran and damp its target as already collected.
-            _reason_data[Force.PIVOT_RECOLLECT.value] = False
-            if _pivot_v2 and _pivot_override is not None:
-                # The cancelled pivot never dispatched: return its count.
-                _counts["pivot"] = max(0, _count("pivot") - 1)
-        # G3: order-driven requery forcing (2b step 5) — a bounded
-        # re-retrieval for an unsatisfied claim outranks the remaining
-        # gathering rules but never stack-walk (evaluated only when no
-        # walk-stack force fired this cascade). Carried REQUERY orders
-        # are consumed newest-first with the same attempt-budget
-        # matching markers used (same stamps, same summaries); only the
-        # carrier changed. Same-turn summaries ride from history entries
-        # via recorded_attempt_summaries, which carries each entry's
-        # top-level attempt_id into the attempt dict.
-        _consumed_order_ref: dict | None = None
-        # G3 precedence: a fired stack-walk suppresses order
-        # evaluation — carried orders never overwrite it.
-        # F3: the slot stands down on defer and absence-disconfirmation
-        # turns, like every other gathering rule — overwriting those forced
-        # actions burned their budgets.
-        if not _down("requery"):
-            _recorded_summaries = recorded_attempt_summaries(_history or []) or []
-            _order_override = _should_force_order_requery(_history, _recorded_summaries)
-            if _order_override is not None and _order_override.get("mark_consumed"):
-                _mark_idx = _order_override.get("order_index")
-                try:
-                    _mark_entry = (_history or [])[_mark_idx]
-                    if isinstance(_mark_entry, dict):
-                        # Stamp is committed only after the cascade succeeds.
-                        _pending_consume.append(_mark_entry)
-                        _consumed_order_ref = None
-                except (TypeError, IndexError, KeyError):
-                    pass
-                _order_override = None
-            if _order_override is not None:
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _order_override["action_type"]
-                _reason_data["action_parameters"] = _order_override["action_parameters"]
-                _reason_data[Force.REQUERY.value] = True
-                try:
-                    _consumed_order_ref = (_history or [])[_order_override["order_index"]]
-                except (TypeError, IndexError, KeyError):
-                    _consumed_order_ref = None
-                if not isinstance(_consumed_order_ref, dict):
-                    _consumed_order_ref = None
-        # Evidence floor — a committal proposal (formulate/verify/
-        # conclude) on fewer than 3 banked rows for a code-shaped
-        # incident gathers first instead of committing to a thin
-        # theory. Skipped once explicit frames already forced.
-        # Union of both lines' guards: skip floor forcing on defer turns
-        # and once absence-forcing fired (L2-D3-fix), and once walk-stack
-        # or requery forcing fired (g4-closure). No pivot guard: the floor
-        # triggers only on committal proposals (FORMULATE/VERIFY/CONCLUDE)
-        # while a pivot needs a fetch proposal — disjoint by construction
-        # (see PIVOT_FILE_ACTIONS), pinned by test.
-        if not _down("floor"):
-            _floor = _explore_floor_target(
-                _reason_data,
-                int(state.evidence_banked_total or 0),
-                state.triage_route,
-                state.description,
-                state.knowledge_seed,
-                _count("floor"),
-                history=_history,
-            )
-            if _floor:
-                _counts["floor"] = _count("floor") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _floor["next_action"]
-                _reason_data["action_parameters"] = _floor["action_parameters"]
-                _reason_data[Force.FLOOR.value] = True
-        if not _down("formulate") and _should_force_formulate(
-            int(state.iteration or 0),
-            int(state.formulated_count or 0),
-            _reason_data.get("hypotheses_evaluated"),
-            int(state.evidence_banked_total or 0),
-            _count("formulate"),
-        ):
-            _counts["formulate"] = _count("formulate") + 1
-            _reason_data = dict(_reason_data)
-            _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
-            _reason_data["action_parameters"] = {}
-            _reason_data[Force.FORMULATE.value] = True
-            _reason_data[ForcePayload.FORMULATE_RULE.value] = "formulate"
-        # T2-4: synthesis forcing — rich multi-action corpus with
-        # nothing committed gets FORMULATE (same override as G8).
-        if not _down("synthesis"):
-            if _should_force_synthesis(
-                _history,
-                int(state.evidence_banked_total or 0),
-                int(state.formulated_count or 0),
-                _count("synthesis"),
-                _reason_data,
             ):
-                _counts["synthesis"] = _count("synthesis") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
-                _reason_data["action_parameters"] = {}
-                _reason_data[Force.FORMULATE.value] = True
-                _reason_data[ForcePayload.FORMULATE_RULE.value] = "synthesis"
-        # P0-2: re-read forcing — definition claim heading to VERIFY
-        # without a range-read gets the read first (G3 floor would
-        # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.
-        # No pivot guard: the re-read triggers only on VERIFY proposals
-        # while a pivot needs a fetch proposal — disjoint by construction
-        # (see PIVOT_FILE_ACTIONS), pinned by test.
-        if not _down("reread"):
-            _reread_path = _reread_target(_reason_data, _history, _count("reread"))
-            if _reread_path:
-                _counts["reread"] = _count("reread") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "GET_CODE"
-                _reason_data["action_parameters"] = {"file_path": _reread_path}
-                _reason_data[Force.REREAD.value] = True
-        # Call-site forcing — a CALL_EDGE claim naming an unread caller
-        # file reads it before the loop can conclude on a graph summary
-        # alone. Skipped when an earlier read-forcing rule already fired.
-        if not _down("callsite"):
-            _callsite = _callsite_target(
-                _reason_data,
-                _history,
-                _count("callsite"),
-                tenant_id=state.tenant_id,
-                investigation_id=str(state.investigation_id),
-            )
-            if _callsite:
-                _counts["callsite"] = _count("callsite") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _callsite["next_action"]
-                _reason_data["action_parameters"] = _callsite["action_parameters"]
-                _reason_data[Force.CALLSITE.value] = True
-        # B-4: log-first forcing — service-error complaints gather logs
-        # before code/state. Skipped when G8/G3/D2 already forced.
-        if not _down("log_search"):
-            _log_params = _should_force_log_search(
-                str(state.description or ""),
-                _reason_data,
-                _history,
-                _count("log_search"),
-            )
-            if _log_params:
-                _counts["log_search"] = _count("log_search") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = "SEARCH_LOGS"
-                _reason_data["action_parameters"] = _log_params
-                _reason_data[Force.LOG_SEARCH.value] = True
-        # E3: replan trigger last — two enriched empties on one surface
-        # plus same proposal redirects to the alternative family.
-        # Skipped when any earlier rule already forced.
-        if not _down("replan"):
-            _replan = _should_force_replan(
-                str(state.description or ""),
-                _reason_data,
-                _history,
-                _count("replan"),
-                separate_carriers=_separate,
-            )
-            if _replan:
-                _counts["replan"] = _count("replan") + 1
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _replan["next_action"]
-                _reason_data["action_parameters"] = _replan["action_parameters"]
-                _reason_data[Force.REPLAN.value] = True
-        # Phase 4 (claim binding): smallest-fetch slot — LAST override
-        # before the story-debug/shadow capture, so no later rule can
-        # clobber it. First kind with an open order and a dispatchable
-        # directive wins the turn. Orders arrive via carriers (newest
-        # carrier only — an orders-empty carrier supersedes older ones);
-        # coverage stamps prevent refires, so no in-place consumption.
-        if not _down("smallest_fetch"):
-            _carrier_orders: list[dict[str, Any]] = []
-            try:
-                for _evt in reversed(_history or []):
-                    if isinstance(_evt, dict) and _evt.get("kind") == "work_order_feed":
-                        _raw_orders = _evt.get("orders")
-                        if isinstance(_raw_orders, list):
-                            _carrier_orders = [o for o in _raw_orders if isinstance(o, dict)]
-                        break
-            except Exception:
-                _carrier_orders = []
-            _picked_order = None
-            _fetch_kind = ""
-            for _fetch_kind in SMALLEST_FETCH_ORDER:
-                try:
-                    _counter = {
-                        "DEFINITION": _count("smallest_fetch_definition"),
-                        "HISTORY": _count("smallest_fetch_history"),
-                        "BEHAVIOR": _count("smallest_fetch_behavior"),
-                        "ABSENCE": _count("smallest_fetch_absence"),
-                        "CAUSAL": _count("smallest_fetch_causal"),
-                    }[_fetch_kind]
-                except Exception:
-                    continue
-                try:
-                    _picked_order = _pick_gap_order(
-                        _carrier_orders,
-                        kind=_fetch_kind,
-                        history=_history,
-                        forced_count=_counter,
-                    )
-                except Exception:
-                    _picked_order = None
-                if _picked_order is not None:
-                    break
-            if _picked_order is not None:
-                try:
-                    if _fetch_kind == "DEFINITION":
-                        _counts["smallest_fetch_definition"] = (
-                            _count("smallest_fetch_definition") + 1
-                        )
-                    elif _fetch_kind == "HISTORY":
-                        _counts["smallest_fetch_history"] = _count("smallest_fetch_history") + 1
-                    elif _fetch_kind == "BEHAVIOR":
-                        _counts["smallest_fetch_behavior"] = _count("smallest_fetch_behavior") + 1
-                    elif _fetch_kind == "ABSENCE":
-                        _counts["smallest_fetch_absence"] = _count("smallest_fetch_absence") + 1
-                    else:
-                        _counts["smallest_fetch_causal"] = _count("smallest_fetch_causal") + 1
-                except Exception:
-                    pass
-                _reason_data = dict(_reason_data)
-                _reason_data["next_action"] = _picked_order.action_type
-                _reason_data["action_parameters"] = dict(_picked_order.action_parameters or {})
-                _reason_data[Force.SMALLEST_FETCH.value] = True
-                _reason_data["forced_smallest_fetch_kind"] = _fetch_kind
-                _reason_data["forced_smallest_fetch_gap_id"] = str(_picked_order.gap_id or "")
-                # Workflow-only bank context (D4): identity travels
-                # beside params, never inside them.
-                try:
-                    _reason_data["smallest_fetch_context"] = {
-                        "kind": str(_fetch_kind),
-                        "gap_id": str(_picked_order.gap_id or ""),
-                        "claim_ref": str(_picked_order.claim_ref or ""),
-                    }
-                except Exception:
-                    pass
+                continue
+            ctx = CascadeContext(state, reason, counts, _history, _separate, _pivot_v2)
+            fire = TRIGGERS[rule.name](ctx)
+            if fire is None:
+                continue
+            if fire.consume is not None:
+                pending_consume.append(fire.consume)
+            if fire.next_action is None:  # effects only: no dispatch, no flag, no counter
+                continue
+            reason = {**reason, "next_action": fire.next_action,
+                      "action_parameters": dict(fire.action_parameters or {}),
+                      rule.force.value: True, **fire.extra}
+            fired[rule.name] = fire
+            if fire.counter:
+                counts[fire.counter] = ctx.count(fire.counter) + 1
+                fired_counter[rule.force] = fire.counter
+            for cancelled in rule.cancels:  # F5: overwritten dispatch means the earlier rule did not happen
+                reason[cancelled.value] = False
+                refund = fired_counter.pop(cancelled, None)
+                if refund:
+                    counts[refund] = max(0, counts.get(refund, 0) - 1)
+            if fire.consumed_ref is not None:
+                consumed_ref = fire.consumed_ref
+        _pivot_override = fired["pivot"].action_parameters if "pivot" in fired else None
+        _reason_data = reason
+        _counts = counts
+        _pending_consume = pending_consume
+        _consumed_order_ref = consumed_ref
         # P6 2b-i: record this turn's focus for next turn's pivot
         # comparison. lv6 and older read the focus post-cascade (the fetch the
         # loop actually dispatched), which let any forced fetch become the
