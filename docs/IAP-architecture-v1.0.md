@@ -663,7 +663,7 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 
 **Tests.** `test_r12b_refdoc_scoping.py` (3: statement shape with/without the predicate on both branches; busy-sibling isolation via a honoring fake; crowded-index battery on disposable pgvector — iterative scan returns the requested count while a fixed `ef_search=4` pool filtered post-hoc sees none of the app's rows). Existing refdoc suites updated for the honoring in-memory filter. Full unit green, ruff clean, mypy clean on touched modules (3 remaining dependencies.py errors are pre-existing signature mismatches in untouched repos). Retrieval-quality only; unit-proven (db legs on disposable containers).
 
-## 87. Datasource registry eviction (review R12H, no loop version, 2026-10-26... 2026-10-31)
+## 87. Datasource registry eviction (review R12H, no loop version, 2026-10-31)
 
 **Version pinning.** None (lifecycle hygiene of cached engines).
 
