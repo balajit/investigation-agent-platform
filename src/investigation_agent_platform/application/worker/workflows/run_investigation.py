@@ -95,15 +95,16 @@ from .forcing import (
     _caused_by_idempotency_wedge,
     _caused_by_reasoning_transient,
     _classify_failure,
+    _d6_decision,
     _degraded_empty_result,
     _explore_floor_target,
     _forced_conclude_break,
     _investigation_plan,
     _is_auth_blocked,
+    _is_gathering_action,
     _reason_summary,
     _reread_target,
     _resolve_max_iterations,
-    _should_force_conclude_not_checkable,
     _should_force_formulate,
     _should_force_synthesis,
     _should_force_walk_stack,
@@ -583,6 +584,11 @@ class RunInvestigationWorkflow:
         # formulations, banked evidence total, and forced-formulate count.
         formulated_count = 0
         evidence_banked_total = 0
+        # lv4 D6 cap bookkeeping (plain scalars, replay-safe): gathering
+        # fetches dispatched so far, and how often the cap withheld an
+        # all-NOT_CHECKABLE abstention (the gate's measurable firing rate).
+        fetches_dispatched = 0
+        d6_blocked_no_evidence_count = 0
         forced_formulate_count = 0
         forced_reread_count = 0
         forced_log_search_count = 0
@@ -775,7 +781,17 @@ class RunInvestigationWorkflow:
             # claim dicts, force CONCLUDE with readiness 1.0; the loop
             # exit below skips execute/retrieve/verify, and concluding
             # persists the honest abstention (D5/D7).
-            _d6_fired = bool(not _is_defer and _should_force_conclude_not_checkable(_reason_data))
+            # lv4 cap: D6 may not abstain before evidence was attempted
+            # (zero banked rows AND no gathering fetch dispatched yet).
+            _d6_fired, _d6_blocked = _d6_decision(
+                _reason_data,
+                is_defer=bool(_is_defer),
+                evidence_banked_total=evidence_banked_total,
+                fetches_dispatched=fetches_dispatched,
+                loop_version=input_data.loop_version or LOOP_VERSION_CURRENT,
+            )
+            if _d6_blocked:
+                d6_blocked_no_evidence_count += 1
             if _d6_fired:
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "CONCLUDE"
@@ -1080,6 +1096,8 @@ class RunInvestigationWorkflow:
                 _d6_concluded = True
                 break
             _dispatched_action = str(_reason_data.get("next_action", "QUERY_STATE"))
+            if _is_gathering_action(_dispatched_action):
+                fetches_dispatched += 1
             try:
                 execute_res = await workflow.execute_activity(
                     execute_action_activity,
@@ -1541,6 +1559,8 @@ class RunInvestigationWorkflow:
                     "llm_cost_total": llm_cost_total,
                     "formulated_count": formulated_count,
                     "evidence_banked_total": evidence_banked_total,
+                    "d6_blocked_no_evidence_count": d6_blocked_no_evidence_count,
+                    "fetches_dispatched": fetches_dispatched,
                     "forced_formulate_count": forced_formulate_count,
                     "forced_reread_count": forced_reread_count,
                     "forced_log_search_count": forced_log_search_count,

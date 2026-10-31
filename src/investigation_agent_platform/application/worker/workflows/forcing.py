@@ -49,6 +49,8 @@ with workflow.unsafe.imports_passed_through():
 with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.domain.investigation.loop_version import (
         LOOP_VERSION_CURRENT,
+        LOOP_VERSION_LV4,
+        loop_version_at_least,
     )
 
 with workflow.unsafe.imports_passed_through():
@@ -1911,15 +1913,135 @@ def _forced_conclude_break(reason_data: dict[str, Any] | None) -> bool:
         return False
 
 
+#: Actions that gather evidence (every ActionType except the terminal trio).
+#: A literal so the sandboxed workflow needs no extra import; a unit test
+#: pins it to the ActionType enum.
+_GATHERING_ACTIONS = frozenset(
+    {
+        "SEARCH_LOGS",
+        "QUERY_STATE",
+        "GET_CODE",
+        "SEARCH_CODE",
+        "FIND_SYMBOL",
+        "FIND_CALL_GRAPH",
+        "GET_CODE_HISTORY",
+        "PROBE_API",
+        "CORRELATE",
+        "WALK_STACK",
+        "TRACE_LOGIC",
+        "TRACE_JOURNEY",
+        "WALK_SESSION_GRAPH",
+        "SEARCH_REF_DOCS",
+    }
+)
+
+
+def _is_gathering_action(action: Any) -> bool:
+    """Whether a dispatched action is an evidence fetch (pure, never raises)."""
+    try:
+        return str(action or "").strip().upper() in _GATHERING_ACTIONS
+    except Exception:
+        return False
+
+
+def _non_negative_count(value: Any) -> int | None:
+    """A real non-negative int, else None (bool and NaN are not counts)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _d6_cap_enabled(
+    evidence_banked_total: Any,
+    fetches_dispatched: Any,
+    loop_version: Any,
+) -> bool:
+    """Whether the lv4 evidence cap applies to this turn (pure, fail-open).
+
+    True only when the run is pinned lv4+ AND both counters are valid AND
+    nothing has been banked or fetched. Any fault or unrecognized pin returns
+    False, which leaves D6 behaving as it did before the cap.
+    """
+    try:
+        if not loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LV4):
+            return False
+        banked = _non_negative_count(evidence_banked_total)
+        fetched = _non_negative_count(fetches_dispatched)
+        if banked is None or fetched is None:
+            return False
+        return banked == 0 and fetched == 0
+    except Exception:
+        return False
+
+
+def _d6_decision(
+    reason_data: Any,
+    *,
+    is_defer: bool,
+    evidence_banked_total: Any,
+    fetches_dispatched: Any,
+    loop_version: Any,
+) -> tuple[bool, bool]:
+    """The D6 decision as ``(fire, blocked_by_cap)`` (pure, never raises).
+
+    ``fire`` forces CONCLUDE for an all-NOT_CHECKABLE turn. ``blocked_by_cap``
+    is True when the turn matched but the lv4 cap withheld the abstention
+    because no evidence was attempted yet; the workflow counts it so the
+    gate's firing rate is measurable.
+    """
+    try:
+        if is_defer:
+            return False, False
+        cap = _d6_cap_enabled(evidence_banked_total, fetches_dispatched, loop_version)
+        fire = _should_force_conclude_not_checkable(
+            reason_data,
+            evidence_banked_total=evidence_banked_total,
+            fetches_dispatched=fetches_dispatched,
+            cap_enabled=cap,
+        )
+        if fire:
+            return True, False
+        # Blocked only if the same turn would have fired without the cap.
+        blocked = cap and _should_force_conclude_not_checkable(reason_data)
+        return False, bool(blocked)
+    except Exception:
+        return False, False
+
+
 def _should_force_conclude_not_checkable(
     reason_data: dict[str, Any] | None,
+    *,
+    evidence_banked_total: Any = None,
+    fetches_dispatched: Any = None,
+    cap_enabled: bool = False,
 ) -> bool:
     """True when honest abstention is the only possible outcome (pure).
 
     Every evaluated statement has ≥1 matching claim dict and every
     claim dict is NOT_CHECKABLE. Empty sets, unmatched statements, and
     any checkable claim return False. Never raises.
+
+    Two decisions, kept separate: first the not-checkable match (unchanged),
+    then the lv4 cap. With ``cap_enabled`` a matching turn does not force
+    while the run has banked no rows and dispatched no fetch (D6 may not
+    abstain before evidence was attempted). The counters are re-validated
+    here; invalid counters leave the cap inert.
     """
+    nc_match = _all_claims_not_checkable(reason_data)
+    if not nc_match:
+        return False
+    if cap_enabled:
+        banked = _non_negative_count(evidence_banked_total)
+        fetched = _non_negative_count(fetches_dispatched)
+        if banked == 0 and fetched == 0:
+            return False
+    return True
+
+
+def _all_claims_not_checkable(
+    reason_data: dict[str, Any] | None,
+) -> bool:
+    """The not-checkable match itself (pure). Never raises."""
     try:
         data = reason_data if isinstance(reason_data, dict) else {}
         raw_hyps = data.get("hypotheses_evaluated") or []

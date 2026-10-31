@@ -93,10 +93,10 @@ class TestLoopVersionResolution:
         with pytest.raises(UnknownLoopVersion):
             resolve_loop_version({"loop_version": "lv1"})
 
-    def test_current_is_lv3_and_includes_lv2_semantics(self) -> None:
-        # lv3 (H5 floor, H8 re-fetch) is current; the F3 stand-down it inherits
-        # from lv2 is unconditional, so lv3 keeps it.
-        assert LOOP_VERSION_CURRENT == "lv3"
+    def test_current_is_lv4_and_includes_earlier_semantics(self) -> None:
+        # lv4 (D6 evidence cap) is current; it inherits lv3 (H5 floor, H8
+        # re-fetch) and the unconditional F3 stand-down from lv2.
+        assert LOOP_VERSION_CURRENT == "lv4"
 
     def test_at_least_routes_on_the_recorded_pin(self) -> None:
         from investigation_agent_platform.domain.investigation.loop_version import (

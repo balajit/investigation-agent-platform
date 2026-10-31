@@ -18,6 +18,13 @@ Versions:
   it has a re-fetch route (H8). Both only add retrieval; neither can publish a
   verdict.
 
+- ``lv4``: lv3 plus the D6 evidence cap (review H5 remainder). The opinion-only
+  fast path may not force a CONCLUDE while the run has banked zero rows and
+  dispatched no gathering fetch: no abstention-for-lack-of-evidence before
+  attempting evidence. It only withholds an early abstention; it cannot
+  publish a verdict. The identifier/path floor was considered and decided
+  against (a named symbol does not make a taste claim falsifiable).
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -28,10 +35,11 @@ from typing import Any
 
 LOOP_VERSION_LV2 = "lv2"
 LOOP_VERSION_LV3 = "lv3"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV3
-KNOWN_LOOP_VERSIONS = frozenset({LOOP_VERSION_LV2, LOOP_VERSION_LV3})
+LOOP_VERSION_LV4 = "lv4"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LV4
+KNOWN_LOOP_VERSIONS = frozenset({LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4})
 # Release order: a later version includes every earlier version's semantics.
-_LOOP_VERSION_ORDER = {LOOP_VERSION_LV2: 2, LOOP_VERSION_LV3: 3}
+_LOOP_VERSION_ORDER = {LOOP_VERSION_LV2: 2, LOOP_VERSION_LV3: 3, LOOP_VERSION_LV4: 4}
 
 
 class UnknownLoopVersion(ValueError):
