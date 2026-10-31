@@ -157,6 +157,8 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
                     out[key] = None
         if "value_semantics" in raw:
             out["value_semantics"] = _clean_opt_str(raw["value_semantics"], 64)
+        if "signature" in raw:
+            out["signature"] = _clean_opt_str(raw["signature"], 256)
         if "claimed_value" in raw:
             out["claimed_value"] = _clean_opt_str(raw["claimed_value"], 512)
         if "fact_category" in raw:
@@ -438,7 +440,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "defer_gathering": {"reason": "...", "missing_proof_kind": "...", "next_action": "<one gathering action>", "next_action_parameters": {...}, "target": "...", "scope": "...", "remaining_repair_budget": 0-2},
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; mandatory for ordinary committed reasoning, but empty for DEFER_GATHERING"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL|NOT_CHECKABLE", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "commit_subject": "<exact subject for HISTORY claims; omit otherwise>", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL|NOT_CHECKABLE", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "commit_subject": "<exact subject for HISTORY claims; omit otherwise>", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "signature": "<parameter types for an overloaded method, e.g. process(Order,int); omit otherwise>", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale". For DEFER_GATHERING, do not commit a hypothesis; select exactly one bounded gathering action and let the workflow own the repair budget.
 Do NOT include execution_hash (derived server-side).""",

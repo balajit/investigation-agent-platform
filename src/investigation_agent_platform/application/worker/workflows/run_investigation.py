@@ -572,6 +572,10 @@ class RunInvestigationWorkflow:
         iteration = 0
         verified = False
         last_error: str | None = None
+        # H17c: the candidate the last verify turn judged. Plain scalar,
+        # rebuilt from activity results on replay; passed at conclude so
+        # verify and conclude do not pick different candidates.
+        last_verified_candidate_id = ""
         # Phase 4 (claim binding): D6 fast-path exit flag. Set when the
         # opinion-only break fires; concluding then requests COMPLETED
         # so the gate routes through _persist_abstention with
@@ -1044,6 +1048,7 @@ class RunInvestigationWorkflow:
                         tenant_id=tenant_id,
                         investigation_id=inv_id,
                         action=_dispatched_action,
+                        loop_version=loop_version,
                         parameters=dict(_reason_data.get("action_parameters", {})),
                         iteration=iteration,
                         hypotheses=list(_reason_data.get("hypotheses_evaluated", []) or []),
@@ -1382,6 +1387,11 @@ class RunInvestigationWorkflow:
                 _seen_version = str(_verify_data.get("claim_binding_version", "") or "")
                 if _seen_version:
                     claim_binding_version_seen = _seen_version
+                # H17c: remember the judged candidate for the conclude handoff.
+                _vd = verify_res.data if isinstance(verify_res.data, dict) else {}
+                last_verified_candidate_id = str(
+                    _vd.get("hypothesis_id", "") or last_verified_candidate_id or ""
+                )
             except Exception:
                 pass
 
@@ -1488,6 +1498,7 @@ class RunInvestigationWorkflow:
                 # conclude return and ride the stamped telemetry.
                 definition_receipt_start=definition_receipt_index,
                 conclude_iteration=iteration,
+                preferred_candidate_id=last_verified_candidate_id,
                 # C-2: loop counters ride into metadata["loop_telemetry"]
                 # at conclude (plain scalars — replay-safe).
                 loop_telemetry={

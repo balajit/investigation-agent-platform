@@ -786,6 +786,7 @@ async def _gate_conclusion_or_fail(
     ctx: Any,
     shadow_notes: list[dict[str, Any]] | None = None,
     triage_route: str = "",
+    preferred_candidate_id: str = "",
 ) -> Any:
     """Evaluate ConclusionGate for a requested COMPLETED conclusion (F-051).
 
@@ -1111,7 +1112,16 @@ async def _gate_conclusion_or_fail(
     )
     ranked = rank_hypotheses(list(hypotheses))
     # G9: same resolvable-citation preference as the verify activity.
-    candidate = select_verifiable_candidate(ranked, evidence_by_id)
+    # H17c: under LV_H prefer the candidate the last verify turn judged.
+    try:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            lv_h_enabled,
+        )
+
+        _prefer = preferred_candidate_id if lv_h_enabled(getattr(_inv, "metadata", None)) else ""
+    except Exception:
+        _prefer = ""
+    candidate = select_verifiable_candidate(ranked, evidence_by_id, prefer_id=_prefer or None)
     if candidate is None:
         await _persist_abstention("refuted", ["all hypotheses rejected or contradicted"])
         return InvestigationStatus.COMPLETED
@@ -1510,6 +1520,7 @@ async def _gate_conclusion_or_fail(
         except Exception:
             pass
     _conclude_binding_blocks = False
+    _conclude_binding_faulted = False
     if (
         claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
         and _conclude_enforcement is not None
@@ -1538,7 +1549,8 @@ async def _gate_conclusion_or_fail(
             ):
                 _conclude_binding_blocks = True
         except Exception:
-            pass
+            _conclude_binding_blocks = True  # H17a: inspection fault fails closed
+            _conclude_binding_faulted = True
     if (
         not bound
         or refuting
@@ -1557,10 +1569,13 @@ async def _gate_conclusion_or_fail(
         if not bound:
             reasons.append("no bound supporting evidence")
         if _conclude_binding_blocks:
-            reasons.append(
-                "claim citations kept zero bound rows (evaporated); "
-                "INCONCLUSIVE pending smallest-fetch re-retrieval"
-            )
+            if _conclude_binding_faulted:
+                reasons.append("claim binding inspection faulted")
+            else:
+                reasons.append(
+                    "claim citations kept zero bound rows (evaporated); "
+                    "INCONCLUSIVE pending smallest-fetch re-retrieval"
+                )
         if refuting:
             reasons.append(f"{len(refuting)} refuting evidence item(s) bound")
         if (
@@ -1824,18 +1839,23 @@ async def _gate_conclusion_or_fail(
         [eid for c in causal_chain for eid in c.evidence_ids], _FINDING_MAX_CAUSAL_IDS
     )
     try:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            lv_h_enabled as _lv_h_enabled,
+        )
+
+        _finding_as_observation = _answered_shape(
+            location=location_answered,
+            code_value=code_value_answered,
+            doc=doc_answered,
+            history=history_answered,
+            state=state_answered,
+            caller_edge=caller_edge_validated,
+            extended=_lv_h_enabled(getattr(_inv, "metadata", None)),
+        )
         finding = Finding(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
-            finding_type=FindingType.OBSERVATION
-            if (
-                location_answered
-                or code_value_answered
-                or history_answered
-                or doc_answered
-                or state_answered
-            )
-            else FindingType.ROOT_CAUSE,
+            finding_type=FindingType.OBSERVATION if _finding_as_observation else FindingType.ROOT_CAUSE,
             title=hyp.title,
             statement=hyp.statement,
             evidence_ids=dedupe_and_cap_ids(supporting_ids, _FINDING_MAX_EVIDENCE_IDS),
@@ -2463,6 +2483,9 @@ async def conclude_investigation_activity(
                                 ctx,
                                 shadow_notes=_conclude_shadow_notes,
                                 triage_route=str(data.get("triage_route", "") or ""),
+                                preferred_candidate_id=str(
+                                    data.get("preferred_candidate_id", "") or ""
+                                ),
                             )
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"

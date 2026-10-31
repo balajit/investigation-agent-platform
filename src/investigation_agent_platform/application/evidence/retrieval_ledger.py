@@ -758,6 +758,9 @@ def target_group_key(target: object) -> tuple[str, dict[str, object]]:
         target_dict = _normalize_target_mapping(target)
     except Exception:
         target_dict = {}
+    stamped = target_dict.pop("identity_key", None)  # H16: minted at write under LV_H
+    if stamped:
+        return str(stamped), target_dict
     try:
         fingerprint = hashlib.sha256(
             str(sorted((str(k), str(v)) for k, v in target_dict.items())).encode("utf-8")

@@ -88,6 +88,12 @@ class ClaimTarget(BaseModel):
     value_semantics: str | None = Field(default=None, max_length=64)
     claimed_value: str | None = Field(default=None, max_length=512)
     fact_category: JavaFactCategory | None = Field(default=None)
+    #: Overload identity (H16): parameter signature for an overloaded method
+    #: (e.g. ``process(Order,int)``). Without one, two overloads stay one group.
+    signature: str | None = Field(default=None, max_length=256)
+    #: Minted identity of the canonical target (H16, LV_H write stamp).
+    #: Honored by ``target_group_key``; absent on older rows.
+    identity_key: str | None = Field(default=None, max_length=32)
 
 
 class HypothesisEvidenceAssessment(BaseModel):

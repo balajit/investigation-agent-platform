@@ -487,6 +487,9 @@ _KNOWN_LIMITATION_CODES = frozenset(
         "REPAIRED_CITATION",
         # P3 (S5/S6 rival bar): established requires a ruled-out rival.
         "RIVAL_UNBEATEN",
+        # H17b: cross-claim conflicts inside one hypothesis.
+        "CLAIM_CONFLICT",
+        "REVISION_MIXED",
     }
 )
 

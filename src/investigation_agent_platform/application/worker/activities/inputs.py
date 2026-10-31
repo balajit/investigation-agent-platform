@@ -110,6 +110,10 @@ class ExecuteActionInput:
     tenant_id: str
     investigation_id: str
     action: str = "QUERY_STATE"
+    #: Loop-semantics pin recorded on the investigation (H16: the FORMULATE
+    #: site stamps canonical target identity only under LV_H). Empty means
+    #: legacy behavior.
+    loop_version: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
     # Reason-proposed hypotheses (decision.hypotheses_evaluated) carried by
     # the workflow so FORMULATE_HYPOTHESIS can persist them. Empty for all
@@ -176,6 +180,9 @@ class ConcludeInvestigationInput:
     tenant_id: str
     investigation_id: str
     status: str
+    #: H17c (LV_H): the candidate the last verify turn judged. Empty means
+    #: rank normally (legacy callers and older pins).
+    preferred_candidate_id: str = ""
     # Workflow terminal reason (last_error: budget_exceeded, input_expired,
     # verification_failed_or_limit_reached, ...). Recorded as a stable
     # failure code on FAILED aggregates so the API can report it.
@@ -308,10 +315,22 @@ def _policy_for_loop_version(policy: Any, metadata: Any) -> Any:
         from investigation_agent_platform.domain.investigation.loop_version import (
             LOOP_VERSION_LV5,
             loop_version_at_least,
+            lv_h_enabled,
         )
 
+        updates: dict[str, Any] = {}
         if loop_version_at_least(metadata, LOOP_VERSION_LV5):
-            return policy.model_copy(update={"blocking_contradictions_only": True})
+            updates["blocking_contradictions_only"] = True
+        meta_ok = (
+            metadata is None
+            or hasattr(metadata, "model_dump")
+            or isinstance(metadata, dict)
+        )
+        if meta_ok and lv_h_enabled(metadata):
+            updates["tolerant_band"] = True
+            updates["require_causal_step_for_causal_claims"] = True
+        if updates:
+            return policy.model_copy(update=updates)
     except Exception:
         pass
     return policy

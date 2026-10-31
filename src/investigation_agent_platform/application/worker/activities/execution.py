@@ -44,7 +44,9 @@ def _authorization_infra_failure(exc: BaseException) -> ApplicationFailure:
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.application.investigation.claim_identity import stamp_identity
 from investigation_agent_platform.domain.common.exceptions import SecurityPolicyViolationException
+from investigation_agent_platform.domain.investigation.loop_version import lv_h_enabled
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 from .common import (
@@ -870,6 +872,9 @@ async def execute_action_activity(
             for claim_variant in claim_variants:
                 variant_target = claim_variant.get("target")
                 variant_target = variant_target if isinstance(variant_target, dict) else {}
+                if lv_h_enabled({"loop_version": data.get("loop_version", "")}):
+                    variant_target = stamp_identity(variant_target)
+                    claim_variant = dict(claim_variant, target=variant_target)
                 proposed_claims[_claim_identity_key(claim_text, claim_kind_key, variant_target)] = (
                     claim_variant
                 )

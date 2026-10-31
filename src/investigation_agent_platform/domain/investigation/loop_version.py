@@ -52,13 +52,21 @@ Versions:
 
 - ``lv9``: lv8 plus bounded work-order carriers and honest coverage (review W2,
   W3, W5). A REQUERY order is read newest-carrier-only and expires after its
-  time-to-live in turns; a smallest-fetch gap is covered only by a fetch that
+  time-to-live in turns; a smallest-fetch gap is not covered by a fetch that
   produced evidence (or cleanly proved emptiness), a failed or degraded fetch
   may be retried once, and a failed-cited-group gap is no longer covered by the
   earlier uncited fetch of the same group; a gap feed older than its
   time-to-live is ignored; the pivot compares file surfaces by canonical
   identity and ignores an inverted line window. It only withholds or retries
   retrieval; it cannot publish a verdict.
+
+- ``lv10``: lv9 plus hypothesis identity and verdict hygiene (review H). Claim
+  targets canonicalize (whitespace, separators, signatures) with an explicit
+  two-step requirement for ESTABLISHED and a no-step CAUSAL rule; cross-claim
+  conflicts demote or withdraw the conjunction; failed cited groups get a
+  re-fetch route including targetless BEHAVIOR/CAUSAL gaps; contradictions are
+  typed and reconciled; caller-edge answers write OBSERVATION findings. It only
+  tightens which verdicts publish; it cannot invent evidence.
 
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
@@ -76,7 +84,8 @@ LOOP_VERSION_LV6 = "lv6"
 LOOP_VERSION_LV7 = "lv7"
 LOOP_VERSION_LV8 = "lv8"
 LOOP_VERSION_LVW = "lv9"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LVW
+LOOP_VERSION_LVH = "lv10"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LVH
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -87,6 +96,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LV7,
         LOOP_VERSION_LV8,
         LOOP_VERSION_LVW,
+        LOOP_VERSION_LVH,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -99,6 +109,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV7: 7,
     LOOP_VERSION_LV8: 8,
     LOOP_VERSION_LVW: 9,
+    LOOP_VERSION_LVH: 10,
 }
 
 
@@ -138,3 +149,11 @@ def loop_version_at_least(metadata: Any, minimum: str) -> bool:
     with. An unknown pin raises like :func:`resolve_loop_version`.
     """
     return _LOOP_VERSION_ORDER[resolve_loop_version(metadata)] >= _LOOP_VERSION_ORDER[minimum]
+
+
+def lv_h_enabled(metadata: Any) -> bool:
+    """Whether the H-group (LV_H) semantics apply (fail-safe: unknown pins keep old behavior)."""
+    try:
+        return bool(loop_version_at_least(metadata, LOOP_VERSION_LVH))
+    except Exception:
+        return False

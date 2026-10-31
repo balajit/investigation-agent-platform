@@ -159,6 +159,7 @@ def select_verifiable_candidate(
     ranked: list,
     evidence_by_id: dict,
     exclude_statuses: tuple = ("REJECTED", "CONTRADICTED"),
+    prefer_id: Any | None = None,
 ) -> Any | None:
     """First eligible candidate whose citations resolve, else first eligible.
 
@@ -166,9 +167,11 @@ def select_verifiable_candidate(
     purged); verifying the stale copy first concludes INCONCLUSIVE while a
     verifiable twin waits. Prefer candidates with >=1 supporting ID
     present in evidence_by_id; fall back to the head eligible so the
-    honest-abstention path is unchanged when nothing resolves. Pure and
-    deterministic. ID comparison tolerates str/UUID mixing (same coercion
-    as the activities' _resolve).
+    honest-abstention path is unchanged when nothing resolves. H17c: when
+    ``prefer_id`` names an eligible candidate (the one the last verify turn
+    judged), return it first so verify and conclude do not pick different
+    candidates. Pure and deterministic. ID comparison tolerates str/UUID
+    mixing (same coercion as the activities' _resolve).
     """
     try:
         eligible = [
@@ -179,6 +182,13 @@ def select_verifiable_candidate(
         ]
     except Exception:
         return None
+    if prefer_id:
+        try:
+            for candidate in eligible:
+                if str(getattr(candidate, "id", "")) == str(prefer_id):
+                    return candidate
+        except Exception:
+            pass
     for candidate in eligible:
         try:
             raw_ids = getattr(candidate, "supporting_evidence_ids", None) or []
@@ -345,6 +355,14 @@ class InvestigationConfidence(BaseModel):
         return max(0.0, min(1.0, score))
 
 
+_BAND_EPSILON = 1e-9
+
+
+def band_at_least(score: float, floor: float, *, tolerant: bool) -> bool:
+    """Whether ``score`` meets ``floor``. Tolerant (LV_H) absorbs float rounding."""
+    return (score + _BAND_EPSILON >= floor) if tolerant else (score >= floor)
+
+
 class RootCauseVerificationPolicy(BaseModel):
     min_confidence_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     require_cross_layer_evidence: bool = Field(default=True)
@@ -364,6 +382,16 @@ class RootCauseVerificationPolicy(BaseModel):
     # code profiles can tune the band independently.
     likely_floor: float = Field(default=0.80, ge=0.0, le=1.0)
     established_floor: float = Field(default=0.90, ge=0.0, le=1.0)
+    # H15 (LV_H): compare scores to the band floors with a 1e-9 tolerance and require a
+    # causal step for a CAUSAL claim. Set from the recorded pin by _policy_for_loop_version
+    # in the verify and conclude activities; the defaults keep the old behavior.
+    tolerant_band: bool = Field(default=False)
+    require_causal_step_for_causal_claims: bool = Field(default=False)
+    # H15 (LV_H, owner decision): one step is likely by design, not by accident.
+    established_requires_steps: int = Field(default=2, ge=0)
+    # H17b (LV_H): check claim groups against each other after the per-group
+    # conjunction. Blocking conflicts withdraw; mixed revisions demote to likely.
+    cross_claim_checks: bool = Field(default=False)
 
     @classmethod
     def runtime(cls) -> "RootCauseVerificationPolicy":
@@ -413,6 +441,10 @@ class LimitationCode(str, Enum):
     # rival — the same rows establish two stories, so confidence pays a
     # rival-shared penalty and the conclusion publishes as likely at best.
     RIVAL_SHARED_EVIDENCE = "RIVAL_SHARED_EVIDENCE"
+    # H17b: cross-claim conflict inside one hypothesis.
+    CLAIM_CONFLICT = "CLAIM_CONFLICT"
+    # H17b: claims pinned to different revisions (non-blocking; demotes to likely).
+    REVISION_MIXED = "REVISION_MIXED"
     # Phase 1 (claim binding): a claim verified only on bank-fallback rows
     # with no claim-local retrieval — not proof of claim-local retrieval.
     UNMAPPED_CITATION = "UNMAPPED_CITATION"
@@ -5647,7 +5679,7 @@ class VerificationEngine:
                     if text and text not in cited:
                         cited.append(text)
         except Exception:
-            return (False, "")
+            return (True, "citation inspection faulted; failing closed")
         if not cited:
             return (False, "")
         by_id = VerificationEngine._evidence_by_id(evidence_items)
@@ -5662,7 +5694,7 @@ class VerificationEngine:
                 else:
                     return (False, "")
             except Exception:
-                return (False, "")
+                return (True, "citation inspection faulted; failing closed")
         if saw_orientation:
             return (
                 True,
@@ -7527,6 +7559,73 @@ class VerificationEngine:
                         )
                     ],
                 )
+        if getattr(policy, "cross_claim_checks", False) and len(groups) > 1:
+            try:
+                from investigation_agent_platform.application.investigation.cross_claim import (
+                    cross_claim_conflicts,
+                )
+
+                conflicts = cross_claim_conflicts(groups)
+                blocking = [c for c in conflicts if c.blocking]
+                mixed = [c for c in conflicts if not c.blocking]
+            except Exception:
+                try:
+                    hid = getattr(hypothesis, "id", None) or result.hypothesis_id
+                except Exception:
+                    hid = result.hypothesis_id
+                return VerificationResult(
+                    hypothesis_id=hid,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation="Cross-claim inspection faulted; failing closed.",
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                    limitations=[
+                        VerificationLimitation(
+                            code=LimitationCode.CLAIM_CONFLICT,
+                            detail="cross-claim inspection faulted",
+                        )
+                    ],
+                )
+            if blocking:
+                try:
+                    hid = getattr(hypothesis, "id", None) or result.hypothesis_id
+                except Exception:
+                    hid = result.hypothesis_id
+                return VerificationResult(
+                    hypothesis_id=hid,
+                    status=VerificationStatus.INCONCLUSIVE,
+                    corroborating_evidence_ids=[],
+                    explanation=(
+                        "Verified per group, but the groups contradict each other: "
+                        + "; ".join(c.detail for c in blocking)[:400]
+                    ),
+                    confidence=InvestigationConfidence(
+                        coverage_score=0.0,
+                        reliability_score=0.0,
+                        causal_score=0.0,
+                        contradiction_penalty=0.0,
+                    ),
+                    limitations=[
+                        VerificationLimitation(
+                            code=LimitationCode.CLAIM_CONFLICT,
+                            detail="; ".join(c.detail for c in blocking)[:500],
+                        )
+                    ],
+                )
+            if mixed:
+                existing = list(getattr(result, "limitations", None) or [])
+                existing.append(
+                    VerificationLimitation(
+                        code=LimitationCode.REVISION_MIXED,
+                        detail=mixed[0].detail,
+                    )
+                )
+                result = result.model_copy(update={"tier": "likely", "limitations": existing})
         if not_checkable > 0:
             try:
                 existing = list(getattr(result, "limitations", None) or [])
@@ -7963,6 +8062,29 @@ class VerificationEngine:
                         contradiction_penalty=0.0,
                     ),
                 )
+        # H15-D2: a CAUSAL claim with no causal step does not verify (LV_H).
+        # Only the effective CAUSAL kind is gated; BEHAVIOR and ABSENCE claims
+        # legitimately carry no chain and have their own kind gates.
+        if (
+            policy.require_causal_step_for_causal_claims
+            and not causal_chain
+            and VerificationEngine.effective_claim_kind(hypothesis) == ClaimKind.CAUSAL
+        ):
+            return VerificationResult(
+                hypothesis_id=hypothesis.id,
+                status=VerificationStatus.INCONCLUSIVE,
+                corroborating_evidence_ids=[],
+                explanation=(
+                    "Causal claim has no causal step: volume of evidence alone does not establish "
+                    "a mechanism. Propose a cited cause-to-effect step, then re-verify."
+                ),
+                confidence=InvestigationConfidence(
+                    coverage_score=0.3,
+                    reliability_score=0.5,
+                    causal_score=0.0,
+                    contradiction_penalty=0.0,
+                ),
+            )
         # Causal steps must cite banked grounding rows (code or runtime).
         # A step citing nothing, unknown IDs, or only orientation/docs is
         # unproven — INCONCLUSIVE. Relation demonstration demotes (below),
@@ -8041,7 +8163,11 @@ class VerificationEngine:
 
         status = (
             VerificationStatus.VERIFIED
-            if confidence.overall_confidence >= policy.min_confidence_threshold
+            if band_at_least(
+                confidence.overall_confidence,
+                policy.min_confidence_threshold,
+                tolerant=policy.tolerant_band,
+            )
             else VerificationStatus.INCONCLUSIVE
         )
         # D5: tier + reason/against packaging for VERIFIED results. Best
@@ -8059,7 +8185,16 @@ class VerificationEngine:
                 overall = float(confidence.overall_confidence)
                 likely = float(policy.likely_floor)
                 established = float(policy.established_floor)
-                if likely <= overall < established:
+                if band_at_least(overall, likely, tolerant=policy.tolerant_band) and not band_at_least(
+                    overall, established, tolerant=policy.tolerant_band
+                ):
+                    tier = "likely"
+                elif (
+                    policy.tolerant_band
+                    and VerificationEngine.effective_claim_kind(hypothesis) == ClaimKind.CAUSAL
+                    and len(causal_chain or []) < policy.established_requires_steps
+                ):
+                    # owner decision: one step is likely by design, not by accident
                     tier = "likely"
             except (TypeError, ValueError):
                 pass
@@ -8215,7 +8350,11 @@ class ConclusionGate:
         blockers: list[str] = []
         if verification.status != VerificationStatus.VERIFIED:
             blockers.append(f"hypothesis status is {verification.status.value}, not VERIFIED")
-        if verification.confidence.overall_confidence < policy.min_confidence_threshold:
+        if not band_at_least(
+            verification.confidence.overall_confidence,
+            policy.min_confidence_threshold,
+            tolerant=policy.tolerant_band,
+        ):
             blockers.append(
                 f"confidence {verification.confidence.overall_confidence:.2f} below threshold "
                 f"{policy.min_confidence_threshold:.2f}"
