@@ -117,4 +117,7 @@ def downgrade() -> None:
     )
     for table in _RLS_TABLES:
         op.execute(sa.text(f"DROP POLICY IF EXISTS tenant_isolation ON {table}"))
+        # DISABLE clears relrowsecurity but leaves the FORCE flag set;
+        # NO FORCE restores the exact pre-upgrade state (both flags false).
         op.execute(sa.text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
+        op.execute(sa.text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
