@@ -25,6 +25,8 @@ from fastapi import Depends, Header, Request, status
 from jwt import PyJWKClient
 
 from investigation_agent_platform.api.errors import ApiError
+from investigation_agent_platform.api.rate_limit import check_rate_limit as _check_rate_limit
+from investigation_agent_platform.api.rate_limit import rate_limit_enabled as _rate_limit_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +153,7 @@ async def get_verified_identity(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> VerifiedIdentity:
     identity = await _resolve_verified_identity(x_tenant_id, authorization)
+    await _enforce_verified_rate_limit(request, identity)
     # F-017: only now — after verification has actually succeeded — is the
     # authenticated tenant recorded on request state for downstream logging.
     request.state.authenticated_tenant_id = identity.tenant_id
@@ -237,6 +240,37 @@ async def _resolve_verified_identity(
             message="Missing X-Tenant-ID",
         )
     return VerifiedIdentity(tenant_id=header_tenant, principal_id="dev-principal")
+
+
+async def _enforce_verified_rate_limit(request: Request, identity: VerifiedIdentity) -> None:
+    """Post-auth rate limit (AD1): per-tenant + per-principal bucket.
+
+    Skipped when the limiter is disabled. Fails open on store errors
+    (availability over strictness). Raises 429 with the verified
+    identity's own bucket when exhausted — a spoofed caller can never
+    spend another tenant's quota here because the key comes from the
+    verified identity, not a header.
+    """
+    if not _rate_limit_enabled():
+        return
+    store = getattr(getattr(request, "app", None), "state", None)
+    store = getattr(store, "rate_limit_store", None) if store is not None else None
+    if store is None:
+        return
+    try:
+        path = str(getattr(getattr(request, "url", None), "path", "") or "")
+    except Exception:
+        path = ""
+    allowed, retry_after, klass = await _check_rate_limit(
+        store, identity.tenant_id, identity.principal_id, path or "/api/"
+    )
+    if not allowed:
+        raise ApiError(
+            code="RATE_LIMITED",
+            http_status=status.HTTP_429_TOO_MANY_REQUESTS,
+            message=f"Rate limit exceeded for {klass}; retry later.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 async def require_tenant(identity: VerifiedIdentity = Depends(get_verified_identity)) -> str:  # noqa: B008 - FastAPI Depends idiom

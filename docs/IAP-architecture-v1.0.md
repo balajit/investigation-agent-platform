@@ -702,3 +702,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`domain/common/keys.py` new): `join_key_parts` length-prefixes every part so no delimiter in a part can shift a boundary. Whether tenant ids keep `:` is an ops-owned identity decision (raised, not designed).
 
 **Tests.** `test_r12e_cache_keys.py` (2: injectivity over colon-bearing tenants/apps plus the investigation-participation guard; join unambiguity). Full unit green, ruff clean, mypy clean. Unit-proven only.
+
+## 90. Rate-limit identity: peer pre-auth, verified post-auth (review AD1, no loop version, 2026-10-31)
+
+**Version pinning.** None (API layer).
+
+**The defect.** The middleware keyed the limiter from the caller-supplied `X-Tenant-ID` header with a `None` principal and nothing downstream re-checked, so any caller could spend another tenant's quota (targeted denial of service). The limiter is production-on by default.
+
+**What changed** (`rate_limit.py`, `app.py`, `tenant.py`): the middleware now keys pre-auth buckets by transport peer (`ip:{client.host}`) under generous `PRE_AUTH_QUOTAS` (forwarded headers deliberately untrusted — no trusted-proxy setting added); `get_verified_identity` enforces the per-tenant + per-principal bucket from the verified identity after verification succeeds (429 `RATE_LIMITED` + `Retry-After`), gated on the same enabled flag (off by default outside production) and failing open on store errors at both stages. The store rides `app.state.rate_limit_store`.
+
+**Tests.** `test_ad1_rate_limit_identity.py` (6: shared peer bucket across headers, verified per-tenant counting with 429 shape, pre-auth flood ceiling, fail-open on store errors, env default matrix, key unit test). Red verified by stash. Full unit green, ruff clean, mypy clean. Owner decision: the pre-auth ceiling. Risk noted: many clients behind one NAT share the peer bucket (mitigation: generous ceiling).

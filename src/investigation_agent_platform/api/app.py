@@ -319,25 +319,32 @@ def create_app(
     # F-060: tenant/principal-aware rate limiting. Disabled by default in
     # non-production (IAP_RATE_LIMIT_ENABLED=true to exercise); production
     # deployments should additionally inject a shared Redis store.
-    from investigation_agent_platform.api.rate_limit import InMemoryRateLimitStore
+    from investigation_agent_platform.api.rate_limit import (
+        PRE_AUTH_QUOTAS,
+        InMemoryRateLimitStore,
+        rate_limit_enabled,
+    )
 
     _rate_limit_store = InMemoryRateLimitStore()
-    _rate_limit_enabled = (
-        os.environ.get(
-            "IAP_RATE_LIMIT_ENABLED",
-            "true" if (app_settings.environment or "").lower() == "production" else "false",
-        ).lower()
-        == "true"
+    _rate_limit_enabled = rate_limit_enabled(
+        getattr(app_settings, "environment", None)
     )
+    app.state.rate_limit_store = _rate_limit_store
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next: Callable[..., Any]) -> Response:
         if _rate_limit_enabled and request.url.path.startswith("/api/"):
-            # Identity is best-effort here (verified later by dependencies);
-            # the verified layer re-checks, so header spoofing gains nothing.
-            tenant = request.headers.get("X-Tenant-ID")
+            # Pre-auth only: the bucket is keyed by transport peer, never by
+            # a header, so a spoofed tenant id cannot spend another tenant's
+            # quota. Verified per-tenant/per-principal limits run later in
+            # get_verified_identity.
+            client = request.client.host if request.client else "unknown"
             allowed, retry_after, klass = await check_rate_limit(
-                _rate_limit_store, tenant, None, request.url.path
+                _rate_limit_store,
+                f"ip:{client}",
+                None,
+                request.url.path,
+                quotas=PRE_AUTH_QUOTAS,
             )
             if not allowed:
                 return JSONResponse(

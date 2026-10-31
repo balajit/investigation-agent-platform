@@ -51,6 +51,28 @@ ENDPOINT_QUOTAS: dict[str, tuple[int, int]] = {
     "default": (300, 60),
 }
 
+# Pre-auth peer buckets (AD1): a generous per-peer ceiling that floods
+# cannot exhaust, keyed by transport peer — never by a header. Forwarded
+# headers are not trusted (no trusted-proxy setting exists yet).
+PRE_AUTH_QUOTAS: dict[str, tuple[int, int]] = {
+    "investigation_create": (120, 60),
+    "workflow_control": (240, 60),
+    "default": (1200, 60),
+}
+
+
+def rate_limit_enabled(environment: str | None = None) -> bool:
+    """Whether the limiter runs. Enabled by default only in production."""
+    import os as _os
+
+    env = (
+        environment
+        if environment is not None
+        else _os.environ.get("IAP_ENVIRONMENT", "development")
+    )
+    default = "true" if str(env or "").strip().lower() == "production" else "false"
+    return _os.environ.get("IAP_RATE_LIMIT_ENABLED", default).lower() == "true"
+
 
 def endpoint_class_for_path(path: str) -> str:
     if path == "/api/v1/investigations":
