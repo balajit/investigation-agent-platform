@@ -7,7 +7,8 @@ import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from enum import StrEnum
+from typing import Any, NewType
 
 from temporalio import workflow
 
@@ -41,6 +42,7 @@ with workflow.unsafe.imports_passed_through():
         LOOP_VERSION_LV4,
         LOOP_VERSION_LV6,
         LOOP_VERSION_LV7,
+        LOOP_VERSION_LV8,
         loop_version_at_least,
     )
 
@@ -326,6 +328,25 @@ def _carriers_separated(loop_version: Any) -> bool:
         return False
 
 
+#: A history view that is safe to index positionally ("the last N turns"). Build it only with
+#: ``turn_view``; the carrier readers use the full list instead (they index into it and stamp in place).
+Turns = NewType("Turns", list)
+
+
+def turn_view(history: Any, loop_version: Any) -> Turns:
+    """The turn entries a positional reader may index (pure, never raises).
+
+    From lv6 carriers are removed; an older, unreadable or unknown pin keeps the raw dict entries,
+    so carriers read as turns exactly as those runs always did (review F2, accepted by design).
+    """
+    try:
+        if _carriers_separated(loop_version):
+            return Turns(turn_entries(history))
+        return Turns([e for e in (history or []) if isinstance(e, dict)])
+    except Exception:
+        return Turns([])
+
+
 def _should_force_walk_stack(
     intake_seed: dict | None,
     reason_data: dict | None,
@@ -366,7 +387,29 @@ def _should_force_walk_stack(
 
 
 #: Per-run cap on the pivot recollect (lv7), matching the other forcing rules.
-PIVOT_RECOLLECT_CAP = 2
+PIVOT_RECOLLECT_CAP = 2  # lv7
+#: Set only after the D23 review returns raise or lower; the value applies from lv8.
+PIVOT_RECOLLECT_CAP_NEXT: int | None = None
+
+
+def pivot_cap_for(loop_version: Any) -> int:
+    """Per-run pivot cap routed on the pin (F4-D24, pure, fail-safe).
+
+    Today the next cap is unset, so every pin returns 2. Once the D23 review
+    sets ``PIVOT_RECOLLECT_CAP_NEXT``, the new value applies from lv8 on;
+    older pins and unreadable pins keep 2.
+    """
+    try:
+        if (
+            PIVOT_RECOLLECT_CAP_NEXT is not None
+            and isinstance(loop_version, str)
+            and loop_version.strip()
+            and loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LV8)
+        ):
+            return int(PIVOT_RECOLLECT_CAP_NEXT)
+    except Exception:
+        pass
+    return PIVOT_RECOLLECT_CAP
 
 
 def _pivot_hardened(loop_version: Any) -> bool:
@@ -389,6 +432,118 @@ def _proposed_params(reason_data: Any) -> dict[str, Any]:
         return {}
 
 
+class PivotReason(StrEnum):
+    """Why the pivot rule did or did not fire (F4-D22, observability only)."""
+
+    FIRED = "fired"
+    LIVENESS = "liveness"  # fewer than two turns left
+    NO_SHIFT = "no_shift"  # no focus, no previous focus, same surface, or only a window refinement
+    DAMPED = "damped"  # the surface was collected recently
+    SCOPED_SEARCH = "scoped_search"  # lv7: a SEARCH_CODE that already carries a query is left alone
+    CAPPED = "capped"  # lv7: the per-run cap withheld a pivot that would have fired
+
+
+@dataclass(frozen=True)
+class PivotDecision:
+    """The pivot rule's output and its reason (pure)."""
+
+    override: dict[str, Any] | None
+    reason: PivotReason
+
+
+def _cap_reached(forced_count: Any) -> bool:
+    try:
+        return not isinstance(forced_count, bool) and int(forced_count) >= PIVOT_RECOLLECT_CAP
+    except (TypeError, ValueError, OverflowError):
+        return False  # a malformed counter leaves the cap inert, as before
+
+
+def _hardened_override(curr: Any, proposed: str, kept: dict[str, Any]) -> dict[str, Any]:
+    """The existing lv7 non-destructive rewrite, unchanged (F4-D22)."""
+    if curr.surface_kind == "file":
+        kept["file_path"] = curr.surface
+        if curr.line_start is not None and curr.line_start >= 1:
+            kept["start_line"] = curr.line_start
+        if curr.line_end is not None and curr.line_end >= 1:
+            kept["end_line"] = curr.line_end
+        kept["revision"] = str(kept.get("revision") or "").strip() or "HEAD"
+        return {
+            "next_action": proposed if proposed in ("GET_CODE", "GET_SOURCE") else "GET_CODE",
+            "action_parameters": kept,
+            "forced_pivot_recollect": True,
+        }
+    kept["symbol_name"] = curr.surface
+    kept["revision"] = str(kept.get("revision") or "").strip() or "HEAD"
+    return {
+        "next_action": "FIND_SYMBOL",
+        "action_parameters": kept,
+        "forced_pivot_recollect": True,
+    }
+
+
+def _legacy_override(curr: Any) -> dict[str, Any]:
+    """The existing pre-lv7 rewrite, unchanged (F4-D22)."""
+    if curr.surface_kind == "file":
+        params: dict[str, Any] = {"file_path": curr.surface}
+        if curr.line_start is not None and curr.line_start >= 1:
+            params["start_line"] = curr.line_start
+        if curr.line_end is not None and curr.line_end >= 1:
+            params["end_line"] = curr.line_end
+        params["revision"] = "HEAD"
+        return {
+            "next_action": "GET_CODE",
+            "action_parameters": params,
+            "forced_pivot_recollect": True,
+        }
+    return {
+        "next_action": "FIND_SYMBOL",
+        "action_parameters": {"symbol_name": curr.surface, "revision": "HEAD"},
+        "forced_pivot_recollect": True,
+    }
+
+
+def _pivot_decision(
+    prev_focus: dict[str, Any] | None,
+    reason_data: dict[str, Any] | None,
+    turns_remaining: int,
+    recent_targets: list[str] | None,
+    *,
+    preserve_proposal: bool = False,
+    forced_count: Any = 0,
+) -> PivotDecision:
+    """The pivot rule with its reason (pure, never raises). Dispatch decisions equal the old rule's."""
+    try:
+        if not pivot_can_pay_off(turns_remaining):
+            return PivotDecision(None, PivotReason.LIVENESS)
+        prev: FocusPoint | None = None
+        if isinstance(prev_focus, dict):
+            try:
+                prev = FocusPoint.model_validate(prev_focus)
+            except Exception:
+                prev = None
+        curr = focus_from_reason_data(reason_data if isinstance(reason_data, dict) else {})
+        if curr is None or detect_shift(prev, curr) != FocusShift.PIVOTED:
+            return PivotDecision(None, PivotReason.NO_SHIFT)
+        recent = {str(r or "") for r in (recent_targets or []) if str(r or "")}
+        if f"{curr.surface_kind}:{curr.surface}" in recent:
+            return PivotDecision(None, PivotReason.DAMPED)
+        if preserve_proposal:
+            proposed = str((reason_data or {}).get("next_action", "") or "").upper()
+            kept = _proposed_params(reason_data)
+            if (
+                curr.surface_kind == "file"
+                and proposed == "SEARCH_CODE"
+                and str(kept.get("query") or "").strip()
+            ):
+                return PivotDecision(None, PivotReason.SCOPED_SEARCH)
+            if _cap_reached(forced_count):
+                return PivotDecision(None, PivotReason.CAPPED)
+            return PivotDecision(_hardened_override(curr, proposed, kept), PivotReason.FIRED)
+        return PivotDecision(_legacy_override(curr), PivotReason.FIRED)
+    except Exception:
+        return PivotDecision(None, PivotReason.NO_SHIFT)
+
+
 def _should_force_pivot_recollect(
     prev_focus: dict[str, Any] | None,
     reason_data: dict[str, Any] | None,
@@ -400,91 +555,17 @@ def _should_force_pivot_recollect(
 ) -> dict[str, Any] | None:
     """Collection-forcing override on focus pivot (P6 2b-i, pure).
 
-    After reasoning, if the point of focus changed surfaces and the loop
-    has turns left for the recollect to pay off, force a collection fetch
-    on the new focus instead of verifying or concluding on the stale one.
-    File foci read the new file (pivots land on code); bare-symbol foci
-    resolve the symbol first. Damping: a surface collected in recent
-    turns never refires, so the rule cannot ping-pong.
-
-    Budget-blind by design (agentic layers own budget governance); the
-    only gate is liveness — turns_remaining covers the collection turn
-    plus at least one turn to use what it banks. Never raises.
-
-    ``preserve_proposal`` (lv7, review F4) makes the rewrite non-destructive and
-    bounded: the rule stands down at :data:`PIVOT_RECOLLECT_CAP` fired pivots, a
-    SEARCH_CODE proposal that already carries a query is left as proposed (the
-    model's scoped search targets the new surface), and the proposal's own
-    parameters and pinned revision are kept (``HEAD`` is only the default when
-    no revision was proposed). A malformed ``forced_count`` leaves the cap inert.
+    Stable pure API with many callers; delegates to :func:`_pivot_decision`
+    and returns the override (F4-D22). Never raises.
     """
-    try:
-        if not pivot_can_pay_off(turns_remaining):
-            return None
-        if preserve_proposal:
-            try:
-                if not isinstance(forced_count, bool) and int(forced_count) >= PIVOT_RECOLLECT_CAP:
-                    return None
-            except (TypeError, ValueError, OverflowError):
-                pass
-        prev: FocusPoint | None = None
-        if isinstance(prev_focus, dict):
-            try:
-                prev = FocusPoint.model_validate(prev_focus)
-            except Exception:
-                prev = None
-        curr = focus_from_reason_data(reason_data if isinstance(reason_data, dict) else {})
-        if curr is None or detect_shift(prev, curr) != FocusShift.PIVOTED:
-            return None
-        recent = {str(r or "") for r in (recent_targets or []) if str(r or "")}
-        if f"{curr.surface_kind}:{curr.surface}" in recent:
-            return None
-        if preserve_proposal:
-            proposed = str((reason_data or {}).get("next_action", "") or "").upper()
-            kept = _proposed_params(reason_data)
-            revision = str(kept.get("revision") or "").strip() or "HEAD"
-            if curr.surface_kind == "file":
-                if proposed == "SEARCH_CODE" and str(kept.get("query") or "").strip():
-                    return None
-                kept["file_path"] = curr.surface
-                if curr.line_start is not None and curr.line_start >= 1:
-                    kept["start_line"] = curr.line_start
-                if curr.line_end is not None and curr.line_end >= 1:
-                    kept["end_line"] = curr.line_end
-                kept["revision"] = revision
-                return {
-                    "next_action": proposed
-                    if proposed in ("GET_CODE", "GET_SOURCE")
-                    else "GET_CODE",
-                    "action_parameters": kept,
-                    "forced_pivot_recollect": True,
-                }
-            kept["symbol_name"] = curr.surface
-            kept["revision"] = revision
-            return {
-                "next_action": "FIND_SYMBOL",
-                "action_parameters": kept,
-                "forced_pivot_recollect": True,
-            }
-        if curr.surface_kind == "file":
-            params: dict[str, Any] = {"file_path": curr.surface}
-            if curr.line_start is not None and curr.line_start >= 1:
-                params["start_line"] = curr.line_start
-            if curr.line_end is not None and curr.line_end >= 1:
-                params["end_line"] = curr.line_end
-            params["revision"] = "HEAD"
-            return {
-                "next_action": "GET_CODE",
-                "action_parameters": params,
-                "forced_pivot_recollect": True,
-            }
-        return {
-            "next_action": "FIND_SYMBOL",
-            "action_parameters": {"symbol_name": curr.surface, "revision": "HEAD"},
-            "forced_pivot_recollect": True,
-        }
-    except Exception:
-        return None
+    return _pivot_decision(
+        prev_focus,
+        reason_data,
+        turns_remaining,
+        recent_targets,
+        preserve_proposal=preserve_proposal,
+        forced_count=forced_count,
+    ).override
 
 
 def _carry_requery_order(
@@ -1281,10 +1362,8 @@ def _floor_seen_targets(history: list[Any] | None) -> tuple[set[str], set[str], 
 def _should_force_replan(
     description: str | None,
     reason_data: dict | None,
-    action_history: list | None,
+    turns: Turns,
     forced_count: int,
-    *,
-    separate_carriers: bool = False,
 ) -> dict | None:
     """Alternative gathering action after repeated empties, or None.
 
@@ -1292,19 +1371,15 @@ def _should_force_replan(
     evidence banked on either, and the current proposal repeats it. The
     production call site runs before the current action is appended, so
     the proposal arrives via reason_data (not history): history holds only
-    completed enriched turns. Returns {next_action, params} for the first
-    alternative family, or None. Bounded (max 2 per run). Pure.
+    completed enriched turns. Takes the typed ``Turns`` view (F2-D18), never
+    a raw history: carriers cannot displace a turn. Returns {next_action,
+    params} for the first alternative family, or None. Bounded (max 2 per
+    run). Pure.
     """
     try:
         if int(forced_count or 0) >= 2:
             return None
-        # F2 (lv6): carriers are not turns; a trailing carrier used to displace
-        # the second prior turn and silently disable this rule.
-        entries = (
-            turn_entries(action_history)
-            if separate_carriers
-            else [e for e in (action_history or []) if isinstance(e, dict)]
-        )
+        entries = [e for e in (turns or []) if isinstance(e, dict)]
         # Production shape: completed enriched turns only. The last two
         # are the prior turns; the current proposal comes from reason_data.
         if len(entries) < 2:
@@ -2174,20 +2249,18 @@ def _all_claims_not_checkable(
         return False
 
 
-def _recent_collection_surfaces(
-    action_history: list | None, limit: int = 10, *, separate_carriers: bool = False
-) -> list[str]:
+def _recent_collection_surfaces(turns: Turns, limit: int = 10) -> list[str]:
     """Kind-qualified surfaces collected in recent turns (pure).
 
     File reads contribute ``file:<path>`` (from action parameters
     ``file_path``); symbol resolutions contribute ``symbol:<name>``
     (from ``symbol_name``). Kind-qualified so a collected file does not
     damp a symbol pivot on the same token and vice versa. Bounded to
-    the trailing window; never raises.
+    the trailing window; never raises. Takes the typed ``Turns`` view
+    (F2-D18), never a raw history.
     """
     try:
-        source = turn_entries(action_history) if separate_carriers else list(action_history or [])
-        entries = source[-max(1, int(limit or 10)) :]
+        entries = list(turns or [])[-max(1, int(limit or 10)) :]
     except Exception:
         return []
     surfaces: list[str] = []
@@ -2315,8 +2388,8 @@ class CascadeContext:
     state: PostReasonCascadeState
     reason: dict[str, Any]  # current dispatch data; earlier rules may have rewritten it
     counts: Mapping[str, int]
-    history: list[Any]
-    separate: bool  # lv6 carrier separation
+    history: list[Any]  # full history: carrier readers index into it and stamp in place
+    turns: Turns  # positional readers use this view, never the raw history (F2-D18)
     pivot_v2: bool  # lv7 hardened pivot
 
     def count(self, key: str) -> int:
@@ -2347,9 +2420,9 @@ def _entry_at(history: list[Any], index: Any) -> dict[str, Any] | None:
 
 
 def _t_pivot(ctx: CascadeContext) -> Fire | None:
-    targets = _recent_collection_surfaces(ctx.history, separate_carriers=ctx.separate)
+    targets = _recent_collection_surfaces(ctx.turns)
     turns_left = int(ctx.state.max_iterations or 0) - int(ctx.state.iteration or 0)
-    out = _should_force_pivot_recollect(
+    decision = _pivot_decision(
         ctx.state.prev_focus,
         ctx.reason,
         turns_left,
@@ -2357,8 +2430,13 @@ def _t_pivot(ctx: CascadeContext) -> Fire | None:
         preserve_proposal=ctx.pivot_v2,
         forced_count=ctx.count("pivot"),
     )
-    if out is None:
+    if decision.reason is PivotReason.CAPPED:
+        return Fire(None, counter="pivot_capped")
+    if decision.reason is PivotReason.SCOPED_SEARCH:
+        return Fire(None, counter="pivot_scoped_skipped")
+    if decision.override is None:
         return None
+    out = decision.override
     return Fire(out["next_action"], out["action_parameters"], counter="pivot" if ctx.pivot_v2 else None)
 
 
@@ -2428,8 +2506,7 @@ def _t_log_search(ctx: CascadeContext) -> Fire | None:
 
 def _t_replan(ctx: CascadeContext) -> Fire | None:
     out = _should_force_replan(
-        str(ctx.state.description or ""), ctx.reason, ctx.history, ctx.count("replan"),
-        separate_carriers=ctx.separate,
+        str(ctx.state.description or ""), ctx.reason, ctx.turns, ctx.count("replan"),
     )
     return Fire(out["next_action"], out["action_parameters"], counter="replan") if out else None
 
@@ -2511,8 +2588,9 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _counts = dict(state.counts) if isinstance(state.counts, dict) else {}
         _pending_consume: list[dict[str, Any]] = []
         _history = list(state.action_history or [])
-        # F2 (lv6): positional "recent turns" readers skip work-order carriers.
-        _separate = _carriers_separated(state.loop_version)
+        # F2-D18: the typed turn view is built once; positional readers take it,
+        # carrier readers take the full history. Single pin site.
+        _turns = turn_view(_history, state.loop_version)
         # F4 (lv7): bounded, non-destructive pivot anchored on the model's focus.
         _pivot_v2 = _pivot_hardened(state.loop_version)
         # The model's own focus this turn, read before any rule rewrites the
@@ -2548,13 +2626,17 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 d6_fired=_d6_fired,
             ):
                 continue
-            ctx = CascadeContext(state, reason, counts, _history, _separate, _pivot_v2)
+            ctx = CascadeContext(state, reason, counts, _history, _turns, _pivot_v2)
             fire = TRIGGERS[rule.name](ctx)
             if fire is None:
                 continue
             if fire.consume is not None:
                 pending_consume.append(fire.consume)
-            if fire.next_action is None:  # effects only: no dispatch, no flag, no counter
+            if fire.next_action is None:
+                # effects only: suppression counts and carrier retirements are
+                # recorded without a dispatch, flag or cancel refund.
+                if fire.counter:
+                    counts[fire.counter] = ctx.count(fire.counter) + 1
                 continue
             reason = {**reason, "next_action": fire.next_action,
                       "action_parameters": dict(fire.action_parameters or {}),

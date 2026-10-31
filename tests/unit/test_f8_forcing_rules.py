@@ -422,5 +422,5 @@ def test_the_workflow_writes_a_bool_flag_and_a_separate_consumption_stamp() -> N
     source = inspect.getsource(run_investigation)
     assert '"forced_requery": False' not in source, "the history key is a bool flag, not False/dict"
     assert '"forced_requery": bool(_reason_data.get("forced_requery"' in source
-    assert 'action_history[-1]["requery_consumed"] = {' in source
+    assert '_this_turn["requery_consumed"] = {' in source
     assert 'action_history[-1]["forced_requery"] = {' not in source

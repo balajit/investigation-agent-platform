@@ -222,8 +222,15 @@ def check_rule_contract(rules: tuple[Rule, ...] | list[Rule]) -> list[str]:
     return problems
 
 
-#: Counters that no rule owns: the absence-disconfirmation pre-cascade step.
-EXTRA_COUNTER_KEYS: tuple[str, ...] = ("absence_disconfirmation",)
+#: Counters that no rule owns: the absence-disconfirmation pre-cascade step, plus
+#: the F4 pivot measurement counters (F4-D22: capped and scoped-skipped are
+#: suppression counts, productive is stamped by the workflow).
+EXTRA_COUNTER_KEYS: tuple[str, ...] = (
+    "absence_disconfirmation",
+    "pivot_capped",
+    "pivot_scoped_skipped",
+    "pivot_productive",
+)
 
 
 def counter_keys() -> tuple[str, ...]:

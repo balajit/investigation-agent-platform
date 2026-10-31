@@ -100,7 +100,6 @@ from .forcing import (
     PostReasonCascadeState,
     _absence_disconfirmation_target,
     _callsite_target,
-    _carriers_separated,
     _carry_gap_orders,
     _carry_requery_order,
     _caused_by_idempotency_wedge,
@@ -121,7 +120,7 @@ from .forcing import (
     _should_force_walk_stack,
     apply_post_reason_cascade,
     dispatched_parameters,
-    turn_entries,
+    turn_view,
 )
 
 
@@ -584,14 +583,10 @@ class RunInvestigationWorkflow:
         # model sees repetition and escalates capability instead of looping
         # the same empty action to the iteration cap.
         action_history: list[dict[str, Any]] = []
-        # F2 (lv6): positional "recent turns" readers (the reasoner and verify
-        # recent_actions views, actions_used, the shadow previous outcome) read
-        # turns only; work-order carriers stay in the same list because the
-        # carrier readers index into it. Older pins read the raw list.
-        _split_carriers = _carriers_separated(loop_version)
-
-        def _turn_view() -> list[dict[str, Any]]:
-            return turn_entries(action_history) if _split_carriers else action_history
+        # F2-D18: positional readers (reasoner/verify recent_actions,
+        # actions_used, the shadow previous outcome) take the typed turn view;
+        # work-order carriers stay in the same list because the carrier
+        # readers index into it and stamp in place. Single pin site.
 
         # G6-measure shadow trace (plain JSON scalars, replay-safe): one
         # per-turn (recorded, shadow-selected) record appended by the
@@ -706,7 +701,7 @@ class RunInvestigationWorkflow:
                         tenant_id=tenant_id,
                         investigation_id=inv_id,
                         iteration=iteration,
-                        recent_actions=_turn_view()[-10:],
+                        recent_actions=list(turn_view(action_history, loop_version))[-10:],
                         knowledge_orientation=knowledge_orientation,
                     ),
                     start_to_close_timeout=timedelta(seconds=120),
@@ -905,7 +900,7 @@ class RunInvestigationWorkflow:
                 _shadow_snapshot = build_shadow_snapshot(
                     iteration=iteration,
                     max_iterations=max_iterations,
-                    actions_used=len(_turn_view()),
+                    actions_used=len(turn_view(action_history, loop_version)),
                     action_limit=max_iterations,
                     tokens_used=llm_tokens_total,
                     token_limit=0,
@@ -954,7 +949,8 @@ class RunInvestigationWorkflow:
                 # the recorded action's parameters (capped) for the
                 # changed-input judgment. All loop-local reads.
                 _shadow_turn["evidence_banked_total"] = evidence_banked_total
-                _prev = _turn_view()[-1] if _turn_view() else {}
+                _turns = turn_view(action_history, loop_version)
+                _prev = _turns[-1] if _turns else {}
                 _shadow_turn["prev_outcome"] = (
                     str((_prev or {}).get("outcome_status", "") or "")
                     if isinstance(_prev, dict)
@@ -980,28 +976,29 @@ class RunInvestigationWorkflow:
                 shadow_trace.append({"iteration": iteration, "capture_error": True})
             _hyps = _reason_data.get("hypotheses_evaluated") or []
             _obss = _reason_data.get("observations") or []
-            action_history.append(
-                {
-                    "iteration": iteration,
-                    "action": str(_reason_data.get("next_action", "?")),
-                    "readiness": _reason_data.get("conclusion_readiness"),
-                    "hypotheses": len(_hyps) if isinstance(_hyps, list) else 0,
-                    "observations": len(_obss) if isinstance(_obss, list) else 0,
-                    "disposition": _reason_data.get("disposition"),
-                    "defer_repairs_used": _reason_data.get("defer_repairs_used"),
-                    "defer_reason": (
-                        (_reason_data.get("defer_gathering") or {}).get("reason")
-                        if isinstance(_reason_data.get("defer_gathering"), dict)
-                        else None
-                    ),
-                    "forced_absence_disconfirmation": bool(
-                        _reason_data.get("forced_absence_disconfirmation", False)
-                    ),
-                    "triage_route": triage_route,
-                    # E1: strategy skeleton (iteration 0 only).
-                    "plan": list(investigation_plan) if iteration == 0 else [],
-                }
-            )
+            # F2-D19: keep the appended turn dict; every post-execution stamp
+            # below updates this reference, never a trailing-index read.
+            _this_turn: dict[str, Any] = {
+                "iteration": iteration,
+                "action": str(_reason_data.get("next_action", "?")),
+                "readiness": _reason_data.get("conclusion_readiness"),
+                "hypotheses": len(_hyps) if isinstance(_hyps, list) else 0,
+                "observations": len(_obss) if isinstance(_obss, list) else 0,
+                "disposition": _reason_data.get("disposition"),
+                "defer_repairs_used": _reason_data.get("defer_repairs_used"),
+                "defer_reason": (
+                    (_reason_data.get("defer_gathering") or {}).get("reason")
+                    if isinstance(_reason_data.get("defer_gathering"), dict)
+                    else None
+                ),
+                "forced_absence_disconfirmation": bool(
+                    _reason_data.get("forced_absence_disconfirmation", False)
+                ),
+                "triage_route": triage_route,
+                # E1: strategy skeleton (iteration 0 only).
+                "plan": list(investigation_plan) if iteration == 0 else [],
+            }
+            action_history.append(_this_turn)
             try:
                 llm_tokens_total += int(_reason_data.get("llm_tokens", 0) or 0)
                 llm_cost_total += float(_reason_data.get("llm_cost", 0.0) or 0.0)
@@ -1115,7 +1112,7 @@ class RunInvestigationWorkflow:
                     _exec_banked = int(_exec_banked) if _exec_banked is not None else None
                 except (TypeError, ValueError):
                     _exec_banked = None
-                action_history[-1].update(
+                _this_turn.update(
                     {
                         "parameters": {k: str(v)[:200] for k, v in _params.items()},
                         "outcome_status": _outcome.get("status"),
@@ -1151,6 +1148,11 @@ class RunInvestigationWorkflow:
                         "banked_count": _exec_banked,
                     }
                 )
+                # F4-D22: a fired pivot whose fetch banked at least one row.
+                if _reason_data.get("forced_pivot_recollect") and len(
+                    _outcome.get("evidence_ids", []) or []
+                ) > 0:
+                    counters["pivot_productive"] += 1
                 # G3: stamp the dispatched turn and retire the order in
                 # place (exactly once). A failed/degraded dispatch still
                 # stamps — the carrier stays consumed, recovery waits for a
@@ -1158,7 +1160,7 @@ class RunInvestigationWorkflow:
                 if _reason_data.get("forced_requery") and isinstance(_consumed_order_ref, dict):
                     _consumed_order_ref["consumed"] = True
                     counters["requery"] += 1
-                    action_history[-1]["requery_consumed"] = {
+                    _this_turn["requery_consumed"] = {
                         "claim_ref": str(_consumed_order_ref.get("claim_ref") or ""),
                         "query": str(_consumed_order_ref.get("query") or ""),
                         "scope": str(_consumed_order_ref.get("scope") or ""),
@@ -1169,7 +1171,7 @@ class RunInvestigationWorkflow:
                 # next reason turn picks up the latest hint as non-citable
                 # steering. Only set when present to keep history lean.
                 if isinstance(_outcome.get("fuzzy_orientation"), dict):
-                    action_history[-1]["fuzzy_orientation"] = _outcome["fuzzy_orientation"]
+                    _this_turn["fuzzy_orientation"] = _outcome["fuzzy_orientation"]
                 # G8: track synthesis state for the forcing rule.
                 if _dispatched_action == "FORMULATE_HYPOTHESIS":
                     formulated_count += 1
@@ -1224,7 +1226,7 @@ class RunInvestigationWorkflow:
             # attempted AND what it produced. Pre-execution keys survive
             # (disjoint names); absent enrichment renders the old shape.
             _decision_summary = _reason_summary(
-                {**(reason_res.data or {}), **(action_history[-1] if action_history else {})}
+                {**(reason_res.data or {}), **_this_turn}
             )
             await _transition(
                 "CORRELATING", f"Iteration {iteration} correlating ({_decision_summary})"
@@ -1241,7 +1243,7 @@ class RunInvestigationWorkflow:
                     tenant_id=tenant_id,
                     investigation_id=inv_id,
                     triage_route=triage_route,
-                    recent_actions=_turn_view()[-10:],
+                    recent_actions=list(turn_view(action_history, loop_version))[-10:],
                     iteration=iteration,
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
@@ -1250,7 +1252,7 @@ class RunInvestigationWorkflow:
             # G3: carry the verify-issued re-retrieval as a work
             # order (D3 lifecycle step 2, 2b step 5). ONE new history
             # entry per directive — never merged into
-            # action_history[-1], which the post-execution update owns.
+            # _this_turn, which the post-execution update owns.
             # The next turn's cascade dispatches from the carriers
             # (never the truncated recent_actions view).
             _requery_order = _carry_requery_order(
@@ -1262,7 +1264,7 @@ class RunInvestigationWorkflow:
             # Phase 4 (claim binding): carry the verify-issued claim gaps
             # as work orders (D2 carrier, 2b step 6). ONE new history
             # entry per verify turn — never merged into
-            # action_history[-1]. The next turn's slot dispatches from
+            # _this_turn. The next turn's slot dispatches from
             # the newest carrier's orders (never the truncated
             # recent_actions view).
             _gap_carrier = _carry_gap_orders(

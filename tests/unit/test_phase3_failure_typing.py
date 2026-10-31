@@ -29,6 +29,7 @@ from investigation_agent_platform.application.worker.activities import (
 from investigation_agent_platform.application.worker.workflows import (
     _is_auth_blocked,
     _should_force_replan,
+    turn_view,
 )
 from investigation_agent_platform.domain.common.exceptions import (
     CredentialProviderError,
@@ -244,7 +245,7 @@ class TestReplanProductionShape:
         hit = _should_force_replan(
             "Show recent errors",
             {"next_action": "SEARCH_CODE", "action_parameters": {}},
-            history,
+            turn_view(history, "lv7"),
             0,
         )
         assert hit is not None and hit["next_action"] == "SEARCH_LOGS"
@@ -255,7 +256,7 @@ class TestReplanProductionShape:
             _should_force_replan(
                 "Show recent errors",
                 {"next_action": "SEARCH_CODE", "action_parameters": {}},
-                history,
+                turn_view(history, "lv7"),
                 0,
             )
             is None

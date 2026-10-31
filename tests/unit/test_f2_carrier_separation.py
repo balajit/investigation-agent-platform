@@ -23,12 +23,14 @@ from investigation_agent_platform.application.worker.workflows import forcing, r
 from investigation_agent_platform.application.worker.workflows.forcing import (
     CARRIER_KINDS,
     PostReasonCascadeState,
+    Turns,
     _carriers_separated,
     _recent_collection_surfaces,
     _should_force_replan,
     apply_post_reason_cascade,
     is_carrier_entry,
     turn_entries,
+    turn_view,
 )
 from investigation_agent_platform.domain.investigation.loop_version import (
     loop_version_at_least,
@@ -98,7 +100,7 @@ def test_turn_entries_ignores_non_dict_items_and_never_mutates() -> None:
 def test_a_real_turn_entry_never_carries_a_carrier_kind() -> None:
     """The workflow's turn entry has no `kind` key; guard the assumption."""
     source = inspect.getsource(run_investigation)
-    start = source.index("action_history.append(\n                {\n                    \"iteration\": iteration,")
+    start = source.index("_this_turn: dict[str, Any] = {")
     block = source[start : start + 1800]
     assert '"kind"' not in block
 
@@ -131,44 +133,42 @@ PROPOSAL = {"next_action": "SEARCH_CODE", "action_parameters": {"query": "x"}}
 DESCRIPTION = "where is the order filter implemented"
 
 
-def _replan(history, separate):  # type: ignore[no-untyped-def]
-    return _should_force_replan(
-        DESCRIPTION, PROPOSAL, history, 0, separate_carriers=separate
-    )
+def _replan(history, pin):  # type: ignore[no-untyped-def]
+    return _should_force_replan(DESCRIPTION, PROPOSAL, turn_view(history, pin), 0)
 
 
 def test_replan_fires_on_two_empty_turns_without_a_carrier() -> None:
     history = [_turn("SEARCH_CODE"), _turn("SEARCH_CODE")]
-    assert _replan(history, False) is not None
-    assert _replan(history, True) is not None
+    assert _replan(history, "lv5") is not None
+    assert _replan(history, "lv7") is not None
 
 
 @pytest.mark.parametrize("carrier", [_requery_carrier, _gap_carrier])
 def test_a_trailing_carrier_used_to_disable_replan(carrier) -> None:  # type: ignore[no-untyped-def]
     history = [_turn("SEARCH_CODE"), _turn("SEARCH_CODE"), carrier()]
-    assert _replan(history, False) is None, "premise: the old reader loses the trigger"
-    assert _replan(history, True) is not None, "lv6 sees the two real turns"
+    assert _replan(history, "lv5") is None, "premise: the old reader loses the trigger"
+    assert _replan(history, "lv7") is not None, "lv6 sees the two real turns"
 
 
 def test_a_carrier_between_the_two_turns_also_no_longer_hides_them() -> None:
     history = [_turn("SEARCH_CODE"), _gap_carrier(), _turn("SEARCH_CODE")]
-    assert _replan(history, False) is None
-    assert _replan(history, True) is not None
+    assert _replan(history, "lv5") is None
+    assert _replan(history, "lv7") is not None
 
 
 def test_separation_does_not_make_replan_fire_when_a_turn_banked_evidence() -> None:
     history = [_turn("SEARCH_CODE", 2), _turn("SEARCH_CODE"), _gap_carrier()]
-    assert _replan(history, True) is None
+    assert _replan(history, "lv7") is None
 
 
 def test_separation_does_not_make_replan_fire_for_different_actions() -> None:
     history = [_turn("SEARCH_CODE"), _turn("GET_CODE"), _gap_carrier()]
-    assert _replan(history, True) is None
+    assert _replan(history, "lv7") is None
 
 
 def test_a_single_real_turn_plus_carriers_is_still_too_little_history() -> None:
     history = [_turn("SEARCH_CODE"), _requery_carrier(), _gap_carrier()]
-    assert _replan(history, True) is None
+    assert _replan(history, "lv7") is None
 
 
 # --- the pivot damping window --------------------------------------------------------------------------
@@ -180,13 +180,13 @@ def _read(path):  # type: ignore[no-untyped-def]
 
 def test_carriers_no_longer_push_a_collected_file_out_of_the_damping_window() -> None:
     history = [_read("svc/a.py")] + [_gap_carrier() for _ in range(10)]
-    assert "file:svc/a.py" not in _recent_collection_surfaces(history, 10), "premise"
-    assert "file:svc/a.py" in _recent_collection_surfaces(history, 10, separate_carriers=True)
+    assert "file:svc/a.py" not in _recent_collection_surfaces(turn_view(history, "lv5"), 10), "premise"
+    assert "file:svc/a.py" in _recent_collection_surfaces(turn_view(history, "lv7"), 10)
 
 
 def test_the_damping_window_still_bounds_real_turns() -> None:
     history = [_read(f"svc/f{i}.py") for i in range(12)]
-    out = _recent_collection_surfaces(history, 10, separate_carriers=True)
+    out = _recent_collection_surfaces(turn_view(history, "lv7"), 10)
     assert "file:svc/f0.py" not in out
     assert "file:svc/f11.py" in out
 
@@ -260,19 +260,30 @@ def test_the_cascade_still_dispatches_a_carried_requery_order() -> None:
 
 def test_the_workflow_reads_turns_through_the_view_for_prompts_counts_and_prev_outcome() -> None:
     source = inspect.getsource(run_investigation)
-    assert source.count("_turn_view(") >= 4, "two recent_actions sites, actions_used, prev_outcome"
-    assert "recent_actions=_turn_view()[-10:]" in source
-    assert "actions_used=len(_turn_view())" in source
-    assert "_prev = _turn_view()[-1] if _turn_view() else {}" in source
-    assert "_carriers_separated(" in source
+    assert source.count("turn_view(action_history, loop_version)") >= 4, "two recent_actions sites, actions_used, prev_outcome"
+    assert "recent_actions=list(turn_view(action_history, loop_version))[-10:]" in source
+    assert "actions_used=len(turn_view(action_history, loop_version))" in source
+    assert "_turns = turn_view(action_history, loop_version)" in source
 
 
 def test_carrier_appends_and_in_place_stamps_still_use_the_full_list() -> None:
     source = inspect.getsource(run_investigation)
     assert "action_history.append(_requery_order)" in source
     assert "action_history.append(_gap_carrier)" in source
-    assert 'action_history[-1]["requery_consumed"]' in source
+    assert '_this_turn["requery_consumed"]' in source
+    assert "action_history[-1]" not in source
 
 
 def test_forcing_module_exports_the_helpers() -> None:
     assert hasattr(forcing, "turn_entries") and hasattr(forcing, "is_carrier_entry")
+    assert hasattr(forcing, "turn_view") and hasattr(forcing, "Turns")
+
+
+def test_positional_readers_require_the_typed_view() -> None:
+    import inspect as _inspect
+
+    for fn in (_should_force_replan, _recent_collection_surfaces):
+        params = _inspect.signature(fn).parameters
+        assert "separate_carriers" not in params
+        ann = params["turns" if "turns" in params else "action_history"].annotation
+        assert ann is Turns or ann == "Turns" or getattr(ann, "__name__", "") == "Turns"

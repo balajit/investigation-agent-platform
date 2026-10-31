@@ -9,6 +9,7 @@ holds unevaluated hypotheses against banked evidence.
 from investigation_agent_platform.application.worker.workflows import (
     _absence_disconfirmation_target,
     _should_force_formulate,
+    turn_view,
 )
 
 
@@ -486,7 +487,7 @@ def test_force_replan_redirects_repeated_empties():
     hit = _should_force_replan(
         "Show recent errors for payments",
         {"next_action": "SEARCH_CODE", "action_parameters": {}},
-        history,
+        turn_view(history, "lv7"),
         0,
     )
     assert hit is not None
@@ -498,14 +499,14 @@ def test_force_replan_redirects_repeated_empties():
         {"action": "SEARCH_CODE", "evidence_added": 0},
         {"action": "SEARCH_CODE", "evidence_added": 4},
     ]
-    assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, rich, 0) is None
-    assert _should_force_replan("errors here", {"next_action": "QUERY_STATE"}, history, 0) is None
-    assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, history, 2) is None
+    assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, turn_view(rich, "lv7"), 0) is None
+    assert _should_force_replan("errors here", {"next_action": "QUERY_STATE"}, turn_view(history, "lv7"), 0) is None
+    assert _should_force_replan("errors here", {"next_action": "SEARCH_CODE"}, turn_view(history, "lv7"), 2) is None
     assert (
         _should_force_replan(
             "errors here",
             {"next_action": "SEARCH_CODE"},
-            [{"action": "SEARCH_CODE", "evidence_added": 0}],
+            turn_view([{"action": "SEARCH_CODE", "evidence_added": 0}], "lv7"),
             0,
         )
         is None

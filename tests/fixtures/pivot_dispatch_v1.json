@@ -1,0 +1,5417 @@
+[
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": {
+   "action_parameters": {
+    "revision": "HEAD",
+    "symbol_name": "new_sym"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "FIND_SYMBOL"
+  },
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": {
+   "action_parameters": {
+    "revision": "HEAD",
+    "symbol_name": "new_sym"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "FIND_SYMBOL"
+  },
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "revision": "HEAD"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "GET_CODE"
+  },
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py",
+    "query": "q"
+   },
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 5,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/old.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [
+   "file:svc/a.py"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 1,
+  "out": {
+   "action_parameters": {
+    "revision": "HEAD",
+    "symbol_name": "new_sym"
+   },
+   "forced_pivot_recollect": true,
+   "next_action": "FIND_SYMBOL"
+  },
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "file:svc/new.py"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "symbol_name": "new_sym"
+   },
+   "next_action": "FIND_SYMBOL"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 9
+ },
+ {
+  "count": 1,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "line_end": 20,
+   "line_start": 1,
+   "surface": "svc/old.py",
+   "surface_kind": "file"
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "next_action": "FORMULATE_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 9
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 0,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "surface": "old_sym",
+   "surface_kind": "symbol"
+  },
+  "proposal": {
+   "hypotheses_evaluated": [
+    {
+     "statement": "x"
+    }
+   ],
+   "next_action": "VERIFY_HYPOTHESIS"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 1
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": true,
+  "prev": {
+   "bogus": 1
+  },
+  "proposal": {
+   "action_parameters": {},
+   "next_action": "SEARCH_CODE"
+  },
+  "targets": [
+   "symbol:new_sym"
+  ],
+  "turns_left": 0
+ },
+ {
+  "count": 2,
+  "out": null,
+  "preserve": false,
+  "prev": null,
+  "proposal": {
+   "action_parameters": {
+    "file_path": "svc/new.py"
+   },
+   "next_action": "GET_CODE"
+  },
+  "targets": [],
+  "turns_left": 0
+ }
+]
