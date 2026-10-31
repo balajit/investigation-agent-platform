@@ -1557,7 +1557,9 @@ class InMemoryReferenceDocRepository:
                 count += 1
         return count
 
-    async def lexical_candidates(self, tenant_id: str, query: str, limit: int) -> list[object]:
+    async def lexical_candidates(
+        self, tenant_id: str, query: str, limit: int, application_id: str | None = None
+    ) -> list[object]:
         from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
 
         def _generation_active(source_id: str, generation: int) -> bool:
@@ -1574,6 +1576,7 @@ class InMemoryReferenceDocRepository:
                 if tenant == tenant_id
                 and chunk.lifecycle == ChunkLifecycle.ACTIVE
                 and _generation_active(source, gen)
+                and (application_id is None or chunk.application_id == application_id)
             ),
             key=lambda pair: pair[0],
             reverse=True,
@@ -1587,6 +1590,7 @@ class InMemoryReferenceDocRepository:
         embedding_model: str,
         embedding_version: str,
         limit: int,
+        application_id: str | None = None,
     ) -> list[object]:
         from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
 
@@ -1614,6 +1618,10 @@ class InMemoryReferenceDocRepository:
                 and self._chunks[key].embedding_model == embedding_model
                 and self._chunks[key].embedding_version == embedding_version
                 and _generation_active(key[1], key[2])
+                and (
+                    application_id is None
+                    or self._chunks[key].application_id == application_id
+                )
             ),
             key=lambda pair: pair[0],
             reverse=True,
