@@ -121,7 +121,7 @@ def test_literal_assignment_resolves():
     r = resolve_python_value_fact(ev, "timeout")
     assert r.status == CodeFactStatus.RESOLVED
     assert r.resolved_value == "30"
-    assert r.parser_version == "tree-sitter-python"
+    assert r.parser_version.startswith("tree-sitter-python;pack=")
 
 
 def test_explicit_none_differs_from_absent():

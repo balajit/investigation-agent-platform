@@ -39,7 +39,10 @@ def test_model_carries_typed_analysis_snapshots():
     )
     assert record.declaration.declaration_type == "class_declaration"
     assert record.member_names
-    assert model.parser_version == "tree-sitter-java"
+    from investigation_agent_platform.application.analysis.java import _parse as _p
+
+    assert model.parser_version == _p.parser_version()
+    assert model.parser_version.startswith("tree-sitter-java;pack=")
 
 
 def test_model_carries_dataflow_bindings_and_events():
