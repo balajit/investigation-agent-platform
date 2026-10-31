@@ -66,6 +66,7 @@ class InvestigationActionValidator:
         tenant_id: str,
         authorizer: ActionAuthorizerPort,
         capability_registry: CapabilityRegistryPort,
+        application_id: str | None = None,
     ) -> None:
         if not isinstance(action.parameters, dict):
             raise SecurityPolicyViolationException("Action parameters must be a key-value mapping")
@@ -82,7 +83,7 @@ class InvestigationActionValidator:
             raise SecurityPolicyViolationException("Agent unauthorized for action execution")
 
         enabled = await capability_registry.is_capability_enabled(
-            tenant_id, action.action_type.value
+            tenant_id, action.action_type.value, application_id
         )
         if not enabled:
             raise SecurityPolicyViolationException(

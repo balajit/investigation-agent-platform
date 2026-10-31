@@ -273,6 +273,43 @@ def _cognee_fallback_enabled() -> bool:
 _FUZZY_RUN_TRACKING_MAX = 5_000
 
 
+async def _authorizer_deny_reason(
+    authorizer: Any,
+    tenant_id: str,
+    capability: str,
+    resource: str,
+    context: dict[str, Any],
+) -> str | None:
+    """None when allowed; the typed reason string when denied (R6-D3).
+
+    The boolean ``authorize_action`` stays the decision: a ``decide`` method is
+    consulted only to name the reason, and only when the author's type
+    declares one (test doubles that stub ``authorize_action`` alone keep the
+    legacy ``authorization_denied`` value instead of tripping an auto-created
+    mock attribute).
+    """
+    if not await authorizer.authorize_action(tenant_id, capability, resource, context):
+        decide = getattr(type(authorizer), "decide", None)
+        if callable(decide):
+            decision = await authorizer.decide(tenant_id, capability, resource, context)
+            reason = decision.reason
+            return reason.value if reason is not None else "authorization_denied"
+        return "authorization_denied"
+    return None
+
+
+async def _registry_deny_reason(
+    registry: Any, tenant_id: str, capability: str, application_id: str | None
+) -> str:
+    """Typed reason string for a registry denial (R6-D3). Same decide-if-declared rule."""
+    decide = getattr(type(registry), "decide", None)
+    if callable(decide):
+        decision = await registry.decide(tenant_id, capability, application_id)
+        reason = decision.reason
+        return reason.value if reason is not None else "authorization_denied"
+    return "authorization_denied"
+
+
 class EvidenceDeduplicator:
     """Fingerprint-based deduplicator scoped per investigation.
 
@@ -486,17 +523,27 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         # omitting it denies all provider calls unconditionally.
         context = {"application_id": application_id} if application_id else {}
         if self._authorizer is not None:
-            authorized = await self._authorizer.authorize_action(
-                tenant_id, capability, resource, context
+            deny_reason = await _authorizer_deny_reason(
+                self._authorizer, tenant_id, capability, resource, context
             )
-            if not authorized:
+            if deny_reason is not None:
                 raise SecurityPolicyViolationException(
-                    f"Agent unauthorized for capability '{capability}'"
+                    f"Agent unauthorized for capability '{capability}'",
+                    details={"deny_reason": deny_reason},
                 )
         if self._capability_registry is not None:
-            enabled = await self._capability_registry.is_capability_enabled(tenant_id, capability)
+            enabled = await self._capability_registry.is_capability_enabled(
+                tenant_id, capability, application_id
+            )
             if not enabled:
-                raise SecurityPolicyViolationException(f"Capability '{capability}' is disabled")
+                raise SecurityPolicyViolationException(
+                    f"Capability '{capability}' is disabled",
+                    details={
+                        "deny_reason": await _registry_deny_reason(
+                            self._capability_registry, tenant_id, capability, application_id
+                        )
+                    },
+                )
 
     async def _validate_structured_output(self, raw: Any) -> None:
         if self._structured_output_validator is not None:

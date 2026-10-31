@@ -2410,7 +2410,9 @@ _DEFAULT_PROFILE = ApplicationProfile(
         defaultTimeWindow=3600,
         maximumEvidencePerQuery=50,
         maximumInvestigationDuration=7200,
-        enabledEvidenceTypes=["LOG", "TRACE", "DATABASE_STATE", "COMMIT_HISTORY"],
+        # R6-D4: GET_CODE reads source, so the dev default that declares
+        # GET_CODE must enable SOURCE_CODE (repo fixture, not a tenant profile).
+        enabledEvidenceTypes=["LOG", "TRACE", "DATABASE_STATE", "COMMIT_HISTORY", "SOURCE_CODE"],
         correlationDepth=2,
         maximumHypotheses=5,
     ),

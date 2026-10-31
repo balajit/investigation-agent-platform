@@ -1287,7 +1287,11 @@ async def execute_action_activity(
                 action_type=resolved,
                 status=_BlockedStatus.BLOCKED,
                 miss_reason="authorization_denied",
-                error_code=type(exc).__name__,
+                # R6-D3: the typed deny reason rides the outcome (the exception
+                # class name it held before carries no information). Fall back
+                # to the class name only for raisers that attach no reason.
+                error_code=(getattr(exc, "details", None) or {}).get("deny_reason")
+                or type(exc).__name__,
             )
             return GenericActivityResult(
                 success=True,
