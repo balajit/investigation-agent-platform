@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from investigation_agent_platform.domain.knowledge.models import (
     ArtifactStatus,
@@ -112,6 +112,24 @@ class SqlAlchemyArtifactRepository:
     async def save(self, tenant_id: str, artifact: KnowledgeArtifact) -> None:
         async with rls_session(self._session_factory, tenant_id) as session:
             session.add(_artifact_to_orm(artifact))
+
+    async def update_status(
+        self, tenant_id: str, artifact_id: UUID, status: ArtifactStatus
+    ) -> bool:
+        async with rls_session(self._session_factory, tenant_id) as session:
+            result = await session.execute(
+                update(KnowledgeArtifactORM)
+                .where(
+                    KnowledgeArtifactORM.id == artifact_id,
+                    KnowledgeArtifactORM.tenant_id == tenant_id,
+                )
+                .values(status=status.value)
+            )
+            try:
+                affected = int(getattr(result, "rowcount", 0) or 0)
+            except (TypeError, ValueError):
+                affected = 0
+            return affected > 0
 
     async def get_by_id(self, tenant_id: str, artifact_id: UUID) -> KnowledgeArtifact | None:
         async with rls_session(self._session_factory, tenant_id) as session:

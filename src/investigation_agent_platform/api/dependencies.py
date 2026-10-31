@@ -318,6 +318,13 @@ class InMemoryArtifactRepository:
             raise ConcurrencyError("Artifact tenant mismatch")
         self._store[artifact.id] = artifact
 
+    async def update_status(self, tenant_id: str, artifact_id: Any, status: Any) -> bool:
+        row = self._store.get(artifact_id)
+        if row is None or getattr(row, "tenant_id", None) != tenant_id:
+            return False
+        self._store[artifact_id] = row.model_copy(update={"status": status})
+        return True
+
     async def get_by_id(self, tenant_id: str, artifact_id: UUID) -> Any | None:
         from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
 
