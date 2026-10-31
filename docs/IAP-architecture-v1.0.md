@@ -692,3 +692,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`ports/persistence/repositories.py`, `evidence_repository.py` x2, `routers/evidence.py`, `tenant.py`, `routers/events.py`): `EvidenceRepository.get_for_investigation` returns only rows the investigation owns or holds bank interest in (G6 union on both backends); the route uses it (cross-tenant ids stay 404 with no existence signal). `VerifiedIdentity` gains `roles` from the token's `roles`/`groups`/`role` claims; a new `require_approver_role` dependency allows dev header identities as today but otherwise requires the configured `IAP_AUTH_APPROVER_ROLE` to be present on the token (unset role fails closed). Approve-action queries the workflow for `pending_approvals` after the CREATED check (unknown query type reads as empty — a workflow without the query cannot have anything pending) and 404s unknown ids without signaling; transport failures stay 502/503.
 
 **Tests.** `test_r12d_scoped_evidence.py` (7: cross-investigation 404, shared-interest 200, cross-tenant 404 without signal, unknown-id 404 without signal, dev allowance end-to-end, missing role 403 outside dev, matching role allowed). Red verified by stash; legacy approve-ack test updated to the pending contract. Full unit green, ruff clean, mypy clean on touched modules (one pre-existing evidence.py return-type nit). Owner decision outstanding: the approver role contract. Unit-proven only.
+
+## 89. Cache-key injectivity pin and join helper (review R12E, no loop version, 2026-10-31)
+
+**Version pinning.** None (latent; no behavior change — the current key is already injective).
+
+**The defects.** None reproducible as a collision: the tenant is recoverable from the right-hand side (fixed 36-char UUID plus fixed 32-hex digest), so no two distinct tuples alias today. The hazard is future key builders reusing naive `:` joins with colon-capable tenant ids, plus the stale review wording that "carriers shrink the window" (already corrected under R10).
+
+**What changed** (`domain/common/keys.py` new): `join_key_parts` length-prefixes every part so no delimiter in a part can shift a boundary. Whether tenant ids keep `:` is an ops-owned identity decision (raised, not designed).
+
+**Tests.** `test_r12e_cache_keys.py` (2: injectivity over colon-bearing tenants/apps plus the investigation-participation guard; join unambiguity). Full unit green, ruff clean, mypy clean. Unit-proven only.
