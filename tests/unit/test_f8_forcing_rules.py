@@ -27,13 +27,15 @@ import pytest
 from investigation_agent_platform.application.evidence.retrieval_ledger import directive_consumed
 from investigation_agent_platform.application.worker.workflows import forcing, run_investigation
 from investigation_agent_platform.application.worker.workflows.forcing import (
-    RULES,
-    Force,
     PostReasonCascadeState,
-    Rule,
     _fired_forces,
     _stands_down,
     apply_post_reason_cascade,
+)
+from investigation_agent_platform.domain.investigation.forcing_rules import (
+    RULES,
+    Force,
+    Rule,
     check_rule_contract,
 )
 

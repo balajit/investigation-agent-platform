@@ -20,11 +20,9 @@ proposal. lv6 and older pins keep the old behavior.
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
-from investigation_agent_platform.application.worker.workflows import forcing, run_investigation
+from investigation_agent_platform.application.worker.workflows import forcing
 from investigation_agent_platform.application.worker.workflows.forcing import (
     PIVOT_RECOLLECT_CAP,
     PostReasonCascadeState,
@@ -59,7 +57,7 @@ def _pivot(reason, *, hardened=True, forced_count=0, prev=PREV, targets=None):  
 
 
 def test_lv7_is_current_and_includes_lv6() -> None:
-    assert LOOP_VERSION_CURRENT == "lv7"
+    assert LOOP_VERSION_CURRENT == "lv8"
     assert loop_version_at_least({"loop_version": "lv7"}, "lv6") is True
     assert loop_version_at_least({"loop_version": "lv6"}, "lv7") is False
 
@@ -341,10 +339,19 @@ def test_a_pivot_cancelled_by_walk_stack_leaves_the_anchor_so_it_can_refire() ->
 
 
 def test_the_workflow_maps_the_pivot_counter_back_from_the_cascade() -> None:
-    source = inspect.getsource(run_investigation)
-    assert '"pivot": forced_pivot_count' in source
-    assert 'forced_pivot_count = int(_cc.get("pivot", 0) or 0)' in source
-    assert '"forced_pivot_count": forced_pivot_count' in source
+    from investigation_agent_platform.domain.investigation.forcing_rules import (
+        counter_telemetry,
+        merge_counts,
+        new_counters,
+    )
+
+    counters = new_counters()
+    counters["pivot"] = 2
+    tel = counter_telemetry(counters)
+    assert tel["forced_pivot_count"] == 2
+    returned = {"pivot": 3, "walk_stack": 1}
+    merge_counts(counters, returned)
+    assert counters["pivot"] == 3 and counters["walk_stack"] == 1
 
 
 def test_forcing_exports_the_cap() -> None:

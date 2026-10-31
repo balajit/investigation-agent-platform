@@ -78,6 +78,23 @@ def _disposition_routing(investigation: Any) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _pinned_loop_version(investigation: Any) -> str:
+    """Resolved entity loop pin for the create-activity record (F10 D8, pure).
+
+    Unknown pins fail non-retryably to match API dispatch; unmarked resolves
+    to current via resolve_loop_version.
+    """
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        UnknownLoopVersion,
+        resolve_loop_version,
+    )
+
+    try:
+        return resolve_loop_version(getattr(investigation, "metadata", None))
+    except UnknownLoopVersion as exc:
+        raise ApplicationFailure(str(exc), type="UnknownLoopVersion", non_retryable=True) from exc
+
+
 @activity.defn
 @traced("worker", outcome_from=_activity_outcome, extra_from=_activity_extra)
 async def create_investigation_activity(
@@ -154,6 +171,7 @@ async def create_investigation_activity(
                 status=existing.status.value,
                 disposition_action=_disp,
                 primary_target_id=_pid,
+                loop_version=_pinned_loop_version(existing),
             )
 
         from investigation_agent_platform.domain.investigation.models import InvestigationRequest
@@ -187,6 +205,7 @@ async def create_investigation_activity(
             status=inv.status.value,
             disposition_action=_disp,
             primary_target_id=_pid,
+            loop_version=_pinned_loop_version(inv),
         )
     except ApplicationFailure:
         raise

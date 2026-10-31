@@ -46,6 +46,10 @@ Versions:
   proposal instead of a forced fetch. It only withholds or narrows a forced
   override; it cannot publish a verdict.
 
+- ``lv8``: lv7 plus per-rule shadow counting (review F9 D5). The shadow
+  ``forcing_used`` maps each rule to its own counter instead of mirroring
+  formulate for synthesis. Compute-only; loop dispatch is unchanged.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -60,7 +64,8 @@ LOOP_VERSION_LV4 = "lv4"
 LOOP_VERSION_LV5 = "lv5"
 LOOP_VERSION_LV6 = "lv6"
 LOOP_VERSION_LV7 = "lv7"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV7
+LOOP_VERSION_LV8 = "lv8"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LV8
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -69,6 +74,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LV5,
         LOOP_VERSION_LV6,
         LOOP_VERSION_LV7,
+        LOOP_VERSION_LV8,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -79,6 +85,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV5: 5,
     LOOP_VERSION_LV6: 6,
     LOOP_VERSION_LV7: 7,
+    LOOP_VERSION_LV8: 8,
 }
 
 

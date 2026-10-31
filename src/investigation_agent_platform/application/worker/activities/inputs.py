@@ -36,6 +36,9 @@ class CreateInvestigationOutput:
     # driving transitions that must fail and reconciling to FAILED.
     disposition_action: str | None = None
     primary_target_id: str | None = None
+    #: The entity's resolved loop pin (F10). Recorded in history so replay does not
+    #: re-resolve an unmarked row against the code's current version.
+    loop_version: str = ""
 
 
 @dataclass
@@ -327,23 +330,16 @@ def _derive_loop_telemetry(
     (legacy caller) means None out — telemetry unstamped.
     """
     try:
+        from investigation_agent_platform.domain.investigation.forcing_rules import (
+            TELEMETRY_DECLARED_NOT_STAMPED,
+            TELEMETRY_HANDLED_ELSEWHERE,
+            telemetry_allowlist,
+        )
+
         if not isinstance(passed, dict) or not passed:
             return None
         telemetry: dict[str, Any] = {}
-        for key in (
-            "llm_tokens_total",
-            "llm_cost_total",
-            "formulated_count",
-            "evidence_banked_total",
-            "forced_formulate_count",
-            "forced_reread_count",
-            "forced_log_search_count",
-            "forced_walk_stack_count",
-            "forced_replan_count",
-            "forced_synthesis_count",
-            "overconfident_turns",
-            "iterations",
-        ):
+        for key in tuple(sorted(telemetry_allowlist())):
             try:
                 value = passed.get(key)
             except Exception:
@@ -352,6 +348,24 @@ def _derive_loop_telemetry(
                 continue
             if isinstance(value, (int, float)):
                 telemetry[key] = value
+        try:
+            unknown = sorted(
+                str(k)
+                for k in passed
+                if k not in telemetry_allowlist()
+                and k not in TELEMETRY_HANDLED_ELSEWHERE
+                and k not in TELEMETRY_DECLARED_NOT_STAMPED
+            )
+            if unknown:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "loop telemetry dropped unrecognized keys: %s",
+                    ",".join(unknown[:20]),
+                    extra={"event": "loop telemetry key dropped", "dropped_key_count": len(unknown)},
+                )
+        except Exception:
+            pass
         try:
             route = passed.get("triage_route", None)
             if isinstance(route, str) and route:

@@ -6,7 +6,6 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 from temporalio import workflow
@@ -31,6 +30,11 @@ with workflow.unsafe.imports_passed_through():
     )
 
 with workflow.unsafe.imports_passed_through():
+    from investigation_agent_platform.domain.investigation.forcing_rules import (
+        RULES,
+        Force,
+        ForcePayload,
+    )
     from investigation_agent_platform.domain.investigation.loop_version import (
         LOOP_VERSION_CURRENT,
         LOOP_VERSION_LV4,
@@ -75,17 +79,7 @@ def _reason_summary(reason_data: dict[str, Any]) -> str:
     # same one-liner once the history entry is enriched (the call site
     # merges the enriched entry over the raw decision). Absent keys render
     # as-is (None), so pre-execution summaries keep their old shape.
-    forced_bits: list[str] = []
-    if isinstance(reason_data, dict):
-        for key in (
-            "forced_formulate",
-            "forced_reread",
-            "forced_log_search",
-            "forced_walk_stack",
-            "forced_replan",
-        ):
-            if reason_data.get(key):
-                forced_bits.append(key.removeprefix("forced_"))
+    forced_bits = [force.label for force in Force if reason_data.get(force.value)] if isinstance(reason_data, dict) else []
     forced = f" forced=[{','.join(forced_bits)}]" if forced_bits else ""
     outcome_bits: list[str] = []
     if isinstance(reason_data, dict):
@@ -2235,210 +2229,7 @@ def _flat_scalar_params(params: Any) -> dict[str, Any] | None:
         return None
 
 
-class Force(StrEnum):
-    """The forcing flags the cascade stamps on the reason data (review F8).
-
-    Values are the existing flag keys, so stored shapes (history entries, the
-    shadow trace, telemetry) are unchanged; the enum only gives the keys one
-    definition. ``ABSENCE_DISCONFIRMATION`` and ``NOT_CHECKABLE`` (D6) are
-    decided before the cascade runs and arrive as turn state; the rest are
-    written by the cascade itself.
-    """
-
-    ABSENCE_DISCONFIRMATION = "forced_absence_disconfirmation"
-    NOT_CHECKABLE = "forced_not_checkable"
-    PIVOT_RECOLLECT = "forced_pivot_recollect"
-    WALK_STACK = "forced_walk_stack"
-    REQUERY = "forced_requery"
-    FLOOR = "forced_floor"
-    FORMULATE = "forced_formulate"
-    REREAD = "forced_reread"
-    CALLSITE = "forced_callsite"
-    LOG_SEARCH = "forced_log_search"
-    REPLAN = "forced_replan"
-    SMALLEST_FETCH = "forced_smallest_fetch"
-
-
-#: Forces decided before the cascade. Every rule stands down on a turn that
-#: carries one (as turn state), so they are not listed per rule.
-PRE_CASCADE_FORCES = frozenset({Force.ABSENCE_DISCONFIRMATION, Force.NOT_CHECKABLE})
-
-
-@dataclass(frozen=True)
-class Rule:
-    """One cascade rule: the force it writes and what it must yield to.
-
-    ``stands_down_on`` is the set of earlier forces that suppress this rule for
-    the turn. ``exempt`` records an earlier force the rule deliberately does NOT
-    stand down on, with the reason; the contract below requires every earlier
-    force to be in one or the other.
-    """
-
-    name: str
-    force: Force
-    stands_down_on: frozenset[Force]
-    exempt: dict[Force, str] = field(default_factory=dict)
-
-
-_DISJOINT_COMMITTAL = (
-    "disjoint by construction: this rule triggers only on committal proposals "
-    "(FORMULATE/VERIFY/CONCLUDE) while a pivot needs a fetch proposal "
-    "(PIVOT_FILE_ACTIONS); pinned by test"
-)
-
-#: The cascade's rules in evaluation order. ``synthesis`` shares the FORMULATE
-#: force with ``formulate`` (same override, same flag). Keep this table and the
-#: cascade in step: a test requires the cascade to consult it once per rule, in
-#: this order, and ``check_rule_contract`` requires every rule to stand down on
-#: every earlier force or record why not.
-RULES: tuple[Rule, ...] = (
-    Rule("pivot", Force.PIVOT_RECOLLECT, frozenset()),
-    Rule(
-        "walk_stack",
-        Force.WALK_STACK,
-        frozenset(),
-        {
-            Force.PIVOT_RECOLLECT: (
-                "overrides the pivot's dispatch and clears its flag (F5): explicit "
-                "intake frames outrank every other gathering rule"
-            )
-        },
-    ),
-    Rule("requery", Force.REQUERY, frozenset({Force.WALK_STACK, Force.PIVOT_RECOLLECT})),
-    Rule(
-        "floor",
-        Force.FLOOR,
-        frozenset({Force.WALK_STACK, Force.REQUERY}),
-        {Force.PIVOT_RECOLLECT: _DISJOINT_COMMITTAL},
-    ),
-    Rule(
-        "formulate",
-        Force.FORMULATE,
-        frozenset({Force.WALK_STACK, Force.FLOOR, Force.REQUERY, Force.PIVOT_RECOLLECT}),
-    ),
-    Rule(
-        "synthesis",
-        Force.FORMULATE,
-        frozenset(
-            {
-                Force.WALK_STACK,
-                Force.FORMULATE,
-                Force.FLOOR,
-                Force.REQUERY,
-                Force.PIVOT_RECOLLECT,
-            }
-        ),
-    ),
-    Rule(
-        "reread",
-        Force.REREAD,
-        frozenset({Force.FORMULATE, Force.WALK_STACK, Force.FLOOR, Force.REQUERY}),
-        {Force.PIVOT_RECOLLECT: _DISJOINT_COMMITTAL},
-    ),
-    Rule(
-        "callsite",
-        Force.CALLSITE,
-        frozenset(
-            {
-                Force.FORMULATE,
-                Force.WALK_STACK,
-                Force.FLOOR,
-                Force.REREAD,
-                Force.REQUERY,
-                Force.PIVOT_RECOLLECT,
-            }
-        ),
-    ),
-    Rule(
-        "log_search",
-        Force.LOG_SEARCH,
-        frozenset(
-            {
-                Force.FORMULATE,
-                Force.REREAD,
-                Force.WALK_STACK,
-                Force.FLOOR,
-                Force.CALLSITE,
-                Force.REQUERY,
-                Force.PIVOT_RECOLLECT,
-            }
-        ),
-    ),
-    Rule(
-        "replan",
-        Force.REPLAN,
-        frozenset(
-            {
-                Force.FORMULATE,
-                Force.REREAD,
-                Force.LOG_SEARCH,
-                Force.WALK_STACK,
-                Force.FLOOR,
-                Force.CALLSITE,
-                Force.REQUERY,
-                Force.PIVOT_RECOLLECT,
-            }
-        ),
-    ),
-    Rule(
-        "smallest_fetch",
-        Force.SMALLEST_FETCH,
-        frozenset(
-            {
-                Force.FORMULATE,
-                Force.REREAD,
-                Force.WALK_STACK,
-                Force.FLOOR,
-                Force.CALLSITE,
-                Force.REQUERY,
-                Force.LOG_SEARCH,
-                Force.REPLAN,
-                Force.NOT_CHECKABLE,
-                Force.PIVOT_RECOLLECT,
-            }
-        ),
-    ),
-)
-
-_RULES_BY_NAME: dict[str, Rule] = {rule.name: rule for rule in RULES}
-
-
-def check_rule_contract(rules: tuple[Rule, ...] | list[Rule]) -> list[str]:
-    """Violations of the stand-down contract (empty list = satisfied). Pure.
-
-    Every rule must either stand down on, or record an exemption with a reason
-    for, every force an earlier rule writes; a rule may not do both for one
-    force, stand down on a force no earlier rule writes (other than the
-    pre-cascade forces), or reuse a name.
-    """
-    problems: list[str] = []
-    seen_names: set[str] = set()
-    earlier: list[Force] = []
-    for rule in rules:
-        if rule.name in seen_names:
-            problems.append(f"duplicate rule name: {rule.name}")
-        seen_names.add(rule.name)
-        for force in sorted(rule.stands_down_on & set(rule.exempt), key=lambda f: f.value):
-            problems.append(f"rule {rule.name} both stands down on and exempts {force.value}")
-        for force in earlier:
-            if force not in rule.stands_down_on and force not in rule.exempt:
-                problems.append(
-                    f"rule {rule.name} neither stands down on nor exempts earlier force "
-                    f"{force.value}"
-                )
-        for force, reason in rule.exempt.items():
-            if not str(reason or "").strip():
-                problems.append(f"rule {rule.name} exempts {force.value} without a reason")
-            if force not in earlier:
-                problems.append(f"rule {rule.name} exempts {force.value}, which is not earlier")
-        for force in sorted(rule.stands_down_on, key=lambda f: f.value):
-            if force not in earlier and force not in PRE_CASCADE_FORCES:
-                problems.append(
-                    f"rule {rule.name} stands down on {force.value}, which no earlier rule writes"
-                )
-        if rule.force not in earlier:
-            earlier.append(rule.force)
-    return problems
+_RULES_BY_NAME: dict[str, Any] = {rule.name: rule for rule in RULES}
 
 
 def _fired_forces(reason_data: Any) -> frozenset[Force]:
@@ -2700,6 +2491,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
             _reason_data["action_parameters"] = {}
             _reason_data[Force.FORMULATE.value] = True
+            _reason_data[ForcePayload.FORMULATE_RULE.value] = "formulate"
         # T2-4: synthesis forcing — rich multi-action corpus with
         # nothing committed gets FORMULATE (same override as G8).
         if not _down("synthesis"):
@@ -2715,6 +2507,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
                 _reason_data["action_parameters"] = {}
                 _reason_data[Force.FORMULATE.value] = True
+                _reason_data[ForcePayload.FORMULATE_RULE.value] = "synthesis"
         # P0-2: re-read forcing — definition claim heading to VERIFY
         # without a range-read gets the read first (G3 floor would
         # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.

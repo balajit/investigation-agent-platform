@@ -11,8 +11,18 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
+    from investigation_agent_platform.domain.investigation.forcing_rules import (
+        counter_telemetry,
+        fired_labels,
+        forced_stamp,
+        merge_counts,
+        new_counters,
+        payload_stamp,
+        shadow_forced,
+        shadow_forcing_used,
+    )
     from investigation_agent_platform.domain.investigation.loop_version import (
-        LOOP_VERSION_CURRENT,
+        loop_version_at_least,
     )
 
 with workflow.unsafe.imports_passed_through():
@@ -395,6 +405,16 @@ class RunInvestigationWorkflow:
                 error=f"not_startable:CANCELLED:disposition={_action}:primary={_pid}",
             )
 
+        # F10 D8: latch the pin from history. The input pin (API dispatch) wins;
+        # an unmarked input (bulk-intake child, legacy caller) takes the pin the
+        # create activity recorded, so a later LOOP_VERSION_CURRENT bump cannot
+        # change what a replayed run decides.
+        loop_version = str(input_data.loop_version or getattr(create_res, "loop_version", "") or "")
+        if not loop_version:
+            raise ApplicationError(
+                "loop version pin unavailable", type="LoopVersionMissing", non_retryable=True
+            )
+
         async def _transition(target: str, reason: str) -> None:
             await workflow.execute_activity(
                 transition_investigation_activity,
@@ -568,7 +588,7 @@ class RunInvestigationWorkflow:
         # recent_actions views, actions_used, the shadow previous outcome) read
         # turns only; work-order carriers stay in the same list because the
         # carrier readers index into it. Older pins read the raw list.
-        _split_carriers = _carriers_separated(input_data.loop_version or LOOP_VERSION_CURRENT)
+        _split_carriers = _carriers_separated(loop_version)
 
         def _turn_view() -> list[dict[str, Any]]:
             return turn_entries(action_history) if _split_carriers else action_history
@@ -600,23 +620,7 @@ class RunInvestigationWorkflow:
         # all-NOT_CHECKABLE abstention (the gate's measurable firing rate).
         fetches_dispatched = 0
         d6_blocked_no_evidence_count = 0
-        forced_formulate_count = 0
-        forced_reread_count = 0
-        forced_log_search_count = 0
-        forced_walk_stack_count = 0
-        forced_replan_count = 0
-        forced_pivot_count = 0
-        forced_synthesis_count = 0
-        forced_floor_count = 0
-        forced_callsite_count = 0
-        forced_absence_disconfirmation_count = 0
-        # Phase 4 (claim binding): smallest-fetch per-kind counters
-        # (cap 2 each, hard-coded >= 2 at the call site per precedent).
-        forced_smallest_fetch_definition_count = 0
-        forced_smallest_fetch_history_count = 0
-        forced_smallest_fetch_behavior_count = 0
-        forced_smallest_fetch_absence_count = 0
-        forced_smallest_fetch_causal_count = 0
+        counters = new_counters()
         overconfident_turns = 0
         defer_repairs_used = 0
         max_defer_repairs = 2
@@ -800,7 +804,7 @@ class RunInvestigationWorkflow:
                 is_defer=bool(_is_defer),
                 evidence_banked_total=evidence_banked_total,
                 fetches_dispatched=fetches_dispatched,
-                loop_version=input_data.loop_version or LOOP_VERSION_CURRENT,
+                loop_version=loop_version,
             )
             if _d6_blocked:
                 d6_blocked_no_evidence_count += 1
@@ -823,10 +827,10 @@ class RunInvestigationWorkflow:
                     if isinstance(getattr(reason_res, "data", {}), dict)
                     else [],
                     action_history,
-                    forced_absence_disconfirmation_count,
+                    counters["absence_disconfirmation"],
                 )
             if _absence_target is not None:
-                forced_absence_disconfirmation_count += 1
+                counters["absence_disconfirmation"] += 1
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _absence_target["next_action"]
                 _reason_data["action_parameters"] = _absence_target["action_parameters"]
@@ -851,76 +855,24 @@ class RunInvestigationWorkflow:
                     is_defer=bool(_is_defer),
                     d6_fired=bool(_d6_fired),
                     absence_forced=bool(_absence_forced),
-                    counts={
-                        "walk_stack": forced_walk_stack_count,
-                        "floor": forced_floor_count,
-                        "formulate": forced_formulate_count,
-                        "synthesis": forced_synthesis_count,
-                        "reread": forced_reread_count,
-                        "callsite": forced_callsite_count,
-                        "log_search": forced_log_search_count,
-                        "replan": forced_replan_count,
-                        "pivot": forced_pivot_count,
-                        "smallest_fetch_definition": forced_smallest_fetch_definition_count,
-                        "smallest_fetch_history": forced_smallest_fetch_history_count,
-                        "smallest_fetch_behavior": forced_smallest_fetch_behavior_count,
-                        "smallest_fetch_absence": forced_smallest_fetch_absence_count,
-                        "smallest_fetch_causal": forced_smallest_fetch_causal_count,
-                    },
+                    counts=dict(counters),
                     formulated_count=formulated_count,
                     tenant_id=tenant_id,
                     investigation_id=str(inv_id),
-                    loop_version=input_data.loop_version or LOOP_VERSION_CURRENT,
+                    loop_version=loop_version,
                 )
             )
             _reason_data = dict(_cascade_state.reason_data or {})
             _prev_focus = _cascade_state.prev_focus
             _consumed_order_ref = _cascade_state.consumed_order_ref
-            try:
-                _cc = _cascade_state.counts if isinstance(_cascade_state.counts, dict) else {}
-                forced_walk_stack_count = int(_cc.get("walk_stack", 0) or 0)
-                forced_floor_count = int(_cc.get("floor", 0) or 0)
-                forced_formulate_count = int(_cc.get("formulate", 0) or 0)
-                forced_synthesis_count = int(_cc.get("synthesis", 0) or 0)
-                forced_reread_count = int(_cc.get("reread", 0) or 0)
-                forced_callsite_count = int(_cc.get("callsite", 0) or 0)
-                forced_log_search_count = int(_cc.get("log_search", 0) or 0)
-                forced_replan_count = int(_cc.get("replan", 0) or 0)
-                forced_pivot_count = int(_cc.get("pivot", 0) or 0)
-                forced_smallest_fetch_definition_count = int(
-                    _cc.get("smallest_fetch_definition", 0) or 0
-                )
-                forced_smallest_fetch_history_count = int(_cc.get("smallest_fetch_history", 0) or 0)
-                forced_smallest_fetch_behavior_count = int(
-                    _cc.get("smallest_fetch_behavior", 0) or 0
-                )
-                forced_smallest_fetch_absence_count = int(_cc.get("smallest_fetch_absence", 0) or 0)
-                forced_smallest_fetch_causal_count = int(_cc.get("smallest_fetch_causal", 0) or 0)
-            except (TypeError, ValueError):
-                pass
+            merge_counts(counters, _cascade_state.counts)
             # Debug story: forcing cascade outcome. Compares the model's
             # pre-override proposal (_shadow_proposal) with the post-cascade
             # dispatch (_reason_data). Deterministic: both derive from
             # reason output + history. Story is joined with activity-level
             # story.reason_out / story.execute_in by iteration.
             try:
-                _forced_flags = sorted(
-                    k
-                    for k in (
-                        "forced_absence_disconfirmation",
-                        "forced_walk_stack",
-                        "forced_floor",
-                        "forced_formulate",
-                        "forced_reread",
-                        "forced_pivot_recollect",
-                        "forced_callsite",
-                        "forced_log_search",
-                        "forced_replan",
-                        "forced_not_checkable",
-                        "forced_smallest_fetch",
-                    )
-                    if _reason_data.get(k)
-                )
+                _forced_flags = fired_labels(_reason_data)
                 workflow.logger.debug(
                     "story.forcing_outcome iteration=%s proposal=%s final=%s forced=%s defer=%s",
                     iteration,
@@ -986,21 +938,9 @@ class RunInvestigationWorkflow:
                     reread_path_present=_reread_target(_shadow_proposal, action_history, 0)
                     is not None,
                     callsite_owed=_callsite_target(_shadow_proposal, action_history, 0) is not None,
-                    forcing_used={
-                        "walk_stack": forced_walk_stack_count,
-                        "floor": forced_floor_count,
-                        "formulate": forced_formulate_count,
-                        "synthesis": forced_formulate_count,
-                        "reread": forced_reread_count,
-                        "callsite": forced_callsite_count,
-                        "smallest_fetch": (
-                            forced_smallest_fetch_definition_count
-                            + forced_smallest_fetch_history_count
-                            + forced_smallest_fetch_behavior_count
-                            + forced_smallest_fetch_absence_count
-                            + forced_smallest_fetch_causal_count
-                        ),
-                    },
+                    forcing_used=shadow_forcing_used(
+                        counters, synthesis_separate=loop_version_at_least({"loop_version": loop_version}, "lv8")
+                    ),
                     action_history=action_history,
                 )
                 _shadow_turn = capture_turn(
@@ -1026,30 +966,7 @@ class RunInvestigationWorkflow:
                     if isinstance(_raw_params, dict)
                     else {}
                 )
-                _shadow_turn["forced"] = sorted(
-                    short
-                    for key, short in (
-                        ("forced_walk_stack", "walk_stack"),
-                        ("forced_floor", "floor"),
-                        ("forced_formulate", "formulate"),
-                        ("forced_reread", "reread"),
-                        ("forced_callsite", "callsite"),
-                        ("forced_log_search", "log_search"),
-                        ("forced_replan", "replan"),
-                        ("forced_absence_disconfirmation", "absence_disconfirmation"),
-                        # Phase 4 (claim binding): smallest-fetch + opinion
-                        # fast path ride the same short-name list.
-                        ("forced_smallest_fetch", "smallest_fetch"),
-                        ("forced_not_checkable", "not_checkable"),
-                    )
-                    if _reason_data.get(key)
-                )
-                # Synthesis shares the loop's formulate counter and flag:
-                # a set forced_formulate with formulate_owed False means
-                # the synthesis rule fired it (the only other setter).
-                if _reason_data.get("forced_formulate") and not _formulate_owed_now:
-                    _shadow_turn["forced"].append("synthesis")
-                    _shadow_turn["forced"] = sorted(_shadow_turn["forced"])
+                _shadow_turn["forced"] = shadow_forced(_reason_data)
                 _shadow_turn["owed"] = {
                     "walk_stack": _shadow_snapshot.stack_walk_owed,
                     "floor": _shadow_snapshot.below_evidence_floor,
@@ -1206,21 +1123,8 @@ class RunInvestigationWorkflow:
                         "evidence_added": len(_outcome.get("evidence_ids", []) or []),
                         "miss_reason": _outcome.get("miss_reason"),
                         "sources": _outcome.get("sources", []),
-                        "forced_formulate": bool(_reason_data.get("forced_formulate", False)),
-                        "forced_reread": bool(_reason_data.get("forced_reread", False)),
-                        "forced_log_search": bool(_reason_data.get("forced_log_search", False)),
-                        "forced_walk_stack": bool(_reason_data.get("forced_walk_stack", False)),
-                        "forced_pivot_recollect": bool(
-                            _reason_data.get("forced_pivot_recollect", False)
-                        ),
-                        "forced_replan": bool(_reason_data.get("forced_replan", False)),
-                        "forced_floor": bool(_reason_data.get("forced_floor", False)),
-                        "forced_callsite": bool(_reason_data.get("forced_callsite", False)),
-                        # Phase 4 (claim binding): smallest-fetch stamps for
-                        # history dedupe (gap_id-keyed, no param parsing).
-                        "forced_smallest_fetch": bool(
-                            _reason_data.get("forced_smallest_fetch", False)
-                        ),
+                        **forced_stamp(_reason_data),
+                        **payload_stamp(_reason_data),
                         "forced_smallest_fetch_kind": str(
                             _reason_data.get("forced_smallest_fetch_kind", "") or ""
                         ),
@@ -1253,6 +1157,7 @@ class RunInvestigationWorkflow:
                 # fresh evaluation, never a tight retry loop.
                 if _reason_data.get("forced_requery") and isinstance(_consumed_order_ref, dict):
                     _consumed_order_ref["consumed"] = True
+                    counters["requery"] += 1
                     action_history[-1]["requery_consumed"] = {
                         "claim_ref": str(_consumed_order_ref.get("claim_ref") or ""),
                         "query": str(_consumed_order_ref.get("query") or ""),
@@ -1523,9 +1428,9 @@ class RunInvestigationWorkflow:
                 evidence_banked_total,
                 defer_repairs_used,
                 max_defer_repairs,
-                forced_callsite_count,
-                forced_reread_count,
-                forced_formulate_count,
+                counters["callsite"],
+                counters["reread"],
+                counters["formulate"],
             )
         except Exception:
             pass
@@ -1575,23 +1480,10 @@ class RunInvestigationWorkflow:
                     "evidence_banked_total": evidence_banked_total,
                     "d6_blocked_no_evidence_count": d6_blocked_no_evidence_count,
                     "fetches_dispatched": fetches_dispatched,
-                    "forced_formulate_count": forced_formulate_count,
-                    "forced_reread_count": forced_reread_count,
-                    "forced_log_search_count": forced_log_search_count,
-                    "forced_walk_stack_count": forced_walk_stack_count,
-                    "forced_replan_count": forced_replan_count,
-                    "forced_pivot_count": forced_pivot_count,
-                    "forced_synthesis_count": forced_synthesis_count,
+                    **counter_telemetry(counters),
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,
                     "defer_repairs_limit": max_defer_repairs,
-                    # Phase 4 (claim binding): smallest-fetch per-kind fires.
-                    "forced_smallest_fetch_definition_count": forced_smallest_fetch_definition_count,
-                    "forced_smallest_fetch_history_count": forced_smallest_fetch_history_count,
-                    "forced_smallest_fetch_behavior_count": forced_smallest_fetch_behavior_count,
-                    "forced_smallest_fetch_absence_count": forced_smallest_fetch_absence_count,
-                    "forced_smallest_fetch_causal_count": forced_smallest_fetch_causal_count,
-                    "forced_absence_disconfirmation_count": forced_absence_disconfirmation_count,
                     "claim_binding_kept": claim_binding_kept_total,
                     "claim_binding_evaporated": claim_binding_evaporated_total,
                     "claim_binding_unmapped": claim_binding_unmapped_total,
