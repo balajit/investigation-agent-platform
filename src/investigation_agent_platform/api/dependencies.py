@@ -786,6 +786,12 @@ class InMemoryEvidenceRepository(EvidenceRepository):
                 result.append(ev)
         return result
 
+    async def get_for_investigation(
+        self, tenant_id: str, investigation_id: UUID, evidence_id: UUID
+    ) -> Evidence | None:
+        rows = await self.find_by_investigation_id(tenant_id, investigation_id)
+        return next((e for e in rows if e.evidence_id == evidence_id), None)
+
     async def find_by_investigation_id(
         self, tenant_id: str, investigation_id: UUID
     ) -> list[Evidence]:

@@ -1040,6 +1040,9 @@ class TestNewInvestigationRoutes:
         _asyncio.run(ctx.investigation_repo.save("tenant-a", started, inv.version))
         fake_handle = MagicMock()
         fake_handle.signal = AsyncMock(return_value=None)
+        # R12D: the endpoint verifies the action is pending for this
+        # investigation; the fake reports it pending.
+        fake_handle.query = AsyncMock(return_value=["a"])
         fake_client = MagicMock()
         fake_client.get_workflow_handle = MagicMock(return_value=fake_handle)
         ctx.temporal_client = fake_client

@@ -375,6 +375,12 @@ class SqlAlchemyEvidenceRepository:
                 items.extend(shared.all())
             return [self._from_orm(row) for row in items]
 
+    async def get_for_investigation(
+        self, tenant_id: str, investigation_id: UUID, evidence_id: UUID
+    ) -> Evidence | None:
+        rows = await self.find_by_investigation_id(tenant_id, investigation_id)
+        return next((e for e in rows if str(e.evidence_id) == str(evidence_id)), None)
+
     async def sharing_info(
         self, tenant_id: str, evidence_keys: list[str]
     ) -> dict[str, dict[str, Any]]:

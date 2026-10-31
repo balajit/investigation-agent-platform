@@ -111,6 +111,17 @@ class EvidenceRepository(Protocol):
         self, tenant_id: str, investigation_id: UUID
     ) -> list[Evidence]: ...
 
+    async def get_for_investigation(
+        self, tenant_id: str, investigation_id: UUID, evidence_id: UUID
+    ) -> Evidence | None:
+        """Row the investigation owns or holds bank interest in (R12D).
+
+        Owned rows plus the shared reference rows this investigation has
+        interest in (G6 union); a row banked under another investigation
+        with no interest returns None instead of leaking across.
+        """
+        ...
+
 
 @runtime_checkable
 class HypothesisRepository(Protocol):

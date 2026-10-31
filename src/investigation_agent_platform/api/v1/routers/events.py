@@ -17,7 +17,11 @@ from investigation_agent_platform.api.dependencies import (
     get_app_context,
 )
 from investigation_agent_platform.api.errors import ApiError
-from investigation_agent_platform.api.tenant import require_principal, require_tenant
+from investigation_agent_platform.api.tenant import (
+    require_approver_role,
+    require_principal,
+    require_tenant,
+)
 from investigation_agent_platform.api.v1.schemas.errors import COMMON_ERROR_RESPONSES
 from investigation_agent_platform.api.v1.schemas.events import (
     ApproveActionAck,
@@ -39,6 +43,39 @@ _TERMINAL_STATUSES = {
     InvestigationStatus.FAILED,
     InvestigationStatus.CANCELLED,
 }
+
+
+async def _query_workflow(
+    ctx: Any, investigation_id: str, query_name: str
+) -> Any:
+    """Query the running Temporal workflow (R12D: pending approvals).
+
+    Returns the decoded payload. Raises like _signal_workflow on
+    transport failure; an unknown query type surfaces as the query
+    error and is left for the caller to interpret (a workflow without
+    the query cannot have anything pending under it).
+    """
+    temporal_client = getattr(ctx, "temporal_client", None)
+    if temporal_client is None:
+        raise ApiError(
+            code="TEMPORAL_UNAVAILABLE",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Workflow execution engine is unavailable; cannot query investigation",
+        )
+    workflow_id = f"wf-investigation-{investigation_id}"
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        return await handle.query(query_name)
+    except Exception as exc:
+        logger.error(
+            "Failed to query workflow",
+            extra={"workflow_id": workflow_id, "query": query_name, "error": str(exc)},
+        )
+        raise ApiError(
+            code="WORKFLOW_QUERY_FAILED",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+            message=f"Failed to query '{query_name}' on workflow",
+        ) from exc
 
 
 async def _signal_workflow(
@@ -278,6 +315,7 @@ async def approve_action(
     approved: bool,
     x_tenant_id: str = Depends(require_tenant),
     principal_id: str = Depends(require_principal),
+    _approver_role: str = Depends(require_approver_role),
 ) -> ApproveActionAck:
     """Signals Temporal workflow to proceed or abort a Human-in-the-Loop restricted action."""
     ctx = get_app_context()
@@ -308,6 +346,34 @@ async def approve_action(
             code="INVESTIGATION_NOT_STARTED",
             http_status=status.HTTP_409_CONFLICT,
             message="Cannot approve an action on an investigation that was never started (status CREATED); no workflow exists to signal",
+        )
+
+    # R12D: the action must be awaiting approval for this investigation.
+    # A workflow without the pending-approvals query cannot have anything
+    # pending, so an unknown query reads as an empty set (fail closed).
+    try:
+        pending = await _query_workflow(ctx, investigation_id, "pending_approvals")
+    except ApiError as exc:
+        if exc.code == "WORKFLOW_QUERY_FAILED" and "unknown query" in str(
+            getattr(exc, "message", "")
+        ).lower():
+            pending = []
+        else:
+            raise
+    pending_ids = set()
+    try:
+        for entry in pending or []:
+            if isinstance(entry, str):
+                pending_ids.add(entry)
+            elif isinstance(entry, dict) and entry.get("action_id") is not None:
+                pending_ids.add(str(entry["action_id"]))
+    except Exception:
+        pending_ids = set()
+    if str(action_id) not in pending_ids:
+        raise ApiError(
+            code="ACTION_NOT_PENDING",
+            http_status=status.HTTP_404_NOT_FOUND,
+            message="No pending approval for this action on this investigation",
         )
 
     signal_name = "action_approval_response"
