@@ -327,7 +327,9 @@ class ErrorIntakeService:
         else:
             investigation = await self._maybe_reopen(tenant_id, target)
 
-        session_number = await self.code_issue_index.next_session_number(fingerprint)
+        session_number = await self.code_issue_index.allocate_session(
+            fingerprint, investigation.id, now
+        )
         session = InvestigationSession(
             investigation_id=investigation.id,
             session_number=session_number,
@@ -337,9 +339,6 @@ class ErrorIntakeService:
             trace_refs=list(trace_refs or []),
         )
         await self.session_repo.append(tenant_id, session)
-        await self.code_issue_index.record_session(
-            fingerprint, session_number, investigation.id, now
-        )
         logger.info(
             "Intake session recorded",
             extra={

@@ -642,3 +642,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`ports/knowledge/ports.py`, `knowledge_repository.py`, `retrieve.py`, `dependencies.py`, `idempotency_repository.py`): the port and both envelope repos gain `update_status(tenant_id, artifact_id, status) -> bool` (SQL: `UPDATE ... WHERE id AND tenant_id`, rowcount bool; memory: replace by key, foreign/missing → False); `_transition` skips foreign SHARED rows outright (never written by the reader) and calls `update_status`, failing open with a warning; `save` stays insert-only (negative control pinned). Idempotency expiry and orphan paths share one `_reclaim_and_reserve` (delete, flush, re-insert, loser sees an empty insert and reports in-progress); an expired key is reusable regardless of the old request hash. Reconciles and removes the three 2026-10-20 idempotency ledger entries.
 
 **Tests.** `test_r12a_knowledge_transition.py` (3: counting-fake foreign exclusion, disposable-Postgres transition persists + save-stays-insert-only control, disposable-Postgres janitor sweep) and `test_r12c_idempotency_reclaim.py` (3: reclaim + replace, other-payload reuse, 8-way race) on a session-scoped disposable postgres:16 container (non-protected loopback port, pg-guard dogfooded, per-test databases). Full unit green, ruff clean, mypy clean on touched modules. Unit-proven only.
+
+## 86. Session-number race (review R12I, no loop version, 2026-10-31)
+
+**Version pinning.** None (data-layer race).
+
+**The defect.** `next_session_number` committed before `record_session` inserted, releasing the advisory lock in between; concurrent intakes read the same `max`, took the same number, and the loser's row was silently discarded by `ON CONFLICT DO NOTHING`.
+
+**What changed** (`ports/knowledge/ports.py`, `knowledge_repository.py`, `dependencies.py`, `intake.py`, `buffered.py`): one method, one transaction — `allocate_session(fingerprint, investigation_id, occurred_at) -> int` holds the advisory lock until the row commits; the split pair is removed from the port and both stores (in-memory takes it under its lock). Intake calls it once. The buffered-dev proxy no longer WAL-buffers the index (replay would double-allocate); the op falls back to read-style primary/fallback, and the entity-id helper follows the new arg shape.
+
+**Tests.** `test_r12i_session_allocation.py` (2: 8-way concurrent allocation yields 1..8 with 8 rows on disposable Postgres; intake makes exactly one call through a port-shaped fake that rejects the old API). Red verified by stash (old tree lacks the method). Full unit green, ruff clean, mypy clean on touched modules (3 remaining dependencies.py errors are pre-existing signature mismatches in untouched repos). Unit-proven only.

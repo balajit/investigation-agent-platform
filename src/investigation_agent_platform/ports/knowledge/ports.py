@@ -120,13 +120,20 @@ class CodeIssueIndex(Protocol):
     directly to callers; intake and redacted-placeholder assembly only.
     """
 
-    async def record_session(
+    async def allocate_session(
         self,
         code_issue_fingerprint: str,
-        session_number: int,
         investigation_id: UUID,
         occurred_at: Any,
-    ) -> None: ...
+    ) -> int:
+        """Allocate the next session number and record the session, atomically.
+
+        One transaction: the advisory lock is held until the row commits,
+        so concurrent allocations never share a number and no session is
+        lost (R12I). Replaces the split next_session_number/record_session
+        pair, whose lock release-then-insert window dropped rows.
+        """
+        ...
 
     async def sessions_for_fingerprint(
         self, code_issue_fingerprint: str

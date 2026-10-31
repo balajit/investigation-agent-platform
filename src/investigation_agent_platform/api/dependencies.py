@@ -430,17 +430,19 @@ class InMemoryCodeIssueIndex:
         self._lock = asyncio.Lock()
         self._rows: dict[tuple[str, int], tuple[UUID, Any]] = {}
 
-    async def record_session(
+    async def allocate_session(
         self,
         code_issue_fingerprint: str,
-        session_number: int,
         investigation_id: UUID,
         occurred_at: Any,
-    ) -> None:
+    ) -> int:
         async with self._lock:
+            numbers = [num for (fp, num) in self._rows if fp == code_issue_fingerprint]
+            number = (max(numbers) if numbers else 0) + 1
             self._rows.setdefault(
-                (code_issue_fingerprint, session_number), (investigation_id, occurred_at)
+                (code_issue_fingerprint, number), (investigation_id, occurred_at)
             )
+            return number
 
     async def sessions_for_fingerprint(
         self, code_issue_fingerprint: str
@@ -459,12 +461,6 @@ class InMemoryCodeIssueIndex:
         _ = open_only  # status filtering is the caller's job
         rows = await self.sessions_for_fingerprint(code_issue_fingerprint)
         return rows[-1][1] if rows else None
-
-    async def next_session_number(self, code_issue_fingerprint: str) -> int:
-        async with self._lock:
-            numbers = [num for (fp, num) in self._rows if fp == code_issue_fingerprint]
-            return (max(numbers) if numbers else 0) + 1
-
 
 class _InMemoryOutboxRepository:
     """Process-local outbox (durable Postgres version in production)."""
