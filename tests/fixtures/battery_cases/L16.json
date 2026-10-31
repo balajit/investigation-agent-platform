@@ -1,0 +1,58 @@
+{
+  "id": "L16",
+  "symptom": "Where are doFilter and validateOrder implemented in SampleOrderFilter?",
+  "context": "H3 probe (review part 1, Risk B case b): two DEFINITION claims in one file, the second false (the file defines init, doFilter and destroy; there is no validateOrder). The gate must verify every target: the true claim must not carry the false one, and the two claims must not overwrite each other (H2).",
+  "live": false,
+  "offline_reason": "Needs injected typed claims: two DEFINITION groups with different symbols in the same file, sharing one hypothesis statement, one with a bound range row and one with none. The live model does not reliably emit this shape. Offline-only, graded by the offline suite.",
+  "expect": {
+    "status": "ABSTAIN",
+    "claim": "multi_target_definition",
+    "claim_groups": [
+      {
+        "kind": "DEFINITION",
+        "target": {
+          "symbol": "doFilter",
+          "file_path": "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java"
+        },
+        "grounded": true
+      },
+      {
+        "kind": "DEFINITION",
+        "target": {
+          "symbol": "validateOrder",
+          "file_path": "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java"
+        },
+        "grounded": false,
+        "false_target": true
+      }
+    ],
+    "intended": [
+      "status is an abstention; a combined answer that includes validateOrder must not publish",
+      "limitations name the unverified DEFINITION group for validateOrder",
+      "the doFilter group is not lost (no overwrite of the first claim by the second)"
+    ],
+    "known_grader_gaps": [
+      {
+        "id": "multi-target-no-per-target-expectation",
+        "assertion": "an ANSWERED verdict for doFilter alone, with validateOrder excluded and named as unverified, would also be acceptable",
+        "grader": "scripts/tranche_b_battery.py score_supported -> _check_definition",
+        "current_behavior": "the grader has one expect.cited_path and one expect_symbol and no per-target expectation, so that reading cannot be expressed; the fixture encodes the stricter whole-verdict-withheld reading instead. A combined ANSWERED is still caught, but only because status ABSTAIN is expected ('fabricated answer to unanswerable')",
+        "t9": "L1/L3/L4 match one named path by substring and any one matching row passes"
+      },
+      {
+        "id": "multi-target-limitation-unchecked",
+        "assertion": "the abstention must name the unverified validateOrder group",
+        "grader": "scripts/tranche_b_battery.py score_supported, ABSTAIN branch",
+        "current_behavior": "any abstention passes; limitations are not read",
+        "t9": "L8 passes on any abstention without checking why"
+      },
+      {
+        "id": "multi-target-h2-overwrite-undetectable",
+        "assertion": "the first target's evidence binding survives alongside the second's",
+        "grader": "none: the battery scores the conclusion surface only",
+        "current_behavior": "claim-key collisions inside hypothesis persistence are invisible to the grader",
+        "t9": "grader does not read hypothesis assessments"
+      }
+    ]
+  }
+}

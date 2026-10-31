@@ -1,0 +1,48 @@
+{
+  "id": "L14",
+  "symptom": "Where is SampleOrderFilter implemented, and is it what causes the order handler timeouts under load?",
+  "context": "H3 probe (review part 1, Risk B case a): a mixed-kind hypothesis [DEFINITION grounded by a range read of the filter file, CAUSAL with no evidence] must not publish. The verdict gate has to verify every checkable (kind, target) group; the grounded DEFINITION alone must not carry the ungrounded causal statement into root_cause.",
+  "live": false,
+  "offline_reason": "The live model chooses its own claim groups, so this shape cannot be forced live. It needs injected typed claims (a DEFINITION group with a bound range read plus a CAUSAL group citing nothing), the same way the NOT_CHECKABLE path is proven by an injected-claim test. Offline-only, graded by the offline suite.",
+  "expect": {
+    "status": "ABSTAIN",
+    "claim": "mixed_kind",
+    "claim_groups": [
+      {
+        "kind": "DEFINITION",
+        "target": {
+          "symbol": "SampleOrderFilter",
+          "file_path": "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java"
+        },
+        "grounded": true
+      },
+      {
+        "kind": "CAUSAL",
+        "target": {},
+        "statement": "SampleOrderFilter causes the order handler timeouts under load",
+        "grounded": false
+      }
+    ],
+    "intended": [
+      "status is an abstention (INSUFFICIENT_EVIDENCE); never ANSWERED or ROOT_CAUSE_*",
+      "root_cause is empty: the ungrounded causal statement does not ship",
+      "limitations name the unverified group (UNVERIFIED_CLAIM_GROUP)"
+    ],
+    "known_grader_gaps": [
+      {
+        "id": "mixed-kind-limitation-unchecked",
+        "assertion": "an abstention must carry an UNVERIFIED_CLAIM_GROUP limitation naming the ungrounded CAUSAL group",
+        "grader": "scripts/tranche_b_battery.py score_supported, ABSTAIN branch (generic: checks only that no cited row is an infrastructure failure)",
+        "current_behavior": "any abstention passes ('honest abstention (INSUFFICIENT_EVIDENCE)') whether or not the limitation is present; the limitation is asserted only for claim 'not_checkable'",
+        "t9": "L8 passes on any abstention without checking why"
+      },
+      {
+        "id": "mixed-kind-g1-miss",
+        "assertion": "a correct abstention here is a G1 handoff",
+        "grader": "scripts/tranche_b_battery.py score_g1 / _concrete_handoff",
+        "current_behavior": "an abstention that carries the UNVERIFIED_CLAIM_GROUP limitation but no priced concrete next_fetch and no eliminated rival scores G1 MISS; G1 does not read limitations",
+        "t9": "INSUFFICIENT-with-limitation is graded as a miss"
+      }
+    ]
+  }
+}

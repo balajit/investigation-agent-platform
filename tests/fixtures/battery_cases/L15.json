@@ -1,0 +1,50 @@
+{
+  "id": "L15",
+  "symptom": "Where is OrderServiceHandler implemented, and is it the best-designed handler in the service?",
+  "context": "H4 probe (review part 1, Risk B case c, post-fix reading): one checkable DEFINITION claim plus a NOT_CHECKABLE taste claim. The checkable claim may publish, but the opinion must not ship in the verdict: it is recorded as a limitation (NOT_CHECKABLE_EXCLUDED), never as root_cause.",
+  "live": false,
+  "offline_reason": "The live model never declares NOT_CHECKABLE (four live data points, owner decision J), so the opinion half cannot be produced live. Needs injected typed claims. Offline-only, graded by the offline suite.",
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "definition",
+    "cited_path": "OrderServiceHandler.java",
+    "expect_symbol": "OrderServiceHandler",
+    "claim_groups": [
+      {
+        "kind": "DEFINITION",
+        "target": {
+          "symbol": "OrderServiceHandler",
+          "file_path": "service/src/main/java/com/sample/orders/handler/OrderServiceHandler.java"
+        },
+        "grounded": true
+      },
+      {
+        "kind": "NOT_CHECKABLE",
+        "target": {},
+        "statement": "OrderServiceHandler is the best-designed handler in the service",
+        "grounded": false
+      }
+    ],
+    "intended": [
+      "status ANSWERED, citing the range read of OrderServiceHandler.java",
+      "root_cause states the location only; the opinion text does not appear in it",
+      "limitations include NOT_CHECKABLE_EXCLUDED"
+    ],
+    "known_grader_gaps": [
+      {
+        "id": "nc-opinion-in-verdict-unchecked",
+        "assertion": "root_cause must not contain the NOT_CHECKABLE statement",
+        "grader": "scripts/tranche_b_battery.py score_supported -> _check_definition",
+        "current_behavior": "_check_definition only requires the expected path in the prose and one cited range row naming the symbol; an answer that also asserts 'best-designed' passes",
+        "t9": "grader never reads the root prose beyond containment of the expected token"
+      },
+      {
+        "id": "nc-limitation-unchecked",
+        "assertion": "limitations must include NOT_CHECKABLE_EXCLUDED when an ANSWERED verdict excluded an opinion claim",
+        "grader": "scripts/tranche_b_battery.py score_supported (ANSWERED path)",
+        "current_behavior": "limitations are read only for RIVAL_UNTESTED (rival exemption) and, on abstention, NOT_CHECKABLE_SKIPPED; an ANSWERED verdict with no limitations passes",
+        "t9": "limitations are not graded for answered cases"
+      }
+    ]
+  }
+}
