@@ -605,6 +605,7 @@ class RunInvestigationWorkflow:
         forced_log_search_count = 0
         forced_walk_stack_count = 0
         forced_replan_count = 0
+        forced_pivot_count = 0
         forced_synthesis_count = 0
         forced_floor_count = 0
         forced_callsite_count = 0
@@ -859,6 +860,7 @@ class RunInvestigationWorkflow:
                         "callsite": forced_callsite_count,
                         "log_search": forced_log_search_count,
                         "replan": forced_replan_count,
+                        "pivot": forced_pivot_count,
                         "smallest_fetch_definition": forced_smallest_fetch_definition_count,
                         "smallest_fetch_history": forced_smallest_fetch_history_count,
                         "smallest_fetch_behavior": forced_smallest_fetch_behavior_count,
@@ -884,6 +886,7 @@ class RunInvestigationWorkflow:
                 forced_callsite_count = int(_cc.get("callsite", 0) or 0)
                 forced_log_search_count = int(_cc.get("log_search", 0) or 0)
                 forced_replan_count = int(_cc.get("replan", 0) or 0)
+                forced_pivot_count = int(_cc.get("pivot", 0) or 0)
                 forced_smallest_fetch_definition_count = int(
                     _cc.get("smallest_fetch_definition", 0) or 0
                 )
@@ -1577,6 +1580,7 @@ class RunInvestigationWorkflow:
                     "forced_log_search_count": forced_log_search_count,
                     "forced_walk_stack_count": forced_walk_stack_count,
                     "forced_replan_count": forced_replan_count,
+                    "forced_pivot_count": forced_pivot_count,
                     "forced_synthesis_count": forced_synthesis_count,
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,

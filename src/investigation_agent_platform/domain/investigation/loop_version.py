@@ -38,6 +38,14 @@ Versions:
   views, ``actions_used`` and the shadow previous-outcome) now read turns only.
   Carrier readers keep the full list because they index into it.
 
+- ``lv7``: lv6 plus a bounded, non-destructive pivot (review F4). The pivot
+  recollect caps at two per run (a pivot cancelled by walk-stack is not
+  counted), preserves the proposal's parameters and pinned revision instead of
+  rewriting them to a whole-file read at HEAD (a scoped SEARCH_CODE is left
+  alone), and measures the next shift against the model's own previous
+  proposal instead of a forced fetch. It only withholds or narrows a forced
+  override; it cannot publish a verdict.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -51,9 +59,17 @@ LOOP_VERSION_LV3 = "lv3"
 LOOP_VERSION_LV4 = "lv4"
 LOOP_VERSION_LV5 = "lv5"
 LOOP_VERSION_LV6 = "lv6"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV6
+LOOP_VERSION_LV7 = "lv7"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LV7
 KNOWN_LOOP_VERSIONS = frozenset(
-    {LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4, LOOP_VERSION_LV5, LOOP_VERSION_LV6}
+    {
+        LOOP_VERSION_LV2,
+        LOOP_VERSION_LV3,
+        LOOP_VERSION_LV4,
+        LOOP_VERSION_LV5,
+        LOOP_VERSION_LV6,
+        LOOP_VERSION_LV7,
+    }
 )
 # Release order: a later version includes every earlier version's semantics.
 _LOOP_VERSION_ORDER = {
@@ -62,6 +78,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV4: 4,
     LOOP_VERSION_LV5: 5,
     LOOP_VERSION_LV6: 6,
+    LOOP_VERSION_LV7: 7,
 }
 
 

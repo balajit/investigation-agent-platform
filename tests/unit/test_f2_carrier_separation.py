@@ -31,7 +31,6 @@ from investigation_agent_platform.application.worker.workflows.forcing import (
     turn_entries,
 )
 from investigation_agent_platform.domain.investigation.loop_version import (
-    LOOP_VERSION_CURRENT,
     loop_version_at_least,
 )
 
@@ -107,8 +106,8 @@ def test_a_real_turn_entry_never_carries_a_carrier_kind() -> None:
 # --- version routing ------------------------------------------------------------------------------
 
 
-def test_lv6_is_current_and_includes_lv5() -> None:
-    assert LOOP_VERSION_CURRENT == "lv6"
+def test_lv6_is_included_in_the_current_version_and_includes_lv5() -> None:
+    assert loop_version_at_least({}, "lv6") is True  # current includes lv6
     assert loop_version_at_least({"loop_version": "lv6"}, "lv5") is True
     assert loop_version_at_least({"loop_version": "lv5"}, "lv6") is False
 

@@ -220,7 +220,7 @@ class TestCompetingRules:
         state = _state(
             reason_data={
                 "next_action": "SEARCH_CODE",
-                "action_parameters": {"file_path": "svc/new.py", "query": "filter"},
+                "action_parameters": {"file_path": "svc/new.py"},
             },
             action_history=history,
             description="where is the order filter implemented",
@@ -228,6 +228,27 @@ class TestCompetingRules:
         out = apply_post_reason_cascade(state)
         assert out.reason_data["forced_pivot_recollect"] is True
         assert out.reason_data.get("forced_replan") is not True
+
+    def test_a_scoped_search_with_a_query_is_not_pivoted_from_lv7(self) -> None:
+        # F4: a SEARCH_CODE that already carries a query targets the surface
+        # itself; the pivot no longer rewrites it to a whole-file read.
+        history = [
+            {"action": "SEARCH_CODE", "evidence_added": 0, "parameters": {"query": "x"}},
+            {"action": "SEARCH_CODE", "evidence_added": 0, "parameters": {"query": "x"}},
+        ]
+        reason = {
+            "next_action": "SEARCH_CODE",
+            "action_parameters": {"file_path": "svc/new.py", "query": "filter"},
+        }
+        old = apply_post_reason_cascade(
+            _state(reason_data=dict(reason), action_history=list(history), loop_version="lv6")
+        )
+        new = apply_post_reason_cascade(
+            _state(reason_data=dict(reason), action_history=list(history), loop_version="lv7")
+        )
+        assert old.reason_data["forced_pivot_recollect"] is True
+        assert old.reason_data["next_action"] == "GET_CODE"
+        assert not new.reason_data.get("forced_pivot_recollect")
 
     def test_pivot_beats_smallest_fetch(self) -> None:
         from investigation_agent_platform.application.worker.workflows.forcing import (

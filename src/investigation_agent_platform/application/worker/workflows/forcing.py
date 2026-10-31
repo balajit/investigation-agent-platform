@@ -51,6 +51,7 @@ with workflow.unsafe.imports_passed_through():
         LOOP_VERSION_CURRENT,
         LOOP_VERSION_LV4,
         LOOP_VERSION_LV6,
+        LOOP_VERSION_LV7,
         loop_version_at_least,
     )
 
@@ -394,11 +395,38 @@ def _should_force_walk_stack(
         return None
 
 
+#: Per-run cap on the pivot recollect (lv7), matching the other forcing rules.
+PIVOT_RECOLLECT_CAP = 2
+
+
+def _pivot_hardened(loop_version: Any) -> bool:
+    """Whether the run's pin uses the bounded, non-destructive pivot (lv7+).
+
+    Fail-safe: an unrecognized or unreadable pin returns False (old pivot).
+    """
+    try:
+        return bool(loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LV7))
+    except Exception:
+        return False
+
+
+def _proposed_params(reason_data: Any) -> dict[str, Any]:
+    """A copy of the model's proposed action parameters ({} when malformed)."""
+    try:
+        raw = (reason_data or {}).get("action_parameters")
+        return dict(raw) if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
 def _should_force_pivot_recollect(
     prev_focus: dict[str, Any] | None,
     reason_data: dict[str, Any] | None,
     turns_remaining: int,
     recent_targets: list[str] | None,
+    *,
+    preserve_proposal: bool = False,
+    forced_count: Any = 0,
 ) -> dict[str, Any] | None:
     """Collection-forcing override on focus pivot (P6 2b-i, pure).
 
@@ -412,10 +440,23 @@ def _should_force_pivot_recollect(
     Budget-blind by design (agentic layers own budget governance); the
     only gate is liveness — turns_remaining covers the collection turn
     plus at least one turn to use what it banks. Never raises.
+
+    ``preserve_proposal`` (lv7, review F4) makes the rewrite non-destructive and
+    bounded: the rule stands down at :data:`PIVOT_RECOLLECT_CAP` fired pivots, a
+    SEARCH_CODE proposal that already carries a query is left as proposed (the
+    model's scoped search targets the new surface), and the proposal's own
+    parameters and pinned revision are kept (``HEAD`` is only the default when
+    no revision was proposed). A malformed ``forced_count`` leaves the cap inert.
     """
     try:
         if not pivot_can_pay_off(turns_remaining):
             return None
+        if preserve_proposal:
+            try:
+                if not isinstance(forced_count, bool) and int(forced_count) >= PIVOT_RECOLLECT_CAP:
+                    return None
+            except (TypeError, ValueError, OverflowError):
+                pass
         prev: FocusPoint | None = None
         if isinstance(prev_focus, dict):
             try:
@@ -428,6 +469,33 @@ def _should_force_pivot_recollect(
         recent = {str(r or "") for r in (recent_targets or []) if str(r or "")}
         if f"{curr.surface_kind}:{curr.surface}" in recent:
             return None
+        if preserve_proposal:
+            proposed = str((reason_data or {}).get("next_action", "") or "").upper()
+            kept = _proposed_params(reason_data)
+            revision = str(kept.get("revision") or "").strip() or "HEAD"
+            if curr.surface_kind == "file":
+                if proposed == "SEARCH_CODE" and str(kept.get("query") or "").strip():
+                    return None
+                kept["file_path"] = curr.surface
+                if curr.line_start is not None and curr.line_start >= 1:
+                    kept["start_line"] = curr.line_start
+                if curr.line_end is not None and curr.line_end >= 1:
+                    kept["end_line"] = curr.line_end
+                kept["revision"] = revision
+                return {
+                    "next_action": proposed
+                    if proposed in ("GET_CODE", "GET_SOURCE")
+                    else "GET_CODE",
+                    "action_parameters": kept,
+                    "forced_pivot_recollect": True,
+                }
+            kept["symbol_name"] = curr.surface
+            kept["revision"] = revision
+            return {
+                "next_action": "FIND_SYMBOL",
+                "action_parameters": kept,
+                "forced_pivot_recollect": True,
+            }
         if curr.surface_kind == "file":
             params: dict[str, Any] = {"file_path": curr.surface}
             if curr.line_start is not None and curr.line_start >= 1:
@@ -2480,6 +2548,14 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _history = list(state.action_history or [])
         # F2 (lv6): positional "recent turns" readers skip work-order carriers.
         _separate = _carriers_separated(state.loop_version)
+        # F4 (lv7): bounded, non-destructive pivot anchored on the model's focus.
+        _pivot_v2 = _pivot_hardened(state.loop_version)
+        # The model's own focus this turn, read before any rule rewrites the
+        # dispatch. A turn whose dispatch was forced before the cascade
+        # (absence disconfirmation) carries no model focus.
+        _proposal_focus = (
+            focus_from_reason_data(_reason_data) if _pivot_v2 and not _absence_forced else None
+        )
 
         def _count(key: str) -> int:
             try:
@@ -2505,12 +2581,16 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data,
                 int(state.max_iterations or 0) - int(state.iteration or 0),
                 _pivot_targets,
+                preserve_proposal=_pivot_v2,
+                forced_count=_count("pivot"),
             )
         if _pivot_override is not None:
             _reason_data = dict(_reason_data)
             _reason_data["next_action"] = _pivot_override["next_action"]
             _reason_data["action_parameters"] = _pivot_override["action_parameters"]
             _reason_data["forced_pivot_recollect"] = True
+            if _pivot_v2:
+                _counts["pivot"] = _count("pivot") + 1
         # D2: stack-walk forcing first — explicit intake frames outrank
         # every other gathering rule.
         _walk_params = (
@@ -2530,6 +2610,9 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             # not happen; leaving the flag set would stamp history with a
             # pivot that never ran and damp its target as already collected.
             _reason_data["forced_pivot_recollect"] = False
+            if _pivot_v2 and _pivot_override is not None:
+                # The cancelled pivot never dispatched: return its count.
+                _counts["pivot"] = max(0, _count("pivot") - 1)
         # G3: order-driven requery forcing (2b step 5) — a bounded
         # re-retrieval for an unsatisfied claim outranks the remaining
         # gathering rules but never stack-walk (evaluated only when no
@@ -2844,18 +2927,29 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 except Exception:
                     pass
         # P6 2b-i: record this turn's focus for next turn's pivot
-        # comparison. Post-cascade read is deliberate: focus names the
-        # fetch the loop actually dispatched, so pivot seeds and
-        # damping anchor on collected reality, not the reasoner's
-        # proposal. Proposal drift stays visible — next turn
-        # detect_shift compares the new proposal against this
-        # dispatched surface. Plain JSON scalars, replay-safe.
+        # comparison. lv6 and older read the focus post-cascade (the fetch the
+        # loop actually dispatched), which let any forced fetch become the
+        # anchor: the model's next unrelated proposal then looked like a pivot
+        # and starved the carried orders (review F4). From lv7 the anchor is
+        # the model's own proposal, read before any rule rewrote the dispatch;
+        # damping still anchors on collected reality through the history
+        # surfaces. Plain JSON scalars, replay-safe.
         _turn_focus = None
         try:
             _turn_focus = focus_from_reason_data(
                 _reason_data if isinstance(_reason_data, dict) else {}
             )
-            if _turn_focus is not None:
+            if _pivot_v2:
+                # F4 (lv7): anchor on the model's own proposal, not on a fetch
+                # another rule forced, and leave the anchor alone when the
+                # pivot was cancelled so it can refire. Forced and absence
+                # turns carry no model focus (None) and leave it unchanged.
+                _cancelled = _pivot_override is not None and not _reason_data.get(
+                    "forced_pivot_recollect"
+                )
+                if _proposal_focus is not None and not _cancelled:
+                    state.prev_focus = _proposal_focus.model_dump(mode="json")
+            elif _turn_focus is not None:
                 state.prev_focus = _turn_focus.model_dump(mode="json")
         except Exception:
             pass

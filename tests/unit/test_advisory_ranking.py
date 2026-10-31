@@ -183,9 +183,10 @@ class TestSeamRanking:
         return base
 
     def test_focus_tracks_dispatched_fetch_not_proposal(self) -> None:
-        # The model proposes FORMULATE (no focus); the cascade forces
-        # the smallest open gap fetch. Recorded focus must be the
-        # dispatched fetch, per the post-cascade contract in forcing.py.
+        # lv6 and older (F4 changed this from lv7): the model proposes
+        # FORMULATE (no focus); the cascade forces the smallest open gap
+        # fetch. Recorded focus is the dispatched fetch, per the original
+        # post-cascade contract in forcing.py.
         from investigation_agent_platform.application.worker.workflows.forcing import (
             _carry_gap_orders,
         )
@@ -207,12 +208,44 @@ class TestSeamRanking:
             reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
             action_history=[carrier],
             formulated_count=1,
+            loop_version="lv6",
         )
         out = apply_post_reason_cascade(state)
         assert out.reason_data.get("forced_smallest_fetch") is True
         assert out.prev_focus is not None
         assert out.prev_focus["surface"] == "svc/gap.py"
         assert out.prev_focus["surface_kind"] == "file"
+
+    def test_from_lv7_a_forced_fetch_does_not_become_the_focus_anchor(self) -> None:
+        # F4: the same turn under lv7 keeps the model's own focus. A fetch
+        # another rule forced must not make the next proposal look like a pivot.
+        from investigation_agent_platform.application.worker.workflows.forcing import (
+            _carry_gap_orders,
+        )
+
+        carrier = _carry_gap_orders(
+            {
+                "claim_gaps": [
+                    {
+                        "gap_id": "g1",
+                        "kind": "DEFINITION",
+                        "target": {"file_path": "svc/gap.py"},
+                    },
+                ]
+            },
+            2,
+        )
+        assert carrier is not None
+        state = self._base_state(
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            action_history=[carrier],
+            formulated_count=1,
+            loop_version="lv7",
+        )
+        out = apply_post_reason_cascade(state)
+        assert out.reason_data.get("forced_smallest_fetch") is True
+        assert out.prev_focus is not None
+        assert out.prev_focus["surface"] == "svc/old.py", "anchor stays on the model's focus"
 
     def test_pivot_turn_ranks_seed_first(self) -> None:
         out = apply_post_reason_cascade(self._base_state())
