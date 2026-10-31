@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 _SQL_KINDS = frozenset({DatasourceKind.POSTGRES, DatasourceKind.ORACLE})
 _DEFAULT_TTL_SECONDS = 300.0
+#: Bound on expired entries disposed per resolve (R12H): the sweep stays
+#: a cheap opportunistic pass, never a full-cache walk with I/O.
+_SWEEP_DISPOSE_CAP = 8
 
 
 class DatasourceResolutionError(ExecutionError):
@@ -118,6 +121,15 @@ class DatasourceRegistry:
                 f"Datasource {datasource.id!r} is not read-only; refusing to serve."
             )
         key = (tenant_id, profile.id, datasource.id, profile.version)
+        # R12H: a new profile version disposes superseded engines on
+        # resolve (they would otherwise leak: only an exact-key re-lookup
+        # ever disposed). Bounded sweep reaps expired entries.
+        for old_key in [
+            k for k in self._cache if k[:3] == key[:3] and k[3] < key[3]
+        ]:
+            _adapter, engine, _exp = self._cache.pop(old_key)
+            await self._dispose_engine(engine)
+        await self._sweep_expired()
         cached = self._cache.get(key)
         if cached is not None and cached[2] > time.monotonic():
             return cached[0]
@@ -257,6 +269,33 @@ class DatasourceRegistry:
                     await result
             except Exception:
                 pass
+
+    async def _sweep_expired(self) -> None:
+        """Dispose expired cache entries, bounded per call (R12H).
+
+        Best-effort: faults are contained by _dispose_engine, and the
+        cap keeps the pass cheap. Never raises.
+        """
+        try:
+            now = time.monotonic()
+            reaped = 0
+            for cache_key in list(self._cache.keys()):
+                if reaped >= _SWEEP_DISPOSE_CAP:
+                    break
+                try:
+                    _adapter, engine, expires = self._cache[cache_key]
+                except (KeyError, ValueError, TypeError):
+                    continue
+                try:
+                    expired = float(expires) <= now
+                except (TypeError, ValueError):
+                    continue
+                if expired:
+                    self._cache.pop(cache_key, None)
+                    await self._dispose_engine(engine)
+                    reaped += 1
+        except Exception:
+            pass
 
     # -- MCP servers declared per datasource -------------------------------
 

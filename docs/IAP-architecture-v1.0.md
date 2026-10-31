@@ -662,3 +662,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`reference_doc_repository.py`, `reference_service.py`, `ports/reference/documents.py`, `dependencies.py`): both candidate branches take an optional `application_id` pushed into SQL (port, SQL and in-memory repos; the in-memory mirrors honor the filter); the vector query sets `hnsw.iterative_scan = relaxed_order` + `hnsw.max_scan_tuples = 20000`; `search` passes the id down and drops the post-fusion app filter (the kinds filter stays — source metadata, not row data). Deviation: no partial per-tenant HNSW index (rejected per design — index count scales with tenants).
 
 **Tests.** `test_r12b_refdoc_scoping.py` (3: statement shape with/without the predicate on both branches; busy-sibling isolation via a honoring fake; crowded-index battery on disposable pgvector — iterative scan returns the requested count while a fixed `ef_search=4` pool filtered post-hoc sees none of the app's rows). Existing refdoc suites updated for the honoring in-memory filter. Full unit green, ruff clean, mypy clean on touched modules (3 remaining dependencies.py errors are pre-existing signature mismatches in untouched repos). Retrieval-quality only; unit-proven (db legs on disposable containers).
+
+## 87. Datasource registry eviction (review R12H, no loop version, 2026-10-26... 2026-10-31)
+
+**Version pinning.** None (lifecycle hygiene of cached engines).
+
+**The defect.** The cache key includes the profile version, but only an exact-key re-lookup ever disposed — a new revision orphaned the old engine (and pool) until process exit, and expired entries for keys never re-resolved were never reaped.
+
+**What changed** (`datasources/registry.py`): resolving a key evicts superseded keys with the same `(tenant, app, datasource)` and a lower version, and a bounded sweep (at most 8 dispositions per resolve) reaps expired entries. Disposal faults stay contained in `_dispose_engine` (fail-open for cleanup). `allocate`-style caution applies: the eviction never touches fresher or unrelated keys.
+
+**Tests.** `test_r12h_registry_eviction.py` (3: new version disposes the old engine once and the cache holds v2 only; expired entries swept on another key's resolve; disposal fault still resolves). Full unit green, ruff clean, mypy clean. Unit-proven only.
