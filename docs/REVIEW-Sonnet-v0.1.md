@@ -20,6 +20,7 @@ Commits: `40870d2` pure ruff format (recorded in `.git-blame-ignore-revs`), `230
 | 5 tenancy | R3, R4, R5 done; R2 code half done (index-scope guard, per-service narrowing, status gate), delimiter rename with ops | Partial | `api/tenant.py`, `security/profile_authorizer.py`, `api/dependencies.py` |
 | 6 verdict semantics | H2, H3, H4 code done; battery before/after untested by owner decision | Partial | `activities/execution.py` (`_claim_identity_key`), `verification.py` (`enforce_group_conjunction`), verify + conclude choke points |
 | 7 reasoning failures | H7, T7 | Done (unit level) | `activities/common.py` (`classify_reasoning_failure`), `application/investigation/reasoning.py`, `activities/reasoning.py`, `workflows/run_investigation.py`, `activities/lifecycle.py`, `worker/reasoning_failure.py`; `IAP-architecture-v1.0.md` section 66 |
+| 8 H3/H4 battery fixtures | H3, H4 (fixtures only) | Authored, offline-only | `tests/fixtures/battery_cases/L14.json` (mixed-kind, one ungrounded CAUSAL), `L15.json` (NOT_CHECKABLE plus checkable DEFINITION), `L16.json` (two DEFINITIONs in one file, one false); `tests/unit/test_h3h4_battery_fixtures.py`; baseline re-frozen additively |
 
 ### What did not reproduce or could not be completed
 
@@ -174,3 +175,13 @@ Consider-tier (H15–H17): causal score is a volume heuristic (`min(1,rows/4)`, 
 - The version-pin abstention branches (H9) and the `_enf_status` reset (H10).
 - `test_reason_requery.py` covers only `ValidationError` resample; not defer_gathering errors, disallowed actions, gateway exception during resample, empty first response, temperature/seed, or usage across attempts. The outage test asserts only the activity return shape, not workflow status or retry.
 - Contradiction severity/resolution lifecycle; the production writer of `refuting_evidence_ids`; float boundary of confidence vs policy floors; Finding max-length limits during conclude and retry idempotency.
+
+### H3/H4 fixtures and the grader gaps they expose (tranche 8)
+
+L14-L16 are `live: false`: they need injected typed claim groups, since the live model chooses its own groups and never declares `NOT_CHECKABLE`. They load through the battery's own `load_cases()` and are graded as pure functions in unit tests; nothing executes and no tenant profile or capability is involved (they use only the synthetic sample checkout). The grader was not changed. Probing it on hand-built conclusions showed:
+
+- **Scored correctly:** a combined `ANSWERED` on L14 and L16 fails ("fabricated answer to unanswerable"), because those fixtures expect an abstention; L15's checkable half is graded (right file passes, wrong file is PARTIAL).
+- **Not scoreable (T9):** every abstention passes whether or not it carries the `UNVERIFIED_CLAIM_GROUP` limitation (L14, L16); an `ANSWERED` verdict passes with the opinion text inside `root_cause` and without `NOT_CHECKABLE_EXCLUDED` (L15); a correct L14 abstention with its limitation still scores a G1 miss because G1 never reads limitations; H2 claim-key overwrites are invisible because the grader never reads hypothesis assessments.
+
+Each intended-but-unscoreable assertion is a strict `xfail` in `test_h3h4_battery_fixtures.py` and a `known_grader_gaps` entry in the fixture, so it flips to a hard failure when the grader learns to score it.
+

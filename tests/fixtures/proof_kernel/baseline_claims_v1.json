@@ -13,6 +13,18 @@
       "note": "abstention shape: no provable claim expected"
     },
     {
+      "case_id": "L14",
+      "expected_terminal": "ABSTAIN",
+      "live": false,
+      "note": "abstention shape: no provable claim expected"
+    },
+    {
+      "case_id": "L16",
+      "expected_terminal": "ABSTAIN",
+      "live": false,
+      "note": "abstention shape: no provable claim expected"
+    },
+    {
       "case_id": "L8",
       "expected_terminal": "ABSTAIN",
       "live": true,
@@ -74,6 +86,25 @@
       ],
       "target": {
         "scope": "audit_log/order-9"
+      }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "offline-gradable"
+      },
+      "case_id": "L15",
+      "claim_id": "L15.definition",
+      "claim_kind": "DEFINITION",
+      "expected_terminal": "ANSWERED",
+      "live": false,
+      "proof_requirements": [
+        "range read window containing the symbol, same file+revision"
+      ],
+      "target": {
+        "cited_path": "OrderServiceHandler.java",
+        "expect_symbol": "OrderServiceHandler"
       }
     },
     {
