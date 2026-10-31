@@ -72,6 +72,31 @@ def validate_environment(environment: str) -> str:
 # plain token: no wildcard, comma, or whitespace can ever reach the scope.
 _SERVICE_INDEX_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+# R2-ops: reserved tenant/service delimiter. Tenant and service tokens may
+# not contain `--` and may not begin or end with `-`, so the first `--` in
+# an index name is always the tenant/service boundary.
+INDEX_DELIM = "--"
+_TOKEN = re.compile(r"^[a-z0-9](?:[a-z0-9._]|-(?!-))*[a-z0-9]$|^[a-z0-9]$")
+
+
+def validate_index_token(value: str, what: str) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 128 or not _TOKEN.fullmatch(value):
+        raise SecurityPolicyViolationException(f"Invalid {what} for delimited index scope.")
+    return value
+
+
+def build_delimited_pattern(
+    tenant_id: str,
+    environment: str,
+    services: Iterable[str] = (),
+) -> str:
+    validate_index_token(tenant_id, "tenant identifier")
+    validate_environment(environment)
+    scoped = tuple(sorted({validate_index_token(s, "service") for s in services}))
+    if scoped:
+        return ",".join(f"logs-{tenant_id}{INDEX_DELIM}{s}-{environment}-*" for s in scoped)
+    return f"logs-{tenant_id}{INDEX_DELIM}*-{environment}-*"
+
 
 def dash_boundary_siblings(tenant_id: str, known_tenant_ids: Iterable[str]) -> list[str]:
     """Registered tenant ids whose indexes the wildcard scope of ``tenant_id`` can overlap.
@@ -154,10 +179,20 @@ def resolve_index_pattern(
 
     Tenant/environment shapes are always validated (charset safety, plus the
     dash-boundary sibling guard on the legacy wildcard). Legacy-synthesis mappings fall back
-    to ``build_index_pattern``; every other mapping must declare explicit
+    to ``build_index_pattern``; DELIMITED mappings use the `--` convention
+    (no registry lookup); every other mapping must declare explicit
     patterns. Patterns are charset-validated as defense in depth — they are
     operator configuration, never agent input, either way.
     """
+    from investigation_agent_platform.domain.observability.mapping import IndexSynthesis
+
+    synthesis = getattr(mapping, "index_synthesis", None)
+    if synthesis == IndexSynthesis.DELIMITED:
+        return build_delimited_pattern(tenant_id, environment, services=services)
+    if synthesis == IndexSynthesis.DASH:
+        return build_index_pattern(
+            tenant_id, environment, services=services, known_tenant_ids=known_tenant_ids
+        )
     if mapping.legacy_index_synthesis:
         return build_index_pattern(
             tenant_id, environment, services=services, known_tenant_ids=known_tenant_ids

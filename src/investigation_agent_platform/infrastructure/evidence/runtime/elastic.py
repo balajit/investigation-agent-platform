@@ -42,8 +42,10 @@ from investigation_agent_platform.domain.evidence.requests import (
     RuntimeEvidenceRequest,
 )
 from investigation_agent_platform.domain.observability.mapping import (
+    GENERIC_ECS_DELIMITED_SOURCE_ID,
     GENERIC_ECS_SOURCE_ID,
     ObservabilitySourceMapping,
+    generic_ecs_delimited_mapping,
     generic_ecs_mapping,
 )
 from investigation_agent_platform.domain.profile.models import ApplicationProfile
@@ -252,6 +254,10 @@ class AsyncElasticAdapter:
         """
         if self._known_tenant_ids is None or not mapping.legacy_index_synthesis:
             return None
+        from investigation_agent_platform.domain.observability.mapping import IndexSynthesis
+
+        if getattr(mapping, "index_synthesis", None) == IndexSynthesis.DELIMITED:
+            return None
         now = time.monotonic()
         cached = self._known_ids_cache
         if cached is not None and now < cached[0]:
@@ -334,6 +340,8 @@ class AsyncElasticAdapter:
         """Resolve a stamped mapping id; fail closed before any provider I/O."""
         if source_id is None or source_id == GENERIC_ECS_SOURCE_ID:
             return generic_ecs_mapping()
+        if source_id == GENERIC_ECS_DELIMITED_SOURCE_ID:
+            return generic_ecs_delimited_mapping()
         if self._mapping_registry is None:
             raise PlatformConfigurationError(
                 "Request names an observability mapping but this adapter "
