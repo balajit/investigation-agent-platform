@@ -18,6 +18,8 @@ import fnmatch
 import hashlib
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -182,6 +184,7 @@ class AsyncElasticAdapter:
         profile: ApplicationProfile | None = None,
         mapping_registry: MappingProfileRegistry | None = None,
         tenant_router: TenantTelemetryRouter | None = None,
+        known_tenant_ids: Callable[[], Awaitable[Iterable[str]]] | None = None,
     ) -> None:
         if not settings.cursor_signing_key:
             raise PlatformConfigurationError(
@@ -230,6 +233,32 @@ class AsyncElasticAdapter:
         # connection, index pattern, and timeout — selector, mappings, and
         # profile authorization are untouched.
         self._tenant_router = tenant_router
+        # Registered tenant ids, for the legacy wildcard's dash-boundary
+        # collision guard (review R2). None = guard disabled (behaves as
+        # before). Cached briefly: the registry changes rarely and a lookup
+        # per search would be wasteful.
+        self._known_tenant_ids = known_tenant_ids
+        self._known_ids_cache: tuple[float, tuple[str, ...]] | None = None
+
+    _KNOWN_IDS_TTL_SECONDS = 30.0
+
+    async def _sibling_scope_ids(
+        self, mapping: ObservabilitySourceMapping
+    ) -> tuple[str, ...] | None:
+        """Registered tenant ids when the legacy wildcard guard applies, else None.
+
+        A lookup failure propagates: a request whose index scope cannot be
+        proven unambiguous is not served (fail closed).
+        """
+        if self._known_tenant_ids is None or not mapping.legacy_index_synthesis:
+            return None
+        now = time.monotonic()
+        cached = self._known_ids_cache
+        if cached is not None and now < cached[0]:
+            return cached[1]
+        ids = tuple(await self._known_tenant_ids())
+        self._known_ids_cache = (now + self._KNOWN_IDS_TTL_SECONDS, ids)
+        return ids
 
     def _identity_names(
         self, profile: ApplicationProfile | None, request: RuntimeEvidenceRequest
@@ -260,6 +289,7 @@ class AsyncElasticAdapter:
         profile: ApplicationProfile | None,
         request: RuntimeEvidenceRequest,
         mapping: ObservabilitySourceMapping,
+        known_tenant_ids: Iterable[str] | None = None,
     ) -> tuple[Any, str, float, str | None]:
         """Resolve (client, index pattern, timeout, endpoint name) for one request.
 
@@ -282,7 +312,13 @@ class AsyncElasticAdapter:
                 )
             return (
                 self._client,
-                resolve_index_pattern(mapping, tenant_id, request.environment),
+                resolve_index_pattern(
+                    mapping,
+                    tenant_id,
+                    request.environment,
+                    services=request.services,
+                    known_tenant_ids=known_tenant_ids,
+                ),
                 float(self._request_timeout),
                 None,
             )
@@ -474,6 +510,13 @@ class AsyncElasticAdapter:
                 fetch_endpoint: str | None = handle.endpoint_name
             else:
                 if mapping.legacy_index_synthesis:
+                    # The stored index names no service, so the wildcard scope
+                    # applies: refuse when it is ambiguous with a sibling tenant.
+                    build_index_pattern(
+                        tenant_id,
+                        environment,
+                        known_tenant_ids=await self._sibling_scope_ids(mapping),
+                    )
                     if not index.startswith(f"logs-{tenant_id}-"):
                         raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
                 elif not any(
@@ -540,7 +583,11 @@ class AsyncElasticAdapter:
             # Derive application context from profile provider if available; fallback to tenant-scoped pattern
             mapping = self._resolve_mapping(request.mapping_source_id)
             client, index_pattern, request_timeout, endpoint_name = self._resolve_connection(
-                tenant_id, profile, request, mapping
+                tenant_id,
+                profile,
+                request,
+                mapping,
+                await self._sibling_scope_ids(mapping),
             )
             normalized = normalize_request(
                 tenant_id, investigation_id, request, self._ceilings, mapping

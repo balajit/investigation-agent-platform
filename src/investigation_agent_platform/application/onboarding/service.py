@@ -90,6 +90,35 @@ class OnboardingService:
         self._coverage = coverage
         self._quota_gate = quota_gate
 
+    async def _reject_ambiguous_new_tenant_id(self, tenant_id: str) -> None:
+        """Keep first-onboarding tenant ids from overlapping a sibling's index scope.
+
+        Legacy log indexes are named ``logs-{tenant}-{service}-{env}-{n}`` and
+        both tenant and service may contain ``-``, so a tenant id that is a
+        dash-boundary prefix of another (``acme`` / ``acme-eu``) can read the
+        other's indexes. Tenants whose registry entry is ACTIVE are untouched
+        (existing tenants adding applications keep working). A tenant that is
+        not ACTIVE yet is a first onboarding and must not contain ``-`` nor be
+        a dash-boundary prefix of any known tenant id (registry, investigations,
+        or profiles). Runs before the
+        quota gate and any draft write so a rejection has no side effects.
+        Enforcement at registry-row creation remains an operations duty.
+        """
+        entry = await self._registry.read_entry(tenant_id)
+        if entry is not None and entry.status == "ACTIVE":
+            return
+        collides = "-" in tenant_id or any(
+            other.startswith(f"{tenant_id}-")
+            for other in await self._registry.list_known_tenant_ids()
+        )
+        if collides:
+            raise ServiceError(
+                "TENANT_ID_NOT_ALLOWED",
+                400,
+                "new tenant ids must not contain '-' or be a dash-prefix of a registered "
+                "tenant id; choose a different tenant id",
+            )
+
     async def create_request(
         self,
         *,
@@ -106,6 +135,7 @@ class OnboardingService:
         steps; the 202 contract holds because accept commits request, job,
         audit linkage, and dispatch intent atomically.
         """
+        await self._reject_ambiguous_new_tenant_id(tenant_id)
         if self._quota_gate is not None and not self._quota_gate(tenant_id, "onboarding.create"):
             raise ServiceError("QUOTA_EXCEEDED", 429, "tenant create quota exceeded")
         try:

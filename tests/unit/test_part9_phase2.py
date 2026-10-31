@@ -251,7 +251,8 @@ async def test_search_paginates_with_bound_cursor():
 
     body1 = client.search.call_args.kwargs["body"]
     assert "search_after" not in body1
-    assert client.search.call_args.kwargs["index"] == "logs-tenant-a-*-production-*"
+    # The request names service "checkout": scope narrows to that service (R2).
+    assert client.search.call_args.kwargs["index"] == "logs-tenant-a-checkout-production-*"
 
     second = await adapter.search_runtime_evidence(
         TENANT, iid, req.model_copy(update={"cursor": first.cursor}), _profile()

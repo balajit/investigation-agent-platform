@@ -100,9 +100,18 @@ class _Dispatches:
 
 
 class _Registry:
-    def __init__(self, status: str | None = "RESERVED", fail: bool = False) -> None:
+    def __init__(
+        self,
+        status: str | None = "RESERVED",
+        fail: bool = False,
+        registered_ids: list[str] | None = None,
+    ) -> None:
         self.status = status
         self.fail = fail
+        self.registered_ids = registered_ids or []
+
+    async def list_known_tenant_ids(self) -> list[str]:
+        return list(self.registered_ids)
 
     async def read_entry(self, tenant_id: str) -> Any:
         if self.status is None:
@@ -180,7 +189,7 @@ def _intake() -> Any:
 
 
 async def test_create_request_accepts_after_draft() -> None:
-    service = _service(dispatches=_Dispatches(row=None))
+    service = _service(dispatches=_Dispatches(row=None), registry=_Registry(status="ACTIVE"))
     payload = await service.create_request(
         tenant_id="tenant-a",
         actor_sub="actor",
@@ -192,7 +201,7 @@ async def test_create_request_accepts_after_draft() -> None:
 
 
 async def test_create_request_maps_idempotency_conflict() -> None:
-    service = _service(drafts=_Drafts(behavior="conflict"))
+    service = _service(drafts=_Drafts(behavior="conflict"), registry=_Registry(status="ACTIVE"))
     with pytest.raises(ServiceError) as exc:
         await service.create_request(
             tenant_id="tenant-a", actor_sub="a", idempotency_key="k", intake=_intake()
@@ -202,7 +211,9 @@ async def test_create_request_maps_idempotency_conflict() -> None:
 
 
 async def test_create_request_maps_stale_accept() -> None:
-    service = _service(acceptance=_Acceptance(behavior="stale"))
+    service = _service(
+        acceptance=_Acceptance(behavior="stale"), registry=_Registry(status="ACTIVE")
+    )
     with pytest.raises(ServiceError) as exc:
         await service.create_request(
             tenant_id="tenant-a", actor_sub="a", idempotency_key="k", intake=_intake()
@@ -419,7 +430,8 @@ def test_capabilities_lists_catalog_and_rejects_unknown_tier() -> None:
 
 
 async def test_create_request_honors_quota_gate() -> None:
-    denied = _service(quota_gate=lambda tenant, operation: False)
+    active = _Registry(status="ACTIVE")
+    denied = _service(quota_gate=lambda tenant, operation: False, registry=active)
     with pytest.raises(ServiceError) as exc:
         await denied.create_request(
             tenant_id="tenant-a", actor_sub="a", idempotency_key="k", intake=_intake()
@@ -427,8 +439,72 @@ async def test_create_request_honors_quota_gate() -> None:
     assert exc.value.code == "QUOTA_EXCEEDED"
     assert exc.value.http_status == 429
 
-    allowed = _service(quota_gate=lambda tenant, operation: True)
+    allowed = _service(quota_gate=lambda tenant, operation: True, registry=active)
     payload = await allowed.create_request(
         tenant_id="tenant-a", actor_sub="a", idempotency_key="k", intake=_intake()
     )
+    assert payload.dispatch_state == "QUEUED"
+
+
+class _CountingDrafts(_Drafts):
+    def __init__(self) -> None:
+        super().__init__()
+        self.created = 0
+
+    async def create_draft(self, **kwargs: Any) -> SimpleNamespace:
+        self.created += 1
+        return await super().create_draft(**kwargs)
+
+
+async def _create(service: OnboardingService, tenant_id: str) -> Any:
+    return await service.create_request(
+        tenant_id=tenant_id, actor_sub="a", idempotency_key="k", intake=_intake()
+    )
+
+
+@pytest.mark.parametrize("status", ["RESERVED", "SUSPENDED", None])
+async def test_new_tenant_with_dash_is_rejected_before_any_write(status: str | None) -> None:
+    drafts = _CountingDrafts()
+    quota_calls: list[str] = []
+    service = _service(
+        drafts=drafts,
+        registry=_Registry(status=status),
+        quota_gate=lambda tenant, operation: quota_calls.append(tenant) or True,
+    )
+    with pytest.raises(ServiceError) as exc:
+        await _create(service, "acme-eu")
+    assert exc.value.code == "TENANT_ID_NOT_ALLOWED"
+    assert exc.value.http_status == 400
+    assert drafts.created == 0
+    assert quota_calls == []
+
+
+async def test_new_tenant_that_is_dash_prefix_of_registered_tenant_is_rejected() -> None:
+    drafts = _CountingDrafts()
+    service = _service(
+        drafts=drafts, registry=_Registry(status="RESERVED", registered_ids=["acme-eu", "acme"])
+    )
+    with pytest.raises(ServiceError) as exc:
+        await _create(service, "acme")
+    assert exc.value.code == "TENANT_ID_NOT_ALLOWED"
+    # The error never names the sibling tenant.
+    assert "acme-eu" not in exc.value.message
+    assert drafts.created == 0
+
+
+async def test_new_dash_free_tenant_without_prefix_collision_is_accepted() -> None:
+    service = _service(
+        dispatches=_Dispatches(row=None),
+        registry=_Registry(status="RESERVED", registered_ids=["acmeeu", "other-co", "acme"]),
+    )
+    payload = await _create(service, "acme")
+    assert payload.dispatch_state == "QUEUED"
+
+
+async def test_active_dashed_tenant_is_untouched_even_with_a_dash_sibling() -> None:
+    service = _service(
+        dispatches=_Dispatches(row=None),
+        registry=_Registry(status="ACTIVE", registered_ids=["n-a", "n-a-b", "n"]),
+    )
+    payload = await _create(service, "n-a")
     assert payload.dispatch_state == "QUEUED"

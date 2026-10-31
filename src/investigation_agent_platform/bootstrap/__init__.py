@@ -114,6 +114,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         from investigation_agent_platform.infrastructure.persistence.investigation_repository import (
             SqlAlchemyInvestigationRepository,
         )
+        from investigation_agent_platform.infrastructure.persistence.onboarding_registry_repository import (
+            SqlAlchemyOnboardingRegistryRepository,
+        )
         from investigation_agent_platform.infrastructure.persistence.profile_repository import (
             SqlAlchemyApplicationProfileRepository,
         )
@@ -185,6 +188,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         timeline_repo=timeline_repo,  # type: ignore[arg-type]
         hypothesis_repo=hypothesis_repo,  # type: ignore[arg-type]
     )
+    # Tenant registry (read side): the evidence adapter uses its id list for the
+    # legacy index-scope collision guard (review R2).
+    ctx.registry_repo = SqlAlchemyOnboardingRegistryRepository(session_factory)  # type: ignore[attr-defined]
     # F-011/F-012/F-013: production must never operate on the process-local
     # no-op checkpoint/transition repos or in-memory idempotency store.
     ctx.checkpoint_repo = checkpoint_repo  # type: ignore[attr-defined]
@@ -526,6 +532,8 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 ElasticAdapterSettings,
             )
 
+            registry_repo = getattr(ctx, "registry_repo", None)
+            known_tenant_ids = registry_repo.list_known_tenant_ids if registry_repo else None
             selector.register_runtime_provider(
                 "elastic-primary",
                 AsyncElasticAdapter(
@@ -540,6 +548,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                     request_timeout=config.evidence.elastic_request_timeout,
                     mapping_registry=mapping_registry,
                     tenant_router=tenant_router,
+                    known_tenant_ids=known_tenant_ids,
                 ),
                 # Default route: the global deployment serves all
                 # tenant/app/env contexts without tenant telemetry

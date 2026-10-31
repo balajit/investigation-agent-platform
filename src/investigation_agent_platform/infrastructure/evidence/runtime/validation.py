@@ -9,6 +9,7 @@ continued, always rejected.
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from investigation_agent_platform.domain.common.exceptions import (
@@ -67,14 +68,71 @@ def validate_environment(environment: str) -> str:
     return environment
 
 
-def build_index_pattern(tenant_id: str, environment: str) -> str:
+# A service name may be interpolated into an index expression only when it is a
+# plain token: no wildcard, comma, or whitespace can ever reach the scope.
+_SERVICE_INDEX_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def dash_boundary_siblings(tenant_id: str, known_tenant_ids: Iterable[str]) -> list[str]:
+    """Registered tenant ids whose indexes the wildcard scope of ``tenant_id`` can overlap.
+
+    Index names follow ``logs-{tenant}-{service}-{env}-{n}`` and both tenant and
+    service may contain ``-``, so ``acme`` and ``acme-eu`` are ambiguous at the
+    dash boundary in either direction. Matching is exact-case, like the
+    Elasticsearch wildcard match it models.
+    """
+    return sorted(
+        other
+        for other in set(known_tenant_ids)
+        if other != tenant_id
+        and (other.startswith(f"{tenant_id}-") or tenant_id.startswith(f"{other}-"))
+    )
+
+
+def build_index_pattern(
+    tenant_id: str,
+    environment: str,
+    *,
+    services: Iterable[str] = (),
+    known_tenant_ids: Iterable[str] | None = None,
+) -> str:
     """Build the tenant/environment index scope after validating both inputs.
 
-    Legacy generic-ECS path: synthesizes ``logs-{tenant}-*-{environment}-*``.
+    Legacy generic-ECS path. For a dashed tenant whose request names services
+    (all plain tokens), the scope narrows to one exact pattern per service,
+    ``logs-{tenant}-{service}-{environment}-*``, which cannot reach a sibling
+    tenant's indexes. Otherwise it synthesizes the wildcard
+    ``logs-{tenant}-*-{environment}-*``; when ``known_tenant_ids`` is supplied
+    the wildcard is refused (fail closed) if another registered tenant id
+    overlaps it at the dash boundary. Sibling ids are never echoed in the
+    error. With no sibling list the wildcard is built exactly as before.
     Mapping-driven sources use ``resolve_index_pattern`` instead.
     """
     validate_tenant_id(tenant_id)
     validate_environment(environment)
+    scoped = tuple(sorted(set(services)))
+    # Why narrowing is scoped to DASHED tenants only (do not "simplify" this to
+    # all tenants): index naming varies by deployment, and the per-service form
+    # assumes the index's service segment equals the request's service name.
+    # Where that does not hold, narrowing silently turns data into zero hits.
+    # Only the dash-boundary collision risk class (tenant ids that can extend
+    # one another, which requires '-' in the id) justifies changing behavior;
+    # a dash-free tenant keeps the historical wildcard, and the sibling guard
+    # below covers it.
+    if (
+        "-" in tenant_id
+        and scoped
+        and all(
+            isinstance(service, str) and _SERVICE_INDEX_TOKEN.fullmatch(service)
+            for service in scoped
+        )
+    ):
+        return ",".join(f"logs-{tenant_id}-{service}-{environment}-*" for service in scoped)
+    if known_tenant_ids is not None and dash_boundary_siblings(tenant_id, known_tenant_ids):
+        raise SecurityPolicyViolationException(
+            "Tenant index scope is ambiguous with another registered tenant; "
+            "name the services to search or contact operations."
+        )
     return f"logs-{tenant_id}-*-{environment}-*"
 
 
@@ -85,18 +143,25 @@ INDEX_PATTERN_CHARS = re.compile(r"^[A-Za-z0-9._\-*]+$")
 
 
 def resolve_index_pattern(
-    mapping: ObservabilitySourceMapping, tenant_id: str, environment: str
+    mapping: ObservabilitySourceMapping,
+    tenant_id: str,
+    environment: str,
+    *,
+    services: Iterable[str] = (),
+    known_tenant_ids: Iterable[str] | None = None,
 ) -> str:
     """Comma-joined searchable index scope for one resolved mapping.
 
-    Tenant/environment shapes are always validated (charset safety today,
-    tenant-clause integrity tomorrow). Legacy-synthesis mappings fall back
+    Tenant/environment shapes are always validated (charset safety, plus the
+    dash-boundary sibling guard on the legacy wildcard). Legacy-synthesis mappings fall back
     to ``build_index_pattern``; every other mapping must declare explicit
     patterns. Patterns are charset-validated as defense in depth — they are
     operator configuration, never agent input, either way.
     """
     if mapping.legacy_index_synthesis:
-        return build_index_pattern(tenant_id, environment)
+        return build_index_pattern(
+            tenant_id, environment, services=services, known_tenant_ids=known_tenant_ids
+        )
     validate_tenant_id(tenant_id)
     validate_environment(environment)
     if not mapping.index_patterns:

@@ -359,7 +359,8 @@ async def test_global_path_unchanged_without_router():  # type: ignore[no-untype
     adapter = _tenant_adapter(tenant_client=client)
     result = await adapter.search_runtime_evidence("tenant-a", uuid.uuid4(), _request(), _profile())
     (index,) = [call.kwargs["index"] for call in client.search.call_args_list]
-    assert index == "logs-tenant-a-*-production-*"
+    # The request names service "svc-a": the legacy scope narrows to it (R2).
+    assert index == "logs-tenant-a-svc-a-production-*"
     assert result.execution_metadata["endpoint"] is None
 
 
