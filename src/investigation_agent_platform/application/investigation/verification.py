@@ -1635,6 +1635,14 @@ def _match_recent_action(
         for entry in reversed(entries):
             if not isinstance(entry, dict):
                 continue
+            # R10b: a lossy history entry is never re-dispatchable. Skip it
+            # fail-closed: a directive built from truncated input is not
+            # dispatched. Entries without the flag predate the stamp.
+            try:
+                if bool(entry.get("params_lossy")):
+                    continue
+            except Exception:
+                continue
             try:
                 attempt = entry.get("retrieval_attempt")
                 if isinstance(attempt, dict):
@@ -1684,6 +1692,7 @@ def select_ledger_requery(
     recent_actions: list[Any] | None,
     max_attempts: int = WP_A3_DEFAULT_MAX_ATTEMPTS,
     unavailable_actions: frozenset[str] | None = None,
+    executed_key_budget: bool = False,
 ) -> dict[str, Any] | None:
     """First dispatchable bounded re-retrieval directive, or None (pure).
 
@@ -1691,13 +1700,16 @@ def select_ledger_requery(
     claim whose binding is unsatisfied (unknown citations with zero
     durable attempts, or a failed latest attempt under budget) and whose
     query maps to a typed, validated recent action yields the directive.
-    A directive whose matched action is unavailable is skipped (R8-D4) and
-    the walk continues to the next claim, so the ledger requery can never
-    re-dispatch a denied search. Fail-closed on unavailable history:
-    ``recorded_attempts=None`` (attempt history unavailable, distinct from
-    confirmed-empty) yields None — an unknown-citation retry is never
-    authorized without durable data. Fail-open on internal error: returns
-    None, never a directive.
+    A directive whose matched action is unavailable is skipped (R8-D4)
+    and the walk continues to the next claim, so the ledger requery can
+    never re-dispatch a denied search. ``executed_key_budget`` (R10a,
+    LV_R) counts the budget under the key the matched action will
+    actually dispatch under, so the executed attempts agree with the
+    count by construction; without it the ledger key is used (legacy).
+    Fail-closed on unavailable history: ``recorded_attempts=None``
+    (attempt history unavailable, distinct from confirmed-empty) yields
+    None — an unknown-citation retry is never authorized without durable
+    data. Fail-open on internal error: returns None, never a directive.
     """
     try:
         try:
@@ -1740,6 +1752,7 @@ def select_ledger_requery(
                     target_ref=str(group.get("target_key") or "") or None,
                     stored_query=str(group.get("stored_query") or "") or None,
                     stored_scope=str(group.get("stored_scope") or "") or None,
+                    keep_newest=executed_key_budget,
                 )
             except Exception:
                 continue
@@ -1778,9 +1791,37 @@ def select_ledger_requery(
                 continue
             if str(action_type or "").strip().upper() in _denied_actions:
                 continue
+            # R10a: budget under the key the action will actually dispatch
+            # under (LV_R); legacy counts the ledger key.
+            exec_pair: tuple[str, Any] | None = None
+            if executed_key_budget:
+                try:
+                    exec_query, exec_scope, _provider = extract_search_query(
+                        action_type, params
+                    )
+                    exec_pair = (exec_query, exec_scope)
+                    durable = count_persisted_attempts(
+                        recorded, exec_query, exec_scope, action_type=action_type
+                    )
+                except Exception:
+                    exec_pair = None
+                    durable = count_persisted_attempts(
+                        recorded, ledger.search_query, ledger.scope
+                    )
+            else:
+                durable = count_persisted_attempts(recorded, ledger.search_query, ledger.scope)
+            if durable >= budget:
+                continue
             try:
                 directive = re_retrieval_directive(
-                    binding, ledger, latest, recorded, action_type, params, budget
+                    binding,
+                    ledger,
+                    latest,
+                    recorded,
+                    action_type,
+                    params,
+                    budget,
+                    executed=exec_pair,
                 )
             except Exception:
                 continue

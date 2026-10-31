@@ -22,6 +22,7 @@ with workflow.unsafe.imports_passed_through():
         shadow_forcing_used,
     )
     from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_LVR,
         loop_version_at_least,
     )
 
@@ -120,6 +121,7 @@ from .forcing import (
     _should_force_walk_stack,
     apply_post_reason_cascade,
     dispatched_parameters,
+    history_params,
     turn_view,
 )
 
@@ -1183,9 +1185,20 @@ class RunInvestigationWorkflow:
                     _exec_banked = int(_exec_banked) if _exec_banked is not None else None
                 except (TypeError, ValueError):
                     _exec_banked = None
+                # R10b: history parameters are typed at LV_R and above
+                # (booleans and numbers survive; truncation is flagged
+                # lossy so the requery matcher skips the entry
+                # fail-closed). Older pins keep the stringified shape.
+                _typed_params, _params_lossy = history_params(
+                    _params,
+                    typed=loop_version_at_least(
+                        {"loop_version": loop_version}, LOOP_VERSION_LVR
+                    ),
+                )
                 _this_turn.update(
                     {
-                        "parameters": {k: str(v)[:200] for k, v in _params.items()},
+                        "parameters": _typed_params,
+                        "params_lossy": _params_lossy,
                         "outcome_status": _outcome.get("status"),
                         "items_count": _outcome.get("item_count", _exec_data.get("items_count", 0)),
                         "evidence_added": len(_outcome.get("evidence_ids", []) or []),

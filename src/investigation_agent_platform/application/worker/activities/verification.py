@@ -1384,10 +1384,32 @@ async def verify_root_cause_activity(
                             )
                         except Exception:
                             _timeline_events = None
+                    # R10c: a failed read, or no timeline repo, is "history
+                    # unavailable", not "history is the last 10 turns" — at
+                    # LV_R the summaries alone authorize nothing. Older pins
+                    # keep the fallback.
+                    _requery_fail_closed = False
+                    try:
+                        from investigation_agent_platform.domain.investigation.loop_version import (
+                            LOOP_VERSION_LVR as _FAIL_CLOSED_LVR,
+                        )
+                        from investigation_agent_platform.domain.investigation.loop_version import (
+                            loop_version_at_least as _fail_closed_at_least,
+                        )
+
+                        _requery_fail_closed = bool(
+                            _fail_closed_at_least(
+                                getattr(_inv, "metadata", None), _FAIL_CLOSED_LVR
+                            )
+                        )
+                    except Exception:
+                        _requery_fail_closed = False
                     if _timeline_events is None:
                         # Timeline unavailable: summaries alone, or None
                         # when nothing convertible (fail-closed downstream).
-                        _directive_recorded = _summary_pairs
+                        _directive_recorded = (
+                            None if _requery_fail_closed else _summary_pairs
+                        )
                     else:
                         _directive_recorded = _merge_recorded_attempts(
                             _recorded_timeline_attempts(_timeline_events or []),
@@ -1422,12 +1444,40 @@ async def verify_root_cause_activity(
                             )
                 except Exception:
                     _requery_unavailable = frozenset()
+                # R10a: the verify requery counts the executed key at LV_R.
+                # R10h: the directive and the recorded attempts agree on the
+                # real budget (the variable is an existing tuning knob, not
+                # a semantics switch).
+                _requery_executed_key = False
+                try:
+                    from investigation_agent_platform.domain.investigation.loop_version import (
+                        LOOP_VERSION_LVR as _REQUERY_LVR,
+                    )
+                    from investigation_agent_platform.domain.investigation.loop_version import (
+                        loop_version_at_least as _requery_at_least,
+                    )
+
+                    _requery_executed_key = bool(
+                        _requery_at_least(getattr(_inv, "metadata", None), _REQUERY_LVR)
+                    )
+                except Exception:
+                    _requery_executed_key = False
+                try:
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        _max_attempts_from_env as _requery_budget,
+                    )
+
+                    _requery_budget_value = _requery_budget()
+                except Exception:
+                    _requery_budget_value = 3
                 _ledger_requery = _select_ledger_requery(
                     candidate,
                     evidence_items,
                     _directive_recorded,
                     data.get("recent_actions", []) or [],
+                    max_attempts=_requery_budget_value,
                     unavailable_actions=_requery_unavailable,
+                    executed_key_budget=_requery_executed_key,
                 )
         except Exception:
             _ledger_requery = None

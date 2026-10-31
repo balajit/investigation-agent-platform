@@ -73,9 +73,12 @@ def test_genuine_budget_exhaustion_keeps_its_label() -> None:
     )
     assert carrier is not None
     recorded = [
-        (["row-1"], {"search_query": "q", "scope": "", "attempt_id": "id-1"}),
-        (["row-2"], {"search_query": "q", "scope": "", "attempt_id": "id-2"}),
-        (["row-3"], {"search_query": "q", "scope": "", "attempt_id": "id-3"}),
+        (["row-1"], {"search_query": "q", "scope": "", "attempt_id": "id-1",
+                     "action_type": "SEARCH_CODE"}),
+        (["row-2"], {"search_query": "q", "scope": "", "attempt_id": "id-2",
+                     "action_type": "SEARCH_CODE"}),
+        (["row-3"], {"search_query": "q", "scope": "", "attempt_id": "id-3",
+                     "action_type": "SEARCH_CODE"}),
     ]
     out = _should_force_order_requery([carrier], recorded, WorkOrderPolicy(hardened=True, iteration=9))
     assert out["mark_consumed"] == ConsumeReason.BUDGET_EXHAUSTED.value

@@ -524,6 +524,42 @@ def _authz_aware(loop_version: Any) -> bool:
         return False
 
 
+#: Bounds for history_params (R10b): kept entries stay re-dispatchable.
+_MAX_PARAM_KEYS = 20
+_MAX_PARAM_STR = 1024
+
+
+def history_params(params: Any, *, typed: bool) -> tuple[dict[str, Any], bool]:
+    """(parameters, lossy) for one workflow history entry (R10b, pure).
+
+    typed=False is the pre-LV_R stringified shape (every value cut to 200
+    characters). typed=True keeps JSON scalars at full fidelity (strings
+    to 1024) and reports lossy=True when anything was cut, dropped, or
+    flattened (lists and objects are never re-dispatchable, so they are
+    stored stringified and flagged). Non-dict input yields ({}, False).
+    """
+    try:
+        if not isinstance(params, dict):
+            return {}, False
+        if not typed:
+            return {str(k): str(v)[:200] for k, v in params.items()}, False
+        out: dict[str, Any] = {}
+        lossy = False
+        for key, value in list(params.items())[:_MAX_PARAM_KEYS]:
+            name = str(key)[:64]
+            if value is None or isinstance(value, (bool, int, float)):
+                out[name] = value
+            elif isinstance(value, str):
+                out[name] = value[:_MAX_PARAM_STR]
+                lossy = lossy or len(value) > _MAX_PARAM_STR
+            else:
+                out[name] = str(value)[:200]
+                lossy = True
+        return out, lossy or len(params) > _MAX_PARAM_KEYS
+    except Exception:
+        return {}, False
+
+
 def _carriers_separated(loop_version: Any) -> bool:
     """Whether the run's pin reads turns apart from carriers (lv6+), fail-safe.
 
@@ -859,6 +895,10 @@ def _carry_requery_order(
             "claim_ref": claim_ref,
             "query": query,
             "scope": scope,
+            # R10g: the directive's action rides at top level so
+            # directive_consumed counts the same (query, scope,
+            # action_type) key the directive stamped.
+            "action_type": action_type,
             "max_attempts": max_attempts,
             "consumed": False,
             "order": {

@@ -39,8 +39,22 @@ def _ledger(
     return ClaimRetrievalLedger(claim_key="k|CAUSAL", search_query=query, scope=scope)
 
 
-def _recorded(query: str, scope: str | None, n: int) -> list[tuple[list[str], dict]]:
-    return [(["row-1"], {"search_query": query, "scope": scope}) for _ in range(n)]
+def _recorded(
+    query: str, scope: str | None, n: int, *, ids: bool = True
+) -> list[tuple[list[str], dict]]:
+    # R10f: id-less attempts are skipped by the durable count, so the
+    # helper stamps unique ids unless the caller opts out.
+    return [
+        (
+            ["row-1"],
+            {
+                "search_query": query,
+                "scope": scope,
+                **({"attempt_id": f"a{uuid4().hex[:8]}"} if ids else {}),
+            },
+        )
+        for _ in range(n)
+    ]
 
 
 def test_unknown_citations_require_zero_persisted_attempts() -> None:
@@ -580,12 +594,14 @@ def _failed_attempt_event() -> object:
 
 def _matching_recent_actions() -> list:
     # Same-turn view of the persisted _failed_attempt_event: same stable
-    # id so the merge treats them as one attempt, not two.
+    # id so the merge treats them as one attempt, not two. The parameters
+    # carry the claim query (R10a) so the executed key agrees with the
+    # ledger key in this fixture.
     return [
         {
             "iteration": 0,
             "action": "SEARCH_CODE",
-            "parameters": {"path_prefix": "/"},
+            "parameters": {"query": "SampleOrderFilter", "path_prefix": "/"},
             "attempt_id": "abc123",
             "evidence_ids": [],
             "retrieval_attempt": {
@@ -667,16 +683,20 @@ def test_merge_recorded_attempts_dedupes_by_id() -> None:
         ([], {"search_query": "q", "scope": "s"}),
     ]
     merged = merge_recorded_attempts(persisted, summaries)
-    assert len(merged) == 3
+    # R10f: id-less summaries cannot be deduplicated, so they are skipped
+    # (counter-only) instead of always joining.
+    assert len(merged) == 2
     assert merged[0][1]["attempt_id"] == "abc123"
     assert merged[1][1]["attempt_id"] == "novel-1"
-    assert "attempt_id" not in merged[2][1]
     assert merge_recorded_attempts([], []) == []
     assert merge_recorded_attempts(None, None) == []
 
 
 @pytest.mark.asyncio
 async def test_verify_activity_falls_back_to_summaries_without_timeline() -> None:
+    # R10c amended: at LV_R (unmarked metadata resolves to current) a
+    # missing timeline repo authorizes nothing — the summaries alone no
+    # longer back a directive.
     from investigation_agent_platform.api.dependencies import get_app_context
     from investigation_agent_platform.application.worker.activities import (
         VerifyRootCauseInput,
@@ -687,6 +707,34 @@ async def test_verify_activity_falls_back_to_summaries_without_timeline() -> Non
     _verify_harness(
         hypotheses=[_claim_hypothesis(inv_id)],
         inv_metadata={},
+        timeline_events=[],
+    )
+    get_app_context().timeline_repo = None  # type: ignore[attr-defined]
+    result = await verify_root_cause_activity(
+        VerifyRootCauseInput(
+            tenant_id="t",
+            investigation_id=str(inv_id),
+            recent_actions=_matching_recent_actions(),
+        )
+    )
+    assert result.success is True
+    assert result.data["ledger_requery"] is None
+
+
+@pytest.mark.asyncio
+async def test_verify_activity_fallback_preserved_pre_lvr() -> None:
+    # The pre-LV_R shape is unchanged: without a timeline repo the
+    # summaries alone still back a directive.
+    from investigation_agent_platform.api.dependencies import get_app_context
+    from investigation_agent_platform.application.worker.activities import (
+        VerifyRootCauseInput,
+        verify_root_cause_activity,
+    )
+
+    inv_id = uuid4()
+    _verify_harness(
+        hypotheses=[_claim_hypothesis(inv_id)],
+        inv_metadata={"loop_version": "lv7"},
         timeline_events=[],
     )
     get_app_context().timeline_repo = None  # type: ignore[attr-defined]

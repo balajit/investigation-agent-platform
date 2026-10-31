@@ -1294,6 +1294,17 @@ async def execute_action_activity(
                 outcome_detail["truncated_rows"] = len(items) - len(kept)
             except Exception:
                 pass
+            # R10e: rows the evidence room drops are released — truncation
+            # is a room decision, not a banking decision. Guarded: stubs
+            # without a deduplicator keep working.
+            try:
+                _release = getattr(gateway, "dedup_release", None)
+                if callable(_release) and len(kept) < len(items):
+                    _kept_ids = {id(item) for item in kept}
+                    _dropped = [item for item in items if id(item) not in _kept_ids]
+                    _release(tenant_id, investigation_id, _dropped)
+            except Exception:
+                pass
             # Phase 4 (claim binding): stamp banked rows with the
             # smallest-fetch reason at the single shared bank helper, so
             # every _bank(...) path (and only forced turns, via the
@@ -4741,7 +4752,15 @@ async def execute_action_activity(
             )
 
             _dispatch_start = _time.monotonic()
-            items_count = await handler()
+            # R10e: bank inside the dedup scope so a failed save rolls the
+            # marks back instead of manufacturing absence on retry.
+            # Guarded: gateways without the seam dispatch unwrapped.
+            _dedup_scope = getattr(gateway, "dedup_scope", None)
+            if callable(_dedup_scope):
+                async with _dedup_scope():
+                    items_count = await handler()
+            else:
+                items_count = await handler()
             _dispatch_ms = int((_time.monotonic() - _dispatch_start) * 1000)
             # P0-2: typed outcome from the handler side-channel. DEGRADED
             # survives even with zero items; otherwise zero items => EMPTY.
@@ -4825,6 +4844,11 @@ async def execute_action_activity(
                             _attempt_query,
                             _attempt_scope,
                         )
+                    else:
+                        # R10f: no iteration carried (legacy callers) — fall
+                        # back to the dispatch's deterministic action id,
+                        # stable across a Temporal retry. Never untagged.
+                        _attempt_id = f"act-{inv_action.action_id}"
                 except (TypeError, ValueError):
                     _attempt_id = None
                 if _attempt_id is not None:
