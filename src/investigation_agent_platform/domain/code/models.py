@@ -21,6 +21,10 @@ from investigation_agent_platform.domain.topology.models import (
 )
 
 
+#: History/attribute key carrying the typed window-enumeration result (J D2).
+WINDOW_ANALYSIS_KEY = "window_analysis"
+
+
 class SymbolType(StrEnum):
     """Categories of code symbols for AST indexing and query dispatch."""
 

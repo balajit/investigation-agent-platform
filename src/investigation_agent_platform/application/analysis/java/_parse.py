@@ -10,20 +10,21 @@ _CLASS_TYPES = frozenset({"class_declaration"})
 _METHOD_DECL_TYPES = frozenset(
     {"method_declaration", "constructor_declaration", "compact_constructor_declaration"}
 )
-_PARSER_VERSION = "tree-sitter-java"
 _QUERY_VERSION = "tree-sitter-query-v1"
 
 
 def parse_java(source: bytes) -> Any:
     """Parse a source window; raises the parser exception to the caller."""
-    from tree_sitter_language_pack import get_parser
+    from investigation_agent_platform.application.analysis import grammar as _grammar
 
-    return get_parser("java").parse(source)
+    return _grammar.parser("java").parse(source)
 
 
 def parser_version() -> str:
     """Parser identity recorded on resolutions for grammar-drift auditing."""
-    return _PARSER_VERSION
+    from investigation_agent_platform.application.analysis import grammar as _grammar
+
+    return _grammar.identity("java")
 
 
 def query_version() -> str:
@@ -37,12 +38,11 @@ def query_captures(root: Any, source: bytes, pattern: str) -> dict[str, list[Any
     Query syntax is kept at call sites so each matcher remains reviewable; the
     parser and cursor construction is centralized for API-version stability.
     """
-    from tree_sitter import Query, QueryCursor
-    from tree_sitter_language_pack import get_language
+    from tree_sitter import QueryCursor
 
-    language = get_language("java")
-    query = Query(language, pattern)
-    return dict(QueryCursor(query).captures(root))
+    from investigation_agent_platform.application.analysis import grammar as _grammar
+
+    return dict(QueryCursor(_grammar.query("java", pattern)).captures(root))
 
 
 def node_text(node: Any, source: bytes) -> str:

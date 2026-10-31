@@ -5,19 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
-_PARSER_VERSION = "tree-sitter-python"
-
-
 def parse_python(source: bytes) -> Any:
     """Parse a source window; raises the parser exception to the caller."""
-    from tree_sitter_language_pack import get_parser
+    from investigation_agent_platform.application.analysis import grammar as _grammar
 
-    return get_parser("python").parse(source)
+    return _grammar.parser("python").parse(source)
 
 
 def parser_version() -> str:
     """Parser identity recorded on resolutions for grammar-drift auditing."""
-    return _PARSER_VERSION
+    from investigation_agent_platform.application.analysis import grammar as _grammar
+
+    return _grammar.identity("python")
 
 
 def node_text(node: Any, source: bytes) -> str:

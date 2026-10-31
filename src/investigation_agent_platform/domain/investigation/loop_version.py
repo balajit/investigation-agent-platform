@@ -68,6 +68,11 @@ Versions:
   typed and reconciled; caller-edge answers write OBSERVATION findings. It only
   tightens which verdicts publish; it cannot invent evidence.
 
+- ``lv11``: lv10 plus the advisory frontier state derived from analyzer status
+  (review J10). The advisory ranking's evidence state reads whether the
+  analyzed window completed, gave up, or was blocked; it only relabels an
+  advisory recommendation and cannot publish a verdict.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -85,7 +90,8 @@ LOOP_VERSION_LV7 = "lv7"
 LOOP_VERSION_LV8 = "lv8"
 LOOP_VERSION_LVW = "lv9"
 LOOP_VERSION_LVH = "lv10"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LVH
+LOOP_VERSION_LVJ = "lv11"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LVJ
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -97,6 +103,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LV8,
         LOOP_VERSION_LVW,
         LOOP_VERSION_LVH,
+        LOOP_VERSION_LVJ,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -110,6 +117,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV8: 8,
     LOOP_VERSION_LVW: 9,
     LOOP_VERSION_LVH: 10,
+    LOOP_VERSION_LVJ: 11,
 }
 
 

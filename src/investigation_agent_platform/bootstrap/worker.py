@@ -132,6 +132,27 @@ INDEXING_ACTIVITIES: Sequence[Callable[..., Any]] = [
 ]
 
 
+def preflight_grammars() -> list[str]:
+    """Names of required grammars that cannot be loaded (J6-D11).
+
+    Logs once per missing grammar; never raises. Whether a non-empty result
+    stops the worker is an owner decision (recommended: log and expose in
+    worker health, since a worker without grammars can still serve
+    non-code runs).
+    """
+    from investigation_agent_platform.application.analysis import grammar
+    from investigation_agent_platform.application.analysis.failure import GrammarUnavailable
+
+    missing: list[str] = []
+    for name in sorted(grammar.SUPPORTED):
+        try:
+            grammar.parser(name).parse(b"")
+        except GrammarUnavailable as exc:
+            missing.append(name)
+            logger.error("grammar unavailable at startup: %s (%s)", name, exc)
+    return missing
+
+
 def build_app_context(config: ApplicationConfig) -> AppContext:
     """Build AppContext for the worker using the shared production composition root.
 

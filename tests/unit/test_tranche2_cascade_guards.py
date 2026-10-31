@@ -97,7 +97,7 @@ class TestLoopVersionResolution:
         # lv8 (shadow per-rule counting) is current; it inherits lv7 (bounded pivot), lv6 (carrier separation),
         # lv5 (answer status, contradiction severity), lv4 (D6 evidence cap),
         # lv3 (H5 floor, H8 re-fetch) and the unconditional F3 stand-down.
-        assert LOOP_VERSION_CURRENT == "lv10"
+        assert LOOP_VERSION_CURRENT == "lv11"
 
     def test_at_least_routes_on_the_recorded_pin(self) -> None:
         from investigation_agent_platform.domain.investigation.loop_version import (
