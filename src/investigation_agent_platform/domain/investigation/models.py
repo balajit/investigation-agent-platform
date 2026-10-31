@@ -134,6 +134,10 @@ class ActionOutcome(BaseModel):
     # (RetrievalAttempt dump); None = legacy row or non-retrieval
     # action. Diagnostics-only — never branched on.
     retrieval_attempt: dict[str, Any] | None = Field(default=None)
+    # J10-D20: analyzer outcome summary for this action (status counts +
+    # limitation-class counts from summarize_analysis; JSON scalars only).
+    # None = no analyzer ran. Diagnostics-only — never branched on.
+    analysis: dict[str, int] | None = Field(default=None)
 
 
 class ActorType(StrEnum):

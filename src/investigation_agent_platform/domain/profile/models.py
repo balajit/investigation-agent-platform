@@ -18,6 +18,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from investigation_agent_platform.domain.observability.mapping import GENERIC_ECS_SOURCE_ID
+from investigation_agent_platform.domain.profile.scope import (
+    BoundaryClass,
+    SourceScope,
+    normalize_source_root,
+    repo_locator,
+)
+from investigation_agent_platform.domain.profile.scope import (
+    classify as _classify_source,
+)
 
 VALID_PLANES = frozenset({"backend", "frontend", "mobile", "workers", "data-pipeline"})
 VALID_DATA_CLASSIFICATIONS = frozenset({"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"})
@@ -591,6 +600,25 @@ class ApplicationProfile(BaseModel):
             if root not in seen:
                 seen.append(root)
         return seen
+
+    def source_scopes(self) -> list[SourceScope]:
+        """One repo-qualified scope per service (J9 D16)."""
+        scopes: list[SourceScope] = []
+        for svc in self.services:
+            code = svc.code
+            roots = dict.fromkeys(
+                r for r in (normalize_source_root(x) for x in [*code.source_roots, *code.paths])
+                if r is not None
+            )
+            repos = dict.fromkeys(
+                loc for loc in (repo_locator(code.org or "", repo) for repo in code.repos) if loc
+            )
+            scopes.append(SourceScope(repos=tuple(repos), roots=tuple(roots)))
+        return scopes
+
+    def classify_source(self, repository: str, file_path: str) -> BoundaryClass:
+        """Three-state boundary class for one banked row (J9 D16)."""
+        return _classify_source(self.source_scopes(), repository, file_path)
 
     def all_service_names(self) -> list[str]:
         names: list[str] = []

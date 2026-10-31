@@ -1183,6 +1183,7 @@ class RunInvestigationWorkflow:
                         "items_count": _outcome.get("item_count", _exec_data.get("items_count", 0)),
                         "evidence_added": len(_outcome.get("evidence_ids", []) or []),
                         "miss_reason": _outcome.get("miss_reason"),
+                        "analysis": _outcome.get("analysis"),
                         "sources": _outcome.get("sources", []),
                         **forced_stamp(_reason_data),
                         **payload_stamp(_reason_data),

@@ -281,7 +281,14 @@ def test_cross_module_scope_abstains():
     )
     result = resolve_java_call_target(evidence, "process", declaring_type="com.external.Lib")
     assert result.status == CodeFactStatus.UNRESOLVED
-    assert "cross_module_scope" in result.limitation_codes
+    assert result.limitation_codes == ("declaring_type_mismatch_in_window",)
+
+
+def test_undeclared_window_abstains_without_type():
+    evidence = _source_evidence("// nothing declared here\n")
+    result = resolve_java_call_target(evidence, "process", declaring_type="com.external.Lib")
+    assert result.status == CodeFactStatus.UNRESOLVED
+    assert result.limitation_codes == ("declaring_type_not_in_window",)
 
 
 def test_missing_call_site_abstains():

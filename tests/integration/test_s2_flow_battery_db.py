@@ -52,8 +52,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from investigation_agent_platform.application.investigation.context_compiler import (
     MAX_DORMANT_TEMPLATES,
+    boundary_classifier,
     compile_dormant_templates,
-    external_classifier_for_roots,
 )
 from investigation_agent_platform.application.investigation.validator import (
     _is_within_roots,
@@ -119,6 +119,29 @@ IMPL = "service/src/main/java/com/sample/orders/service/OrderServiceImpl.java"
 HELPER = "service/src/main/java/com/sample/orders/helper/OrderQualifyHelper.java"
 MAPPER = "service/src/main/java/com/sample/orders/legacy/LegacyCodeMapper.java"
 ROOTS = ["service/src/main/java"]
+
+
+def _roots_classifier(roots):  # type: ignore[no-untyped-def]
+    from investigation_agent_platform.domain.profile.models import (
+        ApplicationProfile,
+        Service,
+        ServiceCode,
+    )
+
+    profile = ApplicationProfile(
+        id="app1",
+        tenant_id="t1",
+        name="n",
+        description="d",
+        environment="production",
+        services=[
+            Service(
+                name="svc",
+                code=ServiceCode(org=None, repos=[], source_roots=list(roots)),
+            )
+        ],
+    )
+    return boundary_classifier(profile)
 
 
 def _db_reachable() -> bool:
@@ -390,7 +413,7 @@ async def test_s7_handoff_round_trips_through_conclusion_repository(flow_inv):
 
 
 def _classify(rows):
-    return classify_banked_sites(rows, is_external=external_classifier_for_roots(ROOTS))
+    return classify_banked_sites(rows, classify=_roots_classifier(ROOTS))
 
 
 @pytest.mark.asyncio
@@ -399,7 +422,7 @@ async def test_L1_definition_lookup_seeds_no_templates_but_grades_pass(flow_inv)
     found = await _bank(flow_inv.repos, rows, flow_inv.inv)
     assert _classify(found) == []
     section = compile_dormant_templates(
-        found, anchors=_anchors(), is_external=external_classifier_for_roots(ROOTS)
+        found, anchors=_anchors(), classify=_roots_classifier(ROOTS)
     )
     assert section["templates"] == []
 
@@ -433,7 +456,7 @@ async def test_L2_caller_graph_rows_seed_no_templates(flow_inv):
     found = await _bank(flow_inv.repos, rows, flow_inv.inv)
     assert _classify(found) == []
     section = compile_dormant_templates(
-        found, anchors=_anchors(), is_external=external_classifier_for_roots(ROOTS)
+        found, anchors=_anchors(), classify=_roots_classifier(ROOTS)
     )
     assert section["templates"] == []
 
@@ -496,7 +519,7 @@ async def test_L4_corrected_path_templates_flag_gate_and_grades_pass(flow_inv):
     paths = _classify(found)
     assert len(paths) == 1
     section = compile_dormant_templates(
-        found, anchors=_anchors(), is_external=external_classifier_for_roots(ROOTS)
+        found, anchors=_anchors(), classify=_roots_classifier(ROOTS)
     )
     assert [t["kind"] for t in section["templates"]] == ["FLAG_GATED"]
     assert section["templates"][0]["discriminating_fetch"] is not None
@@ -530,7 +553,7 @@ async def test_L5_branch_chain_templates_data_gated_and_values_grade(flow_inv):
     found = await _bank(flow_inv.repos, rows, flow_inv.inv)
     assert len(_classify(found)) == 1
     section = compile_dormant_templates(
-        found, anchors=_anchors(), is_external=external_classifier_for_roots(ROOTS)
+        found, anchors=_anchors(), classify=_roots_classifier(ROOTS)
     )
     assert [t["kind"] for t in section["templates"]] == ["DATA_GATED"]
 
@@ -554,7 +577,7 @@ async def test_L8_unanswerable_banks_nothing_and_abstains(flow_inv):
     found = await _bank(flow_inv.repos, [], flow_inv.inv)
     assert found == []
     section = compile_dormant_templates(
-        found, anchors=_anchors(), is_external=external_classifier_for_roots(ROOTS)
+        found, anchors=_anchors(), classify=_roots_classifier(ROOTS)
     )
     assert section["templates"] == []
 
@@ -778,13 +801,16 @@ async def test_dispatch_parity_empty_roots_render_handoff_not_fetch(flow_inv):
         )
     ]
     found = await _bank(flow_inv.repos, rows, flow_inv.inv)
-    classifier = external_classifier_for_roots([])
-    assert classifier("service/svc/app.py") is True
+    classifier = boundary_classifier(None)
+    assert classifier("tenant-repo", "service/svc/app.py").value == "unknown"
     assert _is_within_roots("service/svc/app.py", []) is False
-    section = compile_dormant_templates(found, anchors=_anchors(), is_external=classifier)
+    section = compile_dormant_templates(
+        found, anchors=_anchors(), classify=classifier, roots_status="unavailable"
+    )
     assert len(section["templates"]) == 1
-    assert section["templates"][0]["discriminating_fetch"] is None
-    assert section["templates"][0]["handoff"] is not None
+    assert section["templates"][0]["discriminating_fetch"] is not None
+    assert section["templates"][0]["handoff"] is None
+    assert section["templates"][0]["boundary"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -804,7 +830,8 @@ async def test_template_cap_stable_across_bank_order(flow_inv):
     first_section = compile_dormant_templates(
         first_found,
         anchors=_anchors(),
-        is_external=external_classifier_for_roots(ROOTS),
+        classify=_roots_classifier(ROOTS),
+        roots_status="known",
     )
 
     inv2 = _investigation()
@@ -818,7 +845,8 @@ async def test_template_cap_stable_across_bank_order(flow_inv):
         second_section = compile_dormant_templates(
             second_found,
             anchors=_anchors(),
-            is_external=external_classifier_for_roots(ROOTS),
+            classify=_roots_classifier(ROOTS),
+            roots_status="known",
         )
     finally:
         await _hard_delete_investigation(flow_inv.repos, inv2.id)

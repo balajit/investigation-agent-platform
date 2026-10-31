@@ -298,18 +298,25 @@ def resolve_java_call_target(
         if method.name == method_name and not method.is_constructor
     ]
     if declaring_type:
-        candidates = [
+        matched = [
             c for c in candidates if _p.matches_declaring_type(c.qualified_type, declaring_type)
         ]
-        if not candidates:
+        if not matched:
+            declared = {m.enclosing_class for m in code_model.methods if m.enclosing_class}
+            code = (
+                "declaring_type_mismatch_in_window"  # the window declares other types
+                if declared or code_model.classes
+                else "declaring_type_not_in_window"  # the window names no type at all
+            )
             return _unresolved(
                 repository,
                 revision,
                 subject,
-                "cross_module_scope",
+                code,
                 evidence_ids,
                 level_text,
             )
+        candidates = matched
 
     invocations: list[tuple[Any, list[str], str]] = []
     for call in code_model.calls:

@@ -645,6 +645,28 @@ class EvidenceContextFormatter:
             )
 
 
+async def _load_boundary_profile(
+    profile_repo: Any | None, tenant_id: str, application_id: str
+) -> tuple[Any | None, str]:
+    """Load the profile for boundary classification (J9 D16).
+
+    Returns ``(profile, roots_status)``. A missing repo or profile yields
+    ``"unavailable"``; a store failure logs the exception type only (never
+    the message) and also yields ``"unavailable"``. The validator remains
+    the authority at dispatch time.
+    """
+    if profile_repo is None:
+        return None, "unavailable"
+    try:
+        profile = await profile_repo.get_by_application_id(tenant_id, application_id)
+    except Exception as exc:
+        logger.warning("boundary roots unavailable: %s", type(exc).__name__)
+        return None, "unavailable"
+    if profile is None:
+        return None, "unavailable"
+    return profile, "known"
+
+
 class ReasoningCoordinator(InvestigationReasoner):
     """Coordinates structured LLM reasoning and converts outputs to canonical decisions.
 
@@ -1182,25 +1204,21 @@ class ReasoningCoordinator(InvestigationReasoner):
 
         from investigation_agent_platform.application.investigation.context_compiler import (
             REASONER_PROMPT_VERSION,
+            boundary_classifier,
             compile_reasoning_context,
-            external_classifier_for_roots,
         )
 
         # S2 templates: tenant source roots for cross-boundary marking.
-        # Fail-open: a profile-store failure leaves roots empty, so every
-        # site stays in-tenant (conservative default, never a handoff).
-        profile_roots: list[str] = []
-        try:
-            if self._profile_repo is not None:
-                _profile = await self._profile_repo.get_by_application_id(
-                    tenant_id, state.investigation.application_id
-                )
-                if _profile is not None:
-                    profile_roots = list(_profile.all_source_roots() or [])
-        except Exception:
-            profile_roots = []
+        # A profile-store failure leaves roots unavailable (UNKNOWN keeps
+        # the discriminating fetch; never a handoff). The validator
+        # remains the authority at dispatch time.
+        _profile, roots_status = await _load_boundary_profile(
+            self._profile_repo, tenant_id, state.investigation.application_id
+        )
         compiled_context = compile_reasoning_context(
-            state, is_external=external_classifier_for_roots(profile_roots)
+            state,
+            classify=boundary_classifier(_profile),
+            roots_status=roots_status,
         )
         # Phase 4.2: packet disposition for the budget dashboard. Included
         # vs truncated vs dropped partitions the visible excerpts; dropped

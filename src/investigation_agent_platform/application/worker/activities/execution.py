@@ -2087,6 +2087,30 @@ async def execute_action_activity(
             if envelope:
                 merged_attributes[CODE_FACT_RESOLUTIONS_KEY] = envelope
                 outcome_detail[CODE_FACT_RESOLUTIONS_KEY] = envelope
+            # J10-D20: reduce every merged analyzer payload to scalar
+            # counts for the history stamp (no values, messages or ids).
+            try:
+                from investigation_agent_platform.application.analysis.summary import (
+                    summarize_analysis,
+                )
+
+                _analysis_payloads: list[Any] = []
+                _singular = merged_attributes.get("code_fact_resolution_v2")
+                if isinstance(_singular, dict):
+                    _analysis_payloads.append(_singular)
+                for _entry in merged_attributes.get(CODE_FACT_RESOLUTIONS_KEY) or []:
+                    if isinstance(_entry, dict) and isinstance(
+                        _entry.get("resolution"), dict
+                    ):
+                        _analysis_payloads.append(_entry["resolution"])
+                for _key, _value in merged_attributes.items():
+                    if _key.startswith(JAVA_FACT_RESOLUTION_PREFIX) and isinstance(
+                        _value, dict
+                    ):
+                        _analysis_payloads.append(_value)
+                outcome_detail["analysis"] = summarize_analysis(_analysis_payloads)
+            except Exception:
+                pass
             evidence = evidence.model_copy(update={"attributes": merged_attributes})
             if evidence_repo is not None:
                 await evidence_repo.save(
@@ -4731,6 +4755,11 @@ async def execute_action_activity(
                 error_code=outcome_detail.get("error_code"),
                 miss_reason=outcome_detail.get("miss_reason"),
                 duration_ms=_dispatch_ms,
+                analysis=(
+                    dict(outcome_detail["analysis"])
+                    if isinstance(outcome_detail.get("analysis"), dict)
+                    else None
+                ),
                 retrieval_attempt=(
                     outcome_detail.get("retrieval_attempt")
                     if isinstance(outcome_detail.get("retrieval_attempt"), dict)

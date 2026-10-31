@@ -65,6 +65,48 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
+def _evidence_state_for(
+    history: list[Any] | None, banked_total: int, loop_version: Any
+) -> tuple[Any, bool]:
+    """Evidence state for the advisory frontier, pinned to LV_J (J10 D22).
+
+    Below LV_J the row-count derivation applies exactly (pre-LV_J pins keep
+    it byte for byte). At LV_J+ the state derives from analyzer status on
+    banked turns (``gave_up`` when the analyzer refused). Pure: the workflow
+    stays deterministic and replayable from recorded results. W1-A removed
+    the advisory ranker that consumed this, so the pin lives here until a
+    consumer arrives; no rule reads ``gave_up`` today.
+    """
+    from investigation_agent_platform.domain.collection.evidence_state import (
+        AnalysisStamp,
+        derive_evidence_state,
+    )
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_LVJ,
+        loop_version_at_least,
+    )
+
+    try:
+        derived = bool(
+            loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVJ)
+        )
+    except Exception:
+        derived = False
+    if not derived:
+        state = derive_evidence_state(banked_total=banked_total, stamps=[])
+        return state, False
+    stamps = [
+        stamp
+        for entry in history or []
+        if isinstance(entry, dict) and int(entry.get("evidence_added", 0) or 0) > 0
+        for stamp in [AnalysisStamp.parse(entry.get("analysis"))]
+        if stamp is not None
+    ]
+    state = derive_evidence_state(banked_total=banked_total, stamps=stamps)
+    # No frontier import here (W6 fence): match on the state value.
+    return state, state.value in {"ANALYSIS_INCOMPLETE", "ANALYSIS_BLOCKED"}
+
+
 def _reason_summary(reason_data: dict[str, Any]) -> str:
     """One-line summary of a reason-activity decision for timeline descriptions.
 

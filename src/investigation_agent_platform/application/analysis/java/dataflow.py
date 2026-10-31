@@ -263,6 +263,59 @@ def resolve_java_data_flow(
             level_text,
             partial=True,
         )
+    _IMMUTABLE_RECEIVERS = frozenset(
+        {
+            "String",
+            "Integer",
+            "Long",
+            "Double",
+            "Float",
+            "Short",
+            "Byte",
+            "Boolean",
+            "Character",
+            "BigDecimal",
+            "BigInteger",
+            "LocalDate",
+            "LocalDateTime",
+            "Instant",
+            "UUID",
+        }
+    )
+    kinds = {event.kind for event in method_events}
+    declared_type = binding.var_type.split("<", 1)[0].strip()
+    if "member_store" in kinds or (
+        "receiver_call" in kinds and declared_type not in _IMMUTABLE_RECEIVERS
+    ):
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "receiver_mutation_possible",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
+    if "alias_store" in kinds:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "alias_escape",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
+    if "lambda_capture" in kinds:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "lambda_capture_not_modeled",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
     other_bindings = [
         item
         for item in code_model.dataflow_bindings

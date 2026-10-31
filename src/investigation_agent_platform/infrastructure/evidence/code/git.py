@@ -76,18 +76,10 @@ class PyGit2Adapter:
 
     @staticmethod
     def _split_repo_entry(svc_org: str, repo: str) -> str:
-        """Locator for one repos entry.
+        """Locator for one repos entry (delegates to the profile scope rule)."""
+        from investigation_agent_platform.domain.profile.scope import repo_locator
 
-        Entries may carry their own org (``otherorg/shared-libs`` for
-        cross-org checkouts); otherwise the service org applies. Bare
-        names stay bare. One slash max — deeper paths are not locators.
-        """
-        repo = str(repo or "").strip().strip("/")
-        if "/" in repo:
-            org, name = repo.split("/", 1)
-            if org and name and "/" not in name:
-                return f"{org}/{name}"
-            return repo
+        return repo_locator(svc_org, repo)
         if svc_org and repo:
             return f"{svc_org}/{repo}"
         return repo

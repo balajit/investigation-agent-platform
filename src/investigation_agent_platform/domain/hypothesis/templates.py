@@ -25,6 +25,7 @@ prove pinned source identity.
 import re
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -100,6 +101,9 @@ class SuspectSite(BaseModel):
     cross_boundary: bool = False
     #: Upstream identity for cross-boundary sites; required when set.
     upstream_identity: str | None = Field(default=None, max_length=512)
+    #: True when the boundary classifier abstained: the site stays in-tenant
+    #: (the discriminating fetch is kept) and the renderer exposes "unknown".
+    boundary_unknown: bool = False
 
     @model_validator(mode="after")
     def _require_upstream_identity(self) -> "SuspectSite":
@@ -513,6 +517,7 @@ def classify_banked_sites(
     rows: list[object],
     *,
     is_external: Callable[[str], bool] | None = None,
+    classify: Callable[[str, str], Any] | None = None,
 ) -> list[SuspectPath]:
     """Classify banked rows into suspect paths (conservative, never raises).
 
@@ -520,8 +525,11 @@ def classify_banked_sites(
     determinable line: path-only/discovery rows, unpinned revisions, and
     rows without snippet syntax matches are skipped, never guessed.
     Sites group by (repository, revision, file), ordered by line; one
-    SuspectPath per file. ``is_external`` marks files outside tenant
-    repos as cross-boundary; when omitted everything stays in-tenant.
+    SuspectPath per file. ``classify`` (a ``(repository, file_path) ->
+    BoundaryClass``) marks files outside tenant repos as cross-boundary;
+    the legacy ``is_external`` predicate is honored when ``classify`` is
+    omitted. Only EXTERNAL sets ``cross_boundary`` and builds a handoff;
+    UNKNOWN keeps the discriminating fetch and sets ``boundary_unknown``.
     """
     groups: dict[tuple[str, str, str], list[SuspectSite]] = {}
     for row in rows or []:
@@ -550,8 +558,25 @@ def classify_banked_sites(
         text = "\n".join(_matchable_code(body) for _, body in lines)
         if not text.strip():
             continue
-        external = bool(is_external(file_path)) if is_external is not None else False
         repository = _row_repository(row)
+        external = False
+        unknown = False
+        if classify is not None:
+            try:
+                from investigation_agent_platform.domain.profile.scope import (
+                    BoundaryClass,
+                )
+
+                boundary = classify(repository, file_path)
+                external = boundary == BoundaryClass.EXTERNAL
+                unknown = boundary == BoundaryClass.UNKNOWN
+            except Exception:
+                external, unknown = False, False
+        elif is_external is not None:
+            try:
+                external = bool(is_external(file_path))
+            except Exception:
+                external = False
         candidates: list[tuple[int, str, SuspectSiteKind, str]] = []
         for kind, pattern in _SITE_SYNTAX:
             for lineno, body in lines:
@@ -580,6 +605,7 @@ def classify_banked_sites(
                     upstream_identity=(
                         _upstream_identity(snippet, file_path) if external else None
                     ),
+                    boundary_unknown=unknown,
                 )
             except ValueError:
                 continue
