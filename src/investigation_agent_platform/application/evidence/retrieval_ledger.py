@@ -1136,7 +1136,9 @@ def directive_consumed(
             continue
         if entry_turn <= issued_turn:
             continue
-        stamp = entry.get("forced_requery")
+        # F8: the consumption stamp has its own key. `forced_requery` is a bool
+        # "fired this turn" flag on the history entry, like every other forced flag.
+        stamp = entry.get("requery_consumed")
         if not isinstance(stamp, dict):
             continue
         if (

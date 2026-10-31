@@ -1238,7 +1238,7 @@ class RunInvestigationWorkflow:
                         "forced_absence_disconfirmation": bool(
                             _reason_data.get("forced_absence_disconfirmation", False)
                         ),
-                        "forced_requery": False,
+                        "forced_requery": bool(_reason_data.get("forced_requery", False)),
                         "attempt_id": _exec_data.get("attempt_id"),
                         "retrieval_attempt": dict(_exec_attempt) if _exec_attempt else None,
                         "evidence_ids": [str(e) for e in (_outcome.get("evidence_ids") or [])][:25],
@@ -1253,7 +1253,7 @@ class RunInvestigationWorkflow:
                 # fresh evaluation, never a tight retry loop.
                 if _reason_data.get("forced_requery") and isinstance(_consumed_order_ref, dict):
                     _consumed_order_ref["consumed"] = True
-                    action_history[-1]["forced_requery"] = {
+                    action_history[-1]["requery_consumed"] = {
                         "claim_ref": str(_consumed_order_ref.get("claim_ref") or ""),
                         "query": str(_consumed_order_ref.get("query") or ""),
                         "scope": str(_consumed_order_ref.get("scope") or ""),

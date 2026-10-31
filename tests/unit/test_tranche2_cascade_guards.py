@@ -227,20 +227,29 @@ class TestF6FloorSkipsAlreadyReadTargets:
 
 class TestF7CascadeFaultDoesNotBurnCounters:
     def test_exception_leaves_counters_and_carrier_untouched(self, monkeypatch, caplog) -> None:
-        # Walk-stack fires (increments its counter) and a later rule raises.
+        # A pivot fires (counting locally) and the next rule evaluated, walk-stack,
+        # raises. Since F8 every rule after a fired force stands down before its
+        # trigger runs, so the pivot is the earlier force a later trigger can still
+        # fault behind (walk-stack deliberately does not stand down on a pivot).
         def _boom(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise RuntimeError("late rule fault")
 
-        monkeypatch.setattr(forcing, "_should_force_formulate", _boom)
+        monkeypatch.setattr(forcing, "_should_force_walk_stack", _boom)
         counts: dict[str, int] = {}
+        proposal = {"next_action": "GET_CODE", "action_parameters": {"file_path": "svc/new.py"}}
         state = _state(
-            reason_data={"next_action": "GET_CODE", "action_parameters": {"file_path": "a.py"}},
-            knowledge_seed={"frames": [{"file": "svc/boom.py", "line": 7, "function": "run"}]},
+            reason_data={"next_action": "GET_CODE", "action_parameters": {"file_path": "svc/new.py"}},
+            prev_focus={
+                "surface": "svc/old.py",
+                "surface_kind": "file",
+                "line_start": None,
+                "line_end": None,
+            },
             counts=counts,
         )
         with caplog.at_level("WARNING"):
             out = apply_post_reason_cascade(state)
-        assert out.reason_data["next_action"] == "GET_CODE", "proposal must pass through unchanged"
+        assert out.reason_data == proposal, "proposal must pass through unchanged (no pivot rewrite)"
         assert counts == {}, f"counter burned without a dispatch: {counts}"
         assert any("cascade" in r.message.lower() for r in caplog.records), "fault must be logged"
 

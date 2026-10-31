@@ -412,7 +412,7 @@ def test_order_verify_result_carried_to_next_cascade() -> None:
         {
             "iteration": 3,
             "action": fired["action_type"],
-            "forced_requery": {
+            "requery_consumed": {
                 "claim_ref": carrier["claim_ref"],
                 "query": carrier["query"],
                 "scope": carrier["scope"],
@@ -443,7 +443,7 @@ def test_order_failed_dispatch_stays_consumed() -> None:
         {
             "iteration": 2,
             "action": "SEARCH_CODE",
-            "forced_requery": {
+            "requery_consumed": {
                 "claim_ref": "abc",
                 "query": "q",
                 "scope": "s",

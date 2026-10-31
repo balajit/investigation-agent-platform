@@ -271,7 +271,7 @@ def test_carrier_appends_and_in_place_stamps_still_use_the_full_list() -> None:
     source = inspect.getsource(run_investigation)
     assert "action_history.append(_requery_order)" in source
     assert "action_history.append(_gap_carrier)" in source
-    assert 'action_history[-1]["forced_requery"]' in source
+    assert 'action_history[-1]["requery_consumed"]' in source
 
 
 def test_forcing_module_exports_the_helpers() -> None:

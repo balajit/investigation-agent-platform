@@ -7,6 +7,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from temporalio import workflow
@@ -2480,6 +2481,246 @@ def rank_advisory_orders(
     return {"evidence_state": str(evidence_state.value), "ranked": ranked, "skipped": skipped}
 
 
+class Force(StrEnum):
+    """The forcing flags the cascade stamps on the reason data (review F8).
+
+    Values are the existing flag keys, so stored shapes (history entries, the
+    shadow trace, telemetry) are unchanged; the enum only gives the keys one
+    definition. ``ABSENCE_DISCONFIRMATION`` and ``NOT_CHECKABLE`` (D6) are
+    decided before the cascade runs and arrive as turn state; the rest are
+    written by the cascade itself.
+    """
+
+    ABSENCE_DISCONFIRMATION = "forced_absence_disconfirmation"
+    NOT_CHECKABLE = "forced_not_checkable"
+    PIVOT_RECOLLECT = "forced_pivot_recollect"
+    WALK_STACK = "forced_walk_stack"
+    REQUERY = "forced_requery"
+    FLOOR = "forced_floor"
+    FORMULATE = "forced_formulate"
+    REREAD = "forced_reread"
+    CALLSITE = "forced_callsite"
+    LOG_SEARCH = "forced_log_search"
+    REPLAN = "forced_replan"
+    SMALLEST_FETCH = "forced_smallest_fetch"
+
+
+#: Forces decided before the cascade. Every rule stands down on a turn that
+#: carries one (as turn state), so they are not listed per rule.
+PRE_CASCADE_FORCES = frozenset({Force.ABSENCE_DISCONFIRMATION, Force.NOT_CHECKABLE})
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One cascade rule: the force it writes and what it must yield to.
+
+    ``stands_down_on`` is the set of earlier forces that suppress this rule for
+    the turn. ``exempt`` records an earlier force the rule deliberately does NOT
+    stand down on, with the reason; the contract below requires every earlier
+    force to be in one or the other.
+    """
+
+    name: str
+    force: Force
+    stands_down_on: frozenset[Force]
+    exempt: dict[Force, str] = field(default_factory=dict)
+
+
+_DISJOINT_COMMITTAL = (
+    "disjoint by construction: this rule triggers only on committal proposals "
+    "(FORMULATE/VERIFY/CONCLUDE) while a pivot needs a fetch proposal "
+    "(PIVOT_FILE_ACTIONS); pinned by test"
+)
+
+#: The cascade's rules in evaluation order. ``synthesis`` shares the FORMULATE
+#: force with ``formulate`` (same override, same flag). Keep this table and the
+#: cascade in step: a test requires the cascade to consult it once per rule, in
+#: this order, and ``check_rule_contract`` requires every rule to stand down on
+#: every earlier force or record why not.
+RULES: tuple[Rule, ...] = (
+    Rule("pivot", Force.PIVOT_RECOLLECT, frozenset()),
+    Rule(
+        "walk_stack",
+        Force.WALK_STACK,
+        frozenset(),
+        {
+            Force.PIVOT_RECOLLECT: (
+                "overrides the pivot's dispatch and clears its flag (F5): explicit "
+                "intake frames outrank every other gathering rule"
+            )
+        },
+    ),
+    Rule("requery", Force.REQUERY, frozenset({Force.WALK_STACK, Force.PIVOT_RECOLLECT})),
+    Rule(
+        "floor",
+        Force.FLOOR,
+        frozenset({Force.WALK_STACK, Force.REQUERY}),
+        {Force.PIVOT_RECOLLECT: _DISJOINT_COMMITTAL},
+    ),
+    Rule(
+        "formulate",
+        Force.FORMULATE,
+        frozenset({Force.WALK_STACK, Force.FLOOR, Force.REQUERY, Force.PIVOT_RECOLLECT}),
+    ),
+    Rule(
+        "synthesis",
+        Force.FORMULATE,
+        frozenset(
+            {
+                Force.WALK_STACK,
+                Force.FORMULATE,
+                Force.FLOOR,
+                Force.REQUERY,
+                Force.PIVOT_RECOLLECT,
+            }
+        ),
+    ),
+    Rule(
+        "reread",
+        Force.REREAD,
+        frozenset({Force.FORMULATE, Force.WALK_STACK, Force.FLOOR, Force.REQUERY}),
+        {Force.PIVOT_RECOLLECT: _DISJOINT_COMMITTAL},
+    ),
+    Rule(
+        "callsite",
+        Force.CALLSITE,
+        frozenset(
+            {
+                Force.FORMULATE,
+                Force.WALK_STACK,
+                Force.FLOOR,
+                Force.REREAD,
+                Force.REQUERY,
+                Force.PIVOT_RECOLLECT,
+            }
+        ),
+    ),
+    Rule(
+        "log_search",
+        Force.LOG_SEARCH,
+        frozenset(
+            {
+                Force.FORMULATE,
+                Force.REREAD,
+                Force.WALK_STACK,
+                Force.FLOOR,
+                Force.CALLSITE,
+                Force.REQUERY,
+                Force.PIVOT_RECOLLECT,
+            }
+        ),
+    ),
+    Rule(
+        "replan",
+        Force.REPLAN,
+        frozenset(
+            {
+                Force.FORMULATE,
+                Force.REREAD,
+                Force.LOG_SEARCH,
+                Force.WALK_STACK,
+                Force.FLOOR,
+                Force.CALLSITE,
+                Force.REQUERY,
+                Force.PIVOT_RECOLLECT,
+            }
+        ),
+    ),
+    Rule(
+        "smallest_fetch",
+        Force.SMALLEST_FETCH,
+        frozenset(
+            {
+                Force.FORMULATE,
+                Force.REREAD,
+                Force.WALK_STACK,
+                Force.FLOOR,
+                Force.CALLSITE,
+                Force.REQUERY,
+                Force.LOG_SEARCH,
+                Force.REPLAN,
+                Force.NOT_CHECKABLE,
+                Force.PIVOT_RECOLLECT,
+            }
+        ),
+    ),
+)
+
+_RULES_BY_NAME: dict[str, Rule] = {rule.name: rule for rule in RULES}
+
+
+def check_rule_contract(rules: tuple[Rule, ...] | list[Rule]) -> list[str]:
+    """Violations of the stand-down contract (empty list = satisfied). Pure.
+
+    Every rule must either stand down on, or record an exemption with a reason
+    for, every force an earlier rule writes; a rule may not do both for one
+    force, stand down on a force no earlier rule writes (other than the
+    pre-cascade forces), or reuse a name.
+    """
+    problems: list[str] = []
+    seen_names: set[str] = set()
+    earlier: list[Force] = []
+    for rule in rules:
+        if rule.name in seen_names:
+            problems.append(f"duplicate rule name: {rule.name}")
+        seen_names.add(rule.name)
+        for force in sorted(rule.stands_down_on & set(rule.exempt), key=lambda f: f.value):
+            problems.append(f"rule {rule.name} both stands down on and exempts {force.value}")
+        for force in earlier:
+            if force not in rule.stands_down_on and force not in rule.exempt:
+                problems.append(
+                    f"rule {rule.name} neither stands down on nor exempts earlier force "
+                    f"{force.value}"
+                )
+        for force, reason in rule.exempt.items():
+            if not str(reason or "").strip():
+                problems.append(f"rule {rule.name} exempts {force.value} without a reason")
+            if force not in earlier:
+                problems.append(f"rule {rule.name} exempts {force.value}, which is not earlier")
+        for force in sorted(rule.stands_down_on, key=lambda f: f.value):
+            if force not in earlier and force not in PRE_CASCADE_FORCES:
+                problems.append(
+                    f"rule {rule.name} stands down on {force.value}, which no earlier rule writes"
+                )
+        if rule.force not in earlier:
+            earlier.append(rule.force)
+    return problems
+
+
+def _fired_forces(reason_data: Any) -> frozenset[Force]:
+    """The forces whose flag is set on the reason data (pure, never raises)."""
+    try:
+        if not isinstance(reason_data, dict):
+            return frozenset()
+        return frozenset(force for force in Force if reason_data.get(force.value))
+    except Exception:
+        return frozenset()
+
+
+def _stands_down(
+    rule_name: str,
+    reason_data: Any,
+    *,
+    is_defer: bool,
+    absence_forced: bool,
+    d6_fired: bool,
+) -> bool:
+    """Whether ``rule_name`` must not fire this turn (pure, fail-closed).
+
+    True on a defer, absence-disconfirmation or D6 turn (turn state), or when any
+    force in the rule's ``stands_down_on`` already fired. An unknown rule name or
+    a fault stands down: no forcing is the safe outcome, the proposal passes
+    through.
+    """
+    try:
+        if is_defer or absence_forced or d6_fired:
+            return True
+        rule = _RULES_BY_NAME[rule_name]
+        return bool(_fired_forces(reason_data) & rule.stands_down_on)
+    except Exception:
+        return True
+
+
 @dataclass
 class PostReasonCascadeState:
     """Inputs and outputs of the post-reason gathering cascade (2b seam).
@@ -2563,6 +2804,20 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             except (TypeError, ValueError):
                 return 0
 
+        # F8: one definition of "this rule yields this turn". The D6 turn state
+        # and its flag are one fact (production sets both together); each rule's
+        # stand-down set lives in RULES, not in a hand-written guard list.
+        _d6_fired = _d6_fired or bool(_reason_data.get(Force.NOT_CHECKABLE.value))
+
+        def _down(rule_name: str) -> bool:
+            return _stands_down(
+                rule_name,
+                _reason_data,
+                is_defer=_is_defer,
+                absence_forced=_absence_forced,
+                d6_fired=_d6_fired,
+            )
+
         # P6 2b-i: pivot recollect — the reasoner's point of focus
         # moved surfaces, so go back to collection on the new focus
         # instead of verifying or concluding on the stale one. Runs
@@ -2574,7 +2829,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # (agentic layers own budget); the turns-remaining gate is
         # liveness, not budget.
         _pivot_override = None
-        if not _is_defer and not _d6_fired and not _absence_forced:
+        if not _down("pivot"):
             _pivot_targets = _recent_collection_surfaces(_history, separate_carriers=_separate)
             _pivot_override = _should_force_pivot_recollect(
                 state.prev_focus,
@@ -2588,14 +2843,14 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             _reason_data = dict(_reason_data)
             _reason_data["next_action"] = _pivot_override["next_action"]
             _reason_data["action_parameters"] = _pivot_override["action_parameters"]
-            _reason_data["forced_pivot_recollect"] = True
+            _reason_data[Force.PIVOT_RECOLLECT.value] = True
             if _pivot_v2:
                 _counts["pivot"] = _count("pivot") + 1
         # D2: stack-walk forcing first — explicit intake frames outrank
         # every other gathering rule.
         _walk_params = (
             None
-            if _is_defer or _absence_forced or _d6_fired
+            if _down("walk_stack")
             else _should_force_walk_stack(
                 state.knowledge_seed, _reason_data, _history, _count("walk_stack")
             )
@@ -2605,11 +2860,11 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
             _reason_data = dict(_reason_data)
             _reason_data["next_action"] = "WALK_STACK"
             _reason_data["action_parameters"] = _walk_params
-            _reason_data["forced_walk_stack"] = True
+            _reason_data[Force.WALK_STACK.value] = True
             # F5: walk-stack overwrote the pivot's dispatch, so the pivot did
             # not happen; leaving the flag set would stamp history with a
             # pivot that never ran and damp its target as already collected.
-            _reason_data["forced_pivot_recollect"] = False
+            _reason_data[Force.PIVOT_RECOLLECT.value] = False
             if _pivot_v2 and _pivot_override is not None:
                 # The cancelled pivot never dispatched: return its count.
                 _counts["pivot"] = max(0, _count("pivot") - 1)
@@ -2628,13 +2883,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # F3: the slot stands down on defer and absence-disconfirmation
         # turns, like every other gathering rule — overwriting those forced
         # actions burned their budgets.
-        _requery_owns_turn = not _is_defer and not _absence_forced
-        if (
-            _requery_owns_turn
-            and not _reason_data.get("forced_walk_stack")
-            and not _d6_fired
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("requery"):
             _recorded_summaries = recorded_attempt_summaries(_history or []) or []
             _order_override = _should_force_order_requery(_history, _recorded_summaries)
             if _order_override is not None and _order_override.get("mark_consumed"):
@@ -2652,7 +2901,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _order_override["action_type"]
                 _reason_data["action_parameters"] = _order_override["action_parameters"]
-                _reason_data["forced_requery"] = True
+                _reason_data[Force.REQUERY.value] = True
                 try:
                     _consumed_order_ref = (_history or [])[_order_override["order_index"]]
                 except (TypeError, IndexError, KeyError):
@@ -2669,13 +2918,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # triggers only on committal proposals (FORMULATE/VERIFY/CONCLUDE)
         # while a pivot needs a fetch proposal — disjoint by construction
         # (see PIVOT_FILE_ACTIONS), pinned by test.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _d6_fired
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_requery")
-        ):
+        if not _down("floor"):
             _floor = _explore_floor_target(
                 _reason_data,
                 int(state.evidence_banked_total or 0),
@@ -2690,40 +2933,22 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _floor["next_action"]
                 _reason_data["action_parameters"] = _floor["action_parameters"]
-                _reason_data["forced_floor"] = True
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _d6_fired
-            and _should_force_formulate(
-                int(state.iteration or 0),
-                int(state.formulated_count or 0),
-                _reason_data.get("hypotheses_evaluated"),
-                int(state.evidence_banked_total or 0),
-                _count("formulate"),
-            )
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_pivot_recollect")
+                _reason_data[Force.FLOOR.value] = True
+        if not _down("formulate") and _should_force_formulate(
+            int(state.iteration or 0),
+            int(state.formulated_count or 0),
+            _reason_data.get("hypotheses_evaluated"),
+            int(state.evidence_banked_total or 0),
+            _count("formulate"),
         ):
             _counts["formulate"] = _count("formulate") + 1
             _reason_data = dict(_reason_data)
             _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
             _reason_data["action_parameters"] = {}
-            _reason_data["forced_formulate"] = True
+            _reason_data[Force.FORMULATE.value] = True
         # T2-4: synthesis forcing — rich multi-action corpus with
         # nothing committed gets FORMULATE (same override as G8).
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _d6_fired
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_floor")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("synthesis"):
             if _should_force_synthesis(
                 _history,
                 int(state.evidence_banked_total or 0),
@@ -2735,43 +2960,25 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "FORMULATE_HYPOTHESIS"
                 _reason_data["action_parameters"] = {}
-                _reason_data["forced_formulate"] = True
+                _reason_data[Force.FORMULATE.value] = True
         # P0-2: re-read forcing — definition claim heading to VERIFY
         # without a range-read gets the read first (G3 floor would
         # INCONCLUSIVE the verify). Skipped when G8/D2 already forced.
         # No pivot guard: the re-read triggers only on VERIFY proposals
         # while a pivot needs a fetch proposal — disjoint by construction
         # (see PIVOT_FILE_ACTIONS), pinned by test.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _d6_fired
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _reason_data.get("forced_requery")
-        ):
+        if not _down("reread"):
             _reread_path = _reread_target(_reason_data, _history, _count("reread"))
             if _reread_path:
                 _counts["reread"] = _count("reread") + 1
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "GET_CODE"
                 _reason_data["action_parameters"] = {"file_path": _reread_path}
-                _reason_data["forced_reread"] = True
+                _reason_data[Force.REREAD.value] = True
         # Call-site forcing — a CALL_EDGE claim naming an unread caller
         # file reads it before the loop can conclude on a graph summary
         # alone. Skipped when an earlier read-forcing rule already fired.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _d6_fired
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _reason_data.get("forced_reread")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("callsite"):
             _callsite = _callsite_target(
                 _reason_data,
                 _history,
@@ -2784,21 +2991,10 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _callsite["next_action"]
                 _reason_data["action_parameters"] = _callsite["action_parameters"]
-                _reason_data["forced_callsite"] = True
+                _reason_data[Force.CALLSITE.value] = True
         # B-4: log-first forcing — service-error complaints gather logs
         # before code/state. Skipped when G8/G3/D2 already forced.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_reread")
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _d6_fired
-            and not _reason_data.get("forced_callsite")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("log_search"):
             _log_params = _should_force_log_search(
                 str(state.description or ""),
                 _reason_data,
@@ -2810,23 +3006,11 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "SEARCH_LOGS"
                 _reason_data["action_parameters"] = _log_params
-                _reason_data["forced_log_search"] = True
+                _reason_data[Force.LOG_SEARCH.value] = True
         # E3: replan trigger last — two enriched empties on one surface
         # plus same proposal redirects to the alternative family.
         # Skipped when any earlier rule already forced.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_reread")
-            and not _reason_data.get("forced_log_search")
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _d6_fired
-            and not _reason_data.get("forced_callsite")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("replan"):
             _replan = _should_force_replan(
                 str(state.description or ""),
                 _reason_data,
@@ -2839,27 +3023,14 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _replan["next_action"]
                 _reason_data["action_parameters"] = _replan["action_parameters"]
-                _reason_data["forced_replan"] = True
+                _reason_data[Force.REPLAN.value] = True
         # Phase 4 (claim binding): smallest-fetch slot — LAST override
         # before the story-debug/shadow capture, so no later rule can
         # clobber it. First kind with an open order and a dispatchable
         # directive wins the turn. Orders arrive via carriers (newest
         # carrier only — an orders-empty carrier supersedes older ones);
         # coverage stamps prevent refires, so no in-place consumption.
-        if (
-            not _is_defer
-            and not _absence_forced
-            and not _reason_data.get("forced_formulate")
-            and not _reason_data.get("forced_reread")
-            and not _reason_data.get("forced_walk_stack")
-            and not _reason_data.get("forced_floor")
-            and not _reason_data.get("forced_callsite")
-            and not _reason_data.get("forced_requery")
-            and not _reason_data.get("forced_log_search")
-            and not _reason_data.get("forced_replan")
-            and not _reason_data.get("forced_not_checkable")
-            and not _reason_data.get("forced_pivot_recollect")
-        ):
+        if not _down("smallest_fetch"):
             _carrier_orders: list[dict[str, Any]] = []
             try:
                 for _evt in reversed(_history or []):
@@ -2913,7 +3084,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = _picked_order.action_type
                 _reason_data["action_parameters"] = dict(_picked_order.action_parameters or {})
-                _reason_data["forced_smallest_fetch"] = True
+                _reason_data[Force.SMALLEST_FETCH.value] = True
                 _reason_data["forced_smallest_fetch_kind"] = _fetch_kind
                 _reason_data["forced_smallest_fetch_gap_id"] = str(_picked_order.gap_id or "")
                 # Workflow-only bank context (D4): identity travels
@@ -2945,7 +3116,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 # pivot was cancelled so it can refire. Forced and absence
                 # turns carry no model focus (None) and leave it unchanged.
                 _cancelled = _pivot_override is not None and not _reason_data.get(
-                    "forced_pivot_recollect"
+                    Force.PIVOT_RECOLLECT.value
                 )
                 if _proposal_focus is not None and not _cancelled:
                     state.prev_focus = _proposal_focus.model_dump(mode="json")
