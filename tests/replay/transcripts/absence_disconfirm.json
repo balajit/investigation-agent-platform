@@ -1,0 +1,10 @@
+[
+  {
+    "consumed_order_ref": null,
+    "forced": [
+      "forced_absence_disconfirmation"
+    ],
+    "next_action": "GET_CODE",
+    "prev_focus": null
+  }
+]

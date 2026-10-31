@@ -1,0 +1,10 @@
+[
+  {
+    "consumed_order_ref": null,
+    "forced": [
+      "forced_not_checkable"
+    ],
+    "next_action": "CONCLUDE",
+    "prev_focus": null
+  }
+]

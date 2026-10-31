@@ -1,0 +1,24 @@
+[
+  {
+    "consumed_order_ref": null,
+    "forced": [],
+    "next_action": "GET_CODE",
+    "prev_focus": {
+      "line_end": 20,
+      "line_start": 1,
+      "surface": "svc/a.py",
+      "surface_kind": "file"
+    }
+  },
+  {
+    "consumed_order_ref": null,
+    "forced": [],
+    "next_action": "FORMULATE_HYPOTHESIS",
+    "prev_focus": {
+      "line_end": 20,
+      "line_start": 1,
+      "surface": "svc/a.py",
+      "surface_kind": "file"
+    }
+  }
+]

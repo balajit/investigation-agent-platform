@@ -1,0 +1,35 @@
+[
+  {
+    "consumed_order_ref": {
+      "claim_ref": "c1",
+      "consumed": false,
+      "iteration": 1,
+      "kind": "work_order",
+      "max_attempts": 3,
+      "order": {
+        "action_parameters": {
+          "file_path": "svc/req.py"
+        },
+        "action_type": "GET_CODE",
+        "addresses": {
+          "claim_kind": "untyped",
+          "triage_route": "BUG"
+        },
+        "cost_estimate": 1,
+        "kind": "REQUERY",
+        "seed_source": "test:carrier",
+        "status": "PENDING",
+        "work_order_id": "00000000-0000-0000-0000-000000000001"
+      },
+      "order_kind": "REQUERY",
+      "query": "order filter",
+      "scope": "",
+      "turn_issued": 1
+    },
+    "forced": [
+      "forced_requery"
+    ],
+    "next_action": "GET_CODE",
+    "prev_focus": null
+  }
+]

@@ -1,0 +1,13 @@
+[
+  {
+    "consumed_order_ref": null,
+    "forced": [],
+    "next_action": "GET_CODE",
+    "prev_focus": {
+      "line_end": null,
+      "line_start": null,
+      "surface": "svc/b.py",
+      "surface_kind": "file"
+    }
+  }
+]
