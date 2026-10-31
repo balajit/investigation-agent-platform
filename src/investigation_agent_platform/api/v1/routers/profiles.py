@@ -45,7 +45,10 @@ from investigation_agent_platform.domain.common.exceptions import (
     IdempotencyInProgressError,
 )
 from investigation_agent_platform.domain.investigation.models import ActionType
-from investigation_agent_platform.domain.observability.mapping import GENERIC_ECS_SOURCE_ID
+from investigation_agent_platform.domain.observability.mapping import (
+    GENERIC_ECS_DELIMITED_SOURCE_ID,
+    GENERIC_ECS_SOURCE_ID,
+)
 from investigation_agent_platform.domain.profile.models import (
     ApplicationProfile,
     ProfileStatus,
@@ -113,7 +116,10 @@ def _parse_body(tenant_id: str, data: dict[str, Any]) -> ApplicationProfile:
 
 
 def _check_semantics(profile: ApplicationProfile) -> None:
-    known = set(_known_mapping_ids(_MAPPINGS_DIR)) | {GENERIC_ECS_SOURCE_ID}
+    known = set(_known_mapping_ids(_MAPPINGS_DIR)) | {
+        GENERIC_ECS_SOURCE_ID,
+        GENERIC_ECS_DELIMITED_SOURCE_ID,
+    }
     if profile.mapping_source_id not in known:
         raise _err(
             "PROFILE_UNKNOWN_MAPPING",

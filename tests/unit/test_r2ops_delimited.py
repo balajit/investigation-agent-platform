@@ -131,3 +131,15 @@ def test_r2ops_t07_delimited_needs_no_registry_lookup() -> None:
     out = asyncio.run(adapter._sibling_scope_ids(generic_ecs_delimited_mapping()))
     assert out is None
     assert calls["n"] == 0
+
+
+def test_r2ops_t08_router_accepts_delimited_mapping_id() -> None:
+    from investigation_agent_platform.api.v1.routers.profiles import _check_semantics
+    from investigation_agent_platform.domain.profile.models import ApplicationProfile
+
+    base = ApplicationProfile.model_construct(
+        _fields_set={"mapping_source_id", "allowed_capabilities"},
+        mapping_source_id="generic-ecs-delimited",
+        allowed_capabilities=[],
+    )
+    _check_semantics(base)
