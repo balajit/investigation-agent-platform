@@ -8,7 +8,11 @@ from uuid import uuid4
 
 import pytest
 import test_claim_binding_phase1 as fixtures
-from test_claim_binding_phase1 import _activity_ctx, _attempt_event, _two_caller_hyp, _two_caller_rows
+from test_claim_binding_phase1 import (
+    _attempt_event,
+    _two_caller_hyp,
+    _two_caller_rows,
+)
 
 from investigation_agent_platform.application.worker.activities.lifecycle import (
     _answered_shape,
@@ -136,7 +140,6 @@ def test_calibration_edge_cases() -> None:
 
 @pytest.mark.asyncio
 async def test_journey_fusion_with_caller_edge_observation() -> None:
-    from unittest.mock import AsyncMock
 
     from investigation_agent_platform.application.worker.activities.execution import (
         _fuse_journey_findings,

@@ -55,7 +55,10 @@ def _finding(inv_id, hid):  # type: ignore[no-untyped-def]
 
 
 def _conclusion(inv_id):  # type: ignore[no-untyped-def]
-    from investigation_agent_platform.domain.finding.models import ConclusionStatus, InvestigationConclusion
+    from investigation_agent_platform.domain.finding.models import (
+        ConclusionStatus,
+        InvestigationConclusion,
+    )
 
     return InvestigationConclusion(
         tenant_id="t", investigation_id=inv_id, status=ConclusionStatus.ANSWERED,
@@ -124,7 +127,6 @@ async def test_version_conflict_rolls_back_the_unit() -> None:
 async def test_happy_path_is_one_commit() -> None:
     from investigation_agent_platform.application.investigation.verification import (
         LimitationCode,
-        VerificationStatus,
     )
 
     assert LimitationCode.UNVERIFIED_CLAIM_GROUP is not None
@@ -162,7 +164,7 @@ async def test_no_hypothesis_when_already_verified() -> None:
 async def test_retry_after_full_commit_is_a_noop() -> None:
     from test_claim_binding_phase3 import _def_read
 
-    row = _def_read()
+    _def_read()
     finding_repo, _ = _recording_repo()
     inv_id, hid = uuid4(), uuid4()
     first = _finding(inv_id, hid)

@@ -13,7 +13,7 @@ def test_prose_against_evidence_writes_no_refuting_ids() -> None:
     )
     from investigation_agent_platform.domain.hypothesis.models import HypothesisStatus
 
-    engine = VerificationEngine()
+    VerificationEngine()
     hyp = SimpleNamespace(id=uuid4(), status=HypothesisStatus.PROPOSED)
     result = SimpleNamespace(
         status=VerificationStatus.VERIFIED, confidence=SimpleNamespace(overall_confidence=0.9, coverage_score=0.5),
@@ -46,7 +46,9 @@ def test_causal_verdict_at_bar_publishes_likely() -> None:
 
 
 def test_default_is_cbv1() -> None:
-    from investigation_agent_platform.application.investigation.verification import CLAIM_BINDING_CURRENT
+    from investigation_agent_platform.application.investigation.verification import (
+        CLAIM_BINDING_CURRENT,
+    )
 
     assert CLAIM_BINDING_CURRENT == "cbv1"
 
@@ -54,10 +56,8 @@ def test_default_is_cbv1() -> None:
 def test_all_writers_stamp_the_default() -> None:
     import inspect
 
-    import investigation_agent_platform.application.investigation.services as services
-    import investigation_agent_platform.api.dev_seed as dev_seed
-
-    from investigation_agent_platform.application.investigation.verification import CLAIM_BINDING_CURRENT
+    from investigation_agent_platform.api import dev_seed
+    from investigation_agent_platform.application.investigation import services
 
     for module in (services, dev_seed):
         src = inspect.getsource(module)

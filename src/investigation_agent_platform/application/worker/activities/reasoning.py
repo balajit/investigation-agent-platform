@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 

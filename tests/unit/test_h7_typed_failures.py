@@ -3,10 +3,14 @@
 
 import pytest
 import test_h7_reasoning_degrade as h7
-from test_h7_reasoning_degrade import _conclude
 
-from investigation_agent_platform.application.worker.activities.common import classify_reasoning_failure
-from investigation_agent_platform.application.worker.reasoning_failure import KIND_BLOCKED, KIND_TRANSIENT
+from investigation_agent_platform.application.worker.activities.common import (
+    classify_reasoning_failure,
+)
+from investigation_agent_platform.application.worker.reasoning_failure import (
+    KIND_BLOCKED,
+    KIND_TRANSIENT,
+)
 from investigation_agent_platform.domain.finding.models import HandoffState, S7Handoff
 
 
@@ -77,7 +81,9 @@ def test_reasoning_outage_uses_reasoning_deferred() -> None:
 
 
 def test_reasoning_blocked_next_check() -> None:
-    from investigation_agent_platform.application.worker.activities.lifecycle import _epistemic_next_check
+    from investigation_agent_platform.application.worker.activities.lifecycle import (
+        _epistemic_next_check,
+    )
 
     text = _epistemic_next_check("reasoning_provider_blocked:x")
     assert "reasoning provider" in text.lower()

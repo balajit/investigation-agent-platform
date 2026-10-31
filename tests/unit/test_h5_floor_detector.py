@@ -3,7 +3,6 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 
@@ -100,7 +99,6 @@ async def test_reason_activity_forwards_measurement() -> None:
         disposition=None, defer_gathering=None, action_parameters={},
         metadata={"checkability_floor": {"nc_kept": 2}, "resample_count": 3, "resample_outcome": "recovered"},
     )
-    saved: list = []
     ctx = AppContext()
     ctx.investigation_repo = SimpleNamespace(get_by_id=AsyncMock(return_value=inv))  # type: ignore[attr-defined]
     ctx.reasoning_coordinator = SimpleNamespace(reason=AsyncMock(return_value=decision))  # type: ignore[attr-defined]

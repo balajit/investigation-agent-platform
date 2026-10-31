@@ -74,7 +74,7 @@ def _decision(**over):  # type: ignore[no-untyped-def]
 
 @pytest.mark.asyncio
 async def test_persistence_baseline_bare_strings() -> None:
-    ea, eb = uuid4(), uuid4()
+    ea, _eb = uuid4(), uuid4()
     out, saved = await _run_reason(
         _decision(contradictions_found=["pool is exhausted"]),
         [_row(ea)], [_hyp(uuid4(), [ea])], loop_version="lv7",
@@ -98,11 +98,17 @@ async def test_dedupe_by_statement() -> None:
 
     ctx = AppContext()
     ctx.reasoning_coordinator = SimpleNamespace(reason=AsyncMock(return_value=_decision(contradictions_found=["pool is exhausted"])))  # type: ignore[attr-defined]
-    from datetime import UTC as _UTC, datetime as _dt, timedelta as _td
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
 
     from investigation_agent_platform.domain.investigation.models import (
         Investigation as _Inv,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
         InvestigationContext as _InvCtx,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
         InvestigationRequest as _InvReq,
     )
 
@@ -133,11 +139,17 @@ async def test_repository_failure_never_fails_reasoning() -> None:
 
     ctx = AppContext()
     ctx.reasoning_coordinator = SimpleNamespace(reason=AsyncMock(return_value=_decision(contradictions_found=["x"])))  # type: ignore[attr-defined]
-    from datetime import UTC as _UTC2, datetime as _dt2, timedelta as _td2
+    from datetime import UTC as _UTC2
+    from datetime import datetime as _dt2
+    from datetime import timedelta as _td2
 
     from investigation_agent_platform.domain.investigation.models import (
         Investigation as _Inv2,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
         InvestigationContext as _InvCtx2,
+    )
+    from investigation_agent_platform.domain.investigation.models import (
         InvestigationRequest as _InvReq2,
     )
 
@@ -156,7 +168,7 @@ async def test_repository_failure_never_fails_reasoning() -> None:
     set_app_context(ctx)
     out = await reason_activity(ReasonInput(tenant_id="t", investigation_id=str(uuid4()), loop_version="lv10"))
     assert out.success is True
-    assert out.data["next_action"] if "next_action" in out.data else True
+    assert out.data.get("next_action", True)
 
 
 @pytest.mark.asyncio
@@ -205,12 +217,13 @@ def test_bare_strings_parse_as_unlinked_notes() -> None:
 
 def test_malformed_reports() -> None:
     import pytest as _pytest
+    from pydantic import ValidationError as _VE
 
-    with _pytest.raises(Exception):
+    with _pytest.raises(_VE):
         InvestigationDecision.model_validate({"contradictions_found": [{"statement": "x" * 5000}]})
-    with _pytest.raises(Exception):
+    with _pytest.raises(_VE):
         InvestigationDecision.model_validate({"contradictions_found": [{"nope": 1}]})
-    with _pytest.raises(Exception):
+    with _pytest.raises(_VE):
         InvestigationDecision.model_validate({"contradictions_found": [{"statement": "x", "evidence_ids": ["a", 1]}]})
 
 
@@ -252,6 +265,8 @@ def test_accept_risk_has_no_automatic_caller() -> None:
 
 
 def test_against_evidence_skips_notes_and_resolved() -> None:
+    from test_verification_scoring import _evidence, _hyp
+
     from investigation_agent_platform.application.investigation.verification import (
         Contradiction,
         ContradictionSeverity,
@@ -259,7 +274,6 @@ def test_against_evidence_skips_notes_and_resolved() -> None:
         VerificationEngine,
     )
     from investigation_agent_platform.domain.evidence.models import EvidenceType
-    from test_verification_scoring import _evidence, _hyp
 
     engine = VerificationEngine()
     items = _evidence("FILE_LOG", EvidenceType.LOG, 4) + _evidence("POSTGRES", EvidenceType.DATABASE_STATE, 4)
