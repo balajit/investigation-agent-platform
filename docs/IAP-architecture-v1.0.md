@@ -480,3 +480,15 @@ Unit-proven only: 34 tests in `tests/unit/test_f4_pivot_bounds.py`, written firs
 **Not done, deliberately.** The table is the source of the stand-down logic, but the cascade is not yet one loop over `RULES`. Each rule's trigger has its own signature and side effects (counters, the requery consume stamp, smallest-fetch's multi-kind pick), so a single loop would need a trigger/apply protocol for eleven heterogeneous rules and is a larger behavior-risk change than the defect warrants. The contract already closes the failure the review named (a rule added without guards); a loop remains an option. The observability lists (`_reason_summary`, the workflow's `_forced_flags` tuple and its history key list, the shadow `forced` list, telemetry counters) still hand-list the flags; deriving them from `Force` is F9.
 
 Unit-proven only: 83 tests in `tests/unit/test_f8_forcing_rules.py` (written first, red on import), two negative controls (a rule forgetting an earlier force fails the contract and the equivalence test; a table rule with no cascade site fails the order test), and a full-suite pass with the five older tests that pinned the old shapes updated. No live run and no Temporal replay.
+
+## 72. Advisory layer deleted, dispatch unchanged (review W1-A, 2026-10-31)
+
+**No loop version.** Deletion removes outputs nobody reads; dispatch identical every pin (parity corpus).
+
+**The defect.** `apply_post_reason_cascade` ran `orders_from_cascade_signals` + `rank_advisory_orders` every turn into `state.advisory_orders`/`advisory_ranking`. `run_investigation.py` never read them; only `test_advisory_ranking.py`/`test_work_order_emission.py` did. The sole emitter produced at most one FETCH_SEED on a pivot turn; `cost_estimate` was literal 1 so ranking collapsed to novelty plus a uuid5 hash; `order_candidates` read wall-clock `seeded_at` via `FrontierCandidate` in workflow context.
+
+**What changed** (`workflows/forcing.py`): deleted `_order_id`, `orders_from_cascade_signals`, `rank_advisory_orders`, the two state fields (replaced by `order_events: list` per W2 D3), the step 3/4 blocks, frontier-ranking imports, `import json`, three empty `imports_passed_through` blocks. Kept `_flat_scalar_params` (carriers use it), `FailureCharacter`/`WorkOrder`/`WorkOrderKind`/`WorkOrderStatus`, `frontier.py`/`work_orders.py` library. `DES-reason-workorders`/`DES-collect-frontier` gained rebuild notes before deletion.
+
+**Tests.** `test_w1_advisory_removal.py`: parity (pivot dispatch, formulate passthrough, `order_events==[]`), removal pins (no advisory fields, symbols gone, workflow never reads advisory, no frontier import), migrated requery-over-gap precedence. Deleted `test_advisory_ranking.py` + `test_work_order_emission.py` after migration (overlap with `test_f4_pivot_bounds.py` verified). One self-caught negative: range deletion also removed `_flat_scalar_params`, breaking 3 `test_g3_retrieval_benefit.py` tests; restored, 5016 passed.
+
+Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 12 xfailed, ruff clean. No live run.

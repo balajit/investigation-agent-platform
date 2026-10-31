@@ -19,3 +19,7 @@ A cheap investigator model drafts; the frontier model engages only below confide
 ## 4. Blind-spot discipline
 
 Cheap and expensive tiers must be diverse (rules + retrieval + small model, not same-family prompts) so escalation headroom is real, not correlated error.
+
+## 5. Rebuild notes (W1-A 2026-10-31, advisory layer removed)
+
+Advisory emission/ranking deleted; `frontier.py`/`work_orders.py` retained. Lessons for any future consumer: cost must come from the fetch (windowed read size, search breadth) or ranking is novelty plus a hash; novelty and any damping must read one baseline function (turn entries, F2 view, last 10); an unlocatable order (REQUERY and GAP orders for ABSENCE and BEHAVIOR carry no file, span or revision) cannot be ranked and needs a fallback; seed identity for a symbol must carry the symbol, not the action name; ids and timestamps must be deterministic (uuid5, no wall clock) because the code runs in workflow context; a dispatched order must leave the ranked pool.

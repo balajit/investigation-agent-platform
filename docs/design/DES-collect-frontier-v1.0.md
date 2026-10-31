@@ -19,3 +19,7 @@ Budget exhaustion (priced handoff), fixpoint (frontier empty or all scores below
 ## 4. Loop discipline
 
 Collection appends to the evidence lake with provenance; never rewrites. Work orders from the reasoner seed the frontier; distill usage signals reweight scoring. Long-running: days/weeks acceptable on the cheap plane.
+
+## 5. Rebuild notes (W1-A 2026-10-31, advisory consumer removed)
+
+`order_candidates`/`FrontierCandidate` retained with no production caller. Any future smallest-fetch consumer must price cost monotonically in fetch size (clamped, never raising), read one collected baseline, fall back to kind order for unlocatable orders, and carry seed identity with the symbol. See `Sonnet_W_items_detailed_design.md` D7 for the full consumer sketch and why it was not wired (no live forensic of an ordering failure; invented costs; at most 3 of 5 kinds locatable).
