@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.python import _parse as _p
 from investigation_agent_platform.application.analysis.python._provenance import (
     python_source_lines,
@@ -199,7 +200,7 @@ def resolve_python_import_fact(
     version_label, version_assumed = _lit.resolve_language_version(language_version)
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         from investigation_agent_platform.domain.provenance.models import SourceLocation
 
         return CodeFactResolutionV2(
@@ -216,6 +217,7 @@ def resolve_python_import_fact(
             source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
             declaration_location=SourceLocation(system="Git", identifier="unknown"),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
             parser_version=_p.parser_version(),
         )
 
@@ -234,7 +236,7 @@ def resolve_python_import_fact(
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        return unresolved(f"python_parser_unavailable:{type(exc).__name__}")
+        return unresolved(failure_code(exc), exc=exc)
     if _p.has_syntax_error(tree.root_node):
         return unresolved("python_syntax_error_or_incomplete_source_window")
 

@@ -25,6 +25,7 @@ import json
 from importlib.resources import files
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.java import _parse as _p
 from investigation_agent_platform.application.analysis.java import literals as _lit
 from investigation_agent_platform.application.analysis.java._provenance import (
@@ -176,6 +177,7 @@ def _base_unresolved(
     code: str,
     evidence_ids: tuple[Any, ...],
     language_version: str | None,
+    exc: BaseException | None = None,
 ) -> CodeFactResolutionV2:
     return CodeFactResolutionV2(
         status=CodeFactStatus.UNRESOLVED,
@@ -191,6 +193,7 @@ def _base_unresolved(
         source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
         declaration_location=SourceLocation(system="Git", identifier="unknown"),
         limitation_codes=(code,) if "," not in code else tuple(code.split(",")),
+        assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
         parser_version=_p.parser_version(),
     )
 
@@ -432,9 +435,10 @@ def resolve_java_framework_boundary(
             repository,
             revision,
             subject,
-            f"java_parser_unavailable:{type(exc).__name__}",
+            failure_code(exc),
             evidence_ids,
             level_text,
+            exc=exc,
         )
     if tree.root_node.has_error:
         return _base_unresolved(

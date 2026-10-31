@@ -90,7 +90,7 @@ def _evidence(
 
 
 def test_enumerates_method_return_and_field_from_file_head_window():
-    records = enumerate_java_window_facts(_evidence(_SOURCE))
+    records = enumerate_java_window_facts(_evidence(_SOURCE)).records
     by_subject = {r.subject_identity: r for r in records}
     method = by_subject.get("com.sample.orders.OrderLookupServiceImpl.findOrder")
     assert method is not None
@@ -106,9 +106,17 @@ def test_enumerates_method_return_and_field_from_file_head_window():
 
 
 def test_enumeration_fail_closed():
-    assert enumerate_java_window_facts(_evidence("not java at all {{{", revision="HEAD")) == []
+    from investigation_agent_platform.application.analysis.java.window_result import (
+        WindowStatus,
+    )
+
+    refused = enumerate_java_window_facts(_evidence("not java at all {{{", revision="HEAD"))
+    assert refused.status == WindowStatus.REFUSED
+    assert refused.records == ()
     broken = SimpleNamespace(provenance=None, attributes={}, content_snippet="")
-    assert enumerate_java_window_facts(broken) == []
+    failed = enumerate_java_window_facts(broken)
+    assert failed.status == WindowStatus.REFUSED
+    assert failed.records == ()
 
 
 _NORMALIZE_MAPPER = """package com.sample.orders.legacy;

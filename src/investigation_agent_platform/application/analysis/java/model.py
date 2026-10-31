@@ -18,7 +18,7 @@ from investigation_agent_platform.application.analysis.java import expressions a
 from investigation_agent_platform.application.analysis.java import literals as _lit
 from investigation_agent_platform.application.analysis.java.method_facts import overload_key
 
-SCHEMA_VERSION = "iap/java-model/v1"
+SCHEMA_VERSION = "iap/java-model/v2"
 
 _LITERAL_NODE_TYPES = frozenset(
     {
@@ -80,7 +80,7 @@ class ArgSketch(BaseModel):
     shape: str = Field(min_length=1, max_length=128)
     operator: str | None = Field(default=None, max_length=32)
     static_type: str = Field(min_length=1, max_length=512)
-    text: str = Field(max_length=1024)
+    text: str = Field(max_length=4096)
     literal: LiteralValue | None = None
     value_role: Literal["lvalue", "rvalue", "read_modify_write", "unknown"] = "rvalue"
 
@@ -139,7 +139,7 @@ class FieldDef(BaseModel):
     is_static: bool = False
     has_declared_type: bool = True
     initializer_kind: str | None = Field(default=None, max_length=64)
-    raw_initializer: str | None = Field(default=None, max_length=1024)
+    raw_initializer: str | None = Field(default=None, max_length=4096)
     evaluated_kind: str | None = Field(default=None, max_length=64)
     evaluated_value: str | float | bool | None = None
     evaluation_limitation: str | None = Field(default=None, max_length=128)
@@ -157,7 +157,7 @@ class LocalDef(BaseModel):
     method_identity: str = Field(default="", max_length=2048)
     method_name: str = Field(default="", max_length=512)
     initializer_kind: str | None = Field(default=None, max_length=64)
-    raw_initializer: str | None = Field(default=None, max_length=1024)
+    raw_initializer: str | None = Field(default=None, max_length=4096)
     evaluated_kind: str | None = Field(default=None, max_length=64)
     evaluated_value: str | float | bool | None = None
     evaluation_limitation: str | None = Field(default=None, max_length=128)
@@ -324,13 +324,33 @@ class GenericTypeUse(BaseModel):
     span: Span
 
 
+class PathCondition(BaseModel):
+    """One enclosing guard of a branch, outermost first."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(default="", max_length=4096)
+    holds: bool = True
+
+
+class SkippedConstruct(BaseModel):
+    """A construct the analyzer saw and deliberately did not model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    code: str = Field(min_length=1, max_length=128)
+    owner: str = Field(default="", max_length=1024)
+    name: str = Field(default="", max_length=512)
+    span: Span
+
+
 class ReturnSite(BaseModel):
     """One return statement inside a guard branch."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     value_shape: str = Field(default="", max_length=128)
-    value_text: str = Field(default="", max_length=1024)
+    value_text: str = Field(default="", max_length=4096)
     raw_text: str = Field(min_length=1, max_length=4096)
     span: Span
 
@@ -351,6 +371,7 @@ class GuardBranch(BaseModel):
     method_identity: str = Field(default="", max_length=2048)
     guard_text: str = Field(default="", max_length=4096)
     returns: list[ReturnSite] = Field(default_factory=list)
+    path_conditions: list[PathCondition] = Field(default_factory=list)
     span: Span
 
 
@@ -403,7 +424,7 @@ class JavaModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["iap/java-model/v1"] = SCHEMA_VERSION
+    schema_version: Literal["iap/java-model/v2"] = SCHEMA_VERSION
     parser_version: str = Field(min_length=1, max_length=128)
     has_syntax_error: bool = False
     repository: str = Field(min_length=1, max_length=512)
@@ -427,6 +448,7 @@ class JavaModel(BaseModel):
     generic_type_uses: list[GenericTypeUse] = Field(default_factory=list)
     type_declarations: list[TypeDeclaration] = Field(default_factory=list)
     analysis_snapshots: list[JavaAnalysisSnapshot] = Field(default_factory=list)
+    skipped: list[SkippedConstruct] = Field(default_factory=list)
     analysis_limitation_codes: list[str] = Field(default_factory=list)
 
 
@@ -897,6 +919,34 @@ def _same_node(left: Any, right: Any) -> bool:
         and left.start_byte == right.start_byte
         and left.end_byte == right.end_byte
     )
+
+
+def _contains(outer: Any, inner: Any) -> bool:
+    return outer.start_byte <= inner.start_byte and inner.end_byte <= outer.end_byte
+
+
+def _path_conditions(node: Any, source: bytes) -> list[PathCondition]:
+    """Enclosing if-conditions of ``node`` inside its method, outermost first.
+
+    Climbs to the nearest scope boundary (method, lambda, type body), recording
+    for each enclosing ``if`` whether we arrived through its consequence (the
+    guard holds) or its alternative (the guard is false: the else-if case).
+    """
+    conditions: list[PathCondition] = []
+    child, parent = node, node.parent
+    while parent is not None and parent.type not in _SCOPE_BOUNDARY_TYPES:
+        if parent.type == "if_statement":
+            cond = parent.child_by_field_name("condition")
+            text = _normalize_guard(_p.node_text(cond, source)) if cond is not None else ""
+            consequence = parent.child_by_field_name("consequence")
+            alternative = parent.child_by_field_name("alternative")
+            if consequence is not None and _contains(consequence, child):
+                conditions.append(PathCondition(text=text, holds=True))
+            elif alternative is not None and _contains(alternative, child):
+                conditions.append(PathCondition(text=text, holds=False))
+        child, parent = parent, parent.parent
+    conditions.reverse()
+    return conditions
 
 
 def _build_dataflow_records(
@@ -1454,6 +1504,7 @@ def build_java_model(
     locals_: list[LocalDef] = []
     params: list[ParamDef] = []
     guard_returns: list[GuardBranch] = []
+    skipped: list[SkippedConstruct] = []
 
     class_stack: list[str] = []
     method_stack: list[str] = []
@@ -1506,13 +1557,23 @@ def build_java_model(
                 classes.append(qualified)
                 class_stack.append(qualified)
                 container_types.append(node_type)
-                if node_type == "class_declaration":
+                if node_type in {
+                    "class_declaration",
+                    "interface_declaration",
+                    "enum_declaration",
+                    "record_declaration",
+                }:
                     class_only.append(name)
                 for child in node.children:
                     visit(child)
                 class_stack.pop()
                 container_types.pop()
-                if node_type == "class_declaration":
+                if node_type in {
+                    "class_declaration",
+                    "interface_declaration",
+                    "enum_declaration",
+                    "record_declaration",
+                }:
                     class_only.pop()
             return
         if (
@@ -1543,6 +1604,22 @@ def build_java_model(
             for child in node.children:
                 visit(child)
             lambda_depth -= 1
+            return
+        if node_type == "enum_constant":
+            ident = node.child_by_field_name("name") or next(
+                (c for c in node.children if c.type == "identifier"), None
+            )
+            if ident is not None:
+                skipped.append(
+                    SkippedConstruct(
+                        code="enum_constant_not_modeled",
+                        owner=enclosing_class() or "",
+                        name=_p.node_text(ident, source).strip(),
+                        span=_span(node, file_path),
+                    )
+                )
+            for child in node.children:
+                visit(child)
             return
         if node_type in {
             "method_declaration",
@@ -1618,6 +1695,19 @@ def build_java_model(
                 method_stack.append(qualified)
                 method_identity_stack.append(method_identity_for(qualified, key, node.start_byte))
                 bare_stack.append(name)
+                has_switch = any(
+                    sub.type in {"switch_expression", "switch_statement"}
+                    for sub in _scope_walk(node)
+                )
+                if has_switch:
+                    skipped.append(
+                        SkippedConstruct(
+                            code="switch_return_not_modeled",
+                            owner=cls or "",
+                            name=name,
+                            span=_span(node, file_path),
+                        )
+                    )
                 for sub in _scope_walk(node):
                     if sub.type != "if_statement":
                         continue
@@ -1635,6 +1725,7 @@ def build_java_model(
                                 _p.node_text(cond, source) if cond is not None else ""
                             ),
                             returns=_branch_returns(consequence, source, file_path),
+                            path_conditions=_path_conditions(sub, source),
                             span=_span(sub, file_path),
                         )
                     )
@@ -1708,7 +1799,8 @@ def build_java_model(
             for child in node.children:
                 visit(child)
             return
-        if node_type == "field_declaration":
+        if node_type in {"field_declaration", "constant_declaration"}:
+            is_constant = node_type == "constant_declaration"
             modifiers = next((c for c in node.children if c.type == "modifiers"), None)
             mod_text = _p.node_text(modifiers, source) if modifiers is not None else ""
             for child in node.children:
@@ -1732,9 +1824,9 @@ def build_java_model(
                             if type_node is not None
                             else "unknown"
                         ),
-                        enclosing_class=enclosing_class(),
-                        declared_in=enclosing_container_type() or "class_declaration",
-                        is_static="static" in mod_text.split(),
+                    enclosing_class=enclosing_class(),
+                    declared_in=enclosing_container_type() or "class_declaration",
+                    is_static=True if is_constant else "static" in mod_text.split(),
                         has_declared_type=type_node is not None,
                         initializer_kind=kind,
                         raw_initializer=raw,
@@ -1847,6 +1939,7 @@ def build_java_model(
         locals=locals_,
         params=params,
         guard_returns=guard_returns,
+        skipped=skipped,
         dataflow_bindings=dataflow_bindings,
         dataflow_events=dataflow_events,
         value_states=value_states,

@@ -31,6 +31,7 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
     CODE_FACT_RESOLUTIONS_KEY,
+    WINDOW_ANALYSIS_KEY,
     CodeFactResolution,
     CodeFactResolutionV2,
     CodeFactStatus,
@@ -2399,7 +2400,28 @@ class VerificationEngine:
         return candidates, malformed
 
     @staticmethod
-    def _with_window_backfill(evidence_items: list[Any]) -> list[Any]:
+    def _window_analysis_of(evidence_items: list[Any]) -> dict[str, Any] | None:
+        """Return the non-ok window analysis stamped on a backfilled row, else None."""
+        for item in evidence_items or []:
+            attrs = getattr(item, "attributes", None)
+            raw = attrs.get(WINDOW_ANALYSIS_KEY) if isinstance(attrs, dict) else None
+            if isinstance(raw, dict) and raw.get("status") in {"failed", "degraded", "refused"}:
+                return raw
+        return None
+
+    @staticmethod
+    def _window_analysis_reason(evidence_items: list[Any]) -> str | None:
+        """Human form of the stamped analysis: `window analysis <status>: <codes>`."""
+        raw = VerificationEngine._window_analysis_of(evidence_items)
+        if raw is None:
+            return None
+        codes = ",".join(raw.get("limitations") or [])
+        return f"window analysis {raw.get('status')}: {codes}"
+
+    @staticmethod
+    def _with_window_backfill(
+        evidence_items: list[Any], subject: str | None = None
+    ) -> list[Any]:
         """Splice bank-time-enumerated records into rows lacking analysis (pure).
 
         Covers shared/reused rows banked before enumeration existed: runs
@@ -2457,10 +2479,8 @@ class VerificationEngine:
                 probe_attrs = dict(attrs)
                 probe_attrs.pop("discovery_only", None)
                 probe = copier(update={"attributes": probe_attrs})
-                records = enumerate_java_window_facts(probe)
-                if not records:
-                    out.append(item)
-                    continue
+                analysis = enumerate_java_window_facts(probe, subject_hint=subject)
+                records = list(analysis.records)
                 merged = list(envelope) if isinstance(envelope, list) else []
                 for record in records:
                     payload = record.model_dump(mode="json")
@@ -2482,11 +2502,17 @@ class VerificationEngine:
                             "resolution": payload,
                         }
                     )
-                if not merged:
+                sense = dict(attrs)
+                if analysis.status.value != "ok":
+                    # The reason "nothing was enumerated" is stamped even when
+                    # no record was produced; refusing/provenance rows keep
+                    # their silence otherwise.
+                    sense[WINDOW_ANALYSIS_KEY] = analysis.to_attribute()
+                if not merged and WINDOW_ANALYSIS_KEY not in sense:
                     out.append(item)
                     continue
-                sense = dict(attrs)
-                sense[CODE_FACT_RESOLUTIONS_KEY] = merged
+                if merged:
+                    sense[CODE_FACT_RESOLUTIONS_KEY] = merged
                 sense.pop("discovery_only", None)
                 out.append(copier(update={"attributes": sense}))
             except Exception:
@@ -2587,11 +2613,16 @@ class VerificationEngine:
                         for entry in envelope
                     ):
                         families.add("ANALYZER_RESOLUTION")
-                    if any(
-                        key.startswith("code_fact_java.") and isinstance(value, dict)
-                        for key, value in attrs.items()
-                    ):
-                        families.add("ANALYZER_RESOLUTION")
+                    for key, value in attrs.items():
+                        if not (key.startswith("code_fact_java.") and isinstance(value, dict)):
+                            continue
+                        try:
+                            named = CodeFactResolutionV2.model_validate(value)
+                        except Exception:
+                            continue
+                        if named.status == CodeFactStatus.RESOLVED:
+                            families.add("ANALYZER_RESOLUTION")
+                            break
                     if attrs.get("search_scope") is not None:
                         families.add("CAUSAL_STEP_BINDINGS")
                     if attrs.get("configuration_source") or attrs.get("config_source"):
@@ -2805,6 +2836,9 @@ class VerificationEngine:
         )
         if resolution is None:
             if v2_any is None:
+                window_reason = VerificationEngine._window_analysis_reason(evidence_items)
+                if window_reason is not None:
+                    return (False, window_reason)
                 return (False, "no resolved CodeFactResolutionV2 is bound to the cited evidence")
             return (False, f"resolution is {v2_any.status.value}: non-verifying status")
         if resolution.fact_category != category:
@@ -2991,8 +3025,14 @@ class VerificationEngine:
         Runtime-shaped abstentions map to NO_RUNTIME_OBSERVATION so next_check
         names the runtime observation; all other partials map to
         RELATION_UNDEMONSTRATED so the existing rival > relation > unmapped >
-        provider priority in next_check_for applies unchanged.
+        provider priority in next_check_for applies unchanged. The class comes
+        from the limitation registry, never substring sniffing.
         """
+        from investigation_agent_platform.application.analysis.limitations import (
+            LimitationClass,
+            limitation_class,
+        )
+
         lowered = f" {(reason or '').lower()} "
         codes_text = ",".join(resolution.limitation_codes) if resolution is not None else ""
         if resolution is not None and resolution.fact_category in {
@@ -3006,7 +3046,15 @@ class VerificationEngine:
                     "runtime observation required."
                 )[:500],
             )
-        if "runtime" in lowered or "runtime" in codes_text.lower():
+        codes = [c for c in codes_text.split(",") if c] or ([reason] if reason else [])
+        if any(limitation_class(code) is LimitationClass.RUNTIME for code in codes):
+            return VerificationLimitation(
+                code=LimitationCode.NO_RUNTIME_OBSERVATION,
+                detail=(
+                    f"Java fact abstained ({codes_text or reason}); runtime evidence required."
+                )[:500],
+            )
+        if "runtime" in lowered and not codes_text:
             return VerificationLimitation(
                 code=LimitationCode.NO_RUNTIME_OBSERVATION,
                 detail=(
@@ -3142,9 +3190,10 @@ class VerificationEngine:
             for c in (contradictions or [])
         ):
             return None
-        evidence_items = self._with_window_backfill(evidence_items)
         target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
-        subject = str(getattr(target, "symbol", "") or "").strip() or None
+        claim_subject = str(getattr(target, "symbol", "") or "").strip() or None
+        evidence_items = self._with_window_backfill(evidence_items, subject=claim_subject)
+        subject = claim_subject
         v2_any = self._v2_any_from_evidence(evidence_items, category, subject)
         ok, reason = self.java_fact_proof(hypothesis, evidence_items)
         if not ok:
@@ -3193,14 +3242,16 @@ class VerificationEngine:
         category = self._fact_category_of(hypothesis)
         if category is None:
             return None
-        evidence_items = self._with_window_backfill(evidence_items)
         target = getattr(hypothesis, "claim_target", None) or getattr(hypothesis, "target", None)
         subject = str(getattr(target, "symbol", "") or "").strip() or None
+        evidence_items = self._with_window_backfill(evidence_items, subject=subject)
         v2_any = self._v2_any_from_evidence(evidence_items, category, subject)
-        if v2_any is None or v2_any.status == CodeFactStatus.RESOLVED:
+        if v2_any is not None and v2_any.status == CodeFactStatus.RESOLVED:
             return None
         ok, reason = self.java_fact_proof(hypothesis, evidence_items)
         if ok:
+            return None
+        if v2_any is None and self._window_analysis_of(evidence_items) is None:
             return None
         limitation = self._java_partial_limitation(v2_any, reason)
         try:

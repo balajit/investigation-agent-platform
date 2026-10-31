@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.python import _parse as _p
 from investigation_agent_platform.application.analysis.python import expressions as _expr
 from investigation_agent_platform.application.analysis.python._provenance import (
@@ -37,6 +38,7 @@ def _unresolved(
     evidence_ids: tuple[Any, ...],
     language_version: str | None,
     semantics: CodeValueSemantics = CodeValueSemantics.EXPLICIT_INITIALIZER,
+    exc: BaseException | None = None,
 ) -> CodeFactResolutionV2:
     from investigation_agent_platform.domain.provenance.models import SourceLocation
 
@@ -57,6 +59,7 @@ def _unresolved(
         source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
         declaration_location=SourceLocation(system="Git", identifier="unknown"),
         limitation_codes=(code,),
+        assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
         parser_version=_p.parser_version(),
     )
 
@@ -387,9 +390,10 @@ def resolve_python_value_fact(
             repository,
             revision or None,
             symbol,
-            f"python_parser_unavailable:{type(exc).__name__}",
+            failure_code(exc),
             evidence_ids,
             version_label,
+            exc=exc,
         )
         return bad
     if _p.has_syntax_error(tree.root_node):
@@ -763,10 +767,11 @@ def resolve_python_param_default_fact(
             repository,
             revision or None,
             symbol,
-            f"python_parser_unavailable:{type(exc).__name__}",
+            failure_code(exc),
             evidence_ids,
             version_label,
             semantics=CodeValueSemantics.PARAMETER_DEFAULT_EXPRESSION,
+            exc=exc,
         )
     if _p.has_syntax_error(tree.root_node):
         return _unresolved(

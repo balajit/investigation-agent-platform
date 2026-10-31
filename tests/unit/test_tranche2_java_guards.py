@@ -26,14 +26,14 @@ def _subjects(records):  # type: ignore[no-untyped-def]
 
 class TestJ4ByteSpanDeclarationIdentity:
     def test_clean_method_on_same_line_does_not_vouch_for_broken_one(self) -> None:
-        records = enumerate_java_window_facts(_evidence(_SAME_LINE))
+        records = enumerate_java_window_facts(_evidence(_SAME_LINE)).records
         subjects = _subjects(records)
         assert not any(subject and subject.endswith(".g") for subject, _ in subjects), (
             f"broken method g was emitted via its neighbour's clean span: {subjects}"
         )
 
     def test_clean_neighbour_is_still_emitted(self) -> None:
-        records = enumerate_java_window_facts(_evidence(_SAME_LINE))
+        records = enumerate_java_window_facts(_evidence(_SAME_LINE)).records
         subjects = _subjects(records)
         assert any(subject and subject.endswith(".f") for subject, _ in subjects), subjects
 
@@ -47,7 +47,7 @@ class TestJ4ByteSpanDeclarationIdentity:
             "    }\n"
             "}\n"
         )
-        records = enumerate_java_window_facts(_evidence(source))
+        records = enumerate_java_window_facts(_evidence(source)).records
         assert any(r.subject_identity.endswith(".f") for r in records)
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.java import _parse as _p
 from investigation_agent_platform.application.analysis.java._provenance import (
     java_source_lines,
@@ -60,7 +61,7 @@ def resolve_java_method_return_fact(
     evidence_id = getattr(evidence, "evidence_id", None)
     evidence_ids = (evidence_id,) if evidence_id is not None else ()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         return CodeFactResolutionV2(
             status=CodeFactStatus.UNRESOLVED,
             repository=repository or None,
@@ -74,6 +75,7 @@ def resolve_java_method_return_fact(
             source_evidence_ids=evidence_ids,
             parser_version=_p.parser_version(),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
         )
 
     if reason:
@@ -92,7 +94,7 @@ def resolve_java_method_return_fact(
     try:
         tree = _p.parse_java(source_bytes)
     except Exception as exc:
-        return unresolved(f"java_parser_unavailable:{type(exc).__name__}")
+        return unresolved(failure_code(exc), exc=exc)
     if tree.root_node.has_error:
         # GET_CODE windows are method-anchored but often run through the
         # enclosing class's closing brace (live L5 banks 6-19: method 6-18

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+
 def parse_python(source: bytes) -> Any:
     """Parse a source window; raises the parser exception to the caller."""
     from investigation_agent_platform.application.analysis import grammar as _grammar

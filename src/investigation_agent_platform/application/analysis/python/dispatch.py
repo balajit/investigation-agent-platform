@@ -14,6 +14,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import (
+    analysis_failed_resolution,
+)
 from investigation_agent_platform.application.analysis.python.class_facts import (
     resolve_python_class_attr_fact,
 )
@@ -39,6 +42,7 @@ from investigation_agent_platform.application.analysis.python.scope_facts import
     resolve_python_param_default_fact,
     resolve_python_value_fact,
 )
+from investigation_agent_platform.domain.code.models import JavaFactCategory
 
 
 def _tier(resolution: Any) -> int:
@@ -101,6 +105,7 @@ async def resolve_python_field_fact(
     scope = (declaring_type or "").strip() or (class_scope or "").strip() or None
     version = await _trusted_version(evidence, read_version_file)
     resolution: Any | None = None
+    failures: list[BaseException] = []
     if (function_scope or "").strip():
         resolution = resolve_python_param_default_fact(
             evidence,
@@ -122,7 +127,8 @@ async def resolve_python_field_fact(
         ):
             try:
                 candidate = attempt()
-            except Exception:
+            except Exception as exc:
+                failures.append(exc)
                 continue
             resolution = _prefer(resolution, candidate)
             if _is_resolved(resolution):
@@ -135,11 +141,22 @@ async def resolve_python_field_fact(
         ):
             try:
                 candidate = attempt()
-            except Exception:
+            except Exception as exc:
+                failures.append(exc)
                 continue
             resolution = _prefer(resolution, candidate)
             if _is_resolved(resolution):
                 break
+    if resolution is None and failures:
+        from investigation_agent_platform.application.analysis.python import _parse as _p
+
+        resolution = analysis_failed_resolution(
+            evidence,
+            category=JavaFactCategory.SOURCE_VALUE_FACT,
+            subject=field_name,
+            exc=failures[0],
+            parser_version=_p.parser_version(),
+        )
     config_source: str | None = None
     if resolution is not None:
         try:

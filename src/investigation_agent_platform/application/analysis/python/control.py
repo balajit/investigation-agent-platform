@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.python import _parse as _p
 from investigation_agent_platform.application.analysis.python import expressions as _expr
 from investigation_agent_platform.application.analysis.python._provenance import (
@@ -26,8 +27,10 @@ from investigation_agent_platform.domain.code.models import (
 )
 
 
-def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any, bytes] | None:
-    """Common gates. Returns (lines, location, repository, revision, evidence_ids, reason, tree, source_bytes)."""
+def _base(
+    evidence: Any,
+) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any, bytes, BaseException | None] | None:
+    """Common gates. Returns (lines, location, repository, revision, evidence_ids, reason, tree, source_bytes, parse_exc)."""
     lines, reason = python_source_lines(evidence)
     provenance = getattr(evidence, "provenance", None)
     location = getattr(provenance, "source_location", None)
@@ -38,7 +41,7 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
     evidence_id = getattr(evidence, "evidence_id", None)
     evidence_ids = (evidence_id,) if evidence_id is not None else ()
     if reason:
-        return (None, None, repository, revision or "", evidence_ids, reason, None, b"")
+        return (None, None, repository, revision or "", evidence_ids, reason, None, b"", None)
     if location is None:
         return (
             None,
@@ -49,6 +52,7 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
             "missing_source_location",
             None,
             b"",
+            None,
         )
     if not source_path.lower().endswith(".py"):
         return (
@@ -60,6 +64,7 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
             "not_a_python_source_file",
             None,
             b"",
+            None,
         )
     if not repository:
         return (
@@ -71,6 +76,7 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
             "repository_identity_unavailable",
             None,
             b"",
+            None,
         )
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
@@ -82,9 +88,10 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
             repository,
             revision or "",
             evidence_ids,
-            f"python_parser_unavailable:{type(exc).__name__}",
+            failure_code(exc),
             None,
             b"",
+            exc,
         )
     if _p.has_syntax_error(tree.root_node):
         return (
@@ -96,8 +103,9 @@ def _base(evidence: Any) -> tuple[Any, Any, str, str, tuple[Any, ...], str, Any,
             "python_syntax_error_or_incomplete_source_window",
             None,
             b"",
+            None,
         )
-    return (lines, location, repository, revision, evidence_ids, "", tree, source_bytes)
+    return (lines, location, repository, revision, evidence_ids, "", tree, source_bytes, None)
 
 
 def resolve_python_write_sites_fact(
@@ -116,10 +124,10 @@ def resolve_python_write_sites_fact(
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
     base = _base(evidence)
     assert base is not None
-    lines, location, repository, revision, evidence_ids, reason, tree, source_bytes = base
+    lines, location, repository, revision, evidence_ids, reason, tree, source_bytes, parse_exc = base
     subject = (symbol or "").strip()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         return CodeFactResolutionV2(
             status=CodeFactStatus.UNRESOLVED,
             repository=repository or "unknown",
@@ -135,11 +143,12 @@ def resolve_python_write_sites_fact(
             source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
             declaration_location=SourceLocation(system="Git", identifier="unknown"),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
             parser_version=_p.parser_version(),
         )
 
     if reason:
-        return unresolved(reason)
+        return unresolved(reason, exc=parse_exc)
     assert lines is not None and location is not None and tree is not None
     if not subject:
         return unresolved("missing_symbol_name")
@@ -260,10 +269,10 @@ def resolve_python_control_fact(
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
     base = _base(evidence)
     assert base is not None
-    lines, location, repository, revision, evidence_ids, reason, tree, source_bytes = base
+    lines, location, repository, revision, evidence_ids, reason, tree, source_bytes, parse_exc = base
     subject = (symbol or "").strip()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         return CodeFactResolutionV2(
             status=CodeFactStatus.UNRESOLVED,
             repository=repository or "unknown",
@@ -279,11 +288,12 @@ def resolve_python_control_fact(
             source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
             declaration_location=SourceLocation(system="Git", identifier="unknown"),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
             parser_version=_p.parser_version(),
         )
 
     if reason:
-        return unresolved(reason)
+        return unresolved(reason, exc=parse_exc)
     assert lines is not None and location is not None and tree is not None
     if not subject:
         return unresolved("missing_symbol_name")

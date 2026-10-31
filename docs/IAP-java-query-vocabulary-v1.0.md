@@ -122,14 +122,16 @@ was found in the supplied bounded records.
    declared-type presence, raw initializer, evaluated kind/value/limitation);
    parameters (name, type, enclosing method, varargs flag); guard branches
    (class-qualified method identity, normalized guard text, per-return
-   shape/value/raw text); dataflow bindings/events; conservative value states;
+   shape/value/raw text, per-branch enclosing path conditions with
+   holds flags); deliberately unmodeled constructs (code, qualified owner,
+   member name, span: enum constants, switch-method returns); dataflow bindings/events; conservative value states;
    source-level guard, alias, and reassignment barrier facts; all flags and
    per-arg shapes above. Dataflow events carry `lvalue`, `rvalue`, or
    `read_modify_write` roles; unknown roles remain explicit.
 - **Model-field inventory:** `schema_version`, `parser_version`,
   `has_syntax_error`, `repository`, `revision`, `file_path`, `package`,
   `imports`, `classes`, `methods`, `calls`, `literals`, `fields`, `locals`,
-  `params`, `guard_returns`, `dataflow_bindings`, `dataflow_events`,
+  `params`, `guard_returns`, `skipped`, `dataflow_bindings`, `dataflow_events`,
   `value_states`, `barriers`, `type_declarations`, `analysis_snapshots`, and
   `analysis_limitation_codes` are model metadata or queryable records; their
   presence does not establish semantic attribution or runtime behavior.

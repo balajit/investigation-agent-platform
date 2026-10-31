@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.java import _parse as _p
 from investigation_agent_platform.application.analysis.java import expressions as _expr
 from investigation_agent_platform.application.analysis.java._provenance import (
@@ -114,7 +115,7 @@ def resolve_java_field_fact(
             language_version=language_version,
         )
     except Exception as exc:
-        return unresolved(f"java_parser_unavailable:{type(exc).__name__}")
+        return unresolved(failure_code(exc))
     if code_model.has_syntax_error:
         return unresolved("java_syntax_error_or_incomplete_source_window")
 

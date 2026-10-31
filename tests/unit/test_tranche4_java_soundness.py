@@ -22,7 +22,7 @@ from investigation_agent_platform.domain.code.models import CodeFactStatus
 
 
 def _facts(source: str):  # type: ignore[no-untyped-def]
-    return enumerate_java_window_facts(_window_evidence(source))
+    return enumerate_java_window_facts(_window_evidence(source)).records
 
 
 def _pairs(records):  # type: ignore[no-untyped-def]

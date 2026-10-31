@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investigation_agent_platform.application.analysis.failure import failure_code
 from investigation_agent_platform.application.analysis.python import _parse as _p
 from investigation_agent_platform.application.analysis.python._provenance import (
     python_source_lines,
@@ -163,15 +164,17 @@ def _context(
     return (lines, location, repository, revision, source_path, evidence_ids, "", ())
 
 
-def _parse_window(lines: Any, location: Any) -> tuple[Any, bytes] | tuple[None, str]:
+def _parse_window(
+    lines: Any, location: Any
+) -> tuple[Any, bytes, BaseException | None] | tuple[None, str, BaseException | None]:
     source_bytes = "\n".join(line.text for line in lines).encode("utf-8")
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        return (None, f"python_parser_unavailable:{type(exc).__name__}")
+        return (None, failure_code(exc), exc)
     if _p.has_syntax_error(tree.root_node):
-        return (None, "python_syntax_error_or_incomplete_source_window")
-    return (tree, source_bytes)
+        return (None, "python_syntax_error_or_incomplete_source_window", None)
+    return (tree, source_bytes, None)
 
 
 def resolve_python_mro_fact(
@@ -207,7 +210,7 @@ def resolve_python_mro_fact(
     version_label, version_assumed = _lit.resolve_language_version(language_version)
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         return CodeFactResolutionV2(
             status=CodeFactStatus.UNRESOLVED,
             repository=repository or "unknown",
@@ -223,6 +226,7 @@ def resolve_python_mro_fact(
             source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
             declaration_location=SourceLocation(system="Git", identifier="unknown"),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
             parser_version=_p.parser_version(),
         )
 
@@ -231,8 +235,8 @@ def resolve_python_mro_fact(
     class_scope = class_scope.strip()
     parsed = _parse_window(lines, location)
     if parsed[0] is None:
-        return unresolved(parsed[1])
-    tree, source_bytes = parsed
+        return unresolved(parsed[1], exc=parsed[2])
+    tree, source_bytes, _ = parsed
 
     matches = list(_class_nodes(tree.root_node, source_bytes, class_scope))
     if len(matches) != 1:
@@ -381,7 +385,7 @@ def resolve_python_method_owner_fact(
     version_label, version_assumed = _lit.resolve_language_version(language_version)
     version_assumptions = ("assumed_default_language_version",) if version_assumed else ()
 
-    def unresolved(code: str) -> CodeFactResolutionV2:
+    def unresolved(code: str, *, exc: BaseException | None = None) -> CodeFactResolutionV2:
         return CodeFactResolutionV2(
             status=CodeFactStatus.UNRESOLVED,
             repository=repository or "unknown",
@@ -397,6 +401,7 @@ def resolve_python_method_owner_fact(
             source_evidence_ids=tuple(e for e in evidence_ids if e is not None),
             declaration_location=SourceLocation(system="Git", identifier="unknown"),
             limitation_codes=(code,),
+            assumptions=() if exc is None else (f"exception_type={type(exc).__name__}",),
             parser_version=_p.parser_version(),
         )
 
@@ -418,7 +423,7 @@ def resolve_python_method_owner_fact(
     try:
         tree = _p.parse_python(source_bytes)
     except Exception as exc:
-        return unresolved(f"python_parser_unavailable:{type(exc).__name__}")
+        return unresolved(failure_code(exc), exc=exc)
     if _p.has_syntax_error(tree.root_node):
         return unresolved("python_syntax_error_or_incomplete_source_window")
 

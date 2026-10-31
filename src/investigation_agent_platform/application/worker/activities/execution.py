@@ -1664,9 +1664,19 @@ async def execute_action_activity(
                 merged_attributes["fetch_reason"] = _fetch_reason
             fact_field = str(parameters.get("field_name", "") or "").strip()
             fact_method = str(parameters.get("method_name", "") or "").strip()
+            from investigation_agent_platform.application.analysis.failure import (
+                analysis_failed_resolution,
+            )
+            from investigation_agent_platform.application.analysis.java._parse import (
+                parser_version as _java_parser_version,
+            )
+            from investigation_agent_platform.application.analysis.python._parse import (
+                parser_version as _py_parser_version,
+            )
             from investigation_agent_platform.domain.code.models import (
                 CODE_FACT_RESOLUTIONS_KEY,
                 JAVA_FACT_RESOLUTION_PREFIX,
+                JavaFactCategory,
             )
             from investigation_agent_platform.domain.evidence.requests import (
                 validate_java_fact_parameters,
@@ -1746,8 +1756,18 @@ async def execute_action_activity(
                         outcome_detail["code_fact_resolution_v2"] = _py_resolution.model_dump(
                             mode="json"
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _failed_py = analysis_failed_resolution(
+                        evidence,
+                        category=JavaFactCategory.SOURCE_VALUE_FACT,
+                        subject=fact_field or None,
+                        exc=exc,
+                        parser_version=_py_parser_version(),
+                    )
+                    merged_attributes["code_fact_resolution_v2"] = _failed_py.model_dump(
+                        mode="json"
+                    )
+                    outcome_detail["code_fact_resolution_v2"] = _failed_py.model_dump(mode="json")
             elif fact_field:
                 from investigation_agent_platform.application.analysis.java_field_facts import (
                     resolve_java_field_fact,
@@ -1808,8 +1828,29 @@ async def execute_action_activity(
                             _method_resolution.model_dump(mode="json"),
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _method_scope = (
+                        str(parameters.get("declaring_type") or "").strip()
+                        or str(parameters.get("class_scope") or "").strip()
+                        or None
+                    )
+                    _failed_py_method = analysis_failed_resolution(
+                        evidence,
+                        category=(
+                            JavaFactCategory.LANGUAGE_SEMANTIC_FACT
+                            if _method_scope
+                            else JavaFactCategory.CONTROL_FLOW_FACT
+                        ),
+                        subject=fact_method or None,
+                        exc=exc,
+                        parser_version=_py_parser_version(),
+                    )
+                    merged_attributes["code_fact_resolution_v2"] = (
+                        _failed_py_method.model_dump(mode="json")
+                    )
+                    outcome_detail["code_fact_resolution_v2"] = _failed_py_method.model_dump(
+                        mode="json"
+                    )
             elif fact_method:
                 # Method-return-on-guard resolution (L5 class): the subject
                 # is a method's guarded `return` literal, which the field
@@ -1836,8 +1877,31 @@ async def execute_action_activity(
                     outcome_detail["code_fact_resolution_v2"] = _method_resolution.model_dump(
                         mode="json"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _failed_java_method = analysis_failed_resolution(
+                        evidence,
+                        category=JavaFactCategory.SOURCE_VALUE_FACT,
+                        subject=fact_method or None,
+                        exc=exc,
+                        parser_version=_java_parser_version(),
+                    )
+                    merged_attributes["code_fact_resolution_v2"] = (
+                        _failed_java_method.model_dump(mode="json")
+                    )
+                    outcome_detail["code_fact_resolution_v2"] = _failed_java_method.model_dump(
+                        mode="json"
+                    )
+
+            _SELECTOR_CATEGORY = {
+                "call_target_name": JavaFactCategory.CALL_TARGET_FACT,
+                "local_name": JavaFactCategory.SOURCE_VALUE_FACT,
+                "init_name": JavaFactCategory.LANGUAGE_SEMANTIC_FACT,
+                "type_symbol": JavaFactCategory.LANGUAGE_SEMANTIC_FACT,
+                "dataflow_symbol": JavaFactCategory.DATA_FLOW_FACT,
+                "control_symbol": JavaFactCategory.CONTROL_FLOW_FACT,
+                "effect_symbol": JavaFactCategory.POSSIBLE_EFFECT_FACT,
+                "boundary_symbol": JavaFactCategory.CONFIGURATION_FACT,
+            }
 
             async def _run_java_fact(
                 selector_name: str,
@@ -1859,10 +1923,16 @@ async def execute_action_activity(
                         "resolution": payload,
                     }
                 except Exception as exc:
-                    payload = {
-                        "status": "UNRESOLVED",
-                        "limitation_codes": ["analysis_failed"],
-                    }
+                    failed = analysis_failed_resolution(
+                        evidence,
+                        category=_SELECTOR_CATEGORY.get(
+                            selector_name, JavaFactCategory.SOURCE_VALUE_FACT
+                        ),
+                        subject=selector or None,
+                        exc=exc,
+                        parser_version=_java_parser_version(),
+                    )
+                    payload = failed.model_dump(mode="json")
                     record = {
                         "resolver": resolver_name,
                         "selector": selector,
@@ -1969,7 +2039,7 @@ async def execute_action_activity(
 
                     for _record in enumerate_java_window_facts(
                         evidence, language_version=parameters.get("language_version")
-                    ):
+                    ).records:
                         _payload = _record.model_dump(mode="json")
                         _prior = merged_attributes.get(CODE_FACT_RESOLUTIONS_KEY) or []
                         if any(
