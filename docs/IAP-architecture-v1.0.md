@@ -712,3 +712,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`rate_limit.py`, `app.py`, `tenant.py`): the middleware now keys pre-auth buckets by transport peer (`ip:{client.host}`) under generous `PRE_AUTH_QUOTAS` (forwarded headers deliberately untrusted — no trusted-proxy setting added); `get_verified_identity` enforces the per-tenant + per-principal bucket from the verified identity after verification succeeds (429 `RATE_LIMITED` + `Retry-After`), gated on the same enabled flag (off by default outside production) and failing open on store errors at both stages. The store rides `app.state.rate_limit_store`.
 
 **Tests.** `test_ad1_rate_limit_identity.py` (6: shared peer bucket across headers, verified per-tenant counting with 429 shape, pre-auth flood ceiling, fail-open on store errors, env default matrix, key unit test). Red verified by stash. Full unit green, ruff clean, mypy clean. Owner decision: the pre-auth ceiling. Risk noted: many clients behind one NAT share the peer bucket (mitigation: generous ceiling).
+
+## 91. Kafka consumer log envelope (review AD2, no loop version, 2026-10-31)
+
+**Version pinning.** None (observability only).
+
+**The defect.** The FastStream consumer logged the full event model, so payload values (secrets, tokens, nested content) rode the log line.
+
+**What changed** (`infrastructure/messaging/faststream.py`): `_LOGGABLE_FIELDS` allowlist (ids, event type, schema version, timestamp, correlation id) plus `envelope_for_log` (allowlisted keys stringified and capped at 128 chars, `payload_keys` count only, `sanitize_extra` redaction, `{"unreadable": True}` on missing/raising/non-dict dumps, never raises) and `log_received` wrapper (never raises); `handle_investigation_event` logs the envelope only. The publisher's existing publish log stays identifier-only.
+
+**Tests.** `test_ad2_kafka_log_envelope.py` (4: T01 payload values never logged with negative control, T02 allowlist shape minus event_type plus count, T03 never-fails-consumer over four shapes, T04 Bearer redaction). Full unit green, ruff clean, mypy clean. Unit-proven only.
