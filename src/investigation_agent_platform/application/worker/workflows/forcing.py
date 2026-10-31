@@ -50,6 +50,7 @@ with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.domain.investigation.loop_version import (
         LOOP_VERSION_CURRENT,
         LOOP_VERSION_LV4,
+        LOOP_VERSION_LV6,
         loop_version_at_least,
     )
 
@@ -313,6 +314,45 @@ def dispatched_parameters(reason_data: dict[str, Any] | None) -> dict[str, Any]:
         return dict(params) if isinstance(params, dict) else {}
     except Exception:
         return {}
+
+
+#: History entries that are work-order carriers, not turns. The workflow appends
+#: them beside the turn entries (a REQUERY order and a GAP_FILL feed); a real turn
+#: entry has no ``kind`` key (a unit test pins that).
+CARRIER_KINDS = frozenset({"work_order", "work_order_feed"})
+
+
+def is_carrier_entry(entry: Any) -> bool:
+    """Whether a history entry is a work-order carrier (pure, never raises)."""
+    try:
+        return isinstance(entry, dict) and entry.get("kind") in CARRIER_KINDS
+    except Exception:
+        return False
+
+
+def turn_entries(history: Any) -> list[dict[str, Any]]:
+    """The real turn entries of an action history, carriers removed (pure).
+
+    Order preserved; non-dict items are not turns and are dropped. The input is
+    never mutated. Positional readers ("the last N turns") use this view so a
+    carrier cannot displace a turn (review F2); carrier readers index into the
+    full list and must not.
+    """
+    try:
+        return [e for e in (history or []) if isinstance(e, dict) and not is_carrier_entry(e)]
+    except Exception:
+        return []
+
+
+def _carriers_separated(loop_version: Any) -> bool:
+    """Whether the run's pin reads turns apart from carriers (lv6+), fail-safe.
+
+    An unrecognized or unreadable pin returns False (keep the old behavior).
+    """
+    try:
+        return bool(loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LV6))
+    except Exception:
+        return False
 
 
 def _should_force_walk_stack(
@@ -1205,6 +1245,8 @@ def _should_force_replan(
     reason_data: dict | None,
     action_history: list | None,
     forced_count: int,
+    *,
+    separate_carriers: bool = False,
 ) -> dict | None:
     """Alternative gathering action after repeated empties, or None.
 
@@ -1218,7 +1260,13 @@ def _should_force_replan(
     try:
         if int(forced_count or 0) >= 2:
             return None
-        entries = [e for e in (action_history or []) if isinstance(e, dict)]
+        # F2 (lv6): carriers are not turns; a trailing carrier used to displace
+        # the second prior turn and silently disable this rule.
+        entries = (
+            turn_entries(action_history)
+            if separate_carriers
+            else [e for e in (action_history or []) if isinstance(e, dict)]
+        )
         # Production shape: completed enriched turns only. The last two
         # are the prior turns; the current proposal comes from reason_data.
         if len(entries) < 2:
@@ -2088,7 +2136,9 @@ def _all_claims_not_checkable(
         return False
 
 
-def _recent_collection_surfaces(action_history: list | None, limit: int = 10) -> list[str]:
+def _recent_collection_surfaces(
+    action_history: list | None, limit: int = 10, *, separate_carriers: bool = False
+) -> list[str]:
     """Kind-qualified surfaces collected in recent turns (pure).
 
     File reads contribute ``file:<path>`` (from action parameters
@@ -2098,7 +2148,8 @@ def _recent_collection_surfaces(action_history: list | None, limit: int = 10) ->
     the trailing window; never raises.
     """
     try:
-        entries = list(action_history or [])[-max(1, int(limit or 10)) :]
+        source = turn_entries(action_history) if separate_carriers else list(action_history or [])
+        entries = source[-max(1, int(limit or 10)) :]
     except Exception:
         return []
     surfaces: list[str] = []
@@ -2427,6 +2478,8 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _counts = dict(state.counts) if isinstance(state.counts, dict) else {}
         _pending_consume: list[dict[str, Any]] = []
         _history = list(state.action_history or [])
+        # F2 (lv6): positional "recent turns" readers skip work-order carriers.
+        _separate = _carriers_separated(state.loop_version)
 
         def _count(key: str) -> int:
             try:
@@ -2446,7 +2499,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # liveness, not budget.
         _pivot_override = None
         if not _is_defer and not _d6_fired and not _absence_forced:
-            _pivot_targets = _recent_collection_surfaces(_history)
+            _pivot_targets = _recent_collection_surfaces(_history, separate_carriers=_separate)
             _pivot_override = _should_force_pivot_recollect(
                 state.prev_focus,
                 _reason_data,
@@ -2696,6 +2749,7 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 _reason_data,
                 _history,
                 _count("replan"),
+                separate_carriers=_separate,
             )
             if _replan:
                 _counts["replan"] = _count("replan") + 1

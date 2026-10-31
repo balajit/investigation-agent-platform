@@ -90,6 +90,7 @@ from .forcing import (
     PostReasonCascadeState,
     _absence_disconfirmation_target,
     _callsite_target,
+    _carriers_separated,
     _carry_gap_orders,
     _carry_requery_order,
     _caused_by_idempotency_wedge,
@@ -110,6 +111,7 @@ from .forcing import (
     _should_force_walk_stack,
     apply_post_reason_cascade,
     dispatched_parameters,
+    turn_entries,
 )
 
 
@@ -562,6 +564,15 @@ class RunInvestigationWorkflow:
         # model sees repetition and escalates capability instead of looping
         # the same empty action to the iteration cap.
         action_history: list[dict[str, Any]] = []
+        # F2 (lv6): positional "recent turns" readers (the reasoner and verify
+        # recent_actions views, actions_used, the shadow previous outcome) read
+        # turns only; work-order carriers stay in the same list because the
+        # carrier readers index into it. Older pins read the raw list.
+        _split_carriers = _carriers_separated(input_data.loop_version or LOOP_VERSION_CURRENT)
+
+        def _turn_view() -> list[dict[str, Any]]:
+            return turn_entries(action_history) if _split_carriers else action_history
+
         # G6-measure shadow trace (plain JSON scalars, replay-safe): one
         # per-turn (recorded, shadow-selected) record appended by the
         # capture hook. Compute-only; the loop never reads this list.
@@ -690,7 +701,7 @@ class RunInvestigationWorkflow:
                         tenant_id=tenant_id,
                         investigation_id=inv_id,
                         iteration=iteration,
-                        recent_actions=action_history[-10:],
+                        recent_actions=_turn_view()[-10:],
                         knowledge_orientation=knowledge_orientation,
                     ),
                     start_to_close_timeout=timedelta(seconds=120),
@@ -939,7 +950,7 @@ class RunInvestigationWorkflow:
                 _shadow_snapshot = build_shadow_snapshot(
                     iteration=iteration,
                     max_iterations=max_iterations,
-                    actions_used=len(action_history),
+                    actions_used=len(_turn_view()),
                     action_limit=max_iterations,
                     tokens_used=llm_tokens_total,
                     token_limit=0,
@@ -1000,7 +1011,7 @@ class RunInvestigationWorkflow:
                 # the recorded action's parameters (capped) for the
                 # changed-input judgment. All loop-local reads.
                 _shadow_turn["evidence_banked_total"] = evidence_banked_total
-                _prev = action_history[-1] if action_history else {}
+                _prev = _turn_view()[-1] if _turn_view() else {}
                 _shadow_turn["prev_outcome"] = (
                     str((_prev or {}).get("outcome_status", "") or "")
                     if isinstance(_prev, dict)
@@ -1322,7 +1333,7 @@ class RunInvestigationWorkflow:
                     tenant_id=tenant_id,
                     investigation_id=inv_id,
                     triage_route=triage_route,
-                    recent_actions=action_history[-10:],
+                    recent_actions=_turn_view()[-10:],
                     iteration=iteration,
                 ),
                 start_to_close_timeout=timedelta(seconds=60),

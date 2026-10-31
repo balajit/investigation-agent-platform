@@ -31,6 +31,13 @@ Versions:
   contract documents ANSWERED as covering caller listings and histories; the
   conclude path had not followed it. Older pins keep the old status.
 
+- ``lv6``: lv5 plus carrier separation (review F2). Work-order carriers (REQUERY
+  orders, GAP_FILL feeds) live in the action history beside the real turn
+  entries; the readers that mean "the last N turns" (the two-empty replan
+  trigger, the pivot damping window, the reasoner and verify ``recent_actions``
+  views, ``actions_used`` and the shadow previous-outcome) now read turns only.
+  Carrier readers keep the full list because they index into it.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -43,9 +50,10 @@ LOOP_VERSION_LV2 = "lv2"
 LOOP_VERSION_LV3 = "lv3"
 LOOP_VERSION_LV4 = "lv4"
 LOOP_VERSION_LV5 = "lv5"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV5
+LOOP_VERSION_LV6 = "lv6"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LV6
 KNOWN_LOOP_VERSIONS = frozenset(
-    {LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4, LOOP_VERSION_LV5}
+    {LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4, LOOP_VERSION_LV5, LOOP_VERSION_LV6}
 )
 # Release order: a later version includes every earlier version's semantics.
 _LOOP_VERSION_ORDER = {
@@ -53,6 +61,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV3: 3,
     LOOP_VERSION_LV4: 4,
     LOOP_VERSION_LV5: 5,
+    LOOP_VERSION_LV6: 6,
 }
 
 

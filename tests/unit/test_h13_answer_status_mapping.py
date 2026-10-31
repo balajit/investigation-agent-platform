@@ -29,7 +29,6 @@ from investigation_agent_platform.domain.finding.models import (
     InvestigationConclusion,
 )
 from investigation_agent_platform.domain.investigation.loop_version import (
-    LOOP_VERSION_CURRENT,
     loop_version_at_least,
 )
 
@@ -70,8 +69,8 @@ def test_no_answer_shape_is_never_answered() -> None:
 # --- the loop version ---------------------------------------------------------------------------
 
 
-def test_lv5_is_current_and_includes_lv4() -> None:
-    assert LOOP_VERSION_CURRENT == "lv5"
+def test_lv5_is_included_in_the_current_version_and_includes_lv4() -> None:
+    assert loop_version_at_least({}, "lv5") is True  # current includes lv5
     assert loop_version_at_least({"loop_version": "lv5"}, "lv5") is True
     assert loop_version_at_least({}, "lv5") is True
     assert loop_version_at_least({"loop_version": "lv4"}, "lv5") is False
