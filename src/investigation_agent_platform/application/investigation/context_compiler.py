@@ -31,7 +31,10 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 # deterministic budget trimming contract.
 # v3-claim-grounded-020: dormant templates carry roots_status and per-template
 # boundary (J9 boundary honesty); nothing branches on them.
-REASONER_PROMPT_VERSION = "v3-claim-grounded-020"
+# v3-claim-grounded-021: the application block offers only actions both
+# capability gates allow (newest ACTIVE revision) plus unavailable_actions
+# with typed reasons (R8 prompt honesty); older pins keep the raw list.
+REASONER_PROMPT_VERSION = "v3-claim-grounded-021"
 CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8

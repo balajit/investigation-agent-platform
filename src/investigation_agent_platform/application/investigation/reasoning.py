@@ -467,6 +467,7 @@ Do NOT include execution_hash (derived server-side).""",
     (
         "action-authority",
         """STRUCTURED_CONTEXT_JSON.application.allowed_capabilities lists the actions authorized for this application — propose ONLY actions on that list; others are denied and waste the turn.
+Actions under STRUCTURED_CONTEXT_JSON.application.unavailable_actions are denied; do not propose them.
 For QUERY_STATE you MUST set "parameters": {"template_id": "<one of the state_templates template_id values in STRUCTURED_CONTEXT_JSON.application.state_templates>"} — never invent a template id and never use raw SQL. You MUST also supply every bind_parameters entry listed for that template_id (e.g. status, application_id) inside parameters — tenant_id is supplied by the platform; a template queried without its bind parameters fails.
 For CORRELATE you MUST set "parameters": {"root_evidence_ids": [<evidence_id strings from visible_evidence_ids>], "max_depth": 2}.""",
     ),
@@ -693,18 +694,49 @@ class ReasoningCoordinator(InvestigationReasoner):
         self._profile_repo = profile_repo
 
     async def _application_context_block(
-        self, tenant_id: str, application_id: str
+        self, tenant_id: str, application_id: str, loop_version: Any = None
     ) -> dict[str, Any]:
         """Typed application context for the reason prompt (never secrets).
 
         Fail-open context: a profile-store failure yields an empty block
         rather than breaking reasoning — this is advisory context, not an
         authorization boundary.
+
+        At LV_R and above the block offers exactly the actions both gates
+        allow, resolved from the newest ACTIVE revision (the same revision
+        the authorizer enforces), plus the unavailable set with reasons.
+        Older pins keep the legacy raw declared list byte for byte.
         """
         if self._profile_repo is None:
             return {}
         try:
-            profile = await self._profile_repo.get_by_application_id(tenant_id, application_id)
+            from investigation_agent_platform.domain.investigation.loop_version import (
+                LOOP_VERSION_LVR,
+                loop_version_at_least,
+            )
+
+            _lvr = bool(loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVR))
+        except Exception:
+            _lvr = False
+        try:
+            if _lvr:
+                from investigation_agent_platform.domain.profile.capability_policy import (
+                    ACTION_POLICY as _ACTION_POLICY,
+                )
+                from investigation_agent_platform.domain.profile.capability_policy import (
+                    capability_available as _capability_available,
+                )
+                from investigation_agent_platform.domain.profile.capability_policy import (
+                    effective_capabilities as _effective_capabilities,
+                )
+                from investigation_agent_platform.domain.profile.capability_policy import (
+                    newest_active_revision as _newest_active,
+                )
+
+                revisions = await self._profile_repo.list_revisions(tenant_id, application_id)
+                profile = _newest_active(revisions)
+            else:
+                profile = await self._profile_repo.get_by_application_id(tenant_id, application_id)
         except Exception:
             return {}
         if profile is None:
@@ -766,10 +798,31 @@ class ReasoningCoordinator(InvestigationReasoner):
             # MUST NOT propose actions outside this list (code-only apps
             # deny SEARCH_LOGS/QUERY_STATE/PROBE_API by design; proposing
             # them wastes iterations on degraded empties).
-            "allowed_capabilities": [
-                str(c.value if hasattr(c, "value") else c)
-                for c in (getattr(profile, "allowed_capabilities", []) or [])
-            ],
+            "allowed_capabilities": (
+                list(_effective_capabilities(profile))
+                if _lvr
+                else [
+                    str(c.value if hasattr(c, "value") else c)
+                    for c in (getattr(profile, "allowed_capabilities", []) or [])
+                ]
+            ),
+            # R8-D2: the unavailable set with typed reasons, from the same
+            # revision the authorizer enforces. LV_R and above only; older
+            # pins keep the legacy block byte for byte.
+            **(
+                {
+                    "unavailable_actions": [
+                        {"action": action.value, "reason": decision.reason.value}
+                        for action in _ACTION_POLICY
+                        if not (
+                            decision := _capability_available(profile, action)
+                        ).allowed
+                        and decision.reason is not None
+                    ]
+                }
+                if _lvr
+                else {}
+            ),
         }
 
     def _validate_llm_decision(
@@ -1252,7 +1305,11 @@ class ReasoningCoordinator(InvestigationReasoner):
             "lifecycle_state": state.investigation.status.value,
             "application_id": state.investigation.application_id,
             "application": await self._application_context_block(
-                tenant_id, state.investigation.application_id
+                tenant_id,
+                state.investigation.application_id,
+                loop_version=(getattr(state.investigation, "metadata", None) or {}).get(
+                    "loop_version", ""
+                ),
             ),
             # The incident itself: without this the model searches blind
             # (it previously guessed service names, matching nothing).

@@ -1038,6 +1038,31 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         "limit": limits.max_llm_tokens,
                     },
                 )
+            # R8-D1: authorization steering snapshot, computed where the I/O
+            # is. Merged only when known and the run is at least LV_R; the
+            # cascade reads it as plain data (replay-exact), fail-open
+            # otherwise (no filtering, authoritative gate unchanged).
+            _steering_unavailable: tuple[str, ...] = ()
+            _steering_known = False
+            try:
+                from investigation_agent_platform.application.security.capability_steering import (
+                    steering_snapshot as _snapshot,
+                )
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    LOOP_VERSION_LVR as _LVR,
+                )
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    loop_version_at_least as _at_least,
+                )
+
+                if _at_least({"loop_version": data.get("loop_version", "")}, _LVR):
+                    _steering_unavailable, _steering_known = await _snapshot(
+                        getattr(ctx, "profile_repo", None),
+                        tenant_id,
+                        str(getattr(investigation, "application_id", None) or "") or None,
+                    )
+            except Exception:
+                _steering_unavailable, _steering_known = (), False
             return GenericActivityResult(
                 success=True,
                 data={
@@ -1166,6 +1191,13 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         "count": int((getattr(decision, "metadata", None) or {}).get("resample_count", 0) or 0),
                         "outcome": (getattr(decision, "metadata", None) or {}).get("resample_outcome"),
                     },
+                    # R8-D1: unavailable actions for the cascade filter; only
+                    # when known and LV_R (absent key = do not filter).
+                    **(
+                        {"unavailable_actions": list(_steering_unavailable)}
+                        if _steering_known
+                        else {}
+                    ),
                 },
             )
         except ApplicationFailure:

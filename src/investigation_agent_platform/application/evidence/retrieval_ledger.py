@@ -59,6 +59,9 @@ class RetrievalOutcome(str, Enum):
     SCOPED_EMPTY = "SCOPED_EMPTY"
     UNSCOPED_EMPTY = "UNSCOPED_EMPTY"
     SEARCH_FAILED = "SEARCH_FAILED"
+    #: A denied dispatch (R8-D5): the action never ran, so the miss is not
+    #: absence and never a retryable failure. Appended; frozen vocabulary.
+    AUTH_DENIED = "AUTH_DENIED"
 
 
 class RetrievalAttempt(BaseModel):
@@ -160,11 +163,15 @@ def classify_retrieval_outcome(
 ) -> RetrievalOutcome:
     """Map (action status, miss reason, row count, scope, signals) to outcome.
 
-    Pure and total. Rows with any partial signal classify PARTIAL_ROWS —
-    never ordinary success. Rows beat failure statuses only when no
-    partial signal exists. Otherwise failures first, then scope presence
-    decides the empty flavor.
+    Pure and total. A denial classifies first, ahead of the generic failure
+    markers: ``authorization_denied`` would otherwise map to SEARCH_FAILED
+    and make the requery loop treat a denial as a retryable failure (R8-D5).
+    Rows with any partial signal classify PARTIAL_ROWS — never ordinary
+    success. Rows beat failure statuses only when no partial signal exists.
+    Otherwise failures first, then scope presence decides the empty flavor.
     """
+    if str(miss_reason or "").strip().lower() == "authorization_denied":
+        return RetrievalOutcome.AUTH_DENIED
     try:
         rows = int(rows_returned or 0)
     except (TypeError, ValueError):

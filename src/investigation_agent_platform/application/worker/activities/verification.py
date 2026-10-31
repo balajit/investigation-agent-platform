@@ -1395,11 +1395,39 @@ async def verify_root_cause_activity(
                         )
                 except Exception:
                     _directive_recorded = None
+                # R8-D4: the verify-time requery obeys the same set. Computed
+                # with steering_snapshot (fail open) and passed only for LV_R
+                # runs; older pins keep the unfiltered directive.
+                _requery_unavailable: frozenset[str] = frozenset()
+                try:
+                    from investigation_agent_platform.application.security.capability_steering import (
+                        steering_snapshot as _requery_snapshot,
+                    )
+                    from investigation_agent_platform.domain.investigation.loop_version import (
+                        LOOP_VERSION_LVR as _REQUERY_LVR,
+                    )
+                    from investigation_agent_platform.domain.investigation.loop_version import (
+                        loop_version_at_least as _requery_at_least,
+                    )
+
+                    if _requery_at_least(getattr(_inv, "metadata", None), _REQUERY_LVR):
+                        _snap_unavailable, _snap_known = await _requery_snapshot(
+                            getattr(ctx, "profile_repo", None),
+                            tenant_id,
+                            str(getattr(_inv, "application_id", "") or "") or None,
+                        )
+                        if _snap_known:
+                            _requery_unavailable = frozenset(
+                                str(a or "").strip().upper() for a in (_snap_unavailable or ())
+                            )
+                except Exception:
+                    _requery_unavailable = frozenset()
                 _ledger_requery = _select_ledger_requery(
                     candidate,
                     evidence_items,
                     _directive_recorded,
                     data.get("recent_actions", []) or [],
+                    unavailable_actions=_requery_unavailable,
                 )
         except Exception:
             _ledger_requery = None

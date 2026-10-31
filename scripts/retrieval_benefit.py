@@ -268,6 +268,10 @@ def _claim_unit_signal(
             continue
         if _attempt_key(attempt) not in keys:
             continue
+        # R8-D5: denials are their own bucket — never a failure signal and
+        # never banking. AUTH_DENIED matches neither failure tuple here nor
+        # the ROWS_RETURNED/PARTIAL_ROWS banking check below by construction,
+        # so a denied query neither attributes evaporation nor proves a lift.
         if str(attempt.get("outcome") or "") not in (
             RetrievalOutcome.SEARCH_FAILED.value,
             RetrievalOutcome.PARTIAL_ROWS.value,

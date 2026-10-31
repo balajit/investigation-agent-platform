@@ -44,6 +44,83 @@ def _authorization_infra_failure(exc: BaseException) -> ApplicationFailure:
 
 logger = logging.getLogger(__name__)
 
+
+async def _append_attempt_marker(
+    ctx: Any,
+    tenant_id: str,
+    investigation_id: Any,
+    inv_action: Any,
+    action_name: str,
+    status: str,
+    attempt: Any | None,
+    attempt_id: str | None,
+    miss_reason: str | None,
+    evidence_ids: list[str] | None = None,
+    banked_count: int = 0,
+    provider_total_count: int | None = None,
+    truncated_rows: int = 0,
+) -> None:
+    """Append one RETRIEVAL_ATTEMPT timeline marker (diagnostics-only, fail-open).
+
+    Shared by the post-handler attempt write and the denial stamp (R8-D5):
+    one writer of markers so both paths record the same shape. Marker
+    faults never touch the outcome. ``attempt`` is the recorded
+    RetrievalAttempt (or None); it is serialized here, never mutated.
+    """
+    try:
+        from investigation_agent_platform.domain.timeline.models import (
+            TimelineEvent,
+            TimelineEventType,
+        )
+
+        retrieval_event_type = getattr(TimelineEventType, "RETRIEVAL_ATTEMPT", None)
+        timeline_repo = getattr(ctx, "timeline_repo", None)
+        if retrieval_event_type is None or timeline_repo is None:
+            return
+        try:
+            attempt_dump = (
+                attempt.model_dump(mode="json")
+                if attempt is not None and hasattr(attempt, "model_dump")
+                else None
+            )
+        except Exception:
+            attempt_dump = None
+        await timeline_repo.append(
+            tenant_id,
+            TimelineEvent(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                timestamp=datetime.now(UTC),
+                event_type=retrieval_event_type,
+                description=(
+                    f"{action_name} attempt "
+                    f"{attempt_id or 'unindexed'}: "
+                    f"{status} "
+                    f"({int(banked_count or 0)} banked)"
+                )[:2048],
+                attributes={
+                    "action_type": action_name,
+                    "status": str(status),
+                    "attempt_id": attempt_id,
+                    # G3: per-action coverage join key — the
+                    # action_executions.action_id for this dispatch (same UUID
+                    # recorded by action_service.execute). None-safe: legacy
+                    # rows simply carry no key and count as missing, never
+                    # as covered.
+                    "action_execution_id": str(getattr(inv_action, "action_id", "") or ""),
+                    "provider_total_count": provider_total_count,
+                    "banked_count": int(banked_count or 0),
+                    "truncated_rows": int(truncated_rows or 0),
+                    "miss_reason": miss_reason,
+                    "evidence_ids": [str(e) for e in (evidence_ids or [])][:25],
+                    "attempt": attempt_dump,
+                },
+            ),
+            investigation_id,
+        )
+    except Exception:
+        pass
+
 from investigation_agent_platform.application.investigation.claim_identity import stamp_identity
 from investigation_agent_platform.domain.common.exceptions import SecurityPolicyViolationException
 from investigation_agent_platform.domain.investigation.loop_version import lv_h_enabled
@@ -1293,6 +1370,65 @@ async def execute_action_activity(
                 error_code=(getattr(exc, "details", None) or {}).get("deny_reason")
                 or type(exc).__name__,
             )
+            # R8-D5: a denial is recorded as an attempt, with its own
+            # outcome — LV_R and above only. Older pins write nothing.
+            try:
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    LOOP_VERSION_LVR as _DENIAL_LVR,
+                )
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    loop_version_at_least as _denial_at_least,
+                )
+
+                _denial_stamp = _denial_at_least(
+                    getattr(investigation_obj, "metadata", None), _DENIAL_LVR
+                )
+            except Exception:
+                _denial_stamp = False
+            if _denial_stamp:
+                try:
+                    from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                        record_retrieval_attempt as _denied_record,
+                    )
+
+                    _denied_attempt = _denied_record(
+                        investigation_id=inv_id_str,
+                        action_type=resolved.value,
+                        parameters=parameters if isinstance(parameters, dict) else {},
+                        status="BLOCKED",
+                        miss_reason="authorization_denied",
+                        row_ids=[],
+                        rows_returned=0,
+                    )
+                except Exception:
+                    _denied_attempt = None
+                # ExecuteActionInput carries no iteration: the marker renders
+                # "unindexed", never a fabricated id.
+                await _append_attempt_marker(
+                    ctx,
+                    tenant_id,
+                    investigation_id,
+                    inv_action,
+                    resolved.value,
+                    "BLOCKED",
+                    _denied_attempt,
+                    None,
+                    "authorization_denied",
+                )
+                try:
+                    blocked = blocked.model_copy(
+                        update={
+                            "retrieval_attempt": _denied_attempt.model_dump(mode="json")
+                            if _denied_attempt is not None
+                            else None,
+                            "error_code": (getattr(exc, "details", None) or {}).get(
+                                "deny_reason"
+                            )
+                            or type(exc).__name__,
+                        }
+                    )
+                except Exception:
+                    pass
             return GenericActivityResult(
                 success=True,
                 data={
@@ -4697,59 +4833,22 @@ async def execute_action_activity(
                 pass
             # G3: RETRIEVAL_ATTEMPT timeline marker (diagnostics-only,
             # fail-open — marker faults never touch the outcome above).
-            try:
-                from investigation_agent_platform.domain.timeline.models import (
-                    TimelineEvent,
-                    TimelineEventType,
-                )
-
-                _retrieval_event_type = getattr(TimelineEventType, "RETRIEVAL_ATTEMPT", None)
-                _timeline_repo = getattr(ctx, "timeline_repo", None)
-                if _retrieval_event_type is not None and _timeline_repo is not None:
-                    # No sequence-number read: TimelineEventORM persists
-                    # no sequence column (ordering is by timestamp), so a
-                    # full-history read here would buy nothing.
-                    _marker_evidence_ids = [
-                        str(e) for e in (outcome_detail.get("evidence_ids") or [])
-                    ][:25]
-                    await _timeline_repo.append(
-                        tenant_id,
-                        TimelineEvent(
-                            tenant_id=tenant_id,
-                            investigation_id=investigation_id,
-                            timestamp=datetime.now(UTC),
-                            event_type=_retrieval_event_type,
-                            description=(
-                                f"{_resolved_action_name} attempt "
-                                f"{_attempt_id or 'unindexed'}: "
-                                f"{_outcome_status} "
-                                f"({int(items_count or 0)} banked)"
-                            )[:2048],
-                            attributes={
-                                "action_type": _resolved_action_name,
-                                "status": str(_outcome_status),
-                                "attempt_id": _attempt_id,
-                                # G3: per-action coverage join key — the
-                                # action_executions.action_id for this
-                                # dispatch (same UUID recorded by
-                                # action_service.execute). Lets the battery
-                                # pair each eligible retrieval action with
-                                # its recorded attempt. None-safe: legacy
-                                # rows simply carry no key and count as
-                                # missing, never as covered.
-                                "action_execution_id": str(inv_action.action_id),
-                                "provider_total_count": _provider_total_count,
-                                "banked_count": int(items_count or 0),
-                                "truncated_rows": int(outcome_detail.get("truncated_rows") or 0),
-                                "miss_reason": outcome_detail.get("miss_reason"),
-                                "evidence_ids": _marker_evidence_ids,
-                                "attempt": outcome_detail.get("retrieval_attempt"),
-                            },
-                        ),
-                        investigation_id,
-                    )
-            except Exception:
-                pass
+            # One writer of markers, shared with the denial stamp (R8-D5).
+            await _append_attempt_marker(
+                ctx,
+                tenant_id,
+                investigation_id,
+                inv_action,
+                _resolved_action_name,
+                str(_outcome_status),
+                _retrieval_attempt,
+                _attempt_id,
+                outcome_detail.get("miss_reason"),
+                evidence_ids=[str(e) for e in (outcome_detail.get("evidence_ids") or [])][:25],
+                banked_count=int(items_count or 0),
+                provider_total_count=_provider_total_count,
+                truncated_rows=int(outcome_detail.get("truncated_rows") or 0),
+            )
             action_outcome = ActionOutcome(
                 action_id=inv_action.action_id,
                 action_type=resolved_action_type,

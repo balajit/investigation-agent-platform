@@ -1683,6 +1683,7 @@ def select_ledger_requery(
     recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None,
     recent_actions: list[Any] | None,
     max_attempts: int = WP_A3_DEFAULT_MAX_ATTEMPTS,
+    unavailable_actions: frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
     """First dispatchable bounded re-retrieval directive, or None (pure).
 
@@ -1690,12 +1691,21 @@ def select_ledger_requery(
     claim whose binding is unsatisfied (unknown citations with zero
     durable attempts, or a failed latest attempt under budget) and whose
     query maps to a typed, validated recent action yields the directive.
-    Fail-closed on unavailable history: ``recorded_attempts=None``
-    (attempt history unavailable, distinct from confirmed-empty) yields
-    None — an unknown-citation retry is never authorized without durable
-    data. Fail-open on internal error: returns None, never a directive.
+    A directive whose matched action is unavailable is skipped (R8-D4) and
+    the walk continues to the next claim, so the ledger requery can never
+    re-dispatch a denied search. Fail-closed on unavailable history:
+    ``recorded_attempts=None`` (attempt history unavailable, distinct from
+    confirmed-empty) yields None — an unknown-citation retry is never
+    authorized without durable data. Fail-open on internal error: returns
+    None, never a directive.
     """
     try:
+        try:
+            _denied_actions = frozenset(
+                str(u or "").strip().upper() for u in (unavailable_actions or frozenset())
+            )
+        except Exception:
+            _denied_actions = frozenset()
         if recorded_attempts is None:
             return None
         recorded = list(recorded_attempts)
@@ -1765,6 +1775,8 @@ def select_ledger_requery(
             except Exception:
                 continue
             if action_type is None or params is None:
+                continue
+            if str(action_type or "").strip().upper() in _denied_actions:
                 continue
             try:
                 directive = re_retrieval_directive(

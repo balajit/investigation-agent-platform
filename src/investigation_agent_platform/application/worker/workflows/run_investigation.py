@@ -909,6 +909,13 @@ class RunInvestigationWorkflow:
                     tenant_id=tenant_id,
                     investigation_id=str(inv_id),
                     loop_version=loop_version,
+                    # R8-D1: plain-data steering from the reason activity
+                    # (absent key = do not filter).
+                    unavailable_actions=tuple(
+                        str(a or "")
+                        for a in (_reason_data.get("unavailable_actions") or ())
+                        if str(a or "").strip()
+                    ),
                 )
             )
             _reason_data = dict(_cascade_state.reason_data or {})

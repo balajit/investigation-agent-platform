@@ -34,6 +34,7 @@ from investigation_agent_platform.domain.investigation.models import ActionOutco
 
 def test_outcome_vocabulary_is_frozen() -> None:
     assert sorted(o.value for o in RetrievalOutcome) == [
+        "AUTH_DENIED",
         "PARTIAL_ROWS",
         "ROWS_RETURNED",
         "SCOPED_EMPTY",
@@ -104,12 +105,25 @@ def test_classify_failures_are_distinct_from_clean_empties() -> None:
         "missing_file_path",
         "missing_query",
         "unsupported_capability",
-        "authorization_denied",
     ):
         assert (
             classify_retrieval_outcome("DEGRADED", miss, 0, "repo@rev:query=q")
             == RetrievalOutcome.SEARCH_FAILED
         ), miss
+    # R8-D5: a denial classifies first, ahead of the generic failure
+    # markers — it is not absence and never a retryable failure.
+    assert (
+        classify_retrieval_outcome("DEGRADED", "authorization_denied", 0, "repo@rev:query=q")
+        == RetrievalOutcome.AUTH_DENIED
+    )
+    assert (
+        classify_retrieval_outcome("BLOCKED", "authorization_denied", 0, "s")
+        == RetrievalOutcome.AUTH_DENIED
+    )
+    assert (
+        classify_retrieval_outcome("FAILED", "authorization_denied", 2, "repo@rev:query=q")
+        == RetrievalOutcome.AUTH_DENIED
+    )
 
 
 def test_classify_clean_empty_uses_scope() -> None:

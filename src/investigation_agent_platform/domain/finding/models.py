@@ -2,6 +2,7 @@
 """Finding aggregates and terminal conclusion models."""
 
 import re
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -152,6 +153,10 @@ class HandoffState(StrEnum):
     REASONING_DEFERRED = "REASONING_DEFERRED"
     #: An input requirement expired with banked evidence kept (H7d).
     INPUT_DEFERRED = "INPUT_DEFERRED"
+    #: Every acquiring action for the leading unproven claim is unavailable
+    #: to the application (review R9). Resume re-enters at the blocked fetch
+    #: after the capability is enabled.
+    CAPABILITY_DENIED = "CAPABILITY_DENIED"
 
 
 # Retrieval actions a next fetch can name (mirrors the investigation action
@@ -235,6 +240,23 @@ def gap_fetch_for_hypotheses(hypotheses: Any) -> str | None:
     claim, highest confidence first. Fail-open: any fault yields None, so a
     handoff is never blocked by gap derivation.
     """
+    strongest = _strongest_open_claim(hypotheses)
+    if strongest is None:
+        return None
+    _, target = strongest
+    try:
+        return derive_gap_fetch(strongest[0], target)
+    except Exception:
+        return None
+
+
+def _strongest_open_claim(hypotheses: Any) -> tuple[ClaimKind, ClaimTarget | None] | None:
+    """(claim kind, target) of the strongest unproven hypothesis with a typed claim.
+
+    Highest confidence first; VERIFIED and REJECTED hypotheses never supply
+    the gap. Fail-open: any fault yields None. Shared by the gap-fetch
+    derivation and the denial rule so both read the same claim (R9-D1).
+    """
     try:
         open_hyps = [
             h
@@ -246,12 +268,66 @@ def gap_fetch_for_hypotheses(hypotheses: Any) -> str | None:
             key=lambda h: float(getattr(h, "confidence_score", 0.0) or 0.0), reverse=True
         )
         for hyp in open_hyps:
-            fetch = derive_gap_fetch(hyp.claim_kind, hyp.claim_target)
+            try:
+                fetch = derive_gap_fetch(hyp.claim_kind, hyp.claim_target)
+            except Exception:
+                continue
             if fetch:
-                return fetch
+                try:
+                    kind = hyp.claim_kind
+                except Exception:
+                    continue
+                if kind is None or kind == ClaimKind.NOT_CHECKABLE:
+                    continue
+                return kind, hyp.claim_target
     except Exception:
         return None
     return None
+
+
+def gap_claim_for_hypotheses(hypotheses: Any) -> ClaimKind | None:
+    """Claim kind of the strongest unproven hypothesis with a fetchable gap.
+
+    Same selection as :func:`gap_fetch_for_hypotheses`, returning the claim
+    kind alongside the fetch so the handoff can name the blocked capability
+    set without re-deriving the claim (R9-D2).
+    """
+    strongest = _strongest_open_claim(hypotheses)
+    return strongest[0] if strongest is not None else None
+
+
+#: Actions that can acquire the proof for each claim kind (R9-D1). Derived
+#: from derive_gap_fetch: the actions it can name for each kind. A test pins
+#: the two together, so adding an action to the derivation without the table
+#: fails loudly.
+CLAIM_ACQUIRING_ACTIONS: dict[ClaimKind, frozenset[str]] = {
+    ClaimKind.DEFINITION: frozenset({"GET_CODE", "SEARCH_CODE"}),
+    ClaimKind.BEHAVIOR: frozenset({"GET_CODE", "SEARCH_CODE"}),
+    ClaimKind.CAUSAL: frozenset({"GET_CODE", "SEARCH_CODE"}),
+    ClaimKind.CALL_EDGE: frozenset({"GET_CODE", "SEARCH_CODE"}),
+    ClaimKind.ABSENCE: frozenset({"SEARCH_CODE"}),
+    ClaimKind.HISTORY: frozenset({"GET_CODE_HISTORY"}),
+}
+
+
+def capability_denied_for(
+    claim_kind: ClaimKind | None, unavailable: Collection[str] | None
+) -> list[str]:
+    """Actions that block the claim: non-empty only when EVERY acquiring action is unavailable."""
+    if claim_kind is None:
+        return []
+    try:
+        acquiring = CLAIM_ACQUIRING_ACTIONS.get(claim_kind)
+    except Exception:
+        return []
+    if not acquiring:
+        return []
+    try:
+        denied = {str(u or "").strip().upper() for u in (unavailable or ())}
+    except Exception:
+        return []
+    blocked = sorted(a for a in acquiring if a in denied)
+    return blocked if len(blocked) == len(acquiring) else []
 
 
 class S7Handoff(BaseModel):
@@ -288,6 +364,10 @@ def classify_terminal_handoff(
     eliminated_rivals: list[EliminatedRival | dict[str, Any]] | None = None,
     upstream_identity: str | None = None,
     gap_fetch: str | None = None,
+    gap_claim_kind: ClaimKind | None = None,
+    unavailable_actions: Collection[str] | None = (),
+    deny_reasons: Mapping[str, str] | None = None,
+    application_id: str | None = None,
 ) -> S7Handoff:
     """Map a terminal outcome to its explicit S7 handoff (handoff-v1).
 
@@ -380,6 +460,47 @@ def classify_terminal_handoff(
             recommended_next_steps=steps[:20],
         )
 
+    # R9-D1: authorization-caused abstention reads as its own state, never as
+    # exhaustion. Fires only for a claim whose EVERY acquiring action is
+    # unavailable and only when the loop named a concrete blocked fetch, so
+    # G1 keeps counting it as a handoff. Placed after PROVED and
+    # CROSS_BOUNDARY and before the telemetry and budget branches: more
+    # budget cannot fix a denial.
+    try:
+        _blocked = capability_denied_for(gap_claim_kind, unavailable_actions)
+    except Exception:
+        _blocked = []
+    if _blocked and target is not None:
+        try:
+            _reasons = deny_reasons if isinstance(deny_reasons, Mapping) else {}
+        except Exception:
+            _reasons = {}
+        try:
+            _why = "; ".join(
+                f"{action} ({_reasons.get(action, 'unavailable')})" for action in _blocked
+            )
+        except Exception:
+            _why = "; ".join(_blocked)
+        try:
+            _app = f" for application {str(application_id or '').strip()[:128]}"
+            _app = _app if str(application_id or "").strip() else ""
+        except Exception:
+            _app = ""
+        try:
+            _resume = (
+                f"A profile owner must enable {', '.join(_blocked)}{_app}; "
+                f"then resume at: {target[:300]}"
+            )
+        except Exception:
+            _resume = f"A profile owner must enable {', '.join(_blocked)}."
+        return S7Handoff(
+            state=HandoffState.CAPABILITY_DENIED,
+            next_fetch=target,
+            price=price_next_fetch(target),
+            resume_pointer=_resume[:1024],
+            recommended_next_steps=[f"Capability unavailable: {_why}.", _resume[:500]][:20],
+        )
+
     _REASONING_MARKERS = (
         "reasoning_provider_blocked", "reasoning_provider_unavailable",
         "reasoning_model_output_invalid", "reasoning_unavailable", "defer_gathering_invalid",
@@ -406,10 +527,16 @@ def classify_terminal_handoff(
             resume_pointer=resume[:1024],
             recommended_next_steps=steps[:20],
         )
+    # R9-D3: the loose "telemetry" substring is removed. TELEMETRY_DEFERRED
+    # keys only on the typed tokens provider_blocked, auth_failed and
+    # reasoning_provider_unavailable: a limitation that merely mentions the
+    # telemetry exporter no longer mislabels the handoff. Unpinned: it
+    # corrects a terminal label and no downstream consumer branches on the
+    # state other than the resume-pointer text.
     if (
         "provider_blocked" in signal_text
         or "auth_failed" in signal_text
-        or "telemetry" in signal_text
+        or "reasoning_provider_unavailable" in signal_text
     ):
         resume = directive or (
             "Restore provider authorization, then resume at the blocked "
