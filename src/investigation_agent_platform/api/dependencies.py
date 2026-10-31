@@ -361,19 +361,37 @@ class InMemoryArtifactRepository:
     async def list_shared_for_fingerprint(
         self, tenant_id: str, code_issue_fingerprint: str
     ) -> list[Any]:
+        from datetime import UTC, datetime
+
         from investigation_agent_platform.domain.knowledge.models import (
             ArtifactStatus,
             ArtifactVisibility,
         )
 
         _ = tenant_id  # binds the (no-op, in-memory) session scope; see docstring
+        now = datetime.now(UTC)
         return [
             a
             for a in self._store.values()
             if a.code_issue_fingerprint == code_issue_fingerprint
             and a.visibility == ArtifactVisibility.SHARED_CODE_ISSUE
             and a.status == ArtifactStatus.ACTIVE
+            and (a.valid_to is None or a.valid_to > now)
         ]
+
+    async def demote_shared(self, tenant_id: str, application_id: str) -> int:
+        from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
+
+        count = 0
+        for artifact_id, row in list(self._store.items()):
+            if (
+                getattr(row, "tenant_id", None) == tenant_id
+                and getattr(row, "application_id", None) == application_id
+                and getattr(row, "visibility", None) == ArtifactVisibility.SHARED_CODE_ISSUE
+            ):
+                self._store[artifact_id] = row.model_copy(update={"visibility": ArtifactVisibility.TENANT})
+                count += 1
+        return count
 
     async def list_expired_ttl(self, tenant_id: str, cutoff: Any, limit: int = 500) -> list[Any]:
         from investigation_agent_platform.domain.knowledge.models import (
@@ -2137,6 +2155,7 @@ class AppContext:
             code_issue_index=self.code_issue_index,
             clock=clock,
             profile_repo=self.profile_repo,
+            fingerprint_key=b"iap-dev-fingerprint-key-not-a-secret",
         )
 
     def knowledge_capture_service(

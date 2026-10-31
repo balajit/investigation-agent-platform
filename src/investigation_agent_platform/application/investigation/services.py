@@ -181,6 +181,23 @@ class CreateInvestigationService:
         self.code_reader = code_reader
         self.probe_runner = probe_runner
 
+    async def _owned_fingerprint(self, tenant_id: str, candidate: str | None) -> str | None:
+        """Return the candidate only when this tenant owns a row with it."""
+        if not candidate or not candidate.startswith("hk1:") or len(candidate) > 128:
+            return None
+        try:
+            if self.code_issue_index is None:
+                return None
+            sessions_for = getattr(self.code_issue_index, "sessions_for_fingerprint", None)
+            if sessions_for is None:
+                return None
+            for _n, inv_id, _ts in await sessions_for(candidate):
+                if await self.investigation_repo.get_by_id(tenant_id, inv_id) is not None:
+                    return candidate
+        except Exception:
+            return None
+        return None
+
     @traced("reason", component="create_service", extra_from=_create_extra)
     async def execute(
         self,
@@ -247,7 +264,16 @@ class CreateInvestigationService:
         )
 
         raw_fingerprint = (request.parameters or {}).get("code_issue_fingerprint")
-        fingerprint = str(raw_fingerprint).strip() or None if raw_fingerprint is not None else None
+        candidate = str(raw_fingerprint).strip() or None if raw_fingerprint is not None else None
+        # R1-D4: a caller-supplied fingerprint is accepted only if it equals
+        # the fingerprint of an investigation this tenant already owns
+        # (resolved through the tenant-free index + tenant-scoped repo).
+        fingerprint = await self._owned_fingerprint(tenant_id, candidate)
+        if candidate is not None and fingerprint is None:
+            logger.warning(
+                "Unproven caller fingerprint dropped",
+                extra={"context": {"tenant_id": tenant_id}},
+            )
         declined = bool((request.parameters or {}).get("declined_as_not_needed", False))
         if skip_disposition:
             disposition = Disposition(

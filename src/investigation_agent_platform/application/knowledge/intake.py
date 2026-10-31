@@ -218,6 +218,7 @@ class ErrorIntakeService:
         code_issue_index: Any,
         clock: Clock | None = None,
         profile_repo: Any | None = None,
+        fingerprint_key: bytes | None = None,
     ) -> None:
         self.investigation_repo = investigation_repo
         self.session_repo = session_repo
@@ -226,6 +227,7 @@ class ErrorIntakeService:
         # Phase 0.5: optional; when present, resolves the canonical
         # repository for the application so intake carries target identity.
         self.profile_repo = profile_repo
+        self.fingerprint_key = fingerprint_key
 
     @traced("knowledge", component="intake", extra_from=_intake_extra)
     async def intake(
@@ -276,6 +278,7 @@ class ErrorIntakeService:
             revision=revision_value,
         )
         fingerprint = build_code_issue_fingerprint(
+            key=self.fingerprint_key if self.fingerprint_key is not None else b"iap-dev-fingerprint-key-not-a-secret",
             error_class=error_class,
             repository=(repository or "").strip() or "UNPINNED",
             revision=(revision_value or "").strip() or "UNPINNED",

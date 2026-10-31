@@ -515,6 +515,33 @@ class KnowledgeConfig(BaseModel):
     graphiti_neo4j_password: SecretStr = Field(default=SecretStr(""))
     graphiti_neo4j_database: str = Field(default="neo4j", min_length=1)
     graphiti_semaphore_limit: int = Field(default=5, ge=1, le=100)
+    fingerprint_key: SecretStr = Field(default=SecretStr(""))
+
+
+def _validate_knowledge_secrets(knowledge: KnowledgeConfig, environment: str) -> None:
+    if environment.strip().lower() not in {"development", "dev", "local", "test", "testing"} and not knowledge.fingerprint_key.get_secret_value():
+        msg = "Boot halted: IAP_KNOWLEDGE_FINGERPRINT_KEY is required outside dev environments"
+        import logging as _logging
+
+        _logging.getLogger(__name__).critical(msg)
+        from investigation_agent_platform.domain.common.exceptions import (
+            PlatformConfigurationError,
+        )
+
+        raise PlatformConfigurationError(msg)
+
+
+def resolve_fingerprint_key(knowledge: KnowledgeConfig, environment: str) -> bytes:
+    secret = knowledge.fingerprint_key.get_secret_value()
+    if secret:
+        return secret.encode("utf-8")
+    if environment.strip().lower() in {"development", "dev", "local", "test", "testing"}:
+        return b"iap-dev-fingerprint-key-not-a-secret"
+    from investigation_agent_platform.domain.common.exceptions import (
+        PlatformConfigurationError,
+    )
+
+    raise PlatformConfigurationError("fingerprint key unavailable")
 
 
 def _tenant_roots_from_env() -> dict[str, list[str]]:
@@ -678,6 +705,7 @@ def _knowledge_config_from_env() -> KnowledgeConfig:
         ),
         graphiti_neo4j_database=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE", "neo4j"),
         graphiti_semaphore_limit=int(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")),
+        fingerprint_key=SecretStr(os.environ.get("IAP_KNOWLEDGE_FINGERPRINT_KEY", "")),
     )
 
 

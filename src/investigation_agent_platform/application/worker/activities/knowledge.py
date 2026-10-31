@@ -372,15 +372,24 @@ async def retrieve_knowledge_activity(
 async def _caller_fingerprints_for(ctx: Any, tenant_id: str, investigation_id: UUID) -> list[str]:
     """Membership proof for cross-tenant SHARED reads: fingerprints of code
     issues this tenant holds a session on, resolved from its own
-    tenant-scoped rows only."""
-    fingerprints: list[str] = []
-    inv_repo: Any = getattr(ctx, "investigation_repo", None)
-    if inv_repo is not None:
-        investigation = await inv_repo.get_by_id(tenant_id, investigation_id)
-        fingerprint = getattr(investigation, "code_issue_fingerprint", None)
-        if fingerprint:
-            fingerprints.append(fingerprint)
-    return fingerprints
+    tenant-scoped rows only. Empty unless the reader opted in (R1-D5)."""
+    try:
+        from investigation_agent_platform.application.knowledge.sharing import (
+            sharing_opted_in,
+        )
+
+        profile_repo: Any = getattr(ctx, "profile_repo", None)
+        inv_repo: Any = getattr(ctx, "investigation_repo", None)
+        application_id: str | None = None
+        if inv_repo is not None:
+            investigation = await inv_repo.get_by_id(tenant_id, investigation_id)
+            application_id = getattr(investigation, "application_id", None)
+            fingerprint = getattr(investigation, "code_issue_fingerprint", None)
+            if fingerprint and await sharing_opted_in(profile_repo, tenant_id, application_id):
+                return [fingerprint]
+    except Exception:
+        return []
+    return []
 
 
 async def _application_id_for(ctx: Any, tenant_id: str, investigation_id: UUID) -> str:

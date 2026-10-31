@@ -84,8 +84,12 @@ async def test_r12a_t02_foreign_shared_row_is_never_written() -> None:
     now = datetime.now(UTC)
     foreign = _ttl_artifact(
         tenant_id="tenant-a",
+        kind="error_signature",
+        statement="Code issue: E at f (r@rev)",
+        source_evidence_ids=[],
+        source_log_refs=[],
         visibility=ArtifactVisibility.SHARED_CODE_ISSUE,
-        code_issue_fingerprint="fp-shared-1",
+        code_issue_fingerprint="hk1:" + "2" * 64,
         valid_from=now - timedelta(days=2),
         valid_to=now - timedelta(days=1),
     )

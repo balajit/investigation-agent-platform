@@ -11,7 +11,11 @@ by the two-tenant determinism test.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
+
+FINGERPRINT_PREFIX = "hk1:"
+_DOMAIN_LABEL = b"iap.code-issue.v1\x1e"
 
 _WS_RUNS = re.compile(r"\s+")
 _HEX_ADDR = re.compile(r"0x[0-9a-fA-F]+")
@@ -45,6 +49,7 @@ def normalize_frame_file(path: str) -> str:
 
 def build_code_issue_fingerprint(
     *,
+    key: bytes,
     error_class: str,
     repository: str,
     revision: str,
@@ -52,7 +57,13 @@ def build_code_issue_fingerprint(
     caller_symbol: str | None = None,
     top_frame_file: str | None = None,
 ) -> str:
-    """Compute the canonical tenant-agnostic code-issue key (hex SHA-256)."""
+    """Compute the canonical tenant-agnostic code-issue key (HMAC-SHA256, hk1:).
+
+    Keyed with the deployment secret so the digest is not guessable;
+    the ``hk1:`` prefix versions the construction for future rotation.
+    """
+    if not key:
+        raise ValueError("fingerprint key must be non-empty")
     if not error_class.strip():
         raise ValueError("error_class must be non-empty")
     if not repository.strip() or not revision.strip() or not failing_symbol.strip():
@@ -65,7 +76,8 @@ def build_code_issue_fingerprint(
         (caller_symbol or "").strip(),
         normalize_frame_file(top_frame_file) if top_frame_file else "",
     ]
-    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    mac = hmac.new(key, _DOMAIN_LABEL + "\x1f".join(parts).encode("utf-8"), hashlib.sha256)
+    return FINGERPRINT_PREFIX + mac.hexdigest()
 
 
 def normalize_symbol_for_match(qualified_name: str) -> str:

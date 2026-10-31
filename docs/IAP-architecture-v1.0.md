@@ -722,3 +722,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`infrastructure/messaging/faststream.py`): `_LOGGABLE_FIELDS` allowlist (ids, event type, schema version, timestamp, correlation id) plus `envelope_for_log` (allowlisted keys stringified and capped at 128 chars, `payload_keys` count only, `sanitize_extra` redaction, `{"unreadable": True}` on missing/raising/non-dict dumps, never raises) and `log_received` wrapper (never raises); `handle_investigation_event` logs the envelope only. The publisher's existing publish log stays identifier-only.
 
 **Tests.** `test_ad2_kafka_log_envelope.py` (4: T01 payload values never logged with negative control, T02 allowlist shape minus event_type plus count, T03 never-fails-consumer over four shapes, T04 Bearer redaction). Full unit green, ruff clean, mypy clean. Unit-proven only.
+
+## 92. Cross-tenant SHARED disclosure closes without opt-in (review R1 code half, no loop version, 2026-10-31)
+
+**Version pinning.** None (security and data layer).
+
+**The defect.** Every investigation with a fingerprint shared per-evidence statements (source + summary) to any tenant that guessed the unkeyed SHA-256; the flag was never read, the proof was caller-supplied, and the router exposed a presence oracle.
+
+**What changed** (`fingerprint.py`, `models.py`, `sharing.py` new, `capture.py`, `intake.py`, `services.py`, `knowledge.py` activity, `routers/knowledge.py`, `rls.py`, `knowledge_repository.py`, `dependencies.py`, `config.py`): HMAC `hk1:` fingerprint with deployment key (`IAP_KNOWLEDGE_FINGERPRINT_KEY`, dev fallback, boot halt outside dev); model allows only `error_signature` SHARED with no refs and statements <=600; per-evidence signatures stay TENANT, at most one SHARED TTL projection from the server-stamped seed when the newest ACTIVE profile opted in (faults fail closed); `SHARED_KINDS` reduced; caller fingerprints accepted only when the tenant owns a row with it; reader proofs and router oracle gated on opt-in; `rls_session` carries a validated `shared_fingerprints` proof GUC (20 max, `hk1:` hex only); SQL and in-memory `list_shared_for_fingerprint` filter ACTIVE + valid; `demote_shared` flips a tenant/app's SHARED rows to TENANT.
+
+**Tests.** `test_r1_shared_removal.py` (12: key dependence, empty key, boot gate, no-opt-in-no-share, projection-only, no-seed-no-share, fault-closed, model rejects, reader gate, caller distrust, router gate, unsafe proof). Existing suites updated to the keyed shape (knowledge, intake, r12a, topology duplicate → dropped-fingerprint). Full unit green, ruff clean, mypy at baseline (one new attr fixed via getattr). Migration `039` + db-suite proofs follow separately. Unit-proven only.

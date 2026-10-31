@@ -171,16 +171,45 @@ class SqlAlchemyArtifactRepository:
         # NOTE: the tenant_id parameter binds the RLS session. SHARED rows
         # from other tenants are visible through the DB visibility policy;
         # the caller MUST verify the requesting tenant holds a session on
-        # this fingerprint before use.
-        async with rls_session(self._session_factory, tenant_id) as session:
+        # this fingerprint before use. The session carries the proof GUC so
+        # the database enforces the membership proof (R1-D7).
+        from datetime import UTC, datetime
+
+        async with rls_session(
+            self._session_factory, tenant_id, shared_fingerprints=[code_issue_fingerprint]
+        ) as session:
             result = await session.scalars(
                 select(KnowledgeArtifactORM).where(
                     KnowledgeArtifactORM.code_issue_fingerprint == code_issue_fingerprint,
                     KnowledgeArtifactORM.visibility == ArtifactVisibility.SHARED_CODE_ISSUE.value,
                     KnowledgeArtifactORM.status == ArtifactStatus.ACTIVE.value,
+                    (
+                        (KnowledgeArtifactORM.valid_to.is_(None))
+                        | (KnowledgeArtifactORM.valid_to > datetime.now(UTC))
+                    ),
                 )
             )
             return [_artifact_from_orm(row) for row in result.all()]
+
+    async def demote_shared(self, tenant_id: str, application_id: str) -> int:
+        """Opt-out demotion (R1-D8): flip this tenant/app's SHARED rows to TENANT."""
+        from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
+
+        async with rls_session(self._session_factory, tenant_id) as session:
+            result = await session.execute(
+                update(KnowledgeArtifactORM)
+                .where(
+                    KnowledgeArtifactORM.tenant_id == tenant_id,
+                    KnowledgeArtifactORM.application_id == application_id,
+                    KnowledgeArtifactORM.visibility == ArtifactVisibility.SHARED_CODE_ISSUE.value,
+                )
+                .values(visibility=ArtifactVisibility.TENANT.value)
+            )
+            try:
+                affected = int(getattr(result, "rowcount", 0) or 0)
+            except (TypeError, ValueError):
+                affected = 0
+            return affected
 
     async def list_expired_ttl(
         self, tenant_id: str, cutoff: datetime, limit: int = 500
