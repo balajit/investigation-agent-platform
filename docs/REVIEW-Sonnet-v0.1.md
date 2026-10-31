@@ -17,12 +17,12 @@ Commits: `40870d2` pure ruff format (recorded in `.git-blame-ignore-revs`), `230
 | 2 guards | F1, F3, F5, F6, F7, J4, J7 | Done | `workflows/forcing.py`, `domain/investigation/loop_version.py` (F3 pinned lv1/lv2), `analysis/java/window_facts.py`, `activities/execution.py` (`_with_read_mode`) |
 | 3 H1 measurement | H1 | Measured on the head tree, default NOT flipped | `tranche_b_battery.py --claim-binding-version`; `IAP-claim-binding-attribution-v1.0.md` |
 | 4 Java soundness | J1, J2, J3 | Done | `analysis/java/model.py`, `dataflow.py`, `verification.py` (`_v2_any_from_evidence`) |
-| 5 tenancy | R3, R4, R5 done; R2 reproduced, decision needed | Partial | `api/tenant.py`, `security/profile_authorizer.py`, `api/dependencies.py` |
+| 5 tenancy | R3, R4, R5 done; R2 code half done (index-scope guard, per-service narrowing, status gate), delimiter rename with ops | Partial | `api/tenant.py`, `security/profile_authorizer.py`, `api/dependencies.py` |
 | 6 verdict semantics | H2, H3, H4 code done; battery before/after untested by owner decision | Partial | `activities/execution.py` (`_claim_identity_key`), `verification.py` (`enforce_group_conjunction`), verify + conclude choke points |
 
 ### What did not reproduce or could not be completed
 
-- **R2** reproduced (by pattern semantics) but cannot be fixed in code alone; pinned by a strict `xfail`. See the ledger entry.
+- **R2** reproduced (by pattern semantics). The code half is done: exact per-service index patterns when services are named, a fail-closed dash-boundary guard against registered sibling tenants, and a status gate on first-onboarding tenant ids. The raw wildcard shape is unchanged and pinned by a strict `xfail` until ops renames the delimiter. See the ledger.
 - **J7**: the reviewer's bypass was confirmed by probe at the TRACE_LOGIC bank site (a file-head read banked with no `read_mode`). The fix stamps the label at both unstamped bank sites, and the guard (`_is_range_read`) now requires an explicit `read_mode == "range"` so an unlabeled provenance window is no longer trusted.
 - **T2** is not complete: the generic handoff filler is removed, but `S7Handoff` has no price field and `next_fetch` is still the free-text `next_check` template, so G1 scores abstentions as misses. See the ledger.
 - **F7** was reproduced (counter burned and carrier stamped when a later rule faults).
