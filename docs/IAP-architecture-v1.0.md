@@ -762,3 +762,11 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`bootstrap/__init__.py`, `dependencies.py`): `_build_production_context` calls `_validate_knowledge_secrets` (boot halts outside dev when empty, naming the variable only) and stores `resolve_fingerprint_key(...)` on the context; `AppContext` gains `fingerprint_key` (default `None` = dev fallback); `error_intake_service()` uses the context key when present. Production bootstrap tests now pin a test key.
 
 **Tests.** `test_r1_t18_ctx_key_flows_to_intake` (default dev fallback, set key flows through); existing T03 validator pins stand; two production-bootstrap tests updated to carry a test key (their prior failure without it proves the halt fires). Full unit green, ruff clean, mypy at baseline. Operator action unchanged: set the secret in the environment and restart; same value on API + worker + intake jobs.
+
+## 96. S0 least-privilege grants matrix + provision dry-run (review R11 stage S0, no loop version, 2026-10-31)
+
+**Version pinning.** None (operator provisioning, outside Alembic).
+
+**What changed** (`IAP-TENANT-ONBOARDING-DB-ROLES.md` §S0, `scripts/provision-onboarding-db-roles.sql` S0 section): per-table verb matrix derived from the repository survey (worker shares the API verbs except chat, which is API-only, and profiles, where the worker reads); no `TRUNCATE`/`REFERENCES`/DDL for runtime roles, `USAGE` on sequences only; tables with no repository access path get no grants; onboarding tables keep their 024 grants; `iap_migrator` takes core-table ownership `IF EXISTS`; `iap_tenant_directory` ensured `NOLOGIN`. The dry-run itself caught a real bug (`to_regclass(cstring)` → text concatenation) before any shared database saw it.
+
+**Tests.** `test_s0_grants_matrix.py` (4, static: exact matrix coverage, no extra runtime grants, no dangerous verbs, no PUBLIC grants/passwords/privileged flags) + `test_s0_provision_dryrun.py` (1, disposable pgvector: full schema create, script executes clean, `has_table_privilege` spot checks both directions, role-attribute check). Full unit green, ruff clean. Exit criterion met: matrix reviewed (in §S0), script dry-run clean on disposable. Credentials remain an approved-secret-procedure item; S2/S3/S4 unchanged.
