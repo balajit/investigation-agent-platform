@@ -1,5 +1,5 @@
 {
-  "index": "logz-ui-checkout-err-grp-es-000016",
+  "index": "logz-xx-xxxxxxx-err-grp-es-000016",
   "properties": {
     "@timestamp": {
       "type": "date"
@@ -20,7 +20,7 @@
         }
       }
     },
-    "ctpSessionID": {
+    "sessionID": {
       "ignore_above": 128,
       "type": "keyword"
     },

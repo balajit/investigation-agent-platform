@@ -1136,8 +1136,9 @@ class TestPinMatrix:
             text = pathlib.Path(rel).read_text()
             assert '"cbv2"' not in text and "'cbv2'" not in text, rel
             assert '"cbv3"' not in text and "'cbv3'" not in text, rel
-            # Stamps use the CLAIM_BINDING_CBV1 constant (or the literal).
-            assert "CLAIM_BINDING_CBV1" in text or "cbv1" in text, rel
+            # Stamps use the CLAIM_BINDING_CURRENT constant (or the CLAIM_BINDING_CBV1
+            # constant, or the literal).
+            assert "CLAIM_BINDING_CURRENT" in text or "CLAIM_BINDING_CBV1" in text or '"cbv1"' in text or "'cbv1'" in text, rel
 
     def test_no_bare_cbv2_equality_gates_remain(self):
         import pathlib

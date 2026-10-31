@@ -1844,14 +1844,19 @@ async def _gate_conclusion_or_fail(
             lv_h_enabled as _lv_h_enabled,
         )
 
-        _finding_as_observation = _answered_shape(
-            location=location_answered,
-            code_value=code_value_answered,
-            doc=doc_answered,
-            history=history_answered,
-            state=state_answered,
-            caller_edge=caller_edge_validated,
-            extended=_lv_h_enabled(getattr(_inv, "metadata", None)),
+        # H13-D1: the pre-LV_H expression, unchanged: location, code-value,
+        # history, state and doc answers are OBSERVATION on every pin.
+        # Caller-edge answers join that set only under LV_H; older pins keep
+        # ROOT_CAUSE for caller-edge listings exactly as today.
+        _finding_as_observation = (
+            location_answered
+            or code_value_answered
+            or history_answered
+            or doc_answered
+            or state_answered
+        ) or (
+            caller_edge_validated
+            and _lv_h_enabled(getattr(_inv, "metadata", None))
         )
         finding = Finding(
             # H14/T12: deterministic id so a conclude retry after a committed

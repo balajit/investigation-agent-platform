@@ -249,6 +249,8 @@ class SqlAlchemyFindingConclusionRepository:
         )
 
     async def save_finding_record(self, tenant_id: str, finding: Finding) -> None:
+        if finding.tenant_id != tenant_id:
+            raise ConcurrencyError("Finding tenant mismatch")
         async with rls_session(self._session_factory, tenant_id) as session:
             await self.save_finding_record_in_session(session, tenant_id, finding)
 
@@ -380,6 +382,8 @@ class SqlAlchemyFindingConclusionRepository:
         different status raises ConcurrencyError instead of silently
         winning. Read and write share one transaction (FOR UPDATE).
         """
+        if conclusion.tenant_id != tenant_id:
+            raise ConcurrencyError("Conclusion tenant mismatch")
         async with rls_session(self._session_factory, tenant_id) as session:
             await self.save_conclusion_in_session(session, tenant_id, conclusion)
 

@@ -93,11 +93,11 @@ class TestLoopVersionResolution:
         with pytest.raises(UnknownLoopVersion):
             resolve_loop_version({"loop_version": "lv1"})
 
-    def test_current_is_lv7_and_includes_earlier_semantics(self) -> None:
+    def test_current_is_lv10_and_includes_earlier_semantics(self) -> None:
         # lv8 (shadow per-rule counting) is current; it inherits lv7 (bounded pivot), lv6 (carrier separation),
         # lv5 (answer status, contradiction severity), lv4 (D6 evidence cap),
         # lv3 (H5 floor, H8 re-fetch) and the unconditional F3 stand-down.
-        assert LOOP_VERSION_CURRENT == "lv9"
+        assert LOOP_VERSION_CURRENT == "lv10"
 
     def test_at_least_routes_on_the_recorded_pin(self) -> None:
         from investigation_agent_platform.domain.investigation.loop_version import (

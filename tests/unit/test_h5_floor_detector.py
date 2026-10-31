@@ -185,4 +185,10 @@ def test_would_verify_replay() -> None:
 
     read = _def_read()
     base = _def_hyp(read, statement="The handler is defined")
-    assert would_verify_if_retyped(base, [read]) is False  # no NC-with-identifier assessments
+    assert would_verify_if_retyped(base, [read]) is False
+
+
+def test_live_db_layer_needs_owner_approval() -> None:
+    import pytest
+
+    pytest.skip("read-only live-DB tier: requires owner approval to run against any database")  # no NC-with-identifier assessments

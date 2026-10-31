@@ -117,7 +117,13 @@ def test_an_unreadable_pin_keeps_the_old_policy() -> None:
 def test_the_policy_is_otherwise_unchanged() -> None:
     base = RootCauseVerificationPolicy.runtime()
     out = _policy_for_loop_version(base, {})
-    assert out.model_copy(update={"blocking_contradictions_only": False}) == base
+    assert out.model_copy(
+        update={
+            "blocking_contradictions_only": False,
+            "tolerant_band": False,
+            "require_causal_step_for_causal_claims": False,
+        }
+    ) == base
 
 
 # --- wiring -------------------------------------------------------------------------------------------

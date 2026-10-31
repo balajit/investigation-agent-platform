@@ -56,8 +56,8 @@ def _pivot(reason, *, hardened=True, forced_count=0, prev=PREV, targets=None):  
 # --- version routing ------------------------------------------------------------------------------
 
 
-def test_lv7_is_current_and_includes_lv6() -> None:
-    assert LOOP_VERSION_CURRENT == "lv9"
+def test_lv10_is_current_and_includes_lv6() -> None:
+    assert LOOP_VERSION_CURRENT == "lv10"
     assert loop_version_at_least({"loop_version": "lv7"}, "lv6") is True
     assert loop_version_at_least({"loop_version": "lv6"}, "lv7") is False
 
