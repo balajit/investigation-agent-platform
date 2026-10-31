@@ -107,6 +107,7 @@ from .common import (
     _story_truncate,
     apply_effective_limits,
     classify_provider_failure,
+    classify_reasoning_failure,
     overlay_evidence_budget,
 )
 from .execution import (

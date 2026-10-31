@@ -19,6 +19,7 @@ Commits: `40870d2` pure ruff format (recorded in `.git-blame-ignore-revs`), `230
 | 4 Java soundness | J1, J2, J3 | Done | `analysis/java/model.py`, `dataflow.py`, `verification.py` (`_v2_any_from_evidence`) |
 | 5 tenancy | R3, R4, R5 done; R2 code half done (index-scope guard, per-service narrowing, status gate), delimiter rename with ops | Partial | `api/tenant.py`, `security/profile_authorizer.py`, `api/dependencies.py` |
 | 6 verdict semantics | H2, H3, H4 code done; battery before/after untested by owner decision | Partial | `activities/execution.py` (`_claim_identity_key`), `verification.py` (`enforce_group_conjunction`), verify + conclude choke points |
+| 7 reasoning failures | H7, T7 | Done (unit level) | `activities/common.py` (`classify_reasoning_failure`), `application/investigation/reasoning.py`, `activities/reasoning.py`, `workflows/run_investigation.py`, `activities/lifecycle.py`, `worker/reasoning_failure.py`; `IAP-architecture-v1.0.md` section 66 |
 
 ### What did not reproduce or could not be completed
 

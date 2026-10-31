@@ -713,14 +713,27 @@ class ReasoningCoordinator(InvestigationReasoner):
         return decision
 
     @staticmethod
-    def _unavailable_decision(reason: str) -> InvestigationDecision:
+    def _unavailable_decision(
+        reason: str, kind: str = "other", retry_after: float | None = None
+    ) -> InvestigationDecision:
         """Explicit non-conclusive result. Readiness is always zero here — it is
         never invented, and callers must treat this as an inconclusive/failed
-        reasoning step, not as evidence of anything."""
+        reasoning step, not as evidence of anything.
+
+        ``kind`` is the typed failure (H7/T7): transient / blocked /
+        model_output / other. The activity raises for transient, hands off for
+        blocked, and degrades the run for the rest; the kind decides which."""
+        metadata: dict[str, Any] = {
+            "status": "REASONING_UNAVAILABLE",
+            "reason": reason,
+            "failure_kind": kind,
+        }
+        if retry_after is not None:
+            metadata["retry_after"] = retry_after
         return InvestigationDecision(
             conclusion_readiness=0.0,
             reasoning_chain="REASONING_UNAVAILABLE",
-            metadata={"status": "REASONING_UNAVAILABLE", "reason": reason},
+            metadata=metadata,
         )
 
     def _ensure_claim_coverage(self, decision: Any, tenant_id: str, state: Any) -> Any:
@@ -1135,7 +1148,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 "No LLM gateway configured; reasoning cannot produce a grounded decision",
                 extra={"tenant_id": tenant_id},
             )
-            return self._unavailable_decision("no_llm_gateway_configured")
+            return self._unavailable_decision("no_llm_gateway_configured", kind="blocked")
 
         try:
             from investigation_agent_platform.ports.reasoning.llm_gateway import (
@@ -1182,12 +1195,20 @@ class ReasoningCoordinator(InvestigationReasoner):
                 "LLM gateway call failed; returning REASONING_UNAVAILABLE",
                 extra={"tenant_id": tenant_id, "error": str(exc)},
             )
+            from investigation_agent_platform.application.worker.activities.common import (
+                classify_reasoning_failure,
+            )
             from investigation_agent_platform.domain.common.exceptions import (
                 RateLimitException,
             )
 
             suffix = ":rate_limited" if isinstance(exc, RateLimitException) else ""
-            return self._unavailable_decision(f"llm_gateway_error:{type(exc).__name__}{suffix}")
+            _kind, _retry_after = classify_reasoning_failure(exc)
+            return self._unavailable_decision(
+                f"llm_gateway_error:{type(exc).__name__}{suffix}",
+                kind=_kind,
+                retry_after=_retry_after,
+            )
 
         if self._observability is not None:
             try:
@@ -1205,7 +1226,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 "LLM gateway returned no parsed output; returning REASONING_UNAVAILABLE",
                 extra={"tenant_id": tenant_id},
             )
-            return self._unavailable_decision("empty_llm_response")
+            return self._unavailable_decision("empty_llm_response", kind="model_output")
 
         _resample_reasons: list[str] = []
         try:
@@ -1235,7 +1256,9 @@ class ReasoningCoordinator(InvestigationReasoner):
                     "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
                     extra={"tenant_id": tenant_id, "error": str(exc)},
                 )
-                return self._unavailable_decision(f"invalid_llm_schema:{type(exc).__name__}")
+                return self._unavailable_decision(
+                    f"invalid_llm_schema:{type(exc).__name__}", kind="model_output"
+                )
             decision = None
             _last_exc: Exception = exc
             for _attempt in range(2):
@@ -1290,7 +1313,25 @@ class ReasoningCoordinator(InvestigationReasoner):
                     "LLM decision invalid after hidden resamples; returning REASONING_UNAVAILABLE",
                     extra={"tenant_id": tenant_id, "error": str(_last_exc)},
                 )
-                return self._unavailable_decision(f"invalid_llm_schema:{type(_last_exc).__name__}")
+                # A malformed answer is a model-quality failure; a transport
+                # error during a resample is not - classify it, do not
+                # misreport it as bad model output.
+                if isinstance(_last_exc, (ValueError, TypeError, ValidationError)):
+                    _final_kind, _final_retry_after = "model_output", None
+                else:
+                    from investigation_agent_platform.application.worker.activities.common import (
+                        classify_reasoning_failure as _classify_resample_failure,
+                    )
+
+                    _final_kind, _final_retry_after = _classify_resample_failure(_last_exc)
+                _final_label = (
+                    "invalid_llm_schema" if _final_kind == "model_output" else "llm_gateway_error"
+                )
+                return self._unavailable_decision(
+                    f"{_final_label}:{type(_last_exc).__name__}",
+                    kind=_final_kind,
+                    retry_after=_final_retry_after,
+                )
         decision = self._ensure_claim_coverage(decision, tenant_id, state)
         # Consolidation: one feedback retry for unstructured value claims.
         # The model formulates the claim but omits fact_category /

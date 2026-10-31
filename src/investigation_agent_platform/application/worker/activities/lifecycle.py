@@ -20,6 +20,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.application.worker.reasoning_failure import (
+    REASON_DEFER_INVALID,
+    REASON_MODEL_OUTPUT_INVALID,
+    REASON_PROVIDER_BLOCKED,
+    REASON_PROVIDER_UNAVAILABLE,
+    REASON_UNAVAILABLE,
+)
 from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
 from investigation_agent_platform.domain.proof.definition_shadow import (
     ShadowError,
@@ -2159,6 +2166,70 @@ def _is_actionable_terminal_reason(text: str) -> bool:
     return t == "no validated causal chain" or "no causal chain established" in t
 
 
+def _is_reasoning_terminal_reason(reason_lower: str) -> bool:
+    """Whether a terminal reason is a reasoning failure that degrades (H7/T7). Pure."""
+    return reason_lower == REASON_DEFER_INVALID or reason_lower.startswith(
+        (REASON_MODEL_OUTPUT_INVALID, REASON_PROVIDER_UNAVAILABLE, REASON_UNAVAILABLE)
+    )
+
+
+def _epistemic_next_check(reason_lower: str) -> str:
+    """The re-verify directive for an epistemic ending, by terminal reason. Pure."""
+    if reason_lower == "budget_exceeded":
+        return "Raise the iteration or evidence budget and resume, then re-verify."
+    if reason_lower == "defer_repair_budget_exhausted":
+        return "Gather the missing proof kind within the bounded repair budget, then re-verify."
+    if REASON_PROVIDER_BLOCKED in reason_lower:
+        return "Restore the blocked provider fetch and resume, then re-verify."
+    if reason_lower.startswith(REASON_MODEL_OUTPUT_INVALID):
+        return (
+            "Re-run reasoning with a different model or prompt (the model returned "
+            "invalid output after bounded resampling), then re-verify."
+        )
+    if reason_lower.startswith(REASON_PROVIDER_UNAVAILABLE):
+        return "Restore the reasoning provider and resume, then re-verify."
+    if reason_lower.startswith(REASON_UNAVAILABLE):
+        return "Resolve the reasoning failure and resume, then re-verify."
+    if reason_lower == REASON_DEFER_INVALID:
+        return (
+            "Re-run the synthesis step with a valid gathering action "
+            "(the model deferred without one), then re-verify."
+        )
+    return (
+        "Bind supporting evidence and a cited causal chain to a candidate "
+        "hypothesis, then re-verify."
+    )
+
+
+def _epistemic_limitation(reason: str, reason_lower: str) -> str:
+    """The persisted limitation line for an epistemic ending. Pure.
+
+    A reasoning failure is named for what it is; it is not a verification miss
+    "within budget".
+    """
+    if _is_reasoning_terminal_reason(reason_lower):
+        return (
+            f"Investigation ended: {reason}. Reasoning could not complete; evidence "
+            "gathered so far is preserved but no hypothesis was verified."
+        )
+    return (
+        f"Investigation ended: {reason}. "
+        "No hypothesis met the evidence-bound verification bar within budget."
+    )
+
+
+async def _has_banked_evidence(ctx: Any, tenant_id: str, investigation_id: Any) -> bool:
+    """Whether any evidence is banked for the run. Fail-closed: unknown -> False."""
+    try:
+        evidence_repo = getattr(ctx, "evidence_repo", None)
+        if evidence_repo is None:
+            return False
+        rows = await evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
+        return bool(rows)
+    except Exception:
+        return False
+
+
 def _route_terminal_check(reasons: list[str], generic: str) -> str:
     """Select the terminal next_check from persisted assessment reasons.
 
@@ -2333,6 +2404,17 @@ async def conclude_investigation_activity(
                             "budget_exceeded",
                             "defer_repair_budget_exhausted",
                         ) or _epistemic_reason_lower.startswith("provider_blocked")
+                        # H7/T7: reasoning that could not complete degrades to a
+                        # named abstention instead of FAILED. A transient outage
+                        # that exhausted its retries degrades only when evidence
+                        # is banked to judge; with nothing banked no evidence
+                        # judgement is possible and the run stays FAILED.
+                        if not epistemic and _is_reasoning_terminal_reason(_epistemic_reason_lower):
+                            epistemic = True
+                            if _epistemic_reason_lower.startswith(REASON_PROVIDER_UNAVAILABLE):
+                                epistemic = await _has_banked_evidence(
+                                    ctx, tenant_id, investigation_id
+                                )
                         if epistemic:
                             from investigation_agent_platform.application.investigation.verification import (
                                 VERIFIER_VERSION_CURRENT,
@@ -2348,23 +2430,7 @@ async def conclude_investigation_activity(
                             if finding_repo is not None:
                                 try:
                                     _epistemic_reason = str(reason or "").strip().lower()
-                                    _epistemic_check = (
-                                        "Raise the iteration or evidence budget and "
-                                        "resume, then re-verify."
-                                        if _epistemic_reason == "budget_exceeded"
-                                        else (
-                                            "Gather the missing proof kind within the "
-                                            "bounded repair budget, then re-verify."
-                                            if _epistemic_reason == "defer_repair_budget_exhausted"
-                                            else (
-                                                "Restore the blocked provider fetch "
-                                                "and resume, then re-verify."
-                                                if "provider_blocked" in _epistemic_reason
-                                                else "Bind supporting evidence and a cited causal "
-                                                "chain to a candidate hypothesis, then re-verify."
-                                            )
-                                        )
-                                    )
+                                    _epistemic_check = _epistemic_next_check(_epistemic_reason)
                                     # P4: budget endings use the same persisted
                                     # assessment reasons as verification-limit endings,
                                     # so a priced next fetch names the actual gap
@@ -2410,11 +2476,7 @@ async def conclude_investigation_activity(
                                             contradicting_evidence_ids=[],
                                             confidence=0.0,
                                             limitations=[
-                                                (
-                                                    f"Investigation ended: {reason}. "
-                                                    "No hypothesis met the evidence-bound "
-                                                    "verification bar within budget."
-                                                )
+                                                _epistemic_limitation(reason, _epistemic_reason)
                                             ],
                                             next_check=_epistemic_check,
                                             recommended_next_steps=list(

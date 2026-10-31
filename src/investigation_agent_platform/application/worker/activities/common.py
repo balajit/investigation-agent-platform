@@ -436,6 +436,41 @@ def classify_provider_failure(exc: BaseException, absent_label: str) -> tuple[st
     raise exc
 
 
+def classify_reasoning_failure(exc: BaseException) -> tuple[str, float | None]:
+    """(failure kind, retry_after) for a reasoning-gateway failure (H7/T7).
+
+    A thin mapping over ``classify_provider_failure`` - the one classifier -
+    onto the reasoning outcomes in ``reasoning_failure``. Timeout, throttle
+    and outage are transient; first-party credential failure and an
+    unconfigured gateway are blocked; everything else (including the
+    classifier's own re-raise for unknown exception types) is "other".
+    The shared classifier's policy is kept: a sniffed third-party auth
+    message degrades, it never blocks by itself.
+    """
+    from investigation_agent_platform.application.worker.reasoning_failure import (
+        KIND_BLOCKED,
+        KIND_OTHER,
+        KIND_TRANSIENT,
+    )
+
+    retry_after: float | None = None
+    try:
+        hint = getattr(exc, "retry_after", None)
+        if isinstance(hint, (int, float)) and not isinstance(hint, bool):
+            retry_after = float(hint)
+    except Exception:
+        retry_after = None
+    try:
+        reason, _status, blocking = classify_provider_failure(exc, "llm_not_configured")
+    except Exception:
+        return (KIND_OTHER, None)
+    if blocking or reason == "llm_not_configured":
+        return (KIND_BLOCKED, None)
+    if reason in ("timeout", "rate_limited", "provider_unavailable"):
+        return (KIND_TRANSIENT, retry_after)
+    return (KIND_OTHER, None)
+
+
 _KNOWN_LIMITATION_CODES = frozenset(
     {
         "RIVAL_UNTESTED",

@@ -350,6 +350,7 @@ def classify_terminal_handoff(
         "provider_blocked" in signal_text
         or "auth_failed" in signal_text
         or "telemetry" in signal_text
+        or "reasoning_provider_unavailable" in signal_text
     ):
         resume = directive or (
             "Restore provider authorization, then resume at the blocked "

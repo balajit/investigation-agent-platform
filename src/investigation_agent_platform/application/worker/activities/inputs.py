@@ -239,6 +239,16 @@ def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> st
         return "INPUT_EXPIRED"
     if normalized == "verification_failed_or_limit_reached":
         return "UNVERIFIED"
+    if normalized.startswith(
+        (
+            "reasoning_provider_unavailable",
+            "reasoning_model_output_invalid",
+            "reasoning_unavailable",
+        )
+    ):
+        # H7/T7: the reasoning step could not complete and nothing was banked to
+        # judge; a stable code instead of UNKNOWN.
+        return "REASONING_UNAVAILABLE"
     return "UNKNOWN"
 
 

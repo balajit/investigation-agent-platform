@@ -11,6 +11,10 @@ from typing import Any
 
 from temporalio import workflow
 
+from investigation_agent_platform.application.worker.reasoning_failure import (
+    TRANSIENT_FAILURE_TYPE,
+)
+
 logger = logging.getLogger(__name__)
 
 with workflow.unsafe.imports_passed_through():
@@ -1420,6 +1424,30 @@ def _caused_by_idempotency_wedge(exc: BaseException) -> bool:
         cause: BaseException | None = exc
         while cause is not None and seen < 5:
             if getattr(cause, "type", "") == "IdempotencyRequestInProgress":
+                return True
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+            if not isinstance(cause, BaseException):
+                return False
+            seen += 1
+        return False
+    except Exception:
+        return False
+
+
+def _caused_by_reasoning_transient(exc: BaseException) -> bool:
+    """Whether an ActivityError wraps an exhausted transient reasoning failure (pure).
+
+    H7: reason_activity raises a retryable ``ReasoningProviderTransient`` for a
+    timeout / 5xx / throttle. When Temporal's retries exhaust, the SDK surfaces
+    it as ActivityError; the workflow degrades the run instead of failing it.
+    Walks __cause__/__context__ (bounded) like the idempotency-wedge check;
+    anything else -> False -> the caller re-raises.
+    """
+    try:
+        seen = 0
+        cause: BaseException | None = exc
+        while cause is not None and seen < 5:
+            if getattr(cause, "type", "") == TRANSIENT_FAILURE_TYPE:
                 return True
             cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
             if not isinstance(cause, BaseException):

@@ -80,6 +80,12 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
+from investigation_agent_platform.application.worker.reasoning_failure import (
+    KIND_OTHER,
+    KIND_TRANSIENT,
+    last_error_for,
+)
+
 from .forcing import (
     PostReasonCascadeState,
     _absence_disconfirmation_target,
@@ -87,6 +93,7 @@ from .forcing import (
     _carry_gap_orders,
     _carry_requery_order,
     _caused_by_idempotency_wedge,
+    _caused_by_reasoning_transient,
     _classify_failure,
     _degraded_empty_result,
     _explore_floor_target,
@@ -670,18 +677,29 @@ class RunInvestigationWorkflow:
                     investigation_plan = []
 
             # Reason — produces next action and readiness score.
-            reason_res = await workflow.execute_activity(
-                reason_activity,
-                ReasonInput(
-                    tenant_id=tenant_id,
-                    investigation_id=inv_id,
-                    iteration=iteration,
-                    recent_actions=action_history[-10:],
-                    knowledge_orientation=knowledge_orientation,
-                ),
-                start_to_close_timeout=timedelta(seconds=120),
-                retry_policy=retry_policy,
-            )
+            try:
+                reason_res = await workflow.execute_activity(
+                    reason_activity,
+                    ReasonInput(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id,
+                        iteration=iteration,
+                        recent_actions=action_history[-10:],
+                        knowledge_orientation=knowledge_orientation,
+                    ),
+                    start_to_close_timeout=timedelta(seconds=120),
+                    retry_policy=retry_policy,
+                )
+            except ActivityError as exc:
+                # H7/T7: a transient reasoning outage (timeout / 5xx /
+                # throttle) was retried by Temporal and exhausted. The run
+                # degrades to a resumable abstention (or FAILED only when
+                # nothing is banked); it is not a WORKFLOW_ERROR. Anything
+                # else still raises.
+                if not _caused_by_reasoning_transient(exc):
+                    raise
+                last_error = last_error_for(KIND_TRANSIENT, "retries exhausted")
+                break
             # Budget guard: if reason signals budget exceeded, break.
             if reason_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
@@ -690,9 +708,13 @@ class RunInvestigationWorkflow:
             # its cause — never a default QUERY_STATE that loops toward a
             # causeless abstention. Terminal handling records last_error.
             if reason_res.data.get("reasoning_unavailable"):
-                _ru_reason = str(reason_res.data.get("reason", "") or "")[:200]
-                last_error = (
-                    f"reasoning_unavailable:{_ru_reason}" if _ru_reason else "reasoning_unavailable"
+                # Typed by the coordinator (H7): blocked -> provider_blocked
+                # handoff; malformed output / other -> model-quality
+                # abstention. Transient failures never get here (the activity
+                # raises so Temporal retries).
+                last_error = last_error_for(
+                    str(reason_res.data.get("failure_kind", "") or KIND_OTHER),
+                    str(reason_res.data.get("reason", "") or ""),
                 )
                 break
             # G8: synthesis forcing — thinking committed before more gathering.

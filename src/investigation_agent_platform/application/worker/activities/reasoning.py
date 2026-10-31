@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +19,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+#: Upper bound on a provider-supplied retry_after (seconds): a hostile or buggy
+#: header must not park an activity retry for hours.
+_MAX_RETRY_AFTER_SECONDS = 60.0
+
+from investigation_agent_platform.application.worker.reasoning_failure import (
+    KIND_TRANSIENT,
+    TRANSIENT_FAILURE_TYPE,
+)
 from investigation_agent_platform.infrastructure.observability.tracing import traced
 
 from .common import (
@@ -726,11 +735,32 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     elapsed_ms=elapsed_ms(t0),
                     error=_unavailable_reason[:500],
                 )
+                _failure_kind = str(_decision_meta.get("failure_kind", "") or "other")
+                if _failure_kind == KIND_TRANSIENT:
+                    # H7: a transient outage (timeout / 5xx / throttle) must be
+                    # retried by Temporal, not returned as success and turned
+                    # into a terminal failure. A throttle's retry_after becomes
+                    # the server-side retry delay (replay-safe; never a sleep).
+                    _delay: timedelta | None = None
+                    _hint = _decision_meta.get("retry_after")
+                    if (
+                        isinstance(_hint, (int, float))
+                        and not isinstance(_hint, bool)
+                        and _hint > 0
+                    ):
+                        _delay = timedelta(seconds=min(float(_hint), _MAX_RETRY_AFTER_SECONDS))
+                    raise ApplicationFailure(
+                        _unavailable_reason[:500] or "reasoning provider unavailable",
+                        type=TRANSIENT_FAILURE_TYPE,
+                        non_retryable=False,
+                        next_retry_delay=_delay,
+                    )
                 return GenericActivityResult(
                     success=True,
                     data={
                         "reasoning_unavailable": True,
                         "reason": _unavailable_reason[:1000],
+                        "failure_kind": _failure_kind,
                         "conclusion_readiness": 0.0,
                         "observations": [],
                         "iteration": iteration,
@@ -1052,6 +1082,10 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     "s4_qualifier_version": _s4.get("s4_qualifier_version"),
                 },
             )
+        except ApplicationFailure:
+            # Already typed (H7: the retryable transient-reasoning failure
+            # raised above); re-wrapping would turn it non-retryable.
+            raise
         except Exception as exc:
             story_log(
                 logger,
