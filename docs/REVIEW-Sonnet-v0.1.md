@@ -21,6 +21,7 @@ Commits: `40870d2` pure ruff format (recorded in `.git-blame-ignore-revs`), `230
 | 6 verdict semantics | H2, H3, H4 code done; battery before/after untested by owner decision | Partial | `activities/execution.py` (`_claim_identity_key`), `verification.py` (`enforce_group_conjunction`), verify + conclude choke points |
 | 7 reasoning failures | H7, T7 | Done (unit level) | `activities/common.py` (`classify_reasoning_failure`), `application/investigation/reasoning.py`, `activities/reasoning.py`, `workflows/run_investigation.py`, `activities/lifecycle.py`, `worker/reasoning_failure.py`; `IAP-architecture-v1.0.md` section 66 |
 | 8 H3/H4 battery fixtures | H3, H4 (fixtures only) | Authored, offline-only | `tests/fixtures/battery_cases/L14.json` (mixed-kind, one ungrounded CAUSAL), `L15.json` (NOT_CHECKABLE plus checkable DEFINITION), `L16.json` (two DEFINITIONs in one file, one false); `tests/unit/test_h3h4_battery_fixtures.py`; baseline re-frozen additively |
+| 9 reasoning quality | H5 (floor), H6, H8 | Done (unit level), H5 partial | `application/investigation/reasoning.py`, `application/investigation/verification.py` (`failed_cited_group_ids`, `build_claim_gaps`), `activities/verification.py`, `domain/investigation/loop_version.py` (lv3); `IAP-architecture-v1.0.md` section 67 |
 
 ### What did not reproduce or could not be completed
 
