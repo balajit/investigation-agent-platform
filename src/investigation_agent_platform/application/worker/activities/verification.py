@@ -284,6 +284,7 @@ async def verify_root_cause_activity(
                 event="verify no-repository fallback",
                 outputs={"version_source": "no-repository"},
             )
+            _inv = None
             verifier_version = VERIFIER_VERSION_CURRENT
             _version_source = "no-repository"
             # Phase 1 (claim binding): no persisted row exists to misread,
@@ -1092,6 +1093,33 @@ async def verify_root_cause_activity(
                         result = engine._fault_inconclusive(candidate)
                     except Exception:
                         pass
+            # Review H8 (lv3): a cited group that fails its own gate gets a
+            # re-fetch route. Computed only for a taken verdict that is not
+            # VERIFIED, and only for runs pinned lv3+ (in-flight lv2 runs keep
+            # their semantics). A fault yields no extra gaps (fail closed to
+            # the existing behavior).
+            _failed_cited_groups: set[str] | None = None
+            try:
+                from investigation_agent_platform.application.investigation.verification import (
+                    VerificationStatus as _RefetchStatus,
+                )
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    LOOP_VERSION_LV3,
+                    loop_version_at_least,
+                )
+
+                if (
+                    result is not None
+                    and getattr(result, "status", None) != _RefetchStatus.VERIFIED
+                    and loop_version_at_least(getattr(_inv, "metadata", None), LOOP_VERSION_LV3)
+                ):
+                    _failed_cited_groups = set(
+                        engine.failed_cited_group_ids(
+                            candidate, result, bound, contradictions, causal_chain, policy
+                        )
+                    )
+            except Exception:
+                _failed_cited_groups = None
             # Phase 4 (claim binding): smallest-fetch gap feed. Built from
             # the candidate plus the post-repair enforcement's cited_groups
             # — the only scope where both coexist. Faulted enforcement or
@@ -1108,7 +1136,9 @@ async def verify_root_cause_activity(
                     )
 
                     _feed = _build_claim_gaps(
-                        candidate, set(_binding_enforcement.cited_groups or [])
+                        candidate,
+                        set(_binding_enforcement.cited_groups or []),
+                        _failed_cited_groups,
                     )
                     if isinstance(_feed, dict) and not _feed.get("error"):
                         _raw_gaps = _feed.get("gaps")

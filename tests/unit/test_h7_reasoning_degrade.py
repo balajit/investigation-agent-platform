@@ -450,6 +450,17 @@ async def test_non_transient_failures_return_a_typed_result_not_a_raise(kind: st
     assert result.data["failure_kind"] == (kind or "other")
 
 
+async def test_unavailable_result_carries_the_spent_usage() -> None:
+    _reason_ctx(
+        _decision(
+            "model_output",
+            llm_usage={"prompt_tokens": 150, "completion_tokens": 15, "cost_usd": 0.3},
+        )
+    )
+    result = await _reason()
+    assert result.data["llm_usage"]["prompt_tokens"] == 150
+
+
 # --- workflow mapping ------------------------------------------------------------
 
 

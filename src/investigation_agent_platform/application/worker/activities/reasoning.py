@@ -761,6 +761,8 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         "reasoning_unavailable": True,
                         "reason": _unavailable_reason[:1000],
                         "failure_kind": _failure_kind,
+                        # H6: tokens spent on the failed attempts still count.
+                        "llm_usage": dict(_decision_meta.get("llm_usage") or {}),
                         "conclusion_readiness": 0.0,
                         "observations": [],
                         "iteration": iteration,

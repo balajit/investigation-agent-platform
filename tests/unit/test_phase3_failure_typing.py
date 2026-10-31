@@ -741,10 +741,21 @@ class TestInvalidSchemaRetry:
         assert "invalid_llm_schema" in decision.metadata.get("reason", "")
 
     @pytest.mark.asyncio
-    async def test_non_validation_error_fails_fast(self) -> None:
-        coord, state, gateway = _reason_harness(
-            [{"observations": [], "action": {"action_type": "NOPE"}}]
-        )
+    async def test_disallowed_action_now_resamples_with_a_hint(self) -> None:
+        # H6 widened the hidden resample to every malformed-output class: a
+        # disallowed action_type is retried (bounded) instead of failing on the
+        # first try, then ends typed as REASONING_UNAVAILABLE.
+        bad = {"observations": [], "action": {"action_type": "NOPE"}}
+        coord, state, gateway = _reason_harness([bad, bad, bad])
+        decision = await coord.reason("tenant-a", state)
+        assert gateway.complete.call_count == 3
+        assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_non_resamplable_error_still_fails_fast(self) -> None:
+        # A transport error is not model noise: no resample.
+        coord, state, gateway = _reason_harness([])
+        gateway.complete.side_effect = TimeoutError("slow")
         decision = await coord.reason("tenant-a", state)
         assert gateway.complete.call_count == 1
         assert decision.metadata.get("status") == "REASONING_UNAVAILABLE"

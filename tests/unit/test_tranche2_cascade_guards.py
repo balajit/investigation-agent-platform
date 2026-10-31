@@ -83,6 +83,7 @@ class TestLoopVersionResolution:
 
     def test_pinned_versions_round_trip(self) -> None:
         assert resolve_loop_version({"loop_version": "lv2"}) == LOOP_VERSION_LV2
+        assert resolve_loop_version({"loop_version": "lv3"}) == "lv3"
 
     def test_unknown_pin_fails_loudly(self) -> None:
         with pytest.raises(UnknownLoopVersion):
@@ -92,8 +93,24 @@ class TestLoopVersionResolution:
         with pytest.raises(UnknownLoopVersion):
             resolve_loop_version({"loop_version": "lv1"})
 
-    def test_current_is_the_guarded_version(self) -> None:
-        assert LOOP_VERSION_CURRENT == LOOP_VERSION_LV2
+    def test_current_is_lv3_and_includes_lv2_semantics(self) -> None:
+        # lv3 (H5 floor, H8 re-fetch) is current; the F3 stand-down it inherits
+        # from lv2 is unconditional, so lv3 keeps it.
+        assert LOOP_VERSION_CURRENT == "lv3"
+
+    def test_at_least_routes_on_the_recorded_pin(self) -> None:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            loop_version_at_least,
+        )
+
+        assert loop_version_at_least({"loop_version": "lv3"}, "lv3") is True
+        assert loop_version_at_least({}, "lv3") is True  # unmarked -> current
+        assert loop_version_at_least(None, "lv3") is True
+        assert loop_version_at_least({"loop_version": "lv2"}, "lv3") is False
+        assert loop_version_at_least({"loop_version": "lv2"}, "lv2") is True
+        assert loop_version_at_least({"loop_version": "lv3"}, "lv2") is True
+        with pytest.raises(UnknownLoopVersion):
+            loop_version_at_least({"loop_version": "lv99"}, "lv3")
 
 
 class TestF3RequeryStandsDownOnDeferAndAbsence:

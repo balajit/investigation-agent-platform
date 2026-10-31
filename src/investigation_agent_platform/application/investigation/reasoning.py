@@ -96,7 +96,7 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
     so one invented key (``commit``, ``revision``, ``confidence`` at claim
     level), a ``null`` evidence_ids, or an off-vocabulary ``claim_kind``
     (e.g. ``HISTORY`` on a "what changed" question) fails the whole reason
-    step — twice, since the resample is byte-identical. Sanitize instead:
+    step (the hidden resample now carries a field-level hint, H6). Sanitize instead:
     drop unknown claim keys, default unknown enums, drop statement-less
     items. Top-level scalars stay strict (persistent garbage still yields
     typed REASONING_UNAVAILABLE). Field names only are ever logged by
@@ -298,6 +298,131 @@ def _sanitize_decision_dict(parsed: dict[str, Any]) -> dict[str, Any]:
 # identical symptoms; 0.1 keeps a sliver of hypothesis diversity without
 # the sampling noise. Scoped to the reasoner request only — embeddings,
 # probes, and every other LLM consumer keep the configured default.
+# H6: decision-validation errors that are model noise rather than a dead
+# provider, so a hidden resample is worth one more call. Messages are matched by
+# prefix (the errors are plain ValueError/TypeError raised by
+# ``_validate_llm_decision`` and ``_sanitize_decision_dict``).
+_RESAMPLABLE_PREFIXES = (
+    "LLM decision proposes",
+    "LLM decision is not an object",
+    "LLM decision contains disallowed action_type",
+    "LLM decision action.parameters is not an object",
+    "defer_gathering",
+)
+
+
+def is_resamplable_decision_error(exc: BaseException) -> bool:
+    """Whether a decision-validation failure qualifies for a hidden resample (H6).
+
+    Pydantic ``ValidationError`` plus the one-action cardinality, defer_gathering
+    shape, non-object and disallowed-action errors. Anything else (a transport
+    or programming error) is not model noise and fails closed immediately.
+    """
+    from pydantic import ValidationError
+
+    if isinstance(exc, ValidationError):
+        return True
+    return isinstance(exc, (ValueError, TypeError)) and str(exc).startswith(_RESAMPLABLE_PREFIXES)
+
+
+# H5: statements that assert a causal mechanism or an observable failure cannot
+# be NOT_CHECKABLE (Phase 4 D5: only claims no evidence could ever settle are).
+# The list errs toward checkable on purpose: re-typing a real opinion costs a
+# retrieval, it can never publish a verdict.
+_CAUSAL_MECHANISM = re.compile(
+    r"\b(?:cause[sd]?|causing|because|due to|lead(?:s|ing)? to|led to|result(?:s|ed|ing)? in|"
+    r"trigger(?:s|ed|ing)?|throw(?:s|ing)?|threw|fail(?:s|ed|ing)? (?:when|because|under|with|after)|"
+    r"time[sd]? out|timing out|exhaust(?:s|ed|ing|ion)?|deadlock(?:s|ed)?)\b",
+    re.IGNORECASE,
+)
+
+
+def checkability_floor_reason(statement: str, evidence_ids: list[str] | None) -> str | None:
+    """Why a claim the model labelled NOT_CHECKABLE cannot be, or None (H5). Pure.
+
+    ``causal_mechanism``: the statement asserts a cause or an observable failure.
+    ``cites_evidence``: the model bound evidence to it, so it is not opinion-only
+    (the prompt tells NC claims to cite none). Naming a code identifier or path is
+    deliberately NOT a reason: a taste judgment about named code is still a taste
+    judgment. Never raises.
+    """
+    try:
+        if _CAUSAL_MECHANISM.search(str(statement or "")):
+            return "causal_mechanism"
+        if any(str(e or "").strip() for e in (evidence_ids or [])):
+            return "cites_evidence"
+    except Exception:
+        return None
+    return None
+
+
+def _resample_hint(exc: BaseException) -> str:
+    """The corrective suffix for a hidden resample (H6). Pure, never raises.
+
+    The retry is varied instead of byte-identical: the previous failure is
+    named so the model can repair it. Only schema field names and static
+    vocabulary ever appear here - never a value the model emitted.
+    """
+    from pydantic import ValidationError
+
+    from investigation_agent_platform.domain.investigation.models import ActionType
+
+    base = (
+        "\n\nYour previous reply was rejected and discarded. Reply again with ONLY a "
+        "single JSON object that satisfies the response schema."
+    )
+    try:
+        if isinstance(exc, ValidationError):
+            fields = sorted(
+                {
+                    ".".join(str(p) for p in (e.get("loc") or ()) if p != "__root__")
+                    for e in exc.errors()
+                }
+                - {""}
+            )
+            if fields:
+                return base + f" Invalid or missing fields: {', '.join(fields[:8])}."
+            return base
+        message = str(exc)
+        if message.startswith("LLM decision contains disallowed action_type"):
+            allowed = ", ".join(sorted(a.value for a in ActionType))
+            return base + f" action.action_type must be exactly one of: {allowed}."
+        if message.startswith("defer_gathering"):
+            return base + (
+                " defer_gathering must be an object with reason, missing_proof_kind, "
+                "next_action (one gathering action) and next_action_parameters."
+            )
+        if message.startswith("LLM decision proposes"):
+            return base + " Propose at most one action."
+        if message.startswith("LLM decision action.parameters"):
+            return base + " action.parameters must be a JSON object."
+        if message.startswith("LLM decision is not an object"):
+            return base + " The reply must be a JSON object, not a list or a string."
+    except Exception:
+        return base
+    return base
+
+
+def _sum_llm_usage(responses: list[Any]) -> dict[str, Any]:
+    """Total token and cost usage across every gateway attempt (H6). Pure."""
+    prompt_tokens = 0
+    completion_tokens = 0
+    cost = 0.0
+    for resp in responses:
+        try:
+            meta = getattr(resp, "metadata", None)
+            prompt_tokens += int(getattr(meta, "prompt_tokens", 0) or 0)
+            completion_tokens += int(getattr(meta, "completion_tokens", 0) or 0)
+            cost += float(getattr(meta, "estimated_cost_usd", 0.0) or 0.0)
+        except Exception:
+            continue
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cost_usd": cost,
+    }
+
+
 REASONING_TEMPERATURE = 0.1
 
 # Versioned, independently testable prompt sections. Capability authority is
@@ -735,6 +860,48 @@ class ReasoningCoordinator(InvestigationReasoner):
             reasoning_chain="REASONING_UNAVAILABLE",
             metadata=metadata,
         )
+
+    @staticmethod
+    def _apply_checkability_floor(decision: Any, state: Any) -> Any:
+        """Re-type NOT_CHECKABLE claims that cannot be opinion-only (review H5).
+
+        Loop-version pinned (lv3): a run pinned lv2 keeps trusting the model's
+        label. Fail-open: any fault returns the decision untouched. The
+        re-typed claim becomes CAUSAL (the sanitizer's own default kind), so it
+        faces the normal gates; nothing here can publish a verdict. The count
+        by reason rides ``metadata["checkability_floor"]`` for measurement.
+        """
+        try:
+            from investigation_agent_platform.domain.hypothesis.models import ClaimKind
+            from investigation_agent_platform.domain.investigation.loop_version import (
+                LOOP_VERSION_LV3,
+                loop_version_at_least,
+            )
+
+            if not loop_version_at_least(
+                getattr(state.investigation, "metadata", None), LOOP_VERSION_LV3
+            ):
+                return decision
+            claims = list(getattr(decision, "claims", None) or [])
+            retyped: dict[str, int] = {}
+            out: list[Any] = []
+            for claim in claims:
+                if getattr(claim, "claim_kind", None) == ClaimKind.NOT_CHECKABLE:
+                    why = checkability_floor_reason(
+                        getattr(claim, "statement", ""), list(getattr(claim, "evidence_ids", []))
+                    )
+                    if why is not None:
+                        retyped[why] = retyped.get(why, 0) + 1
+                        out.append(claim.model_copy(update={"claim_kind": ClaimKind.CAUSAL}))
+                        continue
+                out.append(claim)
+            if not retyped:
+                return decision
+            merged = dict(getattr(decision, "metadata", None) or {})
+            merged["checkability_floor"] = retyped
+            return decision.model_copy(update={"claims": out, "metadata": merged})
+        except Exception:
+            return decision
 
     def _ensure_claim_coverage(self, decision: Any, tenant_id: str, state: Any) -> Any:
         """Type every evaluated hypothesis (Phase 2 item 1).
@@ -1229,35 +1396,39 @@ class ReasoningCoordinator(InvestigationReasoner):
             return self._unavailable_decision("empty_llm_response", kind="model_output")
 
         _resample_reasons: list[str] = []
+        # H6: every attempt's usage counts, not just the last response.
+        _attempt_responses: list[Any] = [resp]
+
+        def _unavailable_with_usage(
+            reason: str, kind: str, retry_after: float | None = None
+        ) -> InvestigationDecision:
+            decision_out = self._unavailable_decision(reason, kind=kind, retry_after=retry_after)
+            merged = dict(decision_out.metadata or {})
+            merged["llm_usage"] = _sum_llm_usage(_attempt_responses)
+            return decision_out.model_copy(update={"metadata": merged})
+
         try:
             decision = self._validate_llm_decision(resp.parsed, tenant_id, state.investigation.id)
         except Exception as exc:
             # SWE-agent loop §2: bounded hidden requery. Schema/cardinality
             # failures are usually sampling noise, not a dead provider: up to
             # two hidden resamples (three attempts total) before declaring
-            # the step unavailable. Retries are same-request resamples — the
-            # miss is recorded in trajectory metadata, never fed back as an
-            # observation. Only pydantic ValidationError and the one-action
-            # cardinality ValueErrors ("LLM decision proposes ...") qualify;
-            # anything else (including disallowed action_type) fails closed
-            # immediately — inventing out-of-vocabulary actions is a
-            # prompt/capability problem, not sampling noise.
+            # the step unavailable. H6: the resample is varied - it names the
+            # failed fields (never values) so the model can repair them - and
+            # covers every malformed-output class (schema, cardinality,
+            # defer_gathering shape, non-object, disallowed action). The miss
+            # is still recorded in trajectory metadata, never fed back as an
+            # observation. A transport or programming error is not noise and
+            # fails closed immediately.
             from pydantic import ValidationError
 
-            def _is_resamplable(_e: BaseException) -> bool:
-                if isinstance(_e, ValidationError):
-                    return True
-                return isinstance(_e, (ValueError, TypeError)) and str(_e).startswith(
-                    "LLM decision proposes"
-                )
-
-            if not _is_resamplable(exc):
+            if not is_resamplable_decision_error(exc):
                 logger.warning(
                     "LLM returned invalid decision schema; returning REASONING_UNAVAILABLE",
                     extra={"tenant_id": tenant_id, "error": str(exc)},
                 )
-                return self._unavailable_decision(
-                    f"invalid_llm_schema:{type(exc).__name__}", kind="model_output"
+                return _unavailable_with_usage(
+                    f"invalid_llm_schema:{type(exc).__name__}", "model_output"
                 )
             decision = None
             _last_exc: Exception = exc
@@ -1283,7 +1454,11 @@ class ReasoningCoordinator(InvestigationReasoner):
                     extra={"tenant_id": tenant_id, "fields": _fields[:10]},
                 )
                 try:
-                    resp = await gateway.complete(tenant_id, req)
+                    _resample_req = req.model_copy(
+                        update={"prompt": req.prompt + _resample_hint(_last_exc)}
+                    )
+                    resp = await gateway.complete(tenant_id, _resample_req)
+                    _attempt_responses.append(resp)
                     if self._observability is not None:
                         try:
                             from investigation_agent_platform.ports.observability.telemetry import (
@@ -1306,7 +1481,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                     break
                 except Exception as exc2:
                     _last_exc = exc2
-                    if not _is_resamplable(exc2):
+                    if not is_resamplable_decision_error(exc2):
                         break
             if decision is None:
                 logger.warning(
@@ -1327,12 +1502,13 @@ class ReasoningCoordinator(InvestigationReasoner):
                 _final_label = (
                     "invalid_llm_schema" if _final_kind == "model_output" else "llm_gateway_error"
                 )
-                return self._unavailable_decision(
+                return _unavailable_with_usage(
                     f"{_final_label}:{type(_last_exc).__name__}",
-                    kind=_final_kind,
-                    retry_after=_final_retry_after,
+                    _final_kind,
+                    _final_retry_after,
                 )
         decision = self._ensure_claim_coverage(decision, tenant_id, state)
+        decision = self._apply_checkability_floor(decision, state)
         # Consolidation: one feedback retry for unstructured value claims.
         # The model formulates the claim but omits fact_category /
         # claimed_value / target — instead of repairing prose downstream,
@@ -1390,6 +1566,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                                 _resp2.parsed, tenant_id, state.investigation.id
                             )
                             _decision2 = self._ensure_claim_coverage(_decision2, tenant_id, state)
+                            _decision2 = self._apply_checkability_floor(_decision2, state)
                             decision = _decision2
                             logger.info(
                                 "structure retry: model resubmitted",
@@ -1413,12 +1590,7 @@ class ReasoningCoordinator(InvestigationReasoner):
         # the worker can accumulate per-investigation spend (budget
         # ledger) without a second telemetry channel.
         try:
-            usage_meta = getattr(resp, "metadata", None)
-            llm_usage = {
-                "prompt_tokens": int(getattr(usage_meta, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(usage_meta, "completion_tokens", 0) or 0),
-                "cost_usd": float(getattr(usage_meta, "estimated_cost_usd", 0.0) or 0.0),
-            }
+            llm_usage = _sum_llm_usage(_attempt_responses)
         except Exception:
             llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
         merged_metadata = dict(getattr(decision, "metadata", None) or {})

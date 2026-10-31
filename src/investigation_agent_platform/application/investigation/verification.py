@@ -637,6 +637,7 @@ _SMALLEST_FETCH_ORDER = ("DEFINITION", "HISTORY", "BEHAVIOR", "ABSENCE", "CAUSAL
 def build_claim_gaps(
     hypothesis: Any,
     cited_group_ids: set[str] | None,
+    failed_cited_group_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Machine-readable smallest-fetch obligations for one hypothesis (pure).
 
@@ -647,7 +648,10 @@ def build_claim_gaps(
     enforcement's ``cited_groups``, "KIND|target_key" strings) — uncited
     groups have no kept rows by construction, so no kept join exists or
     is needed. Cited groups are repair/obligation territory even when
-    their gate failed, never smallest-fetch. NOT_CHECKABLE groups never
+    their gate failed, never smallest-fetch - except (review H8, lv3) a cited
+    group named in ``failed_cited_group_ids``: it failed its own gate over the
+    rows it cites, which left it no route to a better fetch, so it becomes a
+    gap tagged ``reason="cited_gate_failed"``. NOT_CHECKABLE groups never
     appear as gaps; they are inventoried into not_checkable_groups.
     Kinds outside KIND_FETCH (CALL_EDGE, UNTYPED, NO_TARGET/empty
     targets) never appear. Identity is the group identity
@@ -658,6 +662,7 @@ def build_claim_gaps(
     try:
         order = {k: i for i, k in enumerate(_SMALLEST_FETCH_ORDER)}
         cited = set(cited_group_ids or [])
+        failed_cited = set(failed_cited_group_ids or [])
         gaps: list[dict[str, Any]] = []
         inventoried: list[str] = []
         try:
@@ -694,19 +699,21 @@ def build_claim_gaps(
                     continue
                 if kind_value not in order:
                     continue
-                if gid in cited:
+                refetch = gid in cited and gid in failed_cited
+                if gid in cited and not refetch:
                     continue
-                gaps.append(
-                    {
-                        "gap_id": gid,
-                        "claim_ref": ref,
-                        "kind": kind_value,
-                        "target_key": tkey,
-                        "target": dict(target),
-                        "query": str(group.get("stored_query") or ""),
-                        "scope": str(group.get("stored_scope") or ""),
-                    }
-                )
+                gap: dict[str, Any] = {
+                    "gap_id": gid,
+                    "claim_ref": ref,
+                    "kind": kind_value,
+                    "target_key": tkey,
+                    "target": dict(target),
+                    "query": str(group.get("stored_query") or ""),
+                    "scope": str(group.get("stored_scope") or ""),
+                }
+                if refetch:
+                    gap["reason"] = "cited_gate_failed"
+                gaps.append(gap)
             except Exception:
                 continue
         try:
@@ -7363,6 +7370,64 @@ class VerificationEngine:
             return verdict is not None and verdict.status == VerificationStatus.VERIFIED
         except Exception:
             return False
+
+    def failed_cited_group_ids(
+        self,
+        hypothesis: Any,
+        result: Any,
+        evidence_items: list[Any],
+        contradictions: list[Any],
+        causal_chain: list[Any],
+        policy: RootCauseVerificationPolicy,
+    ) -> list[str]:
+        """Cited checkable groups that fail their own gate (review H8, lv3). Pure.
+
+        Returns ``"KIND|target_key"`` ids, sorted. Only meaningful when the taken
+        verdict is not VERIFIED (otherwise nothing needs a re-fetch). Each group
+        is re-verified over the rows IT cites, exactly as
+        ``enforce_group_conjunction`` does. Uncited groups are excluded (they are
+        already smallest-fetch gaps), as are NOT_CHECKABLE and targetless groups.
+        A cited DEFINITION/CALL_EDGE group none of whose cited rows is bound
+        counts as failed: its citation evaporated. Never raises; fault -> [].
+        """
+        try:
+            if getattr(result, "status", None) == VerificationStatus.VERIFIED:
+                return []
+            groups, _nc = VerificationEngine.typed_claim_groups(hypothesis)
+            by_id = {str(getattr(e, "evidence_id", "")): e for e in evidence_items or []}
+            failed: list[str] = []
+            for (kind, target_key), asms in groups.items():
+                if target_key == "NO_TARGET":
+                    continue
+                cited: list[str] = []
+                for asm in asms:
+                    evidence_id = getattr(asm, "evidence_id", None)
+                    if evidence_id is not None and str(evidence_id) not in cited:
+                        cited.append(str(evidence_id))
+                if not cited:
+                    continue
+                own_rows = [by_id[c] for c in cited if c in by_id]
+                gid = f"{kind}|{target_key}"
+                if not own_rows and kind in (
+                    ClaimKind.DEFINITION.value,
+                    ClaimKind.CALL_EDGE.value,
+                ):
+                    failed.append(gid)
+                    continue
+                rows = own_rows or list(evidence_items or [])
+                view = hypothesis.model_copy(
+                    update={
+                        "assessments": list(asms),
+                        "supporting_evidence_ids": [
+                            getattr(by_id[c], "evidence_id", None) for c in cited if c in by_id
+                        ],
+                    }
+                )
+                if not self._group_verifies(view, kind, rows, contradictions, causal_chain, policy):
+                    failed.append(gid)
+            return sorted(set(failed))
+        except Exception:
+            return []
 
     def enforce_group_conjunction(
         self,
