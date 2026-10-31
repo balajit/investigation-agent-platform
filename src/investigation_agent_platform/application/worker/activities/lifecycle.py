@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from temporalio import activity
 
 try:
@@ -73,6 +74,7 @@ from .inputs import (
     _derive_loop_telemetry,
     _failure_code_for,
     _get_ctx,
+    _policy_for_loop_version,
     _stamp_failure,
     _stamp_loop_telemetry,
 )
@@ -757,6 +759,27 @@ def _caller_edge_causal_chain(candidate: Any, evidence_by_id: dict[Any, Any]) ->
     return chain
 
 
+def _answered_shape(
+    *,
+    location: bool,
+    code_value: bool,
+    doc: bool,
+    history: bool,
+    state: bool,
+    caller_edge: bool,
+    extended: bool,
+) -> bool:
+    """Whether a verified answer publishes as ANSWERED (pure).
+
+    Location, code-value and doc answers always do. History, state and
+    caller-edge answers do from loop version lv5 (``extended``); an older pin
+    keeps the old ROOT_CAUSE_* status so in-flight runs do not change shape.
+    """
+    if location or code_value or doc:
+        return True
+    return bool(extended and (history or state or caller_edge))
+
+
 async def _gate_conclusion_or_fail(
     tenant_id: str,
     investigation_id: UUID,
@@ -789,11 +812,24 @@ async def _gate_conclusion_or_fail(
         resolve_claim_binding_version,
     )
     from investigation_agent_platform.domain.finding.models import (
+        CONCLUSION_MAX_CONTRADICTING_IDS as _CONCLUSION_MAX_CONTRADICTING_IDS,
+    )
+    from investigation_agent_platform.domain.finding.models import (
+        CONCLUSION_MAX_EVIDENCE_IDS as _CONCLUSION_MAX_EVIDENCE_IDS,
+    )
+    from investigation_agent_platform.domain.finding.models import (
+        FINDING_MAX_CAUSAL_IDS as _FINDING_MAX_CAUSAL_IDS,
+    )
+    from investigation_agent_platform.domain.finding.models import (
+        FINDING_MAX_EVIDENCE_IDS as _FINDING_MAX_EVIDENCE_IDS,
+    )
+    from investigation_agent_platform.domain.finding.models import (
         ConclusionStatus,
         Finding,
         FindingType,
         InvestigationConclusion,
         classify_terminal_handoff,
+        dedupe_and_cap_ids,
         gap_fetch_for_hypotheses,
     )
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
@@ -1068,6 +1104,7 @@ async def _gate_conclusion_or_fail(
             await _persist_abstention("insufficient", [f"claim binding version unavailable: {exc}"])
             return InvestigationStatus.FAILED
         _inv = _cb_inv
+        policy = _policy_for_loop_version(policy, getattr(_cb_inv, "metadata", None))
     engine = VerificationEngine(
         verifier_version=verifier_version,
         claim_binding_version=claim_binding_version,
@@ -1776,30 +1813,47 @@ async def _gate_conclusion_or_fail(
         == ClaimKind.CALL_EDGE
         else ([], [], None)
     )
-    supporting_ids = [e.evidence_id for e in bound]
-    causal_ids = [eid for c in causal_chain for eid in c.evidence_ids]
+    # H14: bound and de-duplicate the ids to the model caps, then build the
+    # Finding BEFORE any write. Previously the hypothesis was saved VERIFIED
+    # first, so an over-cap chain raised afterwards and left a VERIFIED
+    # hypothesis with no finding (and the retry re-crashed the same way).
+    supporting_ids = dedupe_and_cap_ids(
+        [e.evidence_id for e in bound], _CONCLUSION_MAX_EVIDENCE_IDS
+    )
+    causal_ids = dedupe_and_cap_ids(
+        [eid for c in causal_chain for eid in c.evidence_ids], _FINDING_MAX_CAUSAL_IDS
+    )
+    try:
+        finding = Finding(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            finding_type=FindingType.OBSERVATION
+            if (
+                location_answered
+                or code_value_answered
+                or history_answered
+                or doc_answered
+                or state_answered
+            )
+            else FindingType.ROOT_CAUSE,
+            title=hyp.title,
+            statement=hyp.statement,
+            evidence_ids=dedupe_and_cap_ids(supporting_ids, _FINDING_MAX_EVIDENCE_IDS),
+            related_hypothesis_ids=[hyp.id],
+            causal_chain=causal_ids,
+            confidence=verification.confidence.overall_confidence,
+        )
+    except ValidationError as exc:
+        # Fail closed to an honest abstention; nothing was persisted yet.
+        # Field names only: never echo model-authored values.
+        _bad_fields = sorted({".".join(str(p) for p in err.get("loc", ())) for err in exc.errors()})
+        await _persist_abstention(
+            "insufficient", [f"finding_invalid: {', '.join(_bad_fields)[:200]}"], candidate.id
+        )
+        return InvestigationStatus.COMPLETED
     if hyp.status == _HStatus.SUPPORTED and hypothesis_repo is not None:
         hyp = hyp.transition_status(_HStatus.VERIFIED)
         await hypothesis_repo.save(tenant_id, hyp, investigation_id, hyp.version)
-    finding = Finding(
-        tenant_id=tenant_id,
-        investigation_id=investigation_id,
-        finding_type=FindingType.OBSERVATION
-        if (
-            location_answered
-            or code_value_answered
-            or history_answered
-            or doc_answered
-            or state_answered
-        )
-        else FindingType.ROOT_CAUSE,
-        title=hyp.title,
-        statement=hyp.statement,
-        evidence_ids=supporting_ids,
-        related_hypothesis_ids=[hyp.id],
-        causal_chain=causal_ids,
-        confidence=verification.confidence.overall_confidence,
-    )
     await finding_repo.save_finding_record(tenant_id, finding)
     # G-4: incident fusion. When a journey spine exists and two or more
     # OBSERVATION findings were persisted across steps, merge them into one
@@ -1988,9 +2042,28 @@ async def _gate_conclusion_or_fail(
             )
     except Exception:
         pass
+    # H13: lv5 maps every answer shape to ANSWERED. A pin that cannot be
+    # read keeps the old mapping (fail closed to existing behavior).
+    try:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            LOOP_VERSION_LV5,
+            loop_version_at_least,
+        )
+
+        _answers_extended = loop_version_at_least(getattr(_inv, "metadata", None), LOOP_VERSION_LV5)
+    except Exception:
+        _answers_extended = False
     _conclusion_status = (
         ConclusionStatus.ANSWERED
-        if (location_answered or code_value_answered or doc_answered)
+        if _answered_shape(
+            location=location_answered,
+            code_value=code_value_answered,
+            doc=doc_answered,
+            history=history_answered,
+            state=state_answered,
+            caller_edge=caller_edge_validated,
+            extended=_answers_extended,
+        )
         else (
             ConclusionStatus.ROOT_CAUSE_LIKELY
             if getattr(verification, "tier", "established") == "likely" or _rival_bar_failed
@@ -2021,7 +2094,9 @@ async def _gate_conclusion_or_fail(
         root_cause=hyp.statement,
         supporting_evidence_ids=supporting_ids,
         supporting_hypothesis_ids=[hyp.id],
-        contradicting_evidence_ids=[e.evidence_id for e in refuting],
+        contradicting_evidence_ids=dedupe_and_cap_ids(
+            [e.evidence_id for e in refuting], _CONCLUSION_MAX_CONTRADICTING_IDS
+        ),
         confidence=verification.confidence.overall_confidence,
         # D5: in-band conclusions publish best-reason/against-evidence
         # with the provisional marker; established stays clean.

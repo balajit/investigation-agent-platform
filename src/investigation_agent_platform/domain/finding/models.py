@@ -67,6 +67,36 @@ def conclusion_rewrite_allowed(current_status: str | None, new_status: str) -> b
     return current_status not in TERMINAL_CONCLUSION_STATUSES
 
 
+#: Model list caps, mirrored as constants so callers bound ids BEFORE building
+#: the model (a unit test pins them to the field limits). H14: an unbounded
+#: chain used to raise after the hypothesis was already saved VERIFIED.
+FINDING_MAX_EVIDENCE_IDS = 100
+FINDING_MAX_CAUSAL_IDS = 50
+CONCLUSION_MAX_EVIDENCE_IDS = 200
+CONCLUSION_MAX_CONTRADICTING_IDS = 200
+
+
+def dedupe_and_cap_ids(ids: Any, limit: int) -> list[Any]:
+    """Order-preserving de-duplication, then keep the leading ``limit`` ids.
+
+    Pure and total: ``None``/empty give ``[]`` and a non-positive limit gives
+    ``[]``. Ids are compared by equality, so UUIDs and their string forms are
+    treated as distinct; callers pass one representation.
+    """
+    if not ids or limit <= 0:
+        return []
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for item in ids:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
 class Finding(BaseModel):
     """Verified finding aggregate backed by causal evidence."""
 
@@ -461,6 +491,13 @@ class InvestigationConclusion(BaseModel):
                 raise ValueError("ROOT_CAUSE_ESTABLISHED requires a detailed root cause statement.")
             if not self.supporting_evidence_ids:
                 raise ValueError("ROOT_CAUSE_ESTABLISHED requires supporting evidence IDs.")
+        if self.status == ConclusionStatus.ROOT_CAUSE_LIKELY:
+            # H13: a provisional verdict is still a verdict; it carries the same
+            # evidence invariant as ESTABLISHED.
+            if not self.root_cause:
+                raise ValueError("ROOT_CAUSE_LIKELY requires a root cause statement.")
+            if not self.supporting_evidence_ids:
+                raise ValueError("ROOT_CAUSE_LIKELY requires supporting evidence IDs.")
         if self.status == ConclusionStatus.ANSWERED:
             if not self.root_cause:
                 raise ValueError("ANSWERED requires the answer statement.")

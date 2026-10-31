@@ -293,6 +293,27 @@ def _select_verification_policy(triage_route: Any) -> Any:
         return RootCauseVerificationPolicy()
 
 
+def _policy_for_loop_version(policy: Any, metadata: Any) -> Any:
+    """Route version-pinned verification policy semantics (pure, fail-safe).
+
+    From lv5 (and for unmarked rows, which resolve to current) the general path
+    counts only unresolved HIGH/CRITICAL contradictions (review H11). A row
+    pinned to an older version, or a pin that cannot be read, keeps the old
+    counting so in-flight runs do not change semantics.
+    """
+    try:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            LOOP_VERSION_LV5,
+            loop_version_at_least,
+        )
+
+        if loop_version_at_least(metadata, LOOP_VERSION_LV5):
+            return policy.model_copy(update={"blocking_contradictions_only": True})
+    except Exception:
+        pass
+    return policy
+
+
 def _derive_loop_telemetry(
     passed: Any,
     hypothesis_counts: dict[str, int],

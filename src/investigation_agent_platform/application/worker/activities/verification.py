@@ -51,6 +51,7 @@ from .inputs import (
     GenericActivityResult,
     VerifyRootCauseInput,
     _get_ctx,
+    _policy_for_loop_version,
     _select_verification_policy,
 )
 
@@ -401,7 +402,10 @@ async def verify_root_cause_activity(
             verifier_version=verifier_version,
             claim_binding_version=claim_binding_version,
         )
-        policy = _select_verification_policy(data.get("triage_route", ""))
+        policy = _policy_for_loop_version(
+            _select_verification_policy(data.get("triage_route", "")),
+            getattr(_inv, "metadata", None),
+        )
         # D3 Phase 0 shadow state is observational and runs beside the one
         # active dev verifier behavior.
         definition_shadow_observations: list[dict[str, Any]] = []

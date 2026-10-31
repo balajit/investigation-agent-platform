@@ -349,6 +349,13 @@ class RootCauseVerificationPolicy(BaseModel):
     min_confidence_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     require_cross_layer_evidence: bool = Field(default=True)
     max_allowed_unresolved_contradictions: int = Field(default=0, ge=0)
+    # H11 (lv5): when True the general path counts only unresolved HIGH/CRITICAL
+    # contradictions against the limit, as ConclusionGate and the specialized
+    # validators already do. Model-reported contradictions are persisted as
+    # MEDIUM with no evidence link and nothing resolves them, so counting them
+    # let one stray prose contradiction force CONTRADICTED. The activities set
+    # this from the recorded loop version; the default keeps the old counting.
+    blocking_contradictions_only: bool = Field(default=False)
     require_causal_relationship: bool = Field(default=True)
     # D5: publish band. [likely_floor, established_floor) concludes
     # ROOT_CAUSE_LIKELY with best-reason/against-evidence; at or above
@@ -7903,6 +7910,12 @@ class VerificationEngine:
                 confidence=confidence,
             )
         unresolved = [c for c in contradictions if c.resolution_status == "UNRESOLVED"]
+        if getattr(policy, "blocking_contradictions_only", False):
+            unresolved = [
+                c
+                for c in unresolved
+                if c.severity in (ContradictionSeverity.HIGH, ContradictionSeverity.CRITICAL)
+            ]
         if len(unresolved) > policy.max_allowed_unresolved_contradictions:
             confidence = InvestigationConfidence(
                 coverage_score=0.4,

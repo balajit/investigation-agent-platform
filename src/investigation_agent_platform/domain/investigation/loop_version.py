@@ -25,6 +25,12 @@ Versions:
   publish a verdict. The identifier/path floor was considered and decided
   against (a named symbol does not make a taste claim falsifiable).
 
+- ``lv5``: lv4 plus the answer-status mapping (review H13). A verified history,
+  state or caller-edge answer publishes ANSWERED, as location, code-value and
+  doc answers already did, instead of ROOT_CAUSE_ESTABLISHED/LIKELY. The status
+  contract documents ANSWERED as covering caller listings and histories; the
+  conclude path had not followed it. Older pins keep the old status.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -36,10 +42,18 @@ from typing import Any
 LOOP_VERSION_LV2 = "lv2"
 LOOP_VERSION_LV3 = "lv3"
 LOOP_VERSION_LV4 = "lv4"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV4
-KNOWN_LOOP_VERSIONS = frozenset({LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4})
+LOOP_VERSION_LV5 = "lv5"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LV5
+KNOWN_LOOP_VERSIONS = frozenset(
+    {LOOP_VERSION_LV2, LOOP_VERSION_LV3, LOOP_VERSION_LV4, LOOP_VERSION_LV5}
+)
 # Release order: a later version includes every earlier version's semantics.
-_LOOP_VERSION_ORDER = {LOOP_VERSION_LV2: 2, LOOP_VERSION_LV3: 3, LOOP_VERSION_LV4: 4}
+_LOOP_VERSION_ORDER = {
+    LOOP_VERSION_LV2: 2,
+    LOOP_VERSION_LV3: 3,
+    LOOP_VERSION_LV4: 4,
+    LOOP_VERSION_LV5: 5,
+}
 
 
 class UnknownLoopVersion(ValueError):

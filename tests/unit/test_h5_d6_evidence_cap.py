@@ -27,7 +27,6 @@ from investigation_agent_platform.application.worker.workflows.forcing import (
     _should_force_conclude_not_checkable,
 )
 from investigation_agent_platform.domain.investigation.loop_version import (
-    LOOP_VERSION_CURRENT,
     UnknownLoopVersion,
     loop_version_at_least,
 )
@@ -55,8 +54,8 @@ def _decide(reason_data, *, banked=0, fetches=0, version="lv4", is_defer=False):
 # --- the version pin -------------------------------------------------------------------------
 
 
-def test_lv4_is_current_and_includes_earlier_semantics() -> None:
-    assert LOOP_VERSION_CURRENT == "lv4"
+def test_lv4_is_included_in_the_current_version() -> None:
+    assert loop_version_at_least({}, "lv4") is True  # current includes lv4
     assert loop_version_at_least({"loop_version": "lv4"}, "lv4") is True
     assert loop_version_at_least({}, "lv4") is True  # unmarked resolves to current
     assert loop_version_at_least({"loop_version": "lv3"}, "lv4") is False
