@@ -1918,7 +1918,7 @@ SMALLEST_FETCH_ACTIONS_BY_KIND: dict[str, frozenset[str]] = {
     "HISTORY": frozenset({"GET_CODE_HISTORY"}),
     "BEHAVIOR": frozenset({"SEARCH_LOGS", "QUERY_STATE"}),
     "ABSENCE": frozenset({"SEARCH_CODE"}),
-    "CAUSAL": frozenset({"GET_CODE"}),
+    "CAUSAL": frozenset({"GET_CODE", "SEARCH_LOGS"}),
 }
 
 _FORCED_SMALLEST_FETCH_DEFAULT_CAP = 2
@@ -2023,6 +2023,32 @@ def _absence_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+_NOTARGET_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "of", "to", "in", "is", "it", "and", "or", "for",
+        "on", "with", "by", "from", "at", "as", "be", "are", "was", "were",
+        "this", "that", "these", "those", "when", "where", "which", "what",
+        "how", "why", "not", "no", "if", "then", "than", "into", "over",
+        "under", "between", "through", "during", "before", "after", "db",
+    }
+)
+
+
+def _notarget_keywords(query: str) -> list[str]:
+    """Keyword tokens for a targetless gap query (pure, total, never raises)."""
+    seen: list[str] = []
+    try:
+        for token in re.split(r"[^A-Za-z0-9_.]+", query or ""):
+            low = token.lower()
+            if len(low) >= 4 and low not in _NOTARGET_STOPWORDS and low not in seen:
+                seen.append(low)
+            if len(seen) >= 8:
+                break
+    except Exception:
+        pass
+    return seen
+
+
 def _causal_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
     """GET_CODE params for a CAUSAL gap's link window (pure)."""
     try:
@@ -2030,6 +2056,10 @@ def _causal_fetch_params(gap: dict[str, Any]) -> dict[str, Any] | None:
         target: dict[str, Any] = _raw_target if isinstance(_raw_target, dict) else {}
         file_path = str(target.get("file_path", "") or "").strip()
         if not file_path:
+            if gap.get("no_target"):
+                keywords = _notarget_keywords(str(gap.get("query") or ""))
+                if keywords:
+                    return {"keywords": keywords, "limit": 10, "_leg": "SEARCH_LOGS"}
             return None
         params: dict[str, Any] = {"file_path": file_path}
         try:
@@ -2059,16 +2089,14 @@ KIND_FETCH: dict[str, dict[str, Any]] = {
 
 
 def _smallest_fetch_action_for(kind: str, params: dict[str, Any]) -> str:
-    """Directive action for a kind, honoring the BEHAVIOR leg (pure)."""
+    """Directive action for a kind, honoring the BEHAVIOR/CAUSAL leg (pure)."""
     try:
         spec = KIND_FETCH.get(str(kind or ""))
         if not spec:
             return ""
-        if (
-            str(kind or "") == "BEHAVIOR"
-            and str((params or {}).pop("_leg", "") or "") == "QUERY_STATE"
-        ):
-            return "QUERY_STATE"
+        leg = str((params or {}).pop("_leg", "") or "")
+        if leg in ("QUERY_STATE", "SEARCH_LOGS"):
+            return leg
         return str(spec.get("action") or "")
     except Exception:
         return ""

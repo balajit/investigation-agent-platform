@@ -1110,6 +1110,7 @@ async def verify_root_cause_activity(
                 from investigation_agent_platform.domain.investigation.loop_version import (
                     LOOP_VERSION_LV3,
                     loop_version_at_least,
+                    lv_h_enabled,
                 )
 
                 if (
@@ -1119,7 +1120,8 @@ async def verify_root_cause_activity(
                 ):
                     _failed_cited_groups = set(
                         engine.failed_cited_group_ids(
-                            candidate, result, bound, contradictions, causal_chain, policy
+                            candidate, result, bound, contradictions, causal_chain, policy,
+                            include_no_target=lv_h_enabled(getattr(_inv, "metadata", None)),
                         )
                     )
             except Exception:
@@ -1143,6 +1145,7 @@ async def verify_root_cause_activity(
                         candidate,
                         set(_binding_enforcement.cited_groups or []),
                         _failed_cited_groups,
+                        include_no_target=lv_h_enabled(getattr(_inv, "metadata", None)),
                     )
                     if isinstance(_feed, dict) and not _feed.get("error"):
                         _raw_gaps = _feed.get("gaps")

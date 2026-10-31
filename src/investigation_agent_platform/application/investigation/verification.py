@@ -677,6 +677,7 @@ def build_claim_gaps(
     hypothesis: Any,
     cited_group_ids: set[str] | None,
     failed_cited_group_ids: set[str] | None = None,
+    include_no_target: bool = False,
 ) -> dict[str, Any]:
     """Machine-readable smallest-fetch obligations for one hypothesis (pure).
 
@@ -730,16 +731,26 @@ def build_claim_gaps(
                     tkey, _ = target_group_key(target)
                 except Exception:
                     tkey = ""
-                if not ref or not tkey or tkey == "NO_TARGET":
+                no_target = tkey == "NO_TARGET"
+                if not ref or not tkey or (
+                    no_target
+                    and not (
+                        include_no_target
+                        and kind_value in ("BEHAVIOR", "CAUSAL")
+                    )
+                ):
                     continue
-                gid = str(kind_value) + "|" + tkey
+                base = str(kind_value) + "|" + tkey
+                # H8b: a targetless gap is keyed by claim reference so two
+                # hypotheses (or two claims) never share one gap id.
+                gid = f"{base}|{ref}" if no_target else base
                 if kind_value == ClaimKind.NOT_CHECKABLE.value:
                     inventoried.append(gid)
                     continue
                 if kind_value not in order:
                     continue
-                refetch = gid in cited and gid in failed_cited
-                if gid in cited and not refetch:
+                refetch = base in cited and base in failed_cited
+                if base in cited and not refetch:
                     continue
                 gap: dict[str, Any] = {
                     "gap_id": gid,
@@ -752,6 +763,19 @@ def build_claim_gaps(
                 }
                 if refetch:
                     gap["reason"] = "cited_gate_failed"
+                if no_target:
+                    gap["no_target"] = True
+                    if not gap["query"]:
+                        from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                            derive_claim_query,
+                        )
+
+                        try:
+                            gap["query"] = derive_claim_query(
+                                str(group.get("statement") or ""), kind_value, target
+                            )[0]
+                        except Exception:
+                            pass
                 gaps.append(gap)
             except Exception:
                 continue
@@ -7418,6 +7442,7 @@ class VerificationEngine:
         contradictions: list[Any],
         causal_chain: list[Any],
         policy: RootCauseVerificationPolicy,
+        include_no_target: bool = False,
     ) -> list[str]:
         """Cited checkable groups that fail their own gate (review H8, lv3). Pure.
 
@@ -7425,9 +7450,11 @@ class VerificationEngine:
         verdict is not VERIFIED (otherwise nothing needs a re-fetch). Each group
         is re-verified over the rows IT cites, exactly as
         ``enforce_group_conjunction`` does. Uncited groups are excluded (they are
-        already smallest-fetch gaps), as are NOT_CHECKABLE and targetless groups.
-        A cited DEFINITION/CALL_EDGE group none of whose cited rows is bound
-        counts as failed: its citation evaporated. Never raises; fault -> [].
+        already smallest-fetch gaps), as are NOT_CHECKABLE groups. Targetless
+        groups are excluded unless ``include_no_target`` (H8b, LV_H) and the kind
+        is BEHAVIOR or CAUSAL. A cited DEFINITION/CALL_EDGE group none of whose
+        cited rows is bound counts as failed: its citation evaporated. Never
+        raises; fault -> [].
         """
         try:
             if getattr(result, "status", None) == VerificationStatus.VERIFIED:
@@ -7436,7 +7463,9 @@ class VerificationEngine:
             by_id = {str(getattr(e, "evidence_id", "")): e for e in evidence_items or []}
             failed: list[str] = []
             for (kind, target_key), asms in groups.items():
-                if target_key == "NO_TARGET":
+                if target_key == "NO_TARGET" and not (
+                    include_no_target and kind in ("BEHAVIOR", "CAUSAL")
+                ):
                     continue
                 cited: list[str] = []
                 for asm in asms:
