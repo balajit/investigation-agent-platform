@@ -528,8 +528,13 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         from the live revision so declarations stay single-sourced.
         Fail-open (None) — callers treat absence as "no declared sources".
         """
+        # R12G: a construction-time profile belongs to exactly one
+        # tenant and application. Accept it only for its own request;
+        # anything else falls through to the repository lookup so a
+        # future caller cannot silently apply one tenant's profile to
+        # another tenant (or application).
         profile = getattr(provider, "profile", None)
-        if profile is not None:
+        if profile is not None and getattr(profile, "tenant_id", None) == tenant_id and getattr(profile, "id", None) == application_id:
             return profile
         repo = self._profile_repo
         if repo is None:

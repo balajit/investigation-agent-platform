@@ -672,3 +672,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **What changed** (`datasources/registry.py`): resolving a key evicts superseded keys with the same `(tenant, app, datasource)` and a lower version, and a bounded sweep (at most 8 dispositions per resolve) reaps expired entries. Disposal faults stay contained in `_dispose_engine` (fail-open for cleanup). `allocate`-style caution applies: the eviction never touches fresher or unrelated keys.
 
 **Tests.** `test_r12h_registry_eviction.py` (3: new version disposes the old engine once and the cache holds v2 only; expired entries swept on another key's resolve; disposal fault still resolves). Full unit green, ruff clean, mypy clean. Unit-proven only.
+
+## 88. Provider profile scoping and file-log tenant roots (review R12G, R12F, no loop version, 2026-10-31)
+
+**Version pinning.** None for both (authorization/configuration correctness).
+
+**The defects.** `AsyncEvidenceGateway._effective_profile` returned any attached provider profile for any tenant — a future caller passing a profile would silently apply it to every tenant and application (latent; no production caller passes one today). `FileLogAdapter` resolved every tenant against the same global roots, so a tenant whose profile declared a `file_log` datasource could glob another tenant's files under a shared root; and the symlink guard called `resolved.is_symlink()` after `resolve()` had already followed the link, so it never fired.
+
+**What changed** (`gateway.py`, `file_provider.py`, `config.py`, `bootstrap/__init__.py`, `ports/reference/documents.py` untouched): the gateway accepts the attached profile only when its `tenant_id` and `id` match the request, otherwise falling through to the repository lookup; file-log settings gain `tenant_roots` (env `IAP_FILE_LOG_TENANT_ROOTS`, JSON, lenient parse) and `allow_global_roots` (bootstrap sets it only in `DEV_ENVIRONMENTS`); `_resolve_files` scopes roots by the profile's tenant and fails closed without a mapping, and the link check inspects `candidate.is_symlink()` before the resolved file check (link entries are never read). Existing file-log and code-recall suites opt into the dev-global behavior explicitly or attach identified profiles.
+
+**Tests.** `test_r12g_provider_profile.py` (3: foreign profile ignored with repo fallthrough, matching profile accepted without repo read, application mismatch falls through; red verified by stash) and `test_r12f_file_roots.py` (3: cross-tenant isolation, fail-closed vs dev allowlist, escaping vs in-root links). Full unit green, ruff clean, mypy clean on touched modules. Owner decisions outstanding: approver role contract (D), colon charset (E). Unit-proven only (file tests on tmp_path).

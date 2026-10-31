@@ -89,6 +89,13 @@ class FileLogSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     roots: list[str] = Field(default_factory=lambda: ["data"])
+    # R12F: per-tenant roots (env IAP_FILE_LOG_TENANT_ROOTS, JSON). Used
+    # only when allow_global_roots is False; without a mapping for the
+    # tenant the provider resolves no files (fail closed).
+    tenant_roots: dict[str, list[str]] = Field(default_factory=dict)
+    # R12F: set by bootstrap only when the environment is in
+    # DEV_ENVIRONMENTS (the same dev allowlist enrichment uses).
+    allow_global_roots: bool = False
     max_bytes_per_file: int = Field(default=2_097_152, ge=1024, le=104857600)
     max_files: int = Field(default=20, ge=1, le=200)
     cursor_signing_key: SecretStr = Field(default=SecretStr(""))
@@ -272,9 +279,17 @@ class FileLogAdapter:
         self._root = Path(project_root) if project_root else Path.cwd()
         self.profile: ApplicationProfile | None = None
 
-    def _allowed_roots(self) -> list[Path]:
+    def _allowed_roots(self, tenant_id: str | None = None) -> list[Path]:
+        raws: list[str]
+        if tenant_id and tenant_id in self._settings.tenant_roots:
+            raws = self._settings.tenant_roots[tenant_id]
+        elif self._settings.allow_global_roots:
+            raws = self._settings.roots
+        else:
+            # Fail closed outside dev: no mapping, no files.
+            return []
         roots: list[Path] = []
-        for raw in self._settings.roots:
+        for raw in raws:
             candidate = (
                 (self._root / raw).resolve() if not os.path.isabs(raw) else Path(raw).resolve()
             )
@@ -299,7 +314,8 @@ class FileLogAdapter:
                         per_file_cap[pattern] = int(cap)
         if not patterns:
             return []
-        roots = self._allowed_roots()
+        tenant_id = str(getattr(profile, "tenant_id", "") or "") or None
+        roots = self._allowed_roots(tenant_id)
         found: dict[str, Path] = {}
         for root in roots:
             if not root.is_dir():
@@ -319,7 +335,10 @@ class FileLogAdapter:
                         continue
                     if not any(resolved == root or root in resolved.parents for root in roots):
                         continue
-                    if resolved.is_symlink() or not resolved.is_file():
+                    # R12F: resolve() follows links, so resolved.is_symlink()
+                    # is always False — check the link itself. The link
+                    # entry is never read as a file.
+                    if candidate.is_symlink() or not resolved.is_file():
                         continue
                     found[str(resolved)] = resolved
         files = sorted(found.values(), key=lambda p: p.stat().st_mtime, reverse=True)

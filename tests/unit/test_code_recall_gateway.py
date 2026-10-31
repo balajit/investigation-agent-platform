@@ -90,7 +90,9 @@ def _gateway(
         return dict(authority or {})
 
     provider = MagicMock()
-    provider.profile = SimpleNamespace(name="test-profile")
+    provider.profile = SimpleNamespace(
+        name="test-profile", tenant_id="tenant-a", id="app-1"
+    )
     if find_symbol_error is not None:
         provider.find_symbol = AsyncMock(side_effect=find_symbol_error)
     else:
@@ -148,7 +150,9 @@ async def test_call_graph_both_depth_expands_callers_and_callees():
     from investigation_agent_platform.ports.evidence.code import CallGraphNode, CodeLocation
 
     provider = MagicMock()
-    provider.profile = SimpleNamespace(name="test-profile")
+    provider.profile = SimpleNamespace(
+        name="test-profile", tenant_id="tenant-a", id="app-1"
+    )
     provider.find_callers = AsyncMock(
         side_effect=[
             [
@@ -431,7 +435,9 @@ async def test_flag_on_without_seams_degrades_to_deterministic(
     )
 
     provider = MagicMock()
-    provider.profile = SimpleNamespace(name="test-profile")
+    provider.profile = SimpleNamespace(
+        name="test-profile", tenant_id="tenant-a", id="app-1"
+    )
     provider.find_symbol = AsyncMock(return_value=[])
     selector = MagicMock()
     selector.get_code_intelligence_provider = AsyncMock(return_value=provider)

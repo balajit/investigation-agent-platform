@@ -586,6 +586,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             if root.strip()
         ]
         if file_roots:
+            from investigation_agent_platform.api.tenant import DEV_ENVIRONMENTS
             from investigation_agent_platform.infrastructure.evidence.logs.file_provider import (
                 FileLogAdapter,
                 FileLogSettings,
@@ -596,6 +597,12 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 FileLogAdapter(
                     settings=FileLogSettings(
                         roots=file_roots,
+                        tenant_roots=dict(config.evidence.file_log_tenant_roots or {}),
+                        # R12F: the global roots are dev-only (the same
+                        # allowlist enrichment uses); elsewhere a tenant
+                        # without a mapping resolves no files.
+                        allow_global_roots=str(config.environment or "").strip().lower()
+                        in DEV_ENVIRONMENTS,
                         max_bytes_per_file=config.evidence.file_log_max_bytes_per_file,
                         max_files=config.evidence.file_log_max_files,
                         cursor_signing_key=config.evidence.cursor_signing_key,
