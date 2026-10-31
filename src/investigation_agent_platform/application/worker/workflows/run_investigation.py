@@ -601,6 +601,8 @@ class RunInvestigationWorkflow:
         definition_shadow_trace: list[dict[str, Any]] = []
         definition_receipt_index = 0
         definition_shadow_duplicates = 0
+        # W2-D15: carrier retirement events (bounded at 20, oldest dropped).
+        requery_order_events: list[dict[str, Any]] = []
         # Cumulative LLM spend across iterations (plain scalars, replay-safe).
         # Fed into each checkpoint so token/cost totals survive worker
         # restarts; the reason activity enforces the per-investigation cap.
@@ -861,6 +863,15 @@ class RunInvestigationWorkflow:
             _prev_focus = _cascade_state.prev_focus
             _consumed_order_ref = _cascade_state.consumed_order_ref
             merge_counts(counters, _cascade_state.counts)
+            # W2-D15: carrier retirement events ride loop telemetry (bounded,
+            # oldest dropped). The consumer the deleted W1 outputs never had.
+            try:
+                for _evt in list(_cascade_state.order_events or []):
+                    if isinstance(_evt, dict):
+                        requery_order_events.append(_evt)
+                del requery_order_events[:-20]
+            except Exception:
+                pass
             # Debug story: forcing cascade outcome. Compares the model's
             # pre-override proposal (_shadow_proposal) with the post-cascade
             # dispatch (_reason_data). Deterministic: both derive from
@@ -1128,6 +1139,9 @@ class RunInvestigationWorkflow:
                         "forced_smallest_fetch_gap_id": str(
                             _reason_data.get("forced_smallest_fetch_gap_id", "") or ""
                         ),
+                        "forced_smallest_fetch_reason": str(
+                            (_reason_data.get("smallest_fetch_context") or {}).get("reason", "") or ""
+                        ),
                         "forced_not_checkable": bool(
                             _reason_data.get("forced_not_checkable", False)
                         ),
@@ -1159,6 +1173,7 @@ class RunInvestigationWorkflow:
                 # fresh evaluation, never a tight retry loop.
                 if _reason_data.get("forced_requery") and isinstance(_consumed_order_ref, dict):
                     _consumed_order_ref["consumed"] = True
+                    _consumed_order_ref["consumed_reason"] = "dispatched"
                     counters["requery"] += 1
                     _this_turn["requery_consumed"] = {
                         "claim_ref": str(_consumed_order_ref.get("claim_ref") or ""),
@@ -1250,7 +1265,7 @@ class RunInvestigationWorkflow:
                 retry_policy=retry_policy,
             )
             # G3: carry the verify-issued re-retrieval as a work
-            # order (D3 lifecycle step 2, 2b step 5). ONE new history
+            # order (D3 lifecycle step 2, requery carrier). ONE new history
             # entry per directive — never merged into
             # _this_turn, which the post-execution update owns.
             # The next turn's cascade dispatches from the carriers
@@ -1262,7 +1277,7 @@ class RunInvestigationWorkflow:
             if _requery_order is not None:
                 action_history.append(_requery_order)
             # Phase 4 (claim binding): carry the verify-issued claim gaps
-            # as work orders (D2 carrier, 2b step 6). ONE new history
+            # as work orders (gap-feed carrier). ONE new history
             # entry per verify turn — never merged into
             # _this_turn. The next turn's slot dispatches from
             # the newest carrier's orders (never the truncated
@@ -1482,6 +1497,7 @@ class RunInvestigationWorkflow:
                     "evidence_banked_total": evidence_banked_total,
                     "d6_blocked_no_evidence_count": d6_blocked_no_evidence_count,
                     "fetches_dispatched": fetches_dispatched,
+                    "requery_order_events": list(requery_order_events[-20:]),
                     **counter_telemetry(counters),
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,

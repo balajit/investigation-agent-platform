@@ -2,6 +2,8 @@
 """P6 chunk 2a: typed work orders + translation (domain only). No loop,
 no model calls."""
 
+import uuid
+
 import pytest
 
 from investigation_agent_platform.domain.collection.frontier import (
@@ -30,6 +32,9 @@ def _character(**kw):
 
 def _order(kind=WorkOrderKind.FETCH_SEED, params=None, **kw):
     args = {
+        "work_order_id": uuid.uuid5(
+            uuid.NAMESPACE_URL, f"test-order|{kind}|{sorted((params or {}).items())}"
+        ),
         "kind": kind,
         "action_type": "GET_CODE",
         "action_parameters": dict(params or {}),

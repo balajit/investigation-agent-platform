@@ -486,11 +486,12 @@ def test_order_carry_rejects_malformed_directive() -> None:
         )
         is None
     )
-    # A corrupt carrier payload never dispatches — retired as exhausted.
+    # A corrupt carrier payload never dispatches — retired as invalid (W-INV).
     corrupt = _carrier(order={"kind": "REQUERY"})
     result = _should_force_order_requery([corrupt], [])
     assert result is not None
-    assert result.get("mark_consumed") == "budget-exhausted"
+    assert result.get("mark_consumed") == "invalid_order"
+    assert result.get("detail") == "validation_failed"
     assert "action_type" not in result
 
 

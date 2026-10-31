@@ -372,6 +372,16 @@ def _derive_loop_telemetry(
                 telemetry["triage_route"] = route[:32]
         except Exception:
             pass
+        try:
+            evts = passed.get("requery_order_events", None)
+            if isinstance(evts, list):
+                telemetry["requery_order_events"] = [
+                    {str(k): e.get(k) for k in ("event", "reason", "detail", "claim_ref", "turn_issued", "age") if k in e}
+                    for e in evts[:20]
+                    if isinstance(e, dict)
+                ]
+        except Exception:
+            pass
         if isinstance(hypothesis_counts, dict):
             for key in ("hypotheses_formulated", "hypotheses_bound", "hypotheses_verified"):
                 try:

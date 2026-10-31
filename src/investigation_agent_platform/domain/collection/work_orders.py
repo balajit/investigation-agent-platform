@@ -1,11 +1,13 @@
 # src/investigation_agent_platform/domain/collection/work_orders.py
-"""P6 typed work orders (DES-reason-workorders §2, chunk 2a: domain only).
+"""P6 typed work orders (DES-reason-workorders §2): the retained implementation.
 
 Work orders are the reasoner's structured alternative to verdicts:
 hypotheses plus discriminating next fetches fed back to the collection
 frontier as seeds. Each carries the failure character it addresses and
-a cost estimate. The running loop consumes them in chunk 2b; this module
-only defines the contract and the translation into frontier candidates.
+a cost estimate. REQUERY and GAP_FILL orders ride workflow history as
+carriers; the loop's requery and smallest-fetch slots dispatch from the
+newest carrier. This module only defines the contract and the translation
+into frontier candidates.
 
 Version-pinned via WORK_ORDER_VERSION_CURRENT (never env-switched).
 
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +38,10 @@ from investigation_agent_platform.domain.collection.frontier import (
 #: Version pin for every work order this module emits.
 WORK_ORDER_VERSION_CURRENT = "workorder-v1"
 
+#: Work order versions this build understands (W-INV D13: unknown versions
+#: are invalid orders, never dispatched).
+KNOWN_WORK_ORDER_VERSIONS = frozenset({WORK_ORDER_VERSION_CURRENT})
+
 #: Bound on seeds translated per call: model output is unbounded, the
 #: frontier intake is not. First-N in input order — deterministic given
 #: the input, never silently sampled.
@@ -49,10 +55,10 @@ class WorkOrderKind(StrEnum):
     #: observation that would discriminate it.
     FETCH_SEED = "FETCH_SEED"
     #: A bounded re-retrieval for an unsatisfied claim. Typed successor
-    #: of the ledger_requery history markers (chunk 2b retires them).
+    #: of the ledger_requery history entries.
     REQUERY = "REQUERY"
     #: A claim-gap fill for a named binding gap. Typed successor of the
-    #: claim-gap feed markers (chunk 2b retires them).
+    #: claim-gap feed entries.
     GAP_FILL = "GAP_FILL"
 
 
@@ -66,10 +72,13 @@ class WorkOrderStatus(StrEnum):
 
 
 def _is_json_safe(value: object) -> bool:
-    """Parameters ride Temporal workflow state: only JSON-native shapes
-    survive replay. Reject anything json.dumps cannot round-trip."""
+    """Parameters ride Temporal workflow state: only strict JSON survives replay.
+
+    NaN and infinity are not strict JSON and ``model_dump(mode="json")`` would turn
+    them into null, silently changing a request. Reject anything strict
+    ``json.dumps`` cannot round-trip."""
     try:
-        json.dumps(value)
+        json.dumps(value, allow_nan=False)
         return True
     except (TypeError, ValueError):
         return False
@@ -80,7 +89,9 @@ class WorkOrder(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    work_order_id: UUID = Field(default_factory=uuid4)
+    # Identity is always supplied (deterministic uuid5 at the carry sites, never random:
+    # the Temporal sandbox rejects uuid4 and an invisible default hides the hazard).
+    work_order_id: UUID
     version: str = Field(default=WORK_ORDER_VERSION_CURRENT, max_length=16)
     kind: WorkOrderKind
     action_type: str = Field(..., min_length=1, max_length=64)
@@ -91,10 +102,14 @@ class WorkOrder(BaseModel):
     max_attempts: int = Field(default=1, ge=1)
     seed_source: str = Field(default="", max_length=256)
     status: WorkOrderStatus = WorkOrderStatus.PENDING
-    #: Gap identity for GAP_FILL orders (2b step 6): the claim-gap this
+    #: Gap identity for GAP_FILL orders: the claim-gap this
     #: order collects. Coverage stamps key on gap_id, so the dispatch
     #: slot never needs the feed entry. None for non-gap orders.
     gap_id: str | None = Field(default=None, max_length=128)
+    #: Why this gap order exists (W3-D17): None for a plain uncited gap,
+    #: "cited_gate_failed" for an H8 re-fetch of a cited group that failed its
+    #: own gate. Part of the coverage identity.
+    gap_reason: str | None = Field(default=None, max_length=64)
     #: Informational claim reference (never dispatched into params).
     claim_ref: str | None = Field(default=None, max_length=128)
 

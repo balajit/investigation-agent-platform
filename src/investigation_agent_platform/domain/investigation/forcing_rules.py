@@ -300,6 +300,7 @@ LOOP_TELEMETRY_SCALARS: tuple[str, ...] = (
 TELEMETRY_HANDLED_ELSEWHERE: frozenset[str] = frozenset(
     {
         "triage_route",
+        "requery_order_events",
         "claim_binding_kept",
         "claim_binding_evaporated",
         "claim_binding_unmapped",

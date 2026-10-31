@@ -43,6 +43,7 @@ with workflow.unsafe.imports_passed_through():
         LOOP_VERSION_LV6,
         LOOP_VERSION_LV7,
         LOOP_VERSION_LV8,
+        LOOP_VERSION_LVW,
         loop_version_at_least,
     )
 
@@ -50,11 +51,13 @@ with workflow.unsafe.imports_passed_through():
     from investigation_agent_platform.domain.collection.focus import (
         FocusPoint,
         FocusShift,
+        canonical_surface,
         detect_shift,
         focus_from_reason_data,
         pivot_can_pay_off,
     )
     from investigation_agent_platform.domain.collection.work_orders import (
+        KNOWN_WORK_ORDER_VERSIONS,
         FailureCharacter,
         WorkOrder,
         WorkOrderKind,
@@ -295,6 +298,156 @@ def dispatched_parameters(reason_data: dict[str, Any] | None) -> dict[str, Any]:
 CARRIER_KINDS = frozenset({"work_order", "work_order_feed"})
 
 
+class ConsumeReason(StrEnum):
+    """Why a REQUERY carrier was retired without dispatching (W2-D3, closed set)."""
+
+    BUDGET_EXHAUSTED = "budget_exhausted"  # directive_consumed: attempts spent or stamp matched
+    EXPIRED = "expired"  # LV_W: age in turns exceeded the order's ttl_rounds
+    INVALID_ORDER = "invalid_order"  # payload missing/malformed/wrong kind/not PENDING/unknown version
+
+
+def _safe_int(value: Any) -> int | None:
+    """int(value), or None for a boolean, a non-number or an overflow (pure)."""
+    try:
+        if isinstance(value, bool):
+            return None
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _work_orders_hardened(loop_version: Any) -> bool:
+    """Whether the run's pin carries the LV_W work-order semantics (fail-safe False).
+
+    Same shape as ``_pivot_hardened`` (lv7): an unrecognized or unreadable pin keeps
+    the old behavior.
+    """
+    try:
+        return bool(loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVW))
+    except Exception:
+        return False
+
+
+@dataclass(frozen=True)
+class WorkOrderPolicy:
+    """What the carrier readers may assume this turn (pure value, JSON-free).
+
+    ``hardened`` False reproduces the lv7 reads exactly: scan all history for the
+    newest unconsumed REQUERY carrier, no expiry, stamp-only gap coverage.
+    ``iteration`` is the cascade's current turn, used to age carriers; None when the
+    turn counter is unreadable, which makes every age unreadable (carriers fail closed).
+    """
+
+    hardened: bool = False
+    iteration: int | None = None
+
+
+def _carrier_age(entry: dict[str, Any], iteration: int | None) -> int | None:
+    """Age in turns of a carrier (pure, never raises; None when unreadable)."""
+    try:
+        if iteration is None:
+            return None
+        turn_issued = _safe_int(entry.get("turn_issued", entry.get("iteration")))
+        if turn_issued is None:
+            return None
+        return int(iteration) - int(turn_issued)
+    except Exception:
+        return None
+
+
+def _retirement_event(
+    entry: dict[str, Any], reason: ConsumeReason, decision: dict[str, Any], policy: WorkOrderPolicy
+) -> dict[str, Any]:
+    """One order_events entry for a retired carrier (pure, never raises)."""
+    try:
+        return {
+            "event": "requery_order_retired",
+            "reason": reason.value,
+            "detail": str(decision.get("detail") or ""),
+            "claim_ref": str(entry.get("claim_ref") or ""),
+            "turn_issued": _safe_int(entry.get("turn_issued", entry.get("iteration"))),
+            "age": _carrier_age(entry, policy.iteration),
+        }
+    except Exception:
+        return {"event": "requery_order_retired", "reason": reason.value, "detail": ""}
+
+
+def _invalid_order_detail(carrier: dict[str, Any]) -> str | None:
+    """Why a REQUERY carrier's order cannot dispatch, or None when it can (pure, never raises).
+
+    Codes: ``not_a_dict`` (payload missing or wrong type), ``validation_failed`` (the WorkOrder
+    model rejects it), ``unknown_version`` (a version this build does not understand),
+    ``wrong_kind`` (a valid order that is not REQUERY), ``not_pending`` (status CONSUMED or
+    EXPIRED on a carrier still marked unconsumed: inconsistent state).
+    """
+    try:
+        payload = carrier.get("order")
+        if not isinstance(payload, dict):
+            return "not_a_dict"
+        try:
+            order = WorkOrder.model_validate(payload)
+        except Exception:
+            return "validation_failed"
+        if order.version not in KNOWN_WORK_ORDER_VERSIONS:
+            return "unknown_version"
+        if order.kind != WorkOrderKind.REQUERY:
+            return "wrong_kind"
+        if order.status != WorkOrderStatus.PENDING:
+            return "not_pending"
+        return None
+    except Exception:
+        return "validation_failed"
+
+
+#: Transient infrastructure misses: a stamped smallest-fetch turn that ended this way
+#: may be retried once (W3-D16). Anything else deterministic is covered, never retried.
+_TRANSIENT_MISS_REASONS = frozenset(
+    {"timeout", "provider_unavailable", "rate_limited", "idempotency_owner_busy"}
+)
+
+
+def _fetch_retryable(entry: dict[str, Any]) -> bool:
+    """Whether a stamped smallest-fetch turn ended in a failure worth one retry (pure)."""
+    try:
+        status = str(entry.get("outcome_status") or "").upper()
+        if status == "FAILED":
+            return True
+        if status == "DEGRADED":
+            return str(entry.get("miss_reason") or "") in _TRANSIENT_MISS_REASONS
+        return False
+    except Exception:
+        return False
+
+
+def _gap_coverage(
+    action_history: list[Any] | None, gap_id: str, reason: str = ""
+) -> tuple[bool, int]:
+    """(covered, attempts) for one gap identity (gap_id, reason) under LV_W (pure, never raises).
+
+    ``attempts`` counts the history entries stamped for this identity. The gap is covered
+    when any such entry ended in a non-retryable outcome, or when the attempts reached
+    ``GAP_MAX_ATTEMPTS``. An entry stamped with a different reason is a different identity.
+    """
+    try:
+        want, want_reason = str(gap_id or ""), str(reason or "")
+        if not want:
+            return False, 0
+        attempts, covered = 0, False
+        for entry in action_history or []:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("forced_smallest_fetch_gap_id") or "") != want:
+                continue
+            if str(entry.get("forced_smallest_fetch_reason") or "") != want_reason:
+                continue
+            attempts += 1
+            if not _fetch_retryable(entry):
+                covered = True
+        return (covered or attempts >= GAP_MAX_ATTEMPTS), attempts
+    except Exception:
+        return True, 0  # fail toward no refire
+
+
 def is_carrier_entry(entry: Any) -> bool:
     """Whether a history entry is a work-order carrier (pure, never raises)."""
     try:
@@ -451,6 +604,21 @@ class PivotDecision:
     reason: PivotReason
 
 
+#: A REQUERY order issued at verify turn N is first evaluated at turn N+1. The F4 pivot
+#: may outrank it for at most PIVOT_RECOLLECT_CAP turns, so the order must survive
+#: PIVOT_RECOLLECT_CAP + 1 turns of age to be dispatchable on the first turn the pivot
+#: has stood down. (Owner decision 2026-10-31: the pivot outranks a waiting order.)
+REQUERY_ORDER_TTL_TURNS = PIVOT_RECOLLECT_CAP + 1
+
+#: A GAP_FILL feed is re-emitted by every healthy verify turn (age 1 on the next cascade).
+#: Three turns tolerates one skipped verify (a defer turn) plus one fault turn, after which
+#: the feed describes a hypothesis the loop has moved past.
+GAP_ORDER_TTL_TURNS = 3
+
+#: One initial fire plus one retry per (gap identity, reason).
+GAP_MAX_ATTEMPTS = 2
+
+
 def _cap_reached(forced_count: Any) -> bool:
     try:
         return not isinstance(forced_count, bool) and int(forced_count) >= PIVOT_RECOLLECT_CAP
@@ -502,6 +670,11 @@ def _legacy_override(curr: Any) -> dict[str, Any]:
     }
 
 
+def _canonical_recent(entry: str) -> str:
+    kind, _, rest = entry.partition(":")
+    return f"{kind}:{canonical_surface(rest, kind)}"
+
+
 def _pivot_decision(
     prev_focus: dict[str, Any] | None,
     reason_data: dict[str, Any] | None,
@@ -510,6 +683,7 @@ def _pivot_decision(
     *,
     preserve_proposal: bool = False,
     forced_count: Any = 0,
+    hardened: bool = False,
 ) -> PivotDecision:
     """The pivot rule with its reason (pure, never raises). Dispatch decisions equal the old rule's."""
     try:
@@ -521,11 +695,19 @@ def _pivot_decision(
                 prev = FocusPoint.model_validate(prev_focus)
             except Exception:
                 prev = None
-        curr = focus_from_reason_data(reason_data if isinstance(reason_data, dict) else {})
-        if curr is None or detect_shift(prev, curr) != FocusShift.PIVOTED:
+        curr = focus_from_reason_data(
+            reason_data if isinstance(reason_data, dict) else {}, hardened=hardened
+        )
+        if curr is None or detect_shift(prev, curr, hardened=hardened) != FocusShift.PIVOTED:
             return PivotDecision(None, PivotReason.NO_SHIFT)
         recent = {str(r or "") for r in (recent_targets or []) if str(r or "")}
-        if f"{curr.surface_kind}:{curr.surface}" in recent:
+        if hardened:
+            recent = {_canonical_recent(r) for r in recent}
+            kind, surface = curr.identity
+            key = f"{kind}:{surface}"
+        else:
+            key = f"{curr.surface_kind}:{curr.surface}"
+        if key in recent:
             return PivotDecision(None, PivotReason.DAMPED)
         if preserve_proposal:
             proposed = str((reason_data or {}).get("next_action", "") or "").upper()
@@ -552,10 +734,11 @@ def _should_force_pivot_recollect(
     *,
     preserve_proposal: bool = False,
     forced_count: Any = 0,
+    hardened: bool = False,
 ) -> dict[str, Any] | None:
     """Collection-forcing override on focus pivot (P6 2b-i, pure).
 
-    Stable pure API with many callers; delegates to :func:`_pivot_decision`
+    Stable pure API with many callers: delegates to :func:`_pivot_decision`
     and returns the override (F4-D22). Never raises.
     """
     return _pivot_decision(
@@ -565,13 +748,14 @@ def _should_force_pivot_recollect(
         recent_targets,
         preserve_proposal=preserve_proposal,
         forced_count=forced_count,
+        hardened=hardened,
     ).override
 
 
 def _carry_requery_order(
     verify_data: dict[str, Any] | None, iteration: int
 ) -> dict[str, Any] | None:
-    """G3 order carrier to append to action_history, or None (2b step 5).
+    """G3 order carrier to append to action_history, or None (requery carrier).
 
     Replaces the ``ledger_requery_directive`` marker dict: validates the
     verify result's ``ledger_requery`` dict minimally (non-empty query,
@@ -634,6 +818,7 @@ def _carry_requery_order(
                     "has_unbeaten_rival": False,
                 },
                 "cost_estimate": 1,
+                "ttl_rounds": REQUERY_ORDER_TTL_TURNS,
                 "max_attempts": max_attempts,
                 "seed_source": f"verify:{turn}",
                 "status": WorkOrderStatus.PENDING.value,
@@ -646,18 +831,23 @@ def _carry_requery_order(
 def _should_force_order_requery(
     action_history: list[Any] | None,
     recorded_summaries: list[Any] | None,
+    policy: WorkOrderPolicy | None = None,
 ) -> dict[str, Any] | None:
-    """G3 order forcing decision (2b step 5: dispatch from carriers).
+    """G3 order forcing decision (requery carrier: dispatch from carriers).
 
-    Replaces ``_should_force_ledger_requery``: returns the typed
-    override (``action_type``, ``action_parameters``, ``order_index``)
-    for the newest unconsumed, budget-satisfying carried REQUERY order,
-    or ``{"mark_consumed": "budget-exhausted", "order_index": index}``
-    when the newest unconsumed carrier budgeted out, or None when the
-    turn proceeds unchanged. Attempt-budget matching is unchanged
-    (same stamps, same summaries) — only the carrier shape changed
-    from marker dict to order entry. Reads only workflow history plus
-    same-turn summaries. Pure — workflow-safe.
+    Returns the typed override (``action_type``, ``action_parameters``,
+    ``order_index``) for the dispatchable carried REQUERY order, or
+    ``{"mark_consumed": <ConsumeReason value>, "detail": code,
+    "order_index": index}`` when the carrier retires without dispatch, or
+    None when the turn proceeds unchanged. Attempt-budget matching is
+    unchanged (same stamps, same summaries). Reads only workflow history
+    plus same-turn summaries. Pure — workflow-safe.
+
+    Under ``hardened`` (LV_W, W2-D9/D10) only the newest REQUERY carrier is
+    read (an older carrier never resurrects behind a consumed newest one)
+    and a carrier older than its order's ``ttl_rounds`` expires. Older pins
+    keep the scan-all-history read and no expiry. Invalid orders retire as
+    ``invalid_order`` on every pin (W-INV: the label was a lie before).
 
     Precedence is enforced by the caller: stack-walk suppresses
     evaluation entirely, and every later override stands down once
@@ -671,35 +861,86 @@ def _should_force_order_requery(
         recorded = list(recorded_summaries or [])
     except Exception:
         recorded = []
+    hardened = bool(getattr(policy, "hardened", False))
+    iteration = getattr(policy, "iteration", None)
     candidate_index: int | None = None
-    for index in range(len(entries) - 1, -1, -1):
-        entry = entries[index]
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("kind") != "work_order":
-            continue
-        if entry.get("order_kind") != WorkOrderKind.REQUERY.value:
-            continue
-        if entry.get("consumed"):
-            continue
-        candidate_index = index
-        break
-    if candidate_index is None:
-        return None
+    if hardened:
+        for index in range(len(entries) - 1, -1, -1):
+            entry = entries[index]
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("kind") != "work_order":
+                continue
+            if entry.get("order_kind") != WorkOrderKind.REQUERY.value:
+                continue
+            if entry.get("consumed"):
+                return None  # a consumed newest carrier never resurrects an older one
+            candidate_index = index
+            break
+        if candidate_index is None:
+            return None
+    else:
+        for index in range(len(entries) - 1, -1, -1):
+            entry = entries[index]
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("kind") != "work_order":
+                continue
+            if entry.get("order_kind") != WorkOrderKind.REQUERY.value:
+                continue
+            if entry.get("consumed"):
+                continue
+            candidate_index = index
+            break
+        if candidate_index is None:
+            return None
     carrier = entries[candidate_index]
-    try:
-        consumed = directive_consumed(carrier, entries, recorded)
-    except Exception:
-        return None
-    if consumed:
-        return {"mark_consumed": "budget-exhausted", "order_index": candidate_index}
+    detail = _invalid_order_detail(carrier)
+    if detail is not None:
+        return {
+            "mark_consumed": ConsumeReason.INVALID_ORDER.value,
+            "detail": detail,
+            "order_index": candidate_index,
+        }
     try:
         payload = carrier.get("order")
         order = WorkOrder.model_validate(payload) if isinstance(payload, dict) else None
     except Exception:
         order = None
-    if order is None or order.status != WorkOrderStatus.PENDING:
-        return {"mark_consumed": "budget-exhausted", "order_index": candidate_index}
+    if order is None:  # validated above; fail closed
+        return {
+            "mark_consumed": ConsumeReason.INVALID_ORDER.value,
+            "detail": "validation_failed",
+            "order_index": candidate_index,
+        }
+    try:
+        consumed = directive_consumed(carrier, entries, recorded)
+    except Exception:
+        return None
+    if consumed:
+        return {
+            "mark_consumed": ConsumeReason.BUDGET_EXHAUSTED.value,
+            "detail": "attempt_budget",
+            "order_index": candidate_index,
+        }
+    if hardened:
+        age = _carrier_age(carrier, iteration)
+        if age is None:
+            return {
+                "mark_consumed": ConsumeReason.INVALID_ORDER.value,
+                "detail": "unreadable_age",
+                "order_index": candidate_index,
+            }
+        try:
+            ttl = int(order.ttl_rounds)
+        except Exception:
+            ttl = REQUERY_ORDER_TTL_TURNS
+        if age > ttl:
+            return {
+                "mark_consumed": ConsumeReason.EXPIRED.value,
+                "detail": "ttl_exceeded",
+                "order_index": candidate_index,
+            }
     return {
         "action_type": order.action_type,
         "action_parameters": dict(order.action_parameters or {}),
@@ -1839,13 +2080,23 @@ def _pick_gap_order(
     kind: str,
     history: list[Any] | None,
     forced_count: int,
+    policy: WorkOrderPolicy | None = None,
+    carrier_turn: int | None = None,
+    allow_retry: bool = False,
 ) -> WorkOrder | None:
     """First dispatchable GAP_FILL order of one claim kind, or None (pure).
 
     Step-6 per-kind picker over a carrier's orders: kind match, gap not
-    already covered (stamps), per-kind run cap, closed kind→action
-    triple. Content-free by design: gap identity + history coverage
-    decide. Never raises.
+    already covered, per-kind run cap, closed kind→action triple.
+    Content-free by design: gap identity + history coverage decide.
+    Never raises.
+
+    Under a hardened policy the coverage is outcome-aware
+    (``_gap_coverage`` on the (gap id, reason) identity, W3-D16/D17), a
+    carrier older than the order's ``ttl_rounds`` is skipped, and retries
+    (attempts > 0) are taken only when ``allow_retry`` (W3-D19: first
+    fires before retries across kinds). Older pins keep stamp-only,
+    one-fire-per-gap coverage.
     """
     try:
         if int(forced_count or 0) >= _FORCED_SMALLEST_FETCH_DEFAULT_CAP:
@@ -1856,6 +2107,8 @@ def _pick_gap_order(
         want = str(kind or "")
         if want not in SMALLEST_FETCH_ORDER:
             return None
+        hardened = bool(getattr(policy, "hardened", False))
+        iteration = getattr(policy, "iteration", None)
         for raw in list(orders or []):
             try:
                 if not isinstance(raw, dict):
@@ -1871,10 +2124,23 @@ def _pick_gap_order(
                 gap_id = str(order.gap_id or "")
                 if not gap_id:
                     continue
+                if hardened:
+                    try:
+                        ttl = int(order.ttl_rounds)
+                    except Exception:
+                        ttl = GAP_ORDER_TTL_TURNS
+                    age = _carrier_age({"turn_issued": carrier_turn}, iteration)
+                    if age is not None and age > ttl:
+                        continue
+                    covered, attempts = _gap_coverage(history, gap_id, str(order.gap_reason or ""))
+                    if covered:
+                        continue
+                    if attempts > 0 and not allow_retry:
+                        continue
                 # Covered gaps fall through to the next open order of
                 # the same kind — a stale carrier never suppresses its
                 # siblings.
-                if _smallest_fetch_already_covered(history, gap_id):
+                elif _smallest_fetch_already_covered(history, gap_id):
                     continue
                 if not _smallest_fetch_dispatchable(
                     want, order.action_type, dict(order.action_parameters or {})
@@ -1947,7 +2213,9 @@ def _gap_order_for(gap: dict[str, Any], turn_issued: int) -> WorkOrder | None:
             action_parameters=params,
             addresses=FailureCharacter(triage_route="UNKNOWN", claim_kind=claim_kind[:64]),
             cost_estimate=1,
+            ttl_rounds=GAP_ORDER_TTL_TURNS,
             gap_id=gap_id,
+            gap_reason=str(gap.get("reason") or "") or None,
             claim_ref=str(gap.get("claim_ref") or "") or None,
             seed_source=f"gap:{gap_id}",
             status=WorkOrderStatus.PENDING,
@@ -1957,7 +2225,7 @@ def _gap_order_for(gap: dict[str, Any], turn_issued: int) -> WorkOrder | None:
 
 
 def _carry_gap_orders(verify_data: dict[str, Any] | None, iteration: int) -> dict[str, Any] | None:
-    """Gap order carrier to append to action_history, or None (2b step 6).
+    """Gap order carrier to append to action_history, or None (gap-feed carrier).
 
     Replaces the ``claim_gap_feed`` marker: validates verify result
     data["claim_gaps"] with the same rules (non-empty gap_id, known
@@ -2370,10 +2638,10 @@ class PostReasonCascadeState:
     #: ``domain.investigation.loop_version``). Routes version-pinned
     #: rule changes; unmarked callers get the current semantics.
     loop_version: str = LOOP_VERSION_CURRENT
-    #: Carrier entry of the dispatched G3 requery order (2b step 5),
+    #: Carrier entry of the dispatched G3 requery order,
     #: for the workflow's consumed stamp. None when no order fired.
     consumed_order_ref: dict | None = None
-    #: Carrier retirements this cascade decided (W2 D3, replaces advisory
+    #: Carrier retirements this cascade decided (W2 D3; supersedes the W1 outputs
     #: outputs removed by W1-A). Each is {"event": "requery_order_retired",
     #: "reason": ConsumeReason value, "detail": short code,
     #: "claim_ref": str, "turn_issued": int, "age": int | None}.
@@ -2391,6 +2659,7 @@ class CascadeContext:
     history: list[Any]  # full history: carrier readers index into it and stamp in place
     turns: Turns  # positional readers use this view, never the raw history (F2-D18)
     pivot_v2: bool  # lv7 hardened pivot
+    policy: WorkOrderPolicy  # carrier semantics for this pin (W2-D2)
 
     def count(self, key: str) -> int:
         try:
@@ -2409,6 +2678,9 @@ class Fire:
     extra: Mapping[str, Any] = field(default_factory=dict)  # payload keys stamped on the reason data
     consume: dict[str, Any] | None = None  # history entry stamped consumed at commit
     consumed_ref: dict[str, Any] | None = None  # carrier the workflow stamps after dispatch
+    retire_reason: str = ""  # ConsumeReason value when consume retires without dispatch
+    retire_detail: str = ""  # short machine code for the retirement event
+    event: dict[str, Any] | None = None  # standalone order_events entry (e.g. gap_feed_stale)
 
 
 def _entry_at(history: list[Any], index: Any) -> dict[str, Any] | None:
@@ -2429,6 +2701,7 @@ def _t_pivot(ctx: CascadeContext) -> Fire | None:
         targets,
         preserve_proposal=ctx.pivot_v2,
         forced_count=ctx.count("pivot"),
+        hardened=ctx.policy.hardened,
     )
     if decision.reason is PivotReason.CAPPED:
         return Fire(None, counter="pivot_capped")
@@ -2446,12 +2719,21 @@ def _t_walk_stack(ctx: CascadeContext) -> Fire | None:
 
 
 def _t_requery(ctx: CascadeContext) -> Fire | None:
-    out = _should_force_order_requery(ctx.history, recorded_attempt_summaries(ctx.history or []) or [])
+    out = _should_force_order_requery(
+        ctx.history, recorded_attempt_summaries(ctx.history or []) or [], ctx.policy
+    )
     if out is None:
         return None
     entry = _entry_at(ctx.history, out.get("order_index"))
-    if out.get("mark_consumed"):  # budget-exhausted: retire the carrier, dispatch nothing
-        return Fire(None, consume=entry) if entry is not None else None
+    if out.get("mark_consumed"):  # retire the carrier, dispatch nothing
+        if entry is None:
+            return None
+        return Fire(
+            None,
+            consume=entry,
+            retire_reason=str(out.get("mark_consumed") or ConsumeReason.BUDGET_EXHAUSTED.value),
+            retire_detail=str(out.get("detail") or ""),
+        )
     return Fire(out["action_type"], out["action_parameters"], consumed_ref=entry)
 
 
@@ -2513,26 +2795,50 @@ def _t_replan(ctx: CascadeContext) -> Fire | None:
 
 def _t_smallest_fetch(ctx: CascadeContext) -> Fire | None:
     orders: list[dict[str, Any]] = []
+    carrier_turn: int | None = None
     for evt in reversed(ctx.history or []):  # newest feed carrier only (a tombstone supersedes older feeds)
         if isinstance(evt, dict) and evt.get("kind") == "work_order_feed":
             raw = evt.get("orders")
             orders = [o for o in raw if isinstance(o, dict)] if isinstance(raw, list) else []
+            carrier_turn = _safe_int(evt.get("turn_issued", evt.get("iteration")))
             break
-    for kind in SMALLEST_FETCH_ORDER:
-        picked = _pick_gap_order(orders, kind=kind, history=ctx.history,
-                                 forced_count=ctx.count(f"smallest_fetch_{kind.lower()}"))
-        if picked is None:
-            continue
-        gap_id = str(picked.gap_id or "")
-        return Fire(
-            picked.action_type, dict(picked.action_parameters or {}),
-            counter=f"smallest_fetch_{kind.lower()}",
-            extra={
-                ForcePayload.SMALLEST_FETCH_KIND.value: kind,
-                ForcePayload.SMALLEST_FETCH_GAP_ID.value: gap_id,
-                "smallest_fetch_context": {"kind": kind, "gap_id": gap_id, "claim_ref": str(picked.claim_ref or "")},
-            },
-        )
+    if ctx.policy.hardened and carrier_turn is not None:
+        try:
+            feed_age = None if ctx.policy.iteration is None else int(ctx.policy.iteration) - int(carrier_turn)
+        except Exception:
+            feed_age = None
+        if feed_age is not None and feed_age > GAP_ORDER_TTL_TURNS:
+            orders = []  # stale feed: a keyless verify must not keep old gaps alive (W3-D20)
+            return Fire(
+                None,
+                event={
+                    "event": "gap_feed_stale",
+                    "age": feed_age,
+                    "turn_issued": carrier_turn,
+                },
+            )
+    for _allow_retry in (False, True) if ctx.policy.hardened else (False,):
+        for kind in SMALLEST_FETCH_ORDER:
+            picked = _pick_gap_order(orders, kind=kind, history=ctx.history,
+                                     forced_count=ctx.count(f"smallest_fetch_{kind.lower()}"),
+                                     policy=ctx.policy, carrier_turn=carrier_turn,
+                                     allow_retry=_allow_retry)
+            if picked is None:
+                continue
+            gap_id = str(picked.gap_id or "")
+            gap_reason = str(picked.gap_reason or "")
+            context: dict[str, Any] = {"kind": kind, "gap_id": gap_id, "claim_ref": str(picked.claim_ref or "")}
+            if gap_reason:
+                context["reason"] = gap_reason
+            return Fire(
+                picked.action_type, dict(picked.action_parameters or {}),
+                counter=f"smallest_fetch_{kind.lower()}",
+                extra={
+                    ForcePayload.SMALLEST_FETCH_KIND.value: kind,
+                    ForcePayload.SMALLEST_FETCH_GAP_ID.value: gap_id,
+                    "smallest_fetch_context": context,
+                },
+            )
     return None
 
 
@@ -2591,13 +2897,20 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # F2-D18: the typed turn view is built once; positional readers take it,
         # carrier readers take the full history. Single pin site.
         _turns = turn_view(_history, state.loop_version)
+        # W2-D2: one policy value, built once next to the F2/F4 precedents.
+        _wo_policy = WorkOrderPolicy(
+            hardened=_work_orders_hardened(state.loop_version),
+            iteration=_safe_int(state.iteration),
+        )
         # F4 (lv7): bounded, non-destructive pivot anchored on the model's focus.
         _pivot_v2 = _pivot_hardened(state.loop_version)
         # The model's own focus this turn, read before any rule rewrites the
         # dispatch. A turn whose dispatch was forced before the cascade
         # (absence disconfirmation) carries no model focus.
         _proposal_focus = (
-            focus_from_reason_data(_reason_data) if _pivot_v2 and not _absence_forced else None
+            focus_from_reason_data(_reason_data, hardened=_wo_policy.hardened)
+            if _pivot_v2 and not _absence_forced
+            else None
         )
 
         # F8: one definition of "this rule yields this turn". The D6 turn state
@@ -2613,8 +2926,9 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         # cascade (proposal unrewritten, counters/stamps uncommitted, one log).
         reason: dict[str, Any] = dict(_reason_data)
         counts: dict[str, int] = dict(_counts)
-        pending_consume: list[dict[str, Any]] = []
+        pending_consume: list[tuple[dict[str, Any], ConsumeReason, str]] = []
         consumed_ref: dict[str, Any] | None = None
+        events: list[dict[str, Any]] = []
         fired_counter: dict[Any, str] = {}  # force -> counter bumped by the rule that wrote it
         fired: dict[str, Fire] = {}
         for rule in RULES:
@@ -2626,12 +2940,38 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 d6_fired=_d6_fired,
             ):
                 continue
-            ctx = CascadeContext(state, reason, counts, _history, _turns, _pivot_v2)
+            ctx = CascadeContext(state, reason, counts, _history, _turns, _pivot_v2, _wo_policy)
             fire = TRIGGERS[rule.name](ctx)
             if fire is None:
                 continue
+            if fire.event is not None:
+                events.append(dict(fire.event))
             if fire.consume is not None:
-                pending_consume.append(fire.consume)
+                try:
+                    _retire_reason = ConsumeReason(fire.retire_reason)
+                except Exception:
+                    _retire_reason = ConsumeReason.BUDGET_EXHAUSTED
+                pending_consume.append((fire.consume, _retire_reason, fire.retire_detail))
+                events.append(
+                    _retirement_event(
+                        fire.consume, _retire_reason,
+                        {"detail": fire.retire_detail}, _wo_policy,
+                    )
+                )
+                if _retire_reason is ConsumeReason.INVALID_ORDER:
+                    try:
+                        logger.warning(
+                            "requery order invalid; carrier retired without dispatch: %s",
+                            fire.retire_detail,
+                            extra={
+                                "event": "requery order invalid",
+                                "error": fire.retire_detail,
+                                "tenant_id": getattr(state, "tenant_id", ""),
+                                "investigation_id": getattr(state, "investigation_id", ""),
+                            },
+                        )
+                    except Exception:
+                        pass
             if fire.next_action is None:
                 # effects only: suppression counts and carrier retirements are
                 # recorded without a dispatch, flag or cancel refund.
@@ -2668,7 +3008,8 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         _turn_focus = None
         try:
             _turn_focus = focus_from_reason_data(
-                _reason_data if isinstance(_reason_data, dict) else {}
+                _reason_data if isinstance(_reason_data, dict) else {},
+                hardened=_wo_policy.hardened,
             )
             if _pivot_v2:
                 # F4 (lv7): anchor on the model's own proposal, not on a fetch
@@ -2684,16 +3025,17 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 state.prev_focus = _turn_focus.model_dump(mode="json")
         except Exception:
             pass
-        # W1-A: advisory emission/ranking deleted. Retirements are recorded
-        # in order_events (W2 D3); this turn retires nothing yet.
+        # W2-D3/D15: carrier retirements decided this turn, committed with
+        # the stamps (F7) so a fault leaves carriers untouched.
         try:
-            state.order_events = []
+            state.order_events = events
         except Exception:
             pass
         # F7 commit point: the whole cascade ran, so counters and consume
         # stamps become visible together with the chosen dispatch.
-        for _stamped in _pending_consume:
+        for _stamped, _stamped_reason, _stamped_detail in _pending_consume:
             _stamped["consumed"] = True
+            _stamped["consumed_reason"] = _stamped_reason.value
         if isinstance(state.counts, dict):
             state.counts.clear()
             state.counts.update(_counts)

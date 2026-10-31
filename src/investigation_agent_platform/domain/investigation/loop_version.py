@@ -50,6 +50,16 @@ Versions:
   ``forcing_used`` maps each rule to its own counter instead of mirroring
   formulate for synthesis. Compute-only; loop dispatch is unchanged.
 
+- ``lv9``: lv8 plus bounded work-order carriers and honest coverage (review W2,
+  W3, W5). A REQUERY order is read newest-carrier-only and expires after its
+  time-to-live in turns; a smallest-fetch gap is covered only by a fetch that
+  produced evidence (or cleanly proved emptiness), a failed or degraded fetch
+  may be retried once, and a failed-cited-group gap is no longer covered by the
+  earlier uncited fetch of the same group; a gap feed older than its
+  time-to-live is ignored; the pivot compares file surfaces by canonical
+  identity and ignores an inverted line window. It only withholds or retries
+  retrieval; it cannot publish a verdict.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -65,7 +75,8 @@ LOOP_VERSION_LV5 = "lv5"
 LOOP_VERSION_LV6 = "lv6"
 LOOP_VERSION_LV7 = "lv7"
 LOOP_VERSION_LV8 = "lv8"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LV8
+LOOP_VERSION_LVW = "lv9"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LVW
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -75,6 +86,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LV6,
         LOOP_VERSION_LV7,
         LOOP_VERSION_LV8,
+        LOOP_VERSION_LVW,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -86,6 +98,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LV6: 6,
     LOOP_VERSION_LV7: 7,
     LOOP_VERSION_LV8: 8,
+    LOOP_VERSION_LVW: 9,
 }
 
 

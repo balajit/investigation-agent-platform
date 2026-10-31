@@ -1,13 +1,13 @@
 # src/investigation_agent_platform/domain/collection/frontier.py
-"""P6 collect frontier (DES-collect-frontier v1.0, chunk 1: domain only).
+"""Collect frontier (DES-collect-frontier v1.0): the retained implementation.
 
-Best-first search over (service, file, commit, span, config) collection
-targets. The reasoner’s dormant templates (P5) seed the frontier; the
-running loop (chunk 2) will consume the ordering and the exit signal.
-Nothing here dispatches, fetches, or touches the loop — pure domain.
+Best-first ordering, seed translation and the three-exit rule, tested and pure. As of the
+advisory-layer decision (review W1) there is no production caller: the loop's pivot,
+requery and smallest-fetch slots do not read it. It must NOT be imported from workflow
+code: ``FrontierCandidate.seeded_at`` defaults to the wall clock and ids default to uuid4,
+neither of which is replay-safe. A consumer (a future frontier-driven slot) must pass
+explicit ids and timestamps. See the rebuild notes in the design document.
 
-Version-pinned via FRONTIER_VERSION_CURRENT (never env-switched);
-in-flight rows keep the semantics they started with.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class FrontierDimension(StrEnum):
 
 class EvidenceState(StrEnum):
     """Collection-side facts the dimension mapping needs (computed by the
-    loop in chunk 2; passed in explicitly here)."""
+    loop; passed in explicitly here)."""
 
     NO_ROWS = "NO_ROWS"
     ROWS_WITHOUT_MATCH = "ROWS_WITHOUT_MATCH"
@@ -152,7 +152,7 @@ class FrontierCandidate(BaseModel):
     @property
     def dispatchable(self) -> bool:
         """True only for PENDING. P9 states are declared but never selected
-        here; the loop owns their lifecycle in chunk 2."""
+        here; the loop owns their lifecycle."""
         return self.status == CandidateStatus.PENDING
 
     def admissible(self, max_depth: int = MAX_FRONTIER_DEPTH) -> bool:
