@@ -245,15 +245,23 @@ class AsyncElasticAdapter:
     _KNOWN_IDS_TTL_SECONDS = 30.0
 
     async def _sibling_scope_ids(
-        self, mapping: ObservabilitySourceMapping
+        self,
+        mapping: ObservabilitySourceMapping,
+        tenant_id: str | None = None,
     ) -> tuple[str, ...] | None:
         """Registered tenant ids when the legacy wildcard guard applies, else None.
 
         A lookup failure propagates: a request whose index scope cannot be
-        proven unambiguous is not served (fail closed).
+        proven unambiguous is not served (fail closed). When the directory
+        read succeeds, the requesting tenant must appear in it (R11-D5);
+        otherwise the directory is incomplete and the request is refused
+        without naming other tenants.
         """
         if self._known_tenant_ids is None or not mapping.legacy_index_synthesis:
             return None
+        from investigation_agent_platform.domain.common.exceptions import (
+            SecurityPolicyViolationException,
+        )
         from investigation_agent_platform.domain.observability.mapping import IndexSynthesis
 
         if getattr(mapping, "index_synthesis", None) == IndexSynthesis.DELIMITED:
@@ -261,9 +269,17 @@ class AsyncElasticAdapter:
         now = time.monotonic()
         cached = self._known_ids_cache
         if cached is not None and now < cached[0]:
+            if tenant_id is not None and tenant_id not in cached[1]:
+                raise SecurityPolicyViolationException(
+                    "Tenant directory read is incomplete; request refused."
+                )
             return cached[1]
         ids = tuple(await self._known_tenant_ids())
         self._known_ids_cache = (now + self._KNOWN_IDS_TTL_SECONDS, ids)
+        if tenant_id is not None and tenant_id not in ids:
+            raise SecurityPolicyViolationException(
+                "Tenant directory read is incomplete; request refused."
+            )
         return ids
 
     def _identity_names(
@@ -523,7 +539,7 @@ class AsyncElasticAdapter:
                     build_index_pattern(
                         tenant_id,
                         environment,
-                        known_tenant_ids=await self._sibling_scope_ids(mapping),
+                        known_tenant_ids=await self._sibling_scope_ids(mapping, tenant_id),
                     )
                     if not index.startswith(f"logs-{tenant_id}-"):
                         raise EvidenceNotFoundException(f"Evidence {evidence_id} not found")
@@ -595,7 +611,7 @@ class AsyncElasticAdapter:
                 profile,
                 request,
                 mapping,
-                await self._sibling_scope_ids(mapping),
+                await self._sibling_scope_ids(mapping, tenant_id),
             )
             normalized = normalize_request(
                 tenant_id, investigation_id, request, self._ceilings, mapping

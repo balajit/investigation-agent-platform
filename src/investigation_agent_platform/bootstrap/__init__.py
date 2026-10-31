@@ -93,6 +93,49 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         pool_pre_ping=True,
     )
 
+    # R11-D1: staged role check (warn first, then enforce). Runs once after
+    # the engine is created; warn logs, enforce halts boot.
+    try:
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.infrastructure.persistence.role_guard import (
+            RoleVerdict,
+            evaluate_role,
+            inspect_runtime_role,
+        )
+
+        _report = _asyncio.run(inspect_runtime_role(engine))
+        _verdict = evaluate_role(_report, config.database.rls_role_check)
+        if _verdict == RoleVerdict.REFUSE:
+            from investigation_agent_platform.domain.common.exceptions import (
+                PlatformConfigurationError,
+            )
+
+            raise PlatformConfigurationError(
+                "Boot halted: database role is privileged or RLS coverage is incomplete"
+            )
+        if _verdict == RoleVerdict.WARN:
+            logger.critical(
+                "Database role is privileged or RLS coverage incomplete",
+                extra={
+                    "context": {
+                        "role": getattr(_report, "role", "unknown"),
+                        "superuser": getattr(_report, "superuser", True),
+                        "bypass_rls": getattr(_report, "bypass_rls", True),
+                        "unprotected_tables": list(
+                            getattr(_report, "unprotected_tables", ())
+                        ),
+                    }
+                },
+            )
+    except Exception as exc:
+        from investigation_agent_platform.domain.common.exceptions import (
+            PlatformConfigurationError as _PCE,
+        )
+
+        if isinstance(exc, _PCE):
+            raise
+
     # Import real repos. Any failure here is a fatal production startup error —
     # production must never silently degrade to in-memory repositories (F-001).
     from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError

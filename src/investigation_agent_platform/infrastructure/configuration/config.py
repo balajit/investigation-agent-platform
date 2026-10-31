@@ -24,6 +24,7 @@ class DatabaseConfig(BaseModel):
     connection_uri: SecretStr = Field(..., min_length=1)
     pool_size: int = Field(default=10, ge=1, le=100)
     max_overflow: int = Field(default=20, ge=0)
+    rls_role_check: str = Field(default="warn")
 
 
 class LLMConfig(BaseModel):
@@ -920,6 +921,7 @@ def load_application_config_from_yaml(
                     max_overflow=int(
                         os.environ.get("IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow))
                     ),
+                    rls_role_check=os.environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"),
                 ),
                 llm=_llm_config_from_env(
                     model_default=reasoning.model,
@@ -1008,6 +1010,7 @@ def load_application_config_from_env() -> ApplicationConfig:
                     connection_uri=SecretStr(db_uri),
                     pool_size=int(os.environ.get("IAP_DB_POOL_SIZE", "10")),
                     max_overflow=int(os.environ.get("IAP_DB_MAX_OVERFLOW", "20")),
+                    rls_role_check=os.environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"),
                 ),
                 llm=_llm_config_from_env(api_key_override=llm_key),
                 budget=BudgetConfig(

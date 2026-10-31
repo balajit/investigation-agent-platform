@@ -196,6 +196,14 @@ class _Session:
 
     async def scalars(self, _stmt: object) -> list[str]:
         self.queries += 1
+        # R11-D4: the repository probes iap_known_tenant_ids() first; this
+        # fake has no function, so fail the probe to exercise the union fallback.
+        try:
+            text = str(_stmt)
+        except Exception:
+            text = ""
+        if "iap_known_tenant_ids" in text:
+            raise RuntimeError("function iap_known_tenant_ids does not exist")
         return self._per_source.pop(0)
 
 
@@ -203,7 +211,8 @@ async def test_known_tenant_ids_is_the_deduplicated_union_of_all_three_sources()
     session = _Session([["acme"], ["n-batt", "acme", "n-a"], ["n-a", "legacy-co"]])
     repo = SqlAlchemyOnboardingRegistryRepository(lambda: session)
     assert await repo.list_known_tenant_ids() == ["acme", "legacy-co", "n-a", "n-batt"]
-    assert session.queries == 3
+    # One function probe (falls back, no function in this fake) + 3 union reads.
+    assert session.queries == 4
 
 
 async def test_known_tenant_ids_finds_a_dashed_sibling_that_is_not_registered() -> None:
