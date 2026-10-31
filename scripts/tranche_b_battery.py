@@ -28,6 +28,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from investigation_agent_platform.domain.finding.models import names_concrete_fetch_target
+
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
 APP_ID = "spring-sample-service"
 
@@ -498,37 +500,29 @@ def score_supported(
     return ("PASS", "conclusion supported by cited evidence")
 
 
-# A next_fetch that names a target: a file path / file name, or a retrieval
-# action. The handoff builder's template sentences ("Bind supporting evidence
-# and a cited causal chain ...") name neither, and counted as handoffs in the
-# first G1 cut - so a non-empty string is not enough.
-_ACTION_TOKEN = re.compile(
-    r"\b(GET_CODE|SEARCH_CODE|FIND_SYMBOL|SEARCH_LOGS|QUERY_STATE|WALK_STACK|TRACE_LOGIC|"
-    r"GET_HISTORY|SEARCH_HISTORY)\b"
-)
-_PATH_TOKEN = re.compile(r"[\w./-]*[\w-]\.(?:java|py|kt|xml|ya?ml|properties|sql|json)\b|[\w-]+/[\w./-]+")
-
-
-def _names_concrete_target(text: str) -> bool:
-    return bool(_ACTION_TOKEN.search(text) or _PATH_TOKEN.search(text))
-
-
 def _concrete_handoff(concl: dict) -> tuple[bool, str]:
-    """True when an abstention names a concrete next step or a ruled-out rival.
+    """True when an abstention carries a priced concrete next fetch or a ruled-out rival.
 
-    Concrete means: a non-empty ``handoff.next_fetch`` that is not the
-    ``n/a`` placeholder, OR a non-empty ``eliminated_rivals`` record. State
-    labels and ``next_check`` template prose do not
-    count - the review (T2) found that counting them made every abstention
-    a "handoff". The handoff model carries no numeric price, so "priced"
-    here means "names what to fetch next or what was eliminated".
+    Consumes the S7 handoff fields: ``handoff.next_fetch`` must name a
+    retrieval action or file (the domain's single definition of concrete,
+    ``names_concrete_fetch_target``) AND ``handoff.price`` must be a positive
+    number (tool-call budget units). A concrete but unpriced fetch is not a
+    priced handoff. Alternatively a non-empty ``eliminated_rivals`` record
+    counts. State labels, the ``n/a`` placeholder and ``next_check`` template
+    prose never count - the review (T2) found that counting them made every
+    abstention a "handoff".
     """
     handoff = concl.get("handoff") or {}
-    fetch = str((handoff.get("next_fetch") if isinstance(handoff, dict) else "") or "").strip()
+    if not isinstance(handoff, dict):
+        handoff = {}
+    fetch = str(handoff.get("next_fetch") or "").strip()
     if fetch and fetch.lower() != "n/a":
-        if _names_concrete_target(fetch):
-            return (True, f"next_fetch: {fetch[:80]}")
-        return (False, f"next_fetch is generic template text: {fetch[:60]}")
+        if not names_concrete_fetch_target(fetch):
+            return (False, f"next_fetch is generic template text: {fetch[:60]}")
+        price = handoff.get("price")
+        if isinstance(price, bool) or not isinstance(price, int | float) or not price > 0:
+            return (False, f"next_fetch is concrete but unpriced: {fetch[:60]}")
+        return (True, f"next_fetch (price {price:g}): {fetch[:80]}")
     rivals = concl.get("eliminated_rivals") or []
     if isinstance(rivals, list) and rivals:
         return (True, f"{len(rivals)} eliminated rival(s)")
@@ -546,7 +540,7 @@ def score_g1(conclusion: dict | None, evidence: dict | None) -> tuple[bool, str,
       row, none of which is an infrastructure-failure row. Evidence reached
       only through a linked hypothesis does NOT count (T8: abstention prose
       and hypothesis links are unverified).
-    - ``handoff``: an abstention that names a concrete next fetch or an
+    - ``handoff``: an abstention carrying a concrete, priced next fetch or an
       elimination record (see ``_concrete_handoff``).
     - ``miss``: anything else, including a missing conclusion, an answered
       conclusion with no resolvable citation, and filler-only abstentions.

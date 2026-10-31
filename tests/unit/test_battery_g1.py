@@ -62,7 +62,11 @@ def test_abstention_with_next_fetch_is_a_handoff() -> None:
     ok, kind, _ = battery.score_g1(
         {
             "status": "INSUFFICIENT_EVIDENCE",
-            "handoff": {"state": "FRONTIER_EXHAUSTED", "next_fetch": "GET_CODE A.java 10-40"},
+            "handoff": {
+                "state": "FRONTIER_EXHAUSTED",
+                "next_fetch": "GET_CODE A.java 10-40",
+                "price": 1.0,
+            },
         },
         {},
     )
@@ -101,7 +105,7 @@ def test_next_fetch_naming_a_path_or_action_is_concrete() -> None:
         "Open OrderFilter.java",
     ):
         ok, kind, _ = battery.score_g1(
-            {"status": "INSUFFICIENT_EVIDENCE", "handoff": {"next_fetch": text}}, {}
+            {"status": "INSUFFICIENT_EVIDENCE", "handoff": {"next_fetch": text, "price": 1.0}}, {}
         )
         assert (ok, kind) == (True, "handoff"), text
 
@@ -172,3 +176,55 @@ def test_stamp_choices_come_from_the_engine_not_a_copy() -> None:
 
     assert battery.known_claim_binding_versions() == sorted(KNOWN_CLAIM_BINDING_VERSIONS)
     assert "cbv3" in battery.known_claim_binding_versions()
+
+
+def test_concrete_but_unpriced_next_fetch_is_a_miss() -> None:
+    for price in (None, 0, 0.0, -1, "1", True, float("nan")):
+        handoff: dict = {"state": "FRONTIER_EXHAUSTED", "next_fetch": "GET_CODE A.java"}
+        if price is not None:
+            handoff["price"] = price
+        ok, kind, detail = battery.score_g1(
+            {"status": "INSUFFICIENT_EVIDENCE", "handoff": handoff}, {}
+        )
+        assert (ok, kind) == (False, "miss"), price
+        assert "unpriced" in detail
+
+
+def test_price_is_reported_in_the_detail() -> None:
+    ok, _, detail = battery.score_g1(
+        {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "handoff": {"next_fetch": "GET_CODE A.java then SEARCH_CODE Foo", "price": 2.0},
+        },
+        {},
+    )
+    assert ok and "price 2" in detail
+
+
+def test_builder_output_with_a_gap_target_satisfies_g1_end_to_end() -> None:
+    from investigation_agent_platform.domain.finding.models import classify_terminal_handoff
+
+    handoff = classify_terminal_handoff(
+        status="INSUFFICIENT_EVIDENCE",
+        reason="insufficient",
+        next_check="Narrow or re-scope the empty-search proof to the claimed scope, then re-verify.",
+        gap_fetch="SEARCH_CODE Foo within svc/",
+    )
+    ok, kind, detail = battery.score_g1(
+        {"status": "INSUFFICIENT_EVIDENCE", "handoff": handoff.model_dump(mode="json")}, {}
+    )
+    assert (ok, kind) == (True, "handoff"), detail
+
+
+def test_builder_output_from_template_prose_alone_still_misses_g1() -> None:
+    from investigation_agent_platform.domain.finding.models import classify_terminal_handoff
+
+    handoff = classify_terminal_handoff(
+        status="INSUFFICIENT_EVIDENCE",
+        reason="insufficient",
+        next_check="Bind a causal chain with cited evidence for each link, then re-verify.",
+    )
+    ok, kind, _ = battery.score_g1(
+        {"status": "INSUFFICIENT_EVIDENCE", "handoff": handoff.model_dump(mode="json")}, {}
+    )
+    assert (ok, kind) == (False, "miss")

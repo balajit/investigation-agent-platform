@@ -77,7 +77,10 @@ def test_s7_likely_is_not_proved_and_keeps_follow_up() -> None:
         ranked_alternatives=["Downstream latency"],
     )
     assert handoff.state != HandoffState.PROVED
-    assert handoff.next_fetch == fetch
+    # Prose names no concrete target: it stays in the steps, never as next_fetch.
+    assert handoff.next_fetch is None
+    assert handoff.price is None
+    assert fetch in handoff.recommended_next_steps
     assert any("rival" in step.lower() for step in handoff.recommended_next_steps)
 
 
@@ -136,7 +139,10 @@ def test_s7_handoff_round_trips_on_conclusion() -> None:
     revived = InvestigationConclusion.model_validate(conclusion.model_dump(mode="json"))
     assert revived.handoff is not None
     assert revived.handoff.state == HandoffState.FRONTIER_EXHAUSTED
-    assert revived.handoff.next_fetch == "Cite and bind supporting evidence, then re-verify."
+    assert revived.handoff.next_fetch is None
+    assert "Cite and bind supporting evidence, then re-verify." in (
+        revived.handoff.recommended_next_steps
+    )
 
 
 def test_s7_budget_handoff_prices_resume_pointer() -> None:
@@ -148,7 +154,7 @@ def test_s7_budget_handoff_prices_resume_pointer() -> None:
     )
     assert handoff.state == HandoffState.BUDGET_DEFERRED
     assert handoff.target == "n/a"
-    assert handoff.next_fetch == fetch
+    assert handoff.next_fetch is None  # prose names no concrete target
     assert handoff.resume_pointer is not None and fetch[:80] in handoff.resume_pointer
     assert handoff.recommended_next_steps[0] == fetch
 

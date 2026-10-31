@@ -1,12 +1,19 @@
 # src/investigation_agent_platform/domain/finding/models.py
 """Finding aggregates and terminal conclusion models."""
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from investigation_agent_platform.domain.hypothesis.models import (
+    ClaimKind,
+    ClaimTarget,
+    HypothesisStatus,
+)
 
 
 class FindingType(StrEnum):
@@ -113,6 +120,106 @@ class HandoffState(StrEnum):
     TELEMETRY_DEFERRED = "TELEMETRY_DEFERRED"
 
 
+# Retrieval actions a next fetch can name (mirrors the investigation action
+# vocabulary). Longest names first so GET_CODE_HISTORY is never read as GET_CODE.
+_FETCH_ACTION_TOKEN = re.compile(
+    r"\b(GET_CODE_HISTORY|FIND_CALL_GRAPH|SEARCH_REF_DOCS|SEARCH_CODE|SEARCH_LOGS|"
+    r"FIND_SYMBOL|QUERY_STATE|WALK_STACK|TRACE_LOGIC|PROBE_API|GET_CODE)\b"
+)
+_FETCH_PATH_TOKEN = re.compile(
+    r"[\w./-]*[\w-]\.(?:java|py|kt|xml|ya?ml|properties|sql|json)\b|[\w-]+/[\w./-]+"
+)
+#: Most tool calls a single priced next fetch may claim.
+MAX_FETCH_PRICE = 20.0
+
+
+def names_concrete_fetch_target(text: str | None) -> bool:
+    """True when text names a retrieval action or a file path/name.
+
+    The single definition of "concrete": the handoff builder emits only such
+    targets in ``next_fetch`` and the battery's G1 scores against the same
+    rule. Template prose ("Bind supporting evidence ...") names neither.
+    """
+    value = str(text or "")
+    return bool(_FETCH_ACTION_TOKEN.search(value) or _FETCH_PATH_TOKEN.search(value))
+
+
+def price_next_fetch(text: str | None) -> float | None:
+    """Estimated cost of a concrete next fetch, in tool-call budget units.
+
+    One unit is one retrieval call against the per-investigation tool-call
+    envelope. A fetch naming N distinct retrieval actions costs N; one that
+    names only a file path (an implied read) costs 1. Prose that names no
+    concrete target is unpriced (None) - a price is never fabricated.
+    """
+    if not names_concrete_fetch_target(text):
+        return None
+    actions = set(_FETCH_ACTION_TOKEN.findall(str(text or "")))
+    return float(min(max(len(actions), 1), MAX_FETCH_PRICE))
+
+
+def derive_gap_fetch(claim_kind: ClaimKind | None, target: ClaimTarget | None) -> str | None:
+    """The concrete next fetch for an unproven claim, from its typed target.
+
+    Deterministic and pure: it names a retrieval action plus the claim's own
+    file/symbol/scope, never prose. Only code-side fetches are named. A
+    BEHAVIOR or CAUSAL claim also needs runtime evidence, but a runtime fetch
+    is never invented here (a code-only application has none to fetch), so
+    those claims get their code half or nothing. Returns None when the claim
+    carries no target to name (NOT_CHECKABLE, untyped, or empty target).
+    """
+    if claim_kind is None or claim_kind == ClaimKind.NOT_CHECKABLE or target is None:
+        return None
+    path = (target.file_path or "").strip()
+    symbol = (target.symbol or "").strip()
+    scope = (target.scope or "").strip()
+    lines = (
+        f" lines {target.line_start}-{target.line_end}"
+        if target.line_start and target.line_end
+        else ""
+    )
+    if claim_kind == ClaimKind.HISTORY:
+        return f"GET_CODE_HISTORY {path}"[:1024] if path else None
+    if claim_kind == ClaimKind.ABSENCE:
+        if not symbol:
+            return None
+        return f"SEARCH_CODE {symbol}" + (f" within {scope}" if scope else "")[:1024]
+    if claim_kind == ClaimKind.CALL_EDGE:
+        if path:
+            return f"GET_CODE {path}{lines} (call site of {symbol or 'the callee'})"[:1024]
+        return f"SEARCH_CODE {symbol} call sites"[:1024] if symbol else None
+    # DEFINITION, BEHAVIOR, CAUSAL: the code half.
+    if path:
+        return f"GET_CODE {path}{lines}" + (f" for {symbol}" if symbol else "")[:1024]
+    return f"SEARCH_CODE {symbol}"[:1024] if symbol else None
+
+
+def gap_fetch_for_hypotheses(hypotheses: Any) -> str | None:
+    """Concrete next fetch for the strongest hypothesis that is still unproven.
+
+    Considers hypotheses that are not VERIFIED or REJECTED and carry a typed
+    claim, highest confidence first. Fail-open: any fault yields None, so a
+    handoff is never blocked by gap derivation.
+    """
+    try:
+        open_hyps = [
+            h
+            for h in (hypotheses or [])
+            if getattr(h, "status", None)
+            not in (HypothesisStatus.VERIFIED, HypothesisStatus.REJECTED)
+        ]
+        open_hyps.sort(
+            key=lambda h: float(getattr(h, "confidence_score", 0.0) or 0.0), reverse=True
+        )
+        for hyp in open_hyps:
+            fetch = derive_gap_fetch(hyp.claim_kind, hyp.claim_target)
+            if fetch:
+                return fetch
+    except Exception:
+        return None
+    return None
+
+
 class S7Handoff(BaseModel):
     """Explicit priced handoff for a terminal investigation.
 
@@ -120,6 +227,10 @@ class S7Handoff(BaseModel):
     and refusal handoffs use ``"n/a"``: the handoff names the next fetch
     or the elimination record, but it never asserts a fetch target and
     never mutates the investigation status target.
+
+    ``price`` is the estimated cost of ``next_fetch`` in tool-call budget
+    units (see ``price_next_fetch``); None means unpriced. It travels in the
+    same JSONB handoff column, so no migration is needed.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -128,6 +239,7 @@ class S7Handoff(BaseModel):
     state: HandoffState
     target: str = Field(default="n/a", max_length=1024)
     next_fetch: str | None = Field(default=None, max_length=1024)
+    price: float | None = Field(default=None, ge=0.0, le=MAX_FETCH_PRICE)
     resume_pointer: str | None = Field(default=None, max_length=1024)
     recommended_next_steps: list[str] = Field(default_factory=list, max_length=20)
 
@@ -141,6 +253,7 @@ def classify_terminal_handoff(
     ranked_alternatives: list[str] | None = None,
     eliminated_rivals: list[EliminatedRival | dict[str, Any]] | None = None,
     upstream_identity: str | None = None,
+    gap_fetch: str | None = None,
 ) -> S7Handoff:
     """Map a terminal outcome to its explicit S7 handoff (handoff-v1).
 
@@ -163,10 +276,23 @@ def classify_terminal_handoff(
         reason_lower = reason_text.lower()
     except Exception:
         reason_text, reason_lower = "", ""
+    # ``next_check`` is a prose directive ("..., then re-verify"). ``next_fetch``
+    # only ever carries a concrete target (a named action or file): the
+    # caller's gap-derived fetch first, else the prose itself when it happens
+    # to name one. Prose that names nothing stays in the steps and is never
+    # stored as a fetch target (review T2: no filler).
     try:
         fetch = str(next_check or "").strip() or None
     except Exception:
         fetch = None
+    try:
+        gap = str(gap_fetch or "").strip()
+        target: str | None = next(
+            (c[:1024] for c in (gap, fetch or "") if c and names_concrete_fetch_target(c)), None
+        )
+    except Exception:
+        target = None
+    directive = fetch or target
     try:
         alternatives = [
             str(item or "").strip()
@@ -201,14 +327,21 @@ def classify_terminal_handoff(
     ):
         return S7Handoff(state=HandoffState.PROVED)
 
+    # Steps keep the prose directive; the concrete target is added once when
+    # it is not already the directive itself.
+    target_step = f"Next fetch: {target[:480]}" if target and target != directive else None
+
     if upstream is not None:
         steps = [f"Named handoff to {upstream[:200]}: no fetch crosses the tenant boundary."]
-        if fetch is not None:
-            steps.append(f"Localizing evidence/next fetch: {fetch[:300]}")
+        if directive is not None:
+            steps.append(f"Localizing evidence/next fetch: {directive[:300]}")
+        if target_step is not None:
+            steps.append(target_step)
         return S7Handoff(
             state=HandoffState.CROSS_BOUNDARY,
             target=upstream[:1024],
-            next_fetch=fetch,
+            next_fetch=target,
+            price=price_next_fetch(target),
             resume_pointer=None,
             recommended_next_steps=steps[:20],
         )
@@ -218,15 +351,17 @@ def classify_terminal_handoff(
         or "auth_failed" in signal_text
         or "telemetry" in signal_text
     ):
-        resume = fetch or (
+        resume = directive or (
             "Restore provider authorization, then resume at the blocked "
             "telemetry fetch and re-verify."
         )
+        steps = [resume[:500]] + ([target_step] if target_step else [])
         return S7Handoff(
             state=HandoffState.TELEMETRY_DEFERRED,
-            next_fetch=fetch,
+            next_fetch=target,
+            price=price_next_fetch(target),
             resume_pointer=resume[:1024],
-            recommended_next_steps=[resume[:500]][:20],
+            recommended_next_steps=steps[:20],
         )
 
     if (
@@ -235,16 +370,18 @@ def classify_terminal_handoff(
         or "verification_failed_or_limit_reached" in signal_text
         or "limit_reached" in signal_text
     ):
-        if fetch is not None:
+        if directive is not None:
             resume = (
                 f"Resume with a larger iteration/evidence budget at the "
-                f"blocked fetch: {fetch[:300]}"
+                f"blocked fetch: {(target or directive)[:300]}"
             )
+            steps = [directive[:500], resume[:500]] + ([target_step] if target_step else [])
             return S7Handoff(
                 state=HandoffState.BUDGET_DEFERRED,
-                next_fetch=fetch,
+                next_fetch=target,
+                price=price_next_fetch(target),
                 resume_pointer=resume[:1024],
-                recommended_next_steps=[fetch[:500], resume[:500]][:20],
+                recommended_next_steps=steps[:20],
             )
 
     record: list[str] = []
@@ -254,14 +391,17 @@ def classify_terminal_handoff(
         )
     if alternatives:
         record.append(f"Ranked alternatives: {alternatives[0][:300]}")
-    if fetch is not None:
-        record.append(fetch[:500])
+    if directive is not None:
+        record.append(directive[:500])
+    if target_step is not None:
+        record.append(target_step)
     # Review T2: no filler sentence. When no rival was ruled out, no
     # alternative ranked and no fetch named, the handoff records nothing -
     # a generic line here made every abstention look like a handoff.
     return S7Handoff(
         state=HandoffState.FRONTIER_EXHAUSTED,
-        next_fetch=fetch,
+        next_fetch=target,
+        price=price_next_fetch(target),
         resume_pointer=None,
         recommended_next_steps=record[:20],
     )

@@ -787,6 +787,7 @@ async def _gate_conclusion_or_fail(
         FindingType,
         InvestigationConclusion,
         classify_terminal_handoff,
+        gap_fetch_for_hypotheses,
     )
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
     from investigation_agent_platform.domain.investigation.models import InvestigationStatus
@@ -952,6 +953,7 @@ async def _gate_conclusion_or_fail(
             limitations=[str(l) for l in (limitations or [])],
             ranked_alternatives=_ranked_alternatives,
             eliminated_rivals=list(_abstention_eliminated or []),
+            gap_fetch=gap_fetch_for_hypotheses(list(hypotheses or [])),
         )
         await finding_repo.save_conclusion(
             tenant_id,
@@ -2001,6 +2003,7 @@ async def _gate_conclusion_or_fail(
         limitations=list(_verification_limitations or []),
         ranked_alternatives=list(_alternatives or []),
         eliminated_rivals=list(_eliminated_rivals or []),
+        gap_fetch=gap_fetch_for_hypotheses(list(hypotheses or [])),
     )
     conclusion = InvestigationConclusion(
         tenant_id=tenant_id,
@@ -2182,6 +2185,25 @@ def _route_terminal_check(reasons: list[str], generic: str) -> str:
         return generic
 
 
+async def _collect_open_gap_fetch(
+    ctx: Any, tenant_id: str, investigation_id: Any, derive: Any
+) -> str | None:
+    """Concrete next fetch for the strongest unproven hypothesis, from the store.
+
+    Fail-open like the reasons collector: any fault yields None and the
+    handoff simply carries no concrete target (never a fabricated one).
+    """
+    try:
+        hypothesis_repo = getattr(ctx, "hypothesis_repo", None)
+        if hypothesis_repo is None:
+            return None
+        hypotheses = await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
+        fetch = derive(list(hypotheses or []))
+        return str(fetch) if fetch else None
+    except Exception:
+        return None
+
+
 async def _collect_hypothesis_gate_reasons(
     ctx: Any, tenant_id: str, investigation_id: Any
 ) -> list[str]:
@@ -2319,6 +2341,7 @@ async def conclude_investigation_activity(
                                 ConclusionStatus,
                                 InvestigationConclusion,
                                 classify_terminal_handoff,
+                                gap_fetch_for_hypotheses,
                             )
 
                             finding_repo: Any = getattr(ctx, "finding_repo", None)
@@ -2358,11 +2381,22 @@ async def conclude_investigation_activity(
                                             )
                                     except Exception:
                                         pass
+                                    # Provider blocks name no code fetch: the blocked
+                                    # fetch itself is the resume point.
+                                    _epistemic_gap: str | None = None
+                                    if "provider_blocked" not in _epistemic_reason:
+                                        _epistemic_gap = await _collect_open_gap_fetch(
+                                            ctx,
+                                            tenant_id,
+                                            investigation_id,
+                                            gap_fetch_for_hypotheses,
+                                        )
                                     _epistemic_handoff = classify_terminal_handoff(
                                         status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
                                         reason=_epistemic_reason,
                                         next_check=_epistemic_check,
                                         limitations=[f"Investigation ended: {reason}."],
+                                        gap_fetch=_epistemic_gap,
                                     )
                                     await finding_repo.save_conclusion(
                                         tenant_id,
