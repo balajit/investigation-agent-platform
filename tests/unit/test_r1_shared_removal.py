@@ -352,3 +352,13 @@ async def _assert_proof_rejected(bad: str) -> None:
 
     async with rls_session(_F(), "t", shared_fingerprints=[bad]):
         pass
+
+
+def test_r1_t18_ctx_key_flows_to_intake() -> None:
+    from investigation_agent_platform.api.dependencies import AppContext
+
+    ctx = AppContext()
+    assert ctx.fingerprint_key is None
+    assert ctx.error_intake_service().fingerprint_key == b"iap-dev-fingerprint-key-not-a-secret"
+    ctx.fingerprint_key = KEY_A
+    assert ctx.error_intake_service().fingerprint_key == KEY_A

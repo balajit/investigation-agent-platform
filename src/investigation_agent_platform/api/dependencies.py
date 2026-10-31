@@ -1999,6 +1999,9 @@ class AppContext:
         # Part 6 Slice 2: Graphiti temporal projection. None = envelopes
         # only (wired in bootstrap when graphiti_enabled).
         self.temporal_port: TemporalKnowledgePort | None = None
+        # R1: deployment HMAC key for code-issue fingerprints. None =
+        # dev fallback (bootstrap sets the resolved key in production).
+        self.fingerprint_key: bytes | None = None
 
         self.outbox_queue: asyncio.Queue[WorkflowStatusEvent] = asyncio.Queue()
         self.outbox_worker = InvestigationOutboxWorker(
@@ -2149,13 +2152,16 @@ class AppContext:
     def error_intake_service(self, clock: Any = None) -> Any:
         from investigation_agent_platform.application.knowledge.intake import ErrorIntakeService
 
+        key = getattr(self, "fingerprint_key", None)
+        if key is None:
+            key = b"iap-dev-fingerprint-key-not-a-secret"
         return ErrorIntakeService(
             investigation_repo=self.investigation_repo,
             session_repo=self.session_repo,
             code_issue_index=self.code_issue_index,
             clock=clock,
             profile_repo=self.profile_repo,
-            fingerprint_key=b"iap-dev-fingerprint-key-not-a-secret",
+            fingerprint_key=key,
         )
 
     def knowledge_capture_service(

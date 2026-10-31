@@ -674,6 +674,7 @@ class TestBootstrap:
             ApplicationConfig,
             BudgetConfig,
             DatabaseConfig,
+            KnowledgeConfig,
             LLMConfig,
         )
 
@@ -685,6 +686,7 @@ class TestBootstrap:
             ),
             llm=LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o"),
             budget=BudgetConfig(),
+            knowledge=KnowledgeConfig(fingerprint_key=SecretStr("test-wiring-key")),
         )
         with patch("investigation_agent_platform.bootstrap.create_async_engine") as mock_engine:
             mock_engine.return_value = MagicMock()

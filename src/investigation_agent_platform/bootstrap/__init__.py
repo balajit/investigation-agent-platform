@@ -86,6 +86,16 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
 
         raise PlatformConfigurationError("IAP_DATABASE_URI is required in production")
 
+    # R1: fingerprint key required outside dev environments (names the
+    # variable only, never a value). Dev falls back to the documented
+    # non-secret key via resolve_fingerprint_key.
+    from investigation_agent_platform.infrastructure.configuration.config import (
+        _validate_knowledge_secrets,
+        resolve_fingerprint_key,
+    )
+
+    _validate_knowledge_secrets(config.knowledge, config.environment)
+
     engine: AsyncEngine = create_async_engine(
         _normalize_async_uri(db_uri),
         pool_size=config.database.pool_size,
@@ -302,6 +312,10 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     ctx.artifact_repo = artifact_repo  # type: ignore[attr-defined]
     ctx.session_repo = session_repo  # type: ignore[attr-defined]
     ctx.code_issue_index = code_issue_index  # type: ignore[attr-defined]
+
+    # R1: resolved HMAC key rides the context so intake uses the deployment
+    # secret (dev: documented non-secret fallback). Never logged.
+    ctx.fingerprint_key = resolve_fingerprint_key(config.knowledge, config.environment)  # type: ignore[attr-defined]
 
     # Attach engine and observability for health probes. Observability
     # construction failure is fatal in production — it must not silently
