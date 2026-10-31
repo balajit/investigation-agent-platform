@@ -436,6 +436,20 @@ def classify_provider_failure(exc: BaseException, absent_label: str) -> tuple[st
     raise exc
 
 
+def _typed_http_status(exc: BaseException) -> int | None:
+    """An HTTP status carried by the exception or its bounded cause chain (never a message)."""
+    current: BaseException | None = exc
+    for _ in range(4):
+        if current is None:
+            return None
+        for attr in ("status_code", "http_status_code", "status"):
+            value = getattr(current, attr, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def classify_reasoning_failure(exc: BaseException) -> tuple[str, float | None]:
     """(failure kind, retry_after) for a reasoning-gateway failure (H7/T7).
 
@@ -445,7 +459,9 @@ def classify_reasoning_failure(exc: BaseException) -> tuple[str, float | None]:
     unconfigured gateway are blocked; everything else (including the
     classifier's own re-raise for unknown exception types) is "other".
     The shared classifier's policy is kept: a sniffed third-party auth
-    message degrades, it never blocks by itself.
+    message degrades, it never blocks by itself. A TYPED 401/403 status on
+    the exception (or its cause chain) is blocked: the adapters already
+    treat those as non-retryable, so sniffing text is unnecessary.
     """
     from investigation_agent_platform.application.worker.reasoning_failure import (
         KIND_BLOCKED,
@@ -453,6 +469,8 @@ def classify_reasoning_failure(exc: BaseException) -> tuple[str, float | None]:
         KIND_TRANSIENT,
     )
 
+    if _typed_http_status(exc) in (401, 403):
+        return (KIND_BLOCKED, None)
     retry_after: float | None = None
     try:
         hint = getattr(exc, "retry_after", None)

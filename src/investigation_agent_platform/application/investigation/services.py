@@ -5,6 +5,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from investigation_agent_platform.application.investigation.verification import (
+    CLAIM_BINDING_CURRENT,
+)
 from investigation_agent_platform.domain.common.exceptions import (
     ApplicationProfileNotFoundException,
     DomainException,
@@ -263,7 +266,7 @@ class CreateInvestigationService:
             metadata={
                 "profile_version": profile.version,
                 "disposition": disposition.to_metadata(),
-                "claim_binding_version": "cbv1",
+                "claim_binding_version": CLAIM_BINDING_CURRENT,
                 "loop_version": LOOP_VERSION_CURRENT,
                 # P1 (S1 anchors): onset T / last-good G (or explicit unknown)
                 # plus the spread budget drawn from the effective tool-call

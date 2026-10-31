@@ -7,7 +7,7 @@ import logging
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
 from temporalio import activity
@@ -26,6 +26,7 @@ from investigation_agent_platform.application.worker.reasoning_failure import (
     REASON_MODEL_OUTPUT_INVALID,
     REASON_PROVIDER_BLOCKED,
     REASON_PROVIDER_UNAVAILABLE,
+    REASON_REASONING_BLOCKED,
     REASON_UNAVAILABLE,
 )
 from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
@@ -1853,6 +1854,9 @@ async def _gate_conclusion_or_fail(
             extended=_lv_h_enabled(getattr(_inv, "metadata", None)),
         )
         finding = Finding(
+            # H14/T12: deterministic id so a conclude retry after a committed
+            # finding is a no-op instead of a duplicate.
+            id=uuid5(NAMESPACE_URL, f"finding:{investigation_id}:{candidate.id}"),
             tenant_id=tenant_id,
             investigation_id=investigation_id,
             finding_type=FindingType.OBSERVATION if _finding_as_observation else FindingType.ROOT_CAUSE,
@@ -1871,36 +1875,9 @@ async def _gate_conclusion_or_fail(
             "insufficient", [f"finding_invalid: {', '.join(_bad_fields)[:200]}"], candidate.id
         )
         return InvestigationStatus.COMPLETED
-    if hyp.status == _HStatus.SUPPORTED and hypothesis_repo is not None:
-        hyp = hyp.transition_status(_HStatus.VERIFIED)
-        await hypothesis_repo.save(tenant_id, hyp, investigation_id, hyp.version)
-    await finding_repo.save_finding_record(tenant_id, finding)
-    # G-4: incident fusion. When a journey spine exists and two or more
-    # OBSERVATION findings were persisted across steps, merge them into one
-    # incident-level finding (union evidence, concatenated statements).
-    # Fail-open: fusion never blocks the conclusion.
-    try:
-        await _fuse_journey_findings(
-            tenant_id=tenant_id,
-            investigation_id=investigation_id,
-            finding_repo=finding_repo,
-            evidence_repo=getattr(ctx, "evidence_repo", None),
-        )
-    except Exception as exc:
-        story_log(
-            logger,
-            logging.WARNING,
-            "journey fusion failed; single findings stand",
-            comp=COMP_ACTVTY,
-            func="_gate_conclusion_or_fail",
-            stage="conclude",
-            step="fuse",
-            outcome=OUTCOME_SKIPPED,
-            tenant_id=tenant_id,
-            investigation_id=investigation_id,
-            event="journey fusion failed",
-            error=str(exc),
-        )
+    # H14: the VERIFIED transition is computed but not yet written; the
+    # hypothesis, the Finding and the conclusion commit as one unit below.
+    hyp_to_commit = hyp.transition_status(_HStatus.VERIFIED) if hyp.status == _HStatus.SUPPORTED else None
     # F: ranked alternatives (runner-ups, capped) computed before the
     # conclusion so partial answers survive abstention.
     _alternatives: list[str] = []
@@ -2134,7 +2111,40 @@ async def _gate_conclusion_or_fail(
         caller_coverage=_caller_coverage,
         verifier_version=verifier_version,
     )
-    await finding_repo.save_conclusion(tenant_id, conclusion)
+    # H14: one unit of work for the hypothesis, the Finding and the
+    # conclusion. The unit of work is required, never optional.
+    await ctx.conclusion_uow.commit_verdict(
+        tenant_id,
+        investigation_id=investigation_id,
+        hypothesis=hyp_to_commit,
+        expected_version=hyp.version,
+        finding=finding,
+        conclusion=conclusion,
+    )
+    # G-4: incident fusion. Runs after the commit (best-effort) so it reads
+    # committed findings. Fail-open: fusion never blocks the conclusion.
+    try:
+        await _fuse_journey_findings(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            finding_repo=finding_repo,
+            evidence_repo=getattr(ctx, "evidence_repo", None),
+        )
+    except Exception as exc:
+        story_log(
+            logger,
+            logging.WARNING,
+            "journey fusion failed; single findings stand",
+            comp=COMP_ACTVTY,
+            func="_gate_conclusion_or_fail",
+            stage="conclude",
+            step="fuse",
+            outcome=OUTCOME_SKIPPED,
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            event="journey fusion failed",
+            error=str(exc),
+        )
     # Debug story: final conclusion payload. Closes the run's story with
     # the terminal verdict and its support.
     _story_debug(
@@ -2264,7 +2274,12 @@ def _is_actionable_terminal_reason(text: str) -> bool:
 def _is_reasoning_terminal_reason(reason_lower: str) -> bool:
     """Whether a terminal reason is a reasoning failure that degrades (H7/T7). Pure."""
     return reason_lower == REASON_DEFER_INVALID or reason_lower.startswith(
-        (REASON_MODEL_OUTPUT_INVALID, REASON_PROVIDER_UNAVAILABLE, REASON_UNAVAILABLE)
+        (
+            REASON_MODEL_OUTPUT_INVALID,
+            REASON_PROVIDER_UNAVAILABLE,
+            REASON_REASONING_BLOCKED,
+            REASON_UNAVAILABLE,
+        )
     )
 
 
@@ -2274,6 +2289,8 @@ def _epistemic_next_check(reason_lower: str) -> str:
         return "Raise the iteration or evidence budget and resume, then re-verify."
     if reason_lower == "defer_repair_budget_exhausted":
         return "Gather the missing proof kind within the bounded repair budget, then re-verify."
+    if reason_lower.startswith(REASON_REASONING_BLOCKED):
+        return "Restore access to the reasoning provider (credentials or configuration), then resume and re-verify."
     if REASON_PROVIDER_BLOCKED in reason_lower:
         return "Restore the blocked provider fetch and resume, then re-verify."
     if reason_lower.startswith(REASON_MODEL_OUTPUT_INVALID):

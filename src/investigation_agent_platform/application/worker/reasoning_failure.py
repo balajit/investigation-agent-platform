@@ -26,9 +26,10 @@ KIND_BLOCKED = "blocked"
 KIND_MODEL_OUTPUT = "model_output"
 KIND_OTHER = "other"
 
-#: Terminal-reason prefixes. ``provider_blocked`` is shared with the execution
-#: side so the existing handoff routing applies unchanged.
+#: Terminal-reason prefixes. ``provider_blocked`` stays execution-side only;
+#: reasoning blocks use their own prefix so handoffs name what to resume.
 REASON_PROVIDER_BLOCKED = "provider_blocked"
+REASON_REASONING_BLOCKED = "reasoning_provider_blocked"
 REASON_MODEL_OUTPUT_INVALID = "reasoning_model_output_invalid"
 REASON_PROVIDER_UNAVAILABLE = "reasoning_provider_unavailable"
 REASON_UNAVAILABLE = "reasoning_unavailable"
@@ -39,7 +40,7 @@ REASON_DEFER_INVALID = "defer_gathering_invalid"
 TRANSIENT_FAILURE_TYPE = "ReasoningProviderTransient"
 
 _PREFIX_FOR_KIND = {
-    KIND_BLOCKED: REASON_PROVIDER_BLOCKED,
+    KIND_BLOCKED: REASON_REASONING_BLOCKED,
     KIND_MODEL_OUTPUT: REASON_MODEL_OUTPUT_INVALID,
     KIND_TRANSIENT: REASON_PROVIDER_UNAVAILABLE,
     KIND_OTHER: REASON_UNAVAILABLE,

@@ -290,10 +290,17 @@ LOOP_TELEMETRY_SCALARS: tuple[str, ...] = (
     "evidence_banked_total",
     "overconfident_turns",
     "iterations",
-    "d6_blocked_no_evidence_count",
-    "fetches_dispatched",
-    "defer_repairs_used",
-    "defer_repairs_limit",
+    "d6_blocked_no_evidence_count",  # lv4 D6 cap firing rate (was dropped)
+    "fetches_dispatched",  # lv4 (was dropped)
+    "defer_repairs_used",  # was dropped
+    "defer_repairs_limit",  # was dropped
+    "checkability_floor_retyped_total",  # H5 reopen detector numerator pieces
+    "nc_kept_total",
+    "nc_kept_with_identifier_total",
+    "claims_total",
+    "resample_attempts_total",  # H6 recovery-rate pieces
+    "resample_recovered_total",
+    "resample_exhausted_total",
 )
 
 #: Workflow keys stamped by their own validated block in _derive_loop_telemetry.

@@ -4,7 +4,7 @@
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from investigation_agent_platform.domain.code.models import JavaFactCategory
 from investigation_agent_platform.domain.hypothesis.models import ClaimKind, ClaimTarget
@@ -53,6 +53,15 @@ class DecisionClaim(BaseModel):
     caller_edges: list[CallerEdgeClaim] = Field(default_factory=list, max_length=20)
 
 
+class ContradictionReport(BaseModel):
+    """H11a: a model-reported contradiction with the evidence rows it relies on."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    statement: str = Field(min_length=1, max_length=2048)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 class ReasoningDisposition(StrEnum):
     """Workflow disposition for a reasoner decision."""
 
@@ -83,12 +92,18 @@ class InvestigationDecision(BaseModel):
     information_gaps: list[str] = Field(default_factory=list)
     hypotheses_evaluated: list[str] = Field(default_factory=list)
     claims: list[DecisionClaim] = Field(default_factory=list, max_length=20)
-    contradictions_found: list[str] = Field(default_factory=list)
+    contradictions_found: list[ContradictionReport] = Field(default_factory=list, max_length=20)
     conclusion_readiness: float = Field(ge=0.0, le=1.0, default=0.0)
     reasoning_chain: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     disposition: ReasoningDisposition | None = None
     defer_gathering: DeferGathering | None = None
+
+    @field_validator("contradictions_found", mode="before")
+    @classmethod
+    def _bare_strings_are_unlinked_reports(cls, value: Any) -> Any:
+        # A bare string is an unlinked report (a note), by definition, not a legacy form.
+        return [{"statement": v} if isinstance(v, str) else v for v in (value or [])]
 
     @model_validator(mode="after")
     def validate_disposition(self) -> "InvestigationDecision":

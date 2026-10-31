@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
@@ -801,13 +802,23 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             # them — verification and the conclusion gate read them back from
             # the repo. Best-effort: persistence trouble must never fail
             # reasoning itself. Statements dedupe against existing rows.
+            # H11a: under LV_H reports are typed (statement + evidence links);
+            # the platform validates the links and caps severity (a report can
+            # never veto a conclusion by itself). Older pins keep MEDIUM
+            # unlinked rows.
+            try:
+                from investigation_agent_platform.domain.investigation.loop_version import (
+                    lv_h_enabled as _lv_h_reason,
+                )
+
+                _typed_reports = bool(
+                    _lv_h_reason({"loop_version": data.get("loop_version", "")})
+                )
+            except Exception:
+                _typed_reports = False
             try:
                 contradiction_repo: Any = getattr(ctx, "contradiction_repo", None)
-                reported = [
-                    str(s or "").strip()[:2048]
-                    for s in (getattr(decision, "contradictions_found", None) or [])
-                ]
-                reported = [s for s in reported if s]
+                reported = list(getattr(decision, "contradictions_found", None) or [])
                 if contradiction_repo is not None and reported:
                     from investigation_agent_platform.application.investigation.verification import (
                         Contradiction,
@@ -820,18 +831,62 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     known_statements = {
                         str(getattr(c, "statement", "")).strip() for c in (existing or [])
                     }
-                    for statement in reported:
-                        if statement in known_statements:
+                    if _typed_reports:
+                        known_rows = {
+                            str(getattr(e, "evidence_id", "") or "")
+                            for e in (getattr(state, "evidence", None) or [])
+                        } | {
+                            str(i)
+                            for h in (getattr(state, "active_hypotheses", None) or [])
+                            for i in (getattr(h, "supporting_evidence_ids", None) or [])
+                        }
+                        known_rows.discard("")
+                    def _rep_get(obj: Any, key: str, default: Any = None) -> Any:
+                        if isinstance(obj, Mapping):
+                            return obj.get(key, default)
+                        return getattr(obj, key, default)
+
+                    for report in reported:
+                        if _typed_reports:
+                            statement = str(_rep_get(report, "statement", "") or "").strip()[:2048]
+                            raw_ids = list(_rep_get(report, "evidence_ids", None) or [])[:20]
+                        else:
+                            statement = str(report or "").strip()[:2048]
+                            raw_ids = []
+                        if not statement or statement in known_statements:
                             continue
                         known_statements.add(statement)
-                        await contradiction_repo.save(
-                            tenant_id,
-                            Contradiction(
+                        if _typed_reports:
+                            from uuid import UUID as _UUID
+
+                            linked: list[Any] = []
+                            for raw_id in raw_ids:
+                                try:
+                                    if str(raw_id) in known_rows:
+                                        linked.append(_UUID(str(raw_id)))
+                                except Exception:
+                                    continue
+                            hyp_ids = [
+                                h.id
+                                for h in (getattr(state, "active_hypotheses", None) or [])
+                                if set(map(str, getattr(h, "supporting_evidence_ids", None) or []))
+                                & set(map(str, linked))
+                            ]
+                            severity = (
+                                ContradictionSeverity.MEDIUM if linked else ContradictionSeverity.LOW
+                            )
+                            row = Contradiction(
+                                statement=statement,
+                                evidence_ids=linked,
+                                hypothesis_ids=hyp_ids,
+                                severity=severity,
+                            )
+                        else:
+                            row = Contradiction(
                                 statement=statement,
                                 severity=ContradictionSeverity.MEDIUM,
-                            ),
-                            investigation_id,
-                        )
+                            )
+                        await contradiction_repo.save(tenant_id, row, investigation_id)
             except Exception as exc:
                 story_log(
                     logger,
@@ -1101,6 +1156,16 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     "s4_shape": _s4.get("s4_shape"),
                     "s4_qualified_layers": _s4.get("s4_qualified_layers"),
                     "s4_qualifier_version": _s4.get("s4_qualifier_version"),
+                    # H5-D1/H6-D1: floor measurement and resample outcome ride
+                    # the result so the workflow can stamp them (fail-open:
+                    # absent keys mean "not recorded", never zero).
+                    "checkability_floor": dict(
+                        (getattr(decision, "metadata", None) or {}).get("checkability_floor", None) or {}
+                    ),
+                    "resample": {
+                        "count": int((getattr(decision, "metadata", None) or {}).get("resample_count", 0) or 0),
+                        "outcome": (getattr(decision, "metadata", None) or {}).get("resample_outcome"),
+                    },
                 },
             )
         except ApplicationFailure:

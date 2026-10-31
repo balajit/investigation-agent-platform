@@ -124,6 +124,20 @@ from .forcing import (
 )
 
 
+def accumulate_resample_totals(totals: dict[str, int], reason_data: dict[str, Any]) -> None:
+    """Add one turn's resample outcome to the run totals (H6-D1, pure, never raises)."""
+    try:
+        rs = (reason_data or {}).get("resample") or {}
+        count = int(rs.get("count", 0) or 0)
+        totals["attempts"] = int(totals.get("attempts", 0) or 0) + max(0, count)
+        if rs.get("outcome") == "recovered":
+            totals["recovered"] = int(totals.get("recovered", 0) or 0) + 1
+        elif rs.get("outcome") == "exhausted":
+            totals["exhausted"] = int(totals.get("exhausted", 0) or 0) + 1
+    except Exception:
+        pass
+
+
 @dataclass
 class RunInvestigationInput:
     application_id: str
@@ -171,6 +185,7 @@ class RunInvestigationWorkflow:
         # is durable; no later failure may rewrite it to FAILED.
         self._conclusion_persisted = False
         self._requested_final_status = ""
+        self._banked_evidence_total = 0
 
     @workflow.signal
     async def pause(self) -> None:
@@ -314,10 +329,13 @@ class RunInvestigationWorkflow:
                     TransitionInvestigationInput(
                         tenant_id=input_data.tenant_id,
                         investigation_id=input_data.investigation_id,
-                        target_status="FAILED",
-                        reason=f"Workflow error reconciled: {cause_type}",
-                        failure_code="WORKFLOW_ERROR",
-                        failure_reason=f"{cause_type}: {cause_msg}".strip(": "),
+                    target_status="FAILED",
+                    reason=f"Workflow error reconciled: {cause_type}",
+                    failure_code="WORKFLOW_ERROR",
+                    failure_reason=(
+                        f"{cause_type}: {cause_msg} "
+                        f"(banked_evidence={getattr(self, '_banked_evidence_total', 0)})"
+                    ).strip(": "),
                     ),
                     start_to_close_timeout=timedelta(seconds=30),
                 )
@@ -621,6 +639,15 @@ class RunInvestigationWorkflow:
         # all-NOT_CHECKABLE abstention (the gate's measurable firing rate).
         fetches_dispatched = 0
         d6_blocked_no_evidence_count = 0
+        # H5/H6 measurement totals (plain scalars, replay-safe): floor
+        # retype counts, kept NC counts, claim counts, resample outcomes.
+        checkability_floor_retyped_total = 0
+        nc_kept_total = 0
+        nc_kept_with_identifier_total = 0
+        claims_total = 0
+        resample_attempts_total = 0
+        resample_recovered_total = 0
+        resample_exhausted_total = 0
         counters = new_counters()
         overconfident_turns = 0
         defer_repairs_used = 0
@@ -709,6 +736,7 @@ class RunInvestigationWorkflow:
                         iteration=iteration,
                         recent_actions=list(turn_view(action_history, loop_version))[-10:],
                         knowledge_orientation=knowledge_orientation,
+                        loop_version=loop_version,
                     ),
                     start_to_close_timeout=timedelta(seconds=120),
                     retry_policy=retry_policy,
@@ -742,6 +770,26 @@ class RunInvestigationWorkflow:
                 break
             # G8: synthesis forcing — thinking committed before more gathering.
             _reason_data = reason_res.data or {}
+            # H5/H6: accumulate floor and resample measurements (plain scalars).
+            try:
+                _cf = _reason_data.get("checkability_floor") or {}
+                checkability_floor_retyped_total += int(_cf.get("causal_mechanism", 0) or 0) + int(
+                    _cf.get("cites_evidence", 0) or 0
+                )
+                nc_kept_total += int(_cf.get("nc_kept", 0) or 0)
+                nc_kept_with_identifier_total += int(_cf.get("nc_kept_with_identifier", 0) or 0)
+                claims_total += len(_reason_data.get("claims", None) or [])
+                _rs_totals = {
+                    "attempts": resample_attempts_total,
+                    "recovered": resample_recovered_total,
+                    "exhausted": resample_exhausted_total,
+                }
+                accumulate_resample_totals(_rs_totals, _reason_data)
+                resample_attempts_total = _rs_totals["attempts"]
+                resample_recovered_total = _rs_totals["recovered"]
+                resample_exhausted_total = _rs_totals["exhausted"]
+            except Exception:
+                pass
             _defer = _reason_data.get("defer_gathering")
             _is_defer = _reason_data.get("disposition") == "DEFER_GATHERING"
             if _is_defer:
@@ -1197,6 +1245,10 @@ class RunInvestigationWorkflow:
                     formulated_count += 1
                 try:
                     evidence_banked_total += len(_outcome.get("evidence_ids", []) or [])
+                    try:
+                        self._banked_evidence_total = int(evidence_banked_total or 0)
+                    except Exception:
+                        pass
                 except TypeError:
                     pass
 
@@ -1474,6 +1526,12 @@ class RunInvestigationWorkflow:
             final_status = "COMPLETED"
         elif verified:
             final_status = "COMPLETED"
+        elif last_error == "input_expired" and evidence_banked_total > 0:
+            # H7d: an expired input with banked evidence is a missing input, not a
+            # platform failure. Request COMPLETED so the gate abstains with
+            # INSUFFICIENT_EVIDENCE (and an INPUT_DEFERRED handoff) instead of
+            # taking the FAILED path. Nothing banked stays FAILED.
+            final_status = "COMPLETED"
         elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted"}:
             final_status = "FAILED"
         else:
@@ -1509,6 +1567,13 @@ class RunInvestigationWorkflow:
                     "d6_blocked_no_evidence_count": d6_blocked_no_evidence_count,
                     "fetches_dispatched": fetches_dispatched,
                     "requery_order_events": list(requery_order_events[-20:]),
+                    "checkability_floor_retyped_total": checkability_floor_retyped_total,
+                    "nc_kept_total": nc_kept_total,
+                    "nc_kept_with_identifier_total": nc_kept_with_identifier_total,
+                    "claims_total": claims_total,
+                    "resample_attempts_total": resample_attempts_total,
+                    "resample_recovered_total": resample_recovered_total,
+                    "resample_exhausted_total": resample_exhausted_total,
                     **counter_telemetry(counters),
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,

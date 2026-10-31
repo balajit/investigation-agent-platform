@@ -2,6 +2,7 @@
 import html
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 from xml.sax.saxutils import quoteattr
@@ -339,6 +340,24 @@ _CAUSAL_MECHANISM = re.compile(
 )
 
 
+_IDENTIFIER = re.compile(
+    r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b"  # dotted symbol
+    r"|\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b"  # CamelCase
+    r"|[\w./-]+\.(?:java|py|kt|xml|ya?ml|properties|sql|json)\b"  # file name
+    r"|[\w-]+/[\w./-]*"  # path
+)
+
+
+def nc_names_identifier(statement: str, target: Mapping[str, Any] | None) -> bool:
+    """Measurement only: a NOT_CHECKABLE claim that names code. Never changes classification."""
+    try:
+        if _IDENTIFIER.search(str(statement or "")):
+            return True
+        return bool((target or {}).get("symbol") or (target or {}).get("file_path"))
+    except Exception:
+        return False
+
+
 def checkability_floor_reason(statement: str, evidence_ids: list[str] | None) -> str | None:
     """Why a claim the model labelled NOT_CHECKABLE cannot be, or None (H5). Pure.
 
@@ -440,7 +459,7 @@ _SYSTEM_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
 "defer_gathering": {"reason": "...", "missing_proof_kind": "...", "next_action": "<one gathering action>", "next_action_parameters": {...}, "target": "...", "scope": "...", "remaining_repair_budget": 0-2},
 "observations": ["..."],
 "hypotheses_evaluated": ["candidate root-cause statements; mandatory for ordinary committed reasoning, but empty for DEFER_GATHERING"],
-"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL|NOT_CHECKABLE", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "commit_subject": "<exact subject for HISTORY claims; omit otherwise>", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "signature": "<parameter types for an overloaded method, e.g. process(Order,int); omit otherwise>", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}}],
+"claims": [{"statement": "<exactly one hypotheses_evaluated entry>", "claim_kind": "DEFINITION|CALL_EDGE|BEHAVIOR|ABSENCE|HISTORY|CAUSAL|NOT_CHECKABLE", "evidence_ids": [<visible evidence_id strings that support THIS claim only>], "caller_edges": [{"target": {"symbol": "<callee or callee.method>", "counterpart": "<one caller>", "file_path": "...", "line_start": N, "line_end": N}, "evidence_ids": [<visible evidence IDs for this caller only>]}], "fact_category": "<SOURCE_VALUE_FACT for method-return value answers; omit otherwise>", "target": {"symbol": "...", "counterpart": "...", "file_path": "...", "commit_id": "...", "commit_subject": "<exact subject for HISTORY claims; omit otherwise>", "line_start": N, "line_end": N, "scope": "...", "declaring_type": "...", "signature": "<parameter types for an overloaded method, e.g. process(Order,int); omit otherwise>", "value_semantics": "EXPLICIT_INITIALIZER|LANGUAGE_DEFAULT|GUARDED_RETURN_LITERAL", "claimed_value": "..."}], "contradictions_found": [{"statement": "<a contradiction between two cited rows or between a cited row and a claim>", "evidence_ids": ["<visible evidence id strings it relies on>"]}],,
 "conclusion_readiness": 0.0-1.0,
 "reasoning_chain": "brief rationale". For DEFER_GATHERING, do not commit a hypothesis; select exactly one bounded gathering action and let the workflow own the repair budget.
 Do NOT include execution_hash (derived server-side).""",
@@ -841,7 +860,10 @@ class ReasoningCoordinator(InvestigationReasoner):
 
     @staticmethod
     def _unavailable_decision(
-        reason: str, kind: str = "other", retry_after: float | None = None
+        reason: str,
+        kind: str = "other",
+        retry_after: float | None = None,
+        resample_count: int = 0,
     ) -> InvestigationDecision:
         """Explicit non-conclusive result. Readiness is always zero here — it is
         never invented, and callers must treat this as an inconclusive/failed
@@ -849,12 +871,18 @@ class ReasoningCoordinator(InvestigationReasoner):
 
         ``kind`` is the typed failure (H7/T7): transient / blocked /
         model_output / other. The activity raises for transient, hands off for
-        blocked, and degrades the run for the rest; the kind decides which."""
+        blocked, and degrades the run for the rest; the kind decides which.
+        H6: when resamples were attempted but the run is exhausted anyway,
+        the count and outcome ride along for measurement.
+        """
         metadata: dict[str, Any] = {
             "status": "REASONING_UNAVAILABLE",
             "reason": reason,
             "failure_kind": kind,
         }
+        if resample_count:
+            metadata["resample_count"] = resample_count
+            metadata["resample_outcome"] = "exhausted"
         if retry_after is not None:
             metadata["retry_after"] = retry_after
         return InvestigationDecision(
@@ -886,6 +914,7 @@ class ReasoningCoordinator(InvestigationReasoner):
                 return decision
             claims = list(getattr(decision, "claims", None) or [])
             retyped: dict[str, int] = {}
+            kept = kept_with_identifier = 0
             out: list[Any] = []
             for claim in claims:
                 if getattr(claim, "claim_kind", None) == ClaimKind.NOT_CHECKABLE:
@@ -896,11 +925,23 @@ class ReasoningCoordinator(InvestigationReasoner):
                         retyped[why] = retyped.get(why, 0) + 1
                         out.append(claim.model_copy(update={"claim_kind": ClaimKind.CAUSAL}))
                         continue
+                    kept += 1
+                    try:
+                        target = getattr(claim, "target", None)
+                        target = dict(target) if isinstance(target, Mapping) else {}
+                    except Exception:
+                        target = {}
+                    if nc_names_identifier(getattr(claim, "statement", ""), target):
+                        kept_with_identifier += 1
                 out.append(claim)
-            if not retyped:
+            if not retyped and not kept:
                 return decision
             merged = dict(getattr(decision, "metadata", None) or {})
-            merged["checkability_floor"] = retyped
+            merged["checkability_floor"] = {
+                **retyped,
+                "nc_kept": kept,
+                "nc_kept_with_identifier": kept_with_identifier,
+            }
             return decision.model_copy(update={"claims": out, "metadata": merged})
         except Exception:
             return decision
@@ -1404,7 +1445,10 @@ class ReasoningCoordinator(InvestigationReasoner):
         def _unavailable_with_usage(
             reason: str, kind: str, retry_after: float | None = None
         ) -> InvestigationDecision:
-            decision_out = self._unavailable_decision(reason, kind=kind, retry_after=retry_after)
+            # H6: the resample happened but the run is exhausted anyway.
+            decision_out = self._unavailable_decision(
+                reason, kind=kind, retry_after=retry_after, resample_count=len(_resample_reasons)
+            )
             merged = dict(decision_out.metadata or {})
             merged["llm_usage"] = _sum_llm_usage(_attempt_responses)
             return decision_out.model_copy(update={"metadata": merged})
@@ -1602,6 +1646,8 @@ class ReasoningCoordinator(InvestigationReasoner):
         if _resample_reasons:
             merged_metadata["resample_count"] = len(_resample_reasons)
             merged_metadata["resample_reasons"] = _resample_reasons[:2]
+            # H6: the varied retry recovered — name the outcome for measurement.
+            merged_metadata["resample_outcome"] = "recovered"
         # P0-1: prompt versioning for replay/evaluation.
         import hashlib as _hashlib
 

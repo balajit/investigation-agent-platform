@@ -219,6 +219,28 @@ class TransitionEventRepository(Protocol):
 
 
 @runtime_checkable
+@runtime_checkable
+class ConclusionUnitOfWork(Protocol):
+    """One transaction for the conclude path's three writes (H14).
+
+    The VERIFIED hypothesis, the Finding and the conclusion commit together
+    or not at all: a mid-write fault leaves no partial verdict behind.
+    """
+
+    async def commit_verdict(
+        self,
+        tenant_id: str,
+        *,
+        investigation_id: UUID,
+        hypothesis: Hypothesis | None,
+        expected_version: int,
+        finding: Finding,
+        conclusion: InvestigationConclusion,
+    ) -> None:
+        """Persist the VERIFIED hypothesis, the Finding and the conclusion atomically."""
+        ...
+
+
 class FindingConclusionRepository(Protocol):
     """Repository for storing final findings and conclusions."""
 

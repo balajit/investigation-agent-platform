@@ -171,7 +171,7 @@ async def test_causal_claim_labelled_nc_is_retyped_and_d6_no_longer_forces_concl
     decision = await coord.reason("tenant-a", state)
     assert _kinds(decision) == ["CAUSAL"]
     assert _force_conclude(decision) is False, "the zero-evidence CONCLUDE is no longer forced"
-    assert decision.metadata["checkability_floor"] == {"causal_mechanism": 1}
+    assert decision.metadata["checkability_floor"] == {"causal_mechanism": 1, "nc_kept": 0, "nc_kept_with_identifier": 0}
 
 
 async def test_unmarked_investigation_resolves_to_current_and_gets_the_floor() -> None:
@@ -193,7 +193,7 @@ async def test_genuine_opinion_still_forces_the_honest_abstention() -> None:
     decision = await coord.reason("tenant-a", state)
     assert _kinds(decision) == ["NOT_CHECKABLE"]
     assert _force_conclude(decision) is True
-    assert "checkability_floor" not in decision.metadata
+    assert decision.metadata["checkability_floor"] == {"nc_kept": 1, "nc_kept_with_identifier": 0}
 
 
 async def test_nc_claim_citing_evidence_is_retyped() -> None:
@@ -203,7 +203,7 @@ async def test_nc_claim_citing_evidence_is_retyped() -> None:
     )
     decision = await coord.reason("tenant-a", state)
     assert _kinds(decision) == ["CAUSAL"]
-    assert decision.metadata["checkability_floor"] == {"cites_evidence": 1}
+    assert decision.metadata["checkability_floor"] == {"cites_evidence": 1, "nc_kept": 0, "nc_kept_with_identifier": 0}
 
 
 async def test_checkable_claims_are_never_touched() -> None:

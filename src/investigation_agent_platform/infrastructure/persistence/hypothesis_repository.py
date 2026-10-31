@@ -91,73 +91,73 @@ class SqlAlchemyHypothesisRepository:
             version=int(getattr(row, "version", 1) or 1),
         )
 
-    async def save(
+    async def save_in_session(
         self,
+        session: Any,
         tenant_id: str,
         hypothesis: Hypothesis,
         investigation_id: UUID | None,
         expected_version: int,
-    ) -> None:
-        """Guarded write: 0 = insert-at-1 (row must not exist), N = update N→N+1.
+    ) -> str:
+        """Guarded write body sharing the caller's session (H14-D1: unit of work).
 
-        Version-check-then-unguarded-write is prohibited: the update is a
-        single conditional statement and the rowcount decides. Last-write-wins
-        is gone — any mismatch raises ConcurrencyError.
+        Returns "updated" or "inserted". A version conflict rolls the shared
+        session back (discarding the whole unit, as required) and raises
+        ConcurrencyError. Never opens its own session.
         """
         orm = self._to_orm(hypothesis, tenant_id, investigation_id)
         try:
-            async with rls_session(self._session_factory, tenant_id) as session:
-                if expected_version > 0:
-                    result = await session.execute(
-                        update(HypothesisORM)
-                        .where(
-                            HypothesisORM.id == hypothesis.id,
-                            HypothesisORM.tenant_id == tenant_id,
-                            HypothesisORM.investigation_id == investigation_id,
-                            HypothesisORM.version == expected_version,
-                        )
-                        .values(
-                            title=orm.title,
-                            description=orm.description,
-                            statement=orm.statement,
-                            status=orm.status,
-                            confidence_score=orm.confidence_score,
-                            support_score=orm.support_score,
-                            supporting_evidence_ids=orm.supporting_evidence_ids,
-                            refuting_evidence_ids=orm.refuting_evidence_ids,
-                            assessments_json=orm.assessments_json,
-                            causal_steps_json=orm.causal_steps_json,
-                            updated_at=orm.updated_at,
-                            version=expected_version + 1,
-                        )
+            if expected_version > 0:
+                result = await session.execute(
+                    update(HypothesisORM)
+                    .where(
+                        HypothesisORM.id == hypothesis.id,
+                        HypothesisORM.tenant_id == tenant_id,
+                        HypothesisORM.investigation_id == investigation_id,
+                        HypothesisORM.version == expected_version,
                     )
-                    if result.rowcount == 0:  # type: ignore[attr-defined]
-                        await session.rollback()
-                        raise ConcurrencyError(
-                            f"Hypothesis {hypothesis.id} was modified concurrently or tenant/investigation mismatch; "
-                            f"expected version {expected_version}.",
-                            details={
-                                "hypothesis_id": str(hypothesis.id),
-                                "expected_version": expected_version,
-                                "tenant_id": tenant_id,
-                            },
-                        )
-                    outcome = "updated"
-                else:
-                    orm.version = 1
-                    session.add(orm)
-                    try:
-                        await session.flush()
-                    except IntegrityError:
-                        await session.rollback()
-                        raise ConcurrencyError(
-                            f"Hypothesis {hypothesis.id} already exists; concurrent insert won.",
-                            details={
-                                "hypothesis_id": str(hypothesis.id),
-                                "tenant_id": tenant_id,
-                            },
-                        )
-                    outcome = "inserted"
+                    .values(
+                        title=orm.title,
+                        description=orm.description,
+                        statement=orm.statement,
+                        status=orm.status,
+                        confidence_score=orm.confidence_score,
+                        support_score=orm.support_score,
+                        supporting_evidence_ids=orm.supporting_evidence_ids,
+                        refuting_evidence_ids=orm.refuting_evidence_ids,
+                        assessments_json=orm.assessments_json,
+                        causal_steps_json=orm.causal_steps_json,
+                        updated_at=orm.updated_at,
+                        version=expected_version + 1,
+                    )
+                )
+                if result.rowcount == 0:  # type: ignore[attr-defined]
+                    await session.rollback()
+                    raise ConcurrencyError(
+                        f"Hypothesis {hypothesis.id} was modified concurrently or tenant/investigation mismatch; "
+                        f"expected version {expected_version}.",
+                        details={
+                            "hypothesis_id": str(hypothesis.id),
+                            "expected_version": expected_version,
+                            "tenant_id": tenant_id,
+                        },
+                    )
+                outcome = "updated"
+            else:
+                orm.version = 1
+                session.add(orm)
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    await session.rollback()
+                    raise ConcurrencyError(
+                        f"Hypothesis {hypothesis.id} already exists; concurrent insert won.",
+                        details={
+                            "hypothesis_id": str(hypothesis.id),
+                            "tenant_id": tenant_id,
+                        },
+                    )
+                outcome = "inserted"
         except ConcurrencyError:
             logger.exception(
                 "hypothesis save version conflict",
@@ -201,6 +201,23 @@ class SqlAlchemyHypothesisRepository:
                 }
             ),
         )
+        return outcome
+
+    async def save(
+        self,
+        tenant_id: str,
+        hypothesis: Hypothesis,
+        investigation_id: UUID | None,
+        expected_version: int,
+    ) -> None:
+        """Guarded write: 0 = insert-at-1 (row must not exist), N = update N→N+1.
+
+        Version-check-then-unguarded-write is prohibited: the update is a
+        single conditional statement and the rowcount decides. Last-write-wins
+        is gone — any mismatch raises ConcurrencyError.
+        """
+        async with rls_session(self._session_factory, tenant_id) as session:
+            await self.save_in_session(session, tenant_id, hypothesis, investigation_id, expected_version)
 
     async def get_by_id(self, tenant_id: str, hypothesis_id: UUID) -> Hypothesis | None:
         async with rls_session(self._session_factory, tenant_id) as session:

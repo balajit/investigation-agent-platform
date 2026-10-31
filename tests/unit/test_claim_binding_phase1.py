@@ -1554,6 +1554,9 @@ def _activity_ctx(inv_metadata, hyp, rows, events):
         find_by_investigation_id=AsyncMock(return_value=list(events)),
         append=AsyncMock(return_value=None),
     )
+    from conftest import FakeConclusionUnitOfWork
+
+    ctx.conclusion_uow = FakeConclusionUnitOfWork(ctx.hypothesis_repo, getattr(ctx, "finding_repo", None), ctx)  # type: ignore[attr-defined]
     set_app_context(ctx)
     return ctx
 

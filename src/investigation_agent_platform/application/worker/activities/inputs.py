@@ -56,6 +56,9 @@ class ReasonInput:
     tenant_id: str
     investigation_id: str
     iteration: int = 0
+    #: Loop-semantics pin recorded on the investigation (H11a: typed
+    #: contradiction persistence only under LV_H). Empty keeps old behavior.
+    loop_version: str = ""
     # Prior iterations' reason decisions (plain JSON scalars, most recent
     # last), accumulated by the workflow. Lets the model see repetition
     # (e.g. SEARCH_LOGS ×N with empty evidence) and escalate capability
@@ -252,6 +255,7 @@ def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> st
     if normalized.startswith(
         (
             "reasoning_provider_unavailable",
+            "reasoning_provider_blocked",
             "reasoning_model_output_invalid",
             "reasoning_unavailable",
         )

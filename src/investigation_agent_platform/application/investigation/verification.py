@@ -155,6 +155,34 @@ def rank_hypotheses(hypotheses: list[Hypothesis]) -> list[Hypothesis]:
     return sorted(hypotheses, key=_key)
 
 
+def reconcile_contradictions(contradictions: list[Any], hypotheses: list[Any]) -> list[Any]:
+    """Contradictions to re-save as RESOLVED. Pure; never raises.
+
+    H11b-D2: a deterministic, attributed resolution with no human in the
+    loop and no fake attribution. An UNRESOLVED contradiction linked only
+    to REJECTED hypotheses is reconciled by ``system:contradiction-reconciler``.
+    ``accept_risk`` keeps its human caller (no automatic callers anywhere).
+    """
+    try:
+        status_by_id = {str(getattr(h, "id", "")): str(getattr(getattr(h, "status", ""), "value", getattr(h, "status", "")) or "") for h in (hypotheses or [])}
+    except Exception:
+        return []
+    out: list[Any] = []
+    try:
+        for c in contradictions or []:
+            try:
+                if getattr(c, "resolution_status", "") != "UNRESOLVED" or not getattr(c, "hypothesis_ids", None):
+                    continue
+                linked = [str(h) for h in (getattr(c, "hypothesis_ids", None) or [])]
+                if linked and all(status_by_id.get(hid) in ("REJECTED",) for hid in linked):
+                    out.append(c.resolve("system:contradiction-reconciler", "every hypothesis it linked was rejected"))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
 def select_verifiable_candidate(
     ranked: list,
     evidence_by_id: dict,
@@ -8237,12 +8265,19 @@ class VerificationEngine:
                     ).strip()[:500]
                 if not best_reason and corroborating_ids:
                     best_reason = f"corroborated by {len(corroborating_ids)} evidence item(s)"
+                _linked_only = bool(getattr(policy, "tolerant_band", False))
                 for contradiction in contradictions or []:
                     try:
-                        if getattr(contradiction, "resolution_status", "") == "UNRESOLVED":
-                            statement = str(getattr(contradiction, "statement", "") or "")
-                            if statement:
-                                against_evidence.append(statement[:300])
+                        # H11b (LV_H): only unresolved LINKED rows count; notes
+                        # (no evidence) and resolved rows never ride a verdict.
+                        # Older pins keep the old selection.
+                        if getattr(contradiction, "resolution_status", "") != "UNRESOLVED":
+                            continue
+                        if _linked_only and not getattr(contradiction, "evidence_ids", None):
+                            continue
+                        statement = str(getattr(contradiction, "statement", "") or "")
+                        if statement:
+                            against_evidence.append(statement[:300])
                     except Exception:
                         continue
                 against_evidence = against_evidence[:5]

@@ -336,6 +336,31 @@ async def verify_root_cause_activity(
                 )
             except Exception:
                 contradictions = []
+        # H11b: deterministic reconcile (LV_H): re-save contradictions whose
+        # linked hypotheses were all rejected. Best-effort; never fails verify.
+        try:
+            from investigation_agent_platform.application.investigation.verification import (
+                reconcile_contradictions as _reconcile,
+            )
+            from investigation_agent_platform.domain.investigation.loop_version import (
+                lv_h_enabled as _lv_h_verify,
+            )
+
+            if _lv_h_verify(getattr(_inv, "metadata", None)):
+                for _resolved in _reconcile(contradictions, list(hypotheses)):
+                    try:
+                        await contradiction_repo.save(tenant_id, _resolved, investigation_id)
+                    except Exception:
+                        continue
+                    try:
+                        contradictions = [
+                            _r if getattr(_r, "contradiction_id", None) != getattr(_resolved, "contradiction_id", None) else _resolved
+                            for _r in contradictions
+                        ]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         evidence_by_id = {getattr(e, "evidence_id", None): e for e in evidence_items}
 
         # P0-3: ranked candidates, bound evidence, real contradictions and

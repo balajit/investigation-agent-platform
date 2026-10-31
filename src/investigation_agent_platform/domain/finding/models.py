@@ -148,6 +148,10 @@ class HandoffState(StrEnum):
     FRONTIER_EXHAUSTED = "FRONTIER_EXHAUSTED"
     CROSS_BOUNDARY = "CROSS_BOUNDARY"
     TELEMETRY_DEFERRED = "TELEMETRY_DEFERRED"
+    #: A reasoning step could not complete; resume reasoning (H7).
+    REASONING_DEFERRED = "REASONING_DEFERRED"
+    #: An input requirement expired with banked evidence kept (H7d).
+    INPUT_DEFERRED = "INPUT_DEFERRED"
 
 
 # Retrieval actions a next fetch can name (mirrors the investigation action
@@ -376,11 +380,36 @@ def classify_terminal_handoff(
             recommended_next_steps=steps[:20],
         )
 
+    _REASONING_MARKERS = (
+        "reasoning_provider_blocked", "reasoning_provider_unavailable",
+        "reasoning_model_output_invalid", "reasoning_unavailable", "defer_gathering_invalid",
+    )
+    if any(marker in signal_text for marker in _REASONING_MARKERS):
+        resume = directive or (
+            "Restore or replace the reasoning provider or model, then resume reasoning and re-verify."
+        )
+        steps = [resume[:500]] + ([target_step] if target_step else [])
+        return S7Handoff(
+            state=HandoffState.REASONING_DEFERRED,
+            next_fetch=target,
+            price=price_next_fetch(target),
+            resume_pointer=resume[:1024],
+            recommended_next_steps=steps[:20],
+        )
+    if "input_expired" in signal_text and status_text in ("INSUFFICIENT_EVIDENCE", "COMPLETED"):
+        resume = directive or "Supply the requested input, then resume; banked evidence is kept."
+        steps = [resume[:500]] + ([target_step] if target_step else [])
+        return S7Handoff(
+            state=HandoffState.INPUT_DEFERRED,
+            next_fetch=target,
+            price=price_next_fetch(target),
+            resume_pointer=resume[:1024],
+            recommended_next_steps=steps[:20],
+        )
     if (
         "provider_blocked" in signal_text
         or "auth_failed" in signal_text
         or "telemetry" in signal_text
-        or "reasoning_provider_unavailable" in signal_text
     ):
         resume = directive or (
             "Restore provider authorization, then resume at the blocked "

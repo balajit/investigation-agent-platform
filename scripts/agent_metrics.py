@@ -43,6 +43,26 @@ _FORCED_RE = re.compile(r"forced=\[([^\]]*)\]")
 _READINESS_RE = re.compile(r"readiness=([0-9]*\.?[0-9]+|\?)")
 _ACTION_RE = re.compile(r"reason: action=(\S+)")
 
+#: Terminal verdicts that count as established (H13-D2: ANSWERED joins
+#: ROOT_CAUSE_ESTABLISHED from lv5, so correct answers stop inflating the
+#: overconfident count). LIKELY stays out (a caveated verdict, as before).
+ESTABLISHED_VERDICTS = frozenset({"ROOT_CAUSE_ESTABLISHED", "ANSWERED"})
+
+
+def readiness_calibration(
+    peaks_by_inv: dict[str, float], status_by_inv: dict[str, str | None]
+) -> tuple[int, int, int]:
+    """(established_or_answered, answered_only, overconfident). Pure."""
+    established = answered = overconfident = 0
+    for inv_id, peak in peaks_by_inv.items():
+        status = status_by_inv.get(inv_id)
+        if status in ESTABLISHED_VERDICTS:
+            established += 1
+            answered += status == "ANSWERED"
+        elif peak >= 0.8:
+            overconfident += 1
+    return established, answered, overconfident
+
 
 def parse_reason_trace(description: str) -> dict | None:
     """Parse one persisted per-turn trace one-liner.
@@ -211,18 +231,18 @@ async def main() -> int:
     overconfident_runs = 0
     established_runs = 0
     max_readiness_by_inv: dict[str, float] = {}
+    peak_by_inv: dict[str, float] = {}
+    status_by_inv: dict[str, str | None] = {}
     for inv_id, traces in traces_by_inv.items():
         readings = [t["readiness"] for t in traces if t["readiness"] is not None]
         peak = max(readings) if readings else 0.0
         max_readiness_by_inv[inv_id] = peak
         concl = concl_by_inv.get(inv_id)
-        established = (
-            concl is not None and str(getattr(concl, "status", "")) == "ROOT_CAUSE_ESTABLISHED"
-        )
-        if established:
-            established_runs += 1
-        elif peak >= 0.8:
-            overconfident_runs += 1
+        peak_by_inv[inv_id] = peak
+        status_by_inv[inv_id] = str(getattr(concl, "status", "")) if concl is not None else None
+    established_runs, answered_only, overconfident_runs = readiness_calibration(
+        peak_by_inv, status_by_inv
+    )
 
     # --- auto-claim + stale-score rates from hypothesis rows ---
     unbound = 0
@@ -420,7 +440,7 @@ async def main() -> int:
         else " => forced_rate=n/a"
     )
     print(
-        f"established conclusions: {established_runs}, overconfident runs (peak>=0.8, not established): {overconfident_runs}"
+        f"established conclusions: {established_runs} (of which ANSWERED: {answered_only}), overconfident runs (peak>=0.8, not established): {overconfident_runs}"
     )
     print(f"hypotheses: {n_hyp}, unbound: {unbound}", end="")
     print(f" => unbound_rate={unbound / n_hyp:.2f}" if n_hyp else " => unbound_rate=n/a")

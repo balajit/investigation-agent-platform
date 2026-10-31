@@ -149,7 +149,7 @@ async def test_provider_unavailable_with_banked_evidence_is_a_resumable_deferral
     assert result.data.get("status") == InvestigationStatus.COMPLETED.value
     conclusion = saved["conclusion"]
     assert str(conclusion.status) == "INSUFFICIENT_EVIDENCE"
-    assert conclusion.handoff.state == HandoffState.TELEMETRY_DEFERRED
+    assert conclusion.handoff.state == HandoffState.REASONING_DEFERRED
     assert conclusion.handoff.resume_pointer
 
 
@@ -185,7 +185,7 @@ def test_last_error_encodes_each_kind_distinctly() -> None:
     )
 
     assert last_error_for(KIND_BLOCKED, "llm_gateway_error:CredentialProviderError").startswith(
-        "provider_blocked:"
+        "reasoning_provider_blocked:"
     )
     assert last_error_for(KIND_MODEL_OUTPUT, "invalid_llm_schema:X").startswith(
         "reasoning_model_output_invalid:"

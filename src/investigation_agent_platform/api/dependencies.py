@@ -1037,6 +1037,32 @@ class InMemoryFindingConclusionRepository(FindingConclusionRepository):
             raise ConcurrencyError("Conclusion tenant mismatch")
         self._conclusions[(tenant_id, conclusion.investigation_id)] = conclusion
 
+
+class InMemoryConclusionUnitOfWork:
+    """In-memory unit of work (H14-D1): the three writes share no session because
+    the store is process-local; the single call is the atomic unit."""
+
+    def __init__(self, hypothesis_repo: Any, finding_repo: Any) -> None:
+        self._hypotheses = hypothesis_repo
+        self._findings = finding_repo
+
+    async def commit_verdict(
+        self,
+        tenant_id: str,
+        *,
+        investigation_id: UUID,
+        hypothesis: Any | None,
+        expected_version: int,
+        finding: Any,
+        conclusion: Any,
+    ) -> None:
+        if hypothesis is not None:
+            await self._hypotheses.save(
+                tenant_id, hypothesis, investigation_id, expected_version
+            )
+        await self._findings.save_finding_record(tenant_id, finding)
+        await self._findings.save_conclusion(tenant_id, conclusion)
+
     async def get_conclusion(
         self, tenant_id: str, investigation_id: UUID
     ) -> InvestigationConclusion | None:
@@ -1879,6 +1905,8 @@ class AppContext:
         # Part 11.2: findings/conclusions — durable Postgres in production,
         # process-local store in dev/test (mirrors every other Part 6+ repo).
         self.finding_repo: FindingConclusionRepository = InMemoryFindingConclusionRepository()
+        # H14: the conclude path's unit of work (required, never optional).
+        self.conclusion_uow = InMemoryConclusionUnitOfWork(self.hypothesis_repo, self.finding_repo)
         # P0-3: contradictions — durable Postgres in production,
         # process-local store in dev/test (mirrors every other repo).
         self.contradiction_repo: Any = InMemoryContradictionRepository()
