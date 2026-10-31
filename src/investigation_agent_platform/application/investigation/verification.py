@@ -28,6 +28,7 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
 from investigation_agent_platform.application.evidence.retrieval_ledger import (
     all_typed_claims_not_checkable as _all_typed_claims_not_checkable,
 )
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
     CODE_FACT_RESOLUTIONS_KEY,
@@ -2268,8 +2269,10 @@ class VerificationEngine:
     def _subject_identifies(requested: str | None, candidates: set[str]) -> bool:
         """Subject match across qualification levels (pure).
 
-        Claims carry short symbols (``OrderLookupServiceImpl.findOrder``)
-        while analyzer resolutions carry fully-qualified identities
+        Delegates to the analyzer-shared matcher so the live claim flow and
+        window budget allocation agree. Claims carry short symbols
+        (``OrderLookupServiceImpl.findOrder``) while analyzer resolutions
+        carry fully-qualified identities
         (``com.example.retail.order.OrderLookupServiceImpl.findOrder``), or the
         reverse for method-anchored windows. Exact match wins; otherwise a
         dot-boundary suffix in either direction matches — except a bare
@@ -2279,20 +2282,11 @@ class VerificationEngine:
         Selection-only — revision, path, window, and value checks below
         still bind the evidence.
         """
-        req = str(requested or "").strip()
-        if not req:
-            return False
-        for candidate in candidates:
-            cand = str(candidate or "").strip()
-            if not cand:
-                continue
-            if cand == req:
-                return True
-            if "." in req and cand.endswith("." + req):
-                return True
-            if req.endswith("." + cand):
-                return True
-        return False
+        from investigation_agent_platform.application.analysis.subjects import (
+            subject_identifies,
+        )
+
+        return subject_identifies(requested, candidates)
 
     @staticmethod
     def _v2_any_from_evidence(
@@ -3558,7 +3552,7 @@ class VerificationEngine:
         for sep in ("::", ".", "#"):
             if sep in callee:
                 names.add(callee.rsplit(sep, 1)[-1])
-        for raw in (snippet or "").splitlines():
+        for raw in split_source_lines(snippet or ""):
             line = (
                 raw.split("| ", 1)[1]
                 if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
@@ -3595,7 +3589,7 @@ class VerificationEngine:
                 try:
                     path = VerificationEngine._item_file(item)
                     text = str(getattr(item, "content_snippet", "") or "")
-                    for raw in text.splitlines():
+                    for raw in split_source_lines(text):
                         line = (
                             raw.split("| ", 1)[1]
                             if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
@@ -3617,7 +3611,7 @@ class VerificationEngine:
                     path = VerificationEngine._item_file(item)
                     text = str(getattr(item, "content_snippet", "") or "")
                     used: set[str] = set()
-                    for raw in text.splitlines():
+                    for raw in split_source_lines(text):
                         line = (
                             raw.split("| ", 1)[1]
                             if "| " in raw and raw.split("|", 1)[0].strip().isdigit()

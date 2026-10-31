@@ -16,6 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.hypothesis.templates import (
     TEMPLATES_VERSION_CURRENT,
     classify_banked_sites,
@@ -209,7 +210,7 @@ def _read_mode(e: Any, snippet: str) -> str:
         if bool(attrs.get("discovery_only")):
             return "path_only"
     # Legacy rows: numbered lines are the provider's range-read shape.
-    first = snippet.splitlines()[0] if snippet else ""
+    first = split_source_lines(snippet)[0] if snippet else ""
     parts = first.split("|", 1)
     if len(parts) == 2 and parts[0].strip().isdigit():
         return "range"
@@ -218,7 +219,7 @@ def _read_mode(e: Any, snippet: str) -> str:
 
 def _last_visible_line(content: str) -> int | None:
     """Last numbered line in provider range content (``480| text``)."""
-    for raw in reversed(content.splitlines()):
+    for raw in reversed(split_source_lines(content)):
         head = raw.split("|", 1)[0].strip()
         if head.isdigit():
             return int(head)

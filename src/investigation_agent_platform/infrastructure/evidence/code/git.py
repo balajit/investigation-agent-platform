@@ -14,6 +14,7 @@ from uuid import UUID
 import pygit2
 from opentelemetry import trace
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.common.exceptions import (
     CodePathNotFoundError,
     ExecutionError,
@@ -512,7 +513,7 @@ class PyGit2Adapter:
                 f"Path not found in any declared repository [{tried}]: {file_path}"
             ) from last_miss
 
-        lines = raw_text.splitlines()
+        lines = split_source_lines(raw_text)
         # P1-2: explicit 1-indexed inclusive ranges return exactly the
         # requested window with numbered lines; otherwise the bounded head
         # (previous behavior). Provenance always records the ACTUAL range.

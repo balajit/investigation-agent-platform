@@ -49,15 +49,20 @@ _EVALUATED_STATIC_TYPE = {
 
 
 class Span(BaseModel):
-    """File-scoped location for a model record."""
+    """File-scoped location for a model record (tree-sitter byte columns)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     file_path: str = Field(min_length=1, max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
-    col_start: int = Field(default=0, ge=0)
-    col_end: int = Field(default=0, ge=0)
+    byte_col_start: int = Field(default=0, ge=0)
+    byte_col_end: int = Field(default=0, ge=0)
+
+
+def code_point_column(line_text: str, byte_col: int) -> int:
+    """Convert a UTF-8 byte offset within ``line_text`` to a code-point column."""
+    return len(line_text.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
 class LiteralValue(BaseModel):
@@ -467,8 +472,8 @@ def _span(node: Any, file_path: str) -> Span:
         file_path=file_path,
         line_start=int(node.start_point[0]) + 1,
         line_end=int(node.end_point[0]) + 1,
-        col_start=int(node.start_point[1]),
-        col_end=int(node.end_point[1]),
+        byte_col_start=int(node.start_point[1]),
+        byte_col_end=int(node.end_point[1]),
     )
 
 
@@ -1221,8 +1226,8 @@ def _build_dataflow_records(
             binding.kind,
             binding.span.line_start,
             binding.span.line_end,
-            binding.span.col_start,
-            binding.span.col_end,
+            binding.span.byte_col_start,
+            binding.span.byte_col_end,
         )
         if key not in seen_bindings:
             seen_bindings.add(key)
@@ -1237,8 +1242,8 @@ def _build_dataflow_records(
             event.value_role,
             event.span.line_start,
             event.span.line_end,
-            event.span.col_start,
-            event.span.col_end,
+            event.span.byte_col_start,
+            event.span.byte_col_end,
         )
         if key not in seen_events:
             seen_events.add(key)

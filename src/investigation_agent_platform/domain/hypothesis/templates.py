@@ -29,6 +29,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
+
 #: Version pin for every template this module emits. In-flight rows keep
 #: the semantics they started with; unmarked rows resolve to current.
 TEMPLATES_VERSION_CURRENT = "templates-v1"
@@ -445,7 +447,7 @@ def _is_range_row(attrs: dict[str, object], snippet: str) -> bool:
         return True
     if declared == "path_only" or bool(attrs.get("discovery_only")):
         return False
-    first = snippet.splitlines()[0] if snippet else ""
+    first = split_source_lines(snippet)[0] if snippet else ""
     head = first.split("|", 1)[0].strip()
     return bool(head) and head.isdigit()
 
@@ -455,7 +457,7 @@ def _code_lines(snippet: str) -> tuple[list[tuple[int | None, str]], int | None]
     numbered line, if any."""
     lines: list[tuple[int | None, str]] = []
     first_numbered: int | None = None
-    for raw in snippet.splitlines():
+    for raw in split_source_lines(snippet):
         match = _NUMBERED_LINE.match(raw)
         if match is not None:
             try:

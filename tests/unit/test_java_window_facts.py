@@ -98,11 +98,14 @@ def test_enumerates_method_return_and_field_from_file_head_window():
     assert method.fact_category == JavaFactCategory.SOURCE_VALUE_FACT
     assert method.value_semantics == CodeValueSemantics.GUARDED_RETURN_LITERAL
     assert method.resolved_value == "STORE_NOT_SUPPORTED"
-    field = by_subject.get("OrderLookupServiceImpl.defaultStore")
+    field = by_subject.get("com.sample.orders.OrderLookupServiceImpl.defaultStore")
     assert field is not None
     assert field.status == CodeFactStatus.RESOLVED
     assert field.resolved_value == "MAIN"
     assert field.value_semantics == CodeValueSemantics.EXPLICIT_INITIALIZER
+    # D14: the unclosed tail names no class, so the file stem owns the
+    # field — labeled as inferred, never bare.
+    assert "declaring class inferred from the file name" in " ".join(field.assumptions)
 
 
 def test_enumeration_fail_closed():

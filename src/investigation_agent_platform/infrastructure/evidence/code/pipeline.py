@@ -8,6 +8,7 @@ from pathlib import Path
 
 import rustworkx as rx
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.infrastructure.evidence.code.graphify_adapter import (
     CodeSymbolGraphBuilder,
 )
@@ -88,7 +89,7 @@ class CodebaseGraphPipeline:
                 self.builder.build_call_graph_edges(content.encode("utf-8"), rel_path, symbols)
 
                 if table_names:
-                    for line_no, line in enumerate(content.splitlines(), start=1):
+                    for line_no, line in enumerate(split_source_lines(content), start=1):
                         if not (SQL_KEYWORDS.search(line) or ORM_PATTERNS.search(line)):
                             continue
                         low = line.lower()

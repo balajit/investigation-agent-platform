@@ -3526,10 +3526,16 @@ async def execute_action_activity(
                     code = _with_read_mode(code, ranged=window_start is not None)
                     banked_rows.append(code)
                     if attributes:
+                        from investigation_agent_platform.domain.code.lines import (
+                            split_source_lines as _split_source_lines,
+                        )
+
                         lowered_attrs = [a.lower() for a in attributes]
                         base_line = window_start or 1
                         for offset, line in enumerate(
-                            str(getattr(code, "content_snippet", "") or "").splitlines()
+                            _split_source_lines(
+                                str(getattr(code, "content_snippet", "") or "")
+                            )
                         ):
                             lowered = line.lower()
                             if _re.search(
