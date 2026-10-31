@@ -46,6 +46,7 @@ graph TD
 3. **H items** that are not gated, plus the J items outside Spring.
 4. **R6, then R8, R9, R10.** R1, R2-ops and R11 wait on owner decisions.
 5. **T3, T4, T5, T6-kernel, T8 (code half), T12.** T3's tests must target the lv4-capped D6 behavior. T9, G-T6 and the H4 quarantine are gated.
+6. **Remaining J items last, before close-out** (owner direction 2026-10-31): J11-J13 (still gated), JPS, JNI, JCV remainder, JLS, and the golden-fixture set. Tackled at the end of the s1s7-reengineering effort.
 
 ## Gated items
 
