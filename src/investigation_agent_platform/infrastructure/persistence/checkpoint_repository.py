@@ -11,8 +11,10 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.infrastructure.persistence.models import CheckpointORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,22 @@ class SqlAlchemyCheckpointRepository:
                 # Monotonicity guard: never regress the recorded step for this
                 # investigation (safe replay of an already-applied checkpoint).
                 if step_number < latest.current_step:
+                    if logger.isEnabledFor(TRACE_LEVEL):
+                        logger.log(
+                            TRACE_LEVEL,
+                            "checkpoint save skipped",
+                            extra=sanitize_extra(
+                                {
+                                    "tenant_id": tenant_id,
+                                    "investigation_id": str(investigation_id),
+                                    "event": "checkpoint.save_checkpoint",
+                                    "outcome": "skipped_monotonic_guard",
+                                    "step_number": step_number,
+                                    "latest_step": latest.current_step,
+                                    "latest_version": latest.checkpoint_version,
+                                }
+                            ),
+                        )
                     return
             row = CheckpointORM(
                 tenant_id=tenant_id,
@@ -78,6 +96,22 @@ class SqlAlchemyCheckpointRepository:
                 ).hexdigest(),
             )
             session.add(row)
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "checkpoint save completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "checkpoint.save_checkpoint",
+                            "outcome": "completed",
+                            "step_number": step_number,
+                            "checkpoint_version": next_version,
+                            "phase": str(state_snapshot.get("phase", "")),
+                        }
+                    ),
+                )
 
     async def get_latest_checkpoint(
         self, tenant_id: str, investigation_id: UUID
@@ -94,6 +128,20 @@ class SqlAlchemyCheckpointRepository:
             )
             row = result.first()
             if row is None:
+                if logger.isEnabledFor(TRACE_LEVEL):
+                    logger.log(
+                        TRACE_LEVEL,
+                        "checkpoint get latest completed",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "event": "checkpoint.get_latest_checkpoint",
+                                "outcome": "completed",
+                                "found": False,
+                            }
+                        ),
+                    )
                 return None
             # F-025: refuse to hydrate snapshots written by an incompatible
             # schema version — replaying across breaking versions silently
@@ -109,4 +157,21 @@ class SqlAlchemyCheckpointRepository:
                     },
                 )
                 return None
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "checkpoint get latest completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "checkpoint.get_latest_checkpoint",
+                            "outcome": "completed",
+                            "found": True,
+                            "checkpoint_version": row.checkpoint_version,
+                            "current_step": row.current_step,
+                            "current_phase": row.current_phase,
+                        }
+                    ),
+                )
             return row.last_action_json

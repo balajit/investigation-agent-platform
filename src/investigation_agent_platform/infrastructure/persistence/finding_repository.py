@@ -45,6 +45,7 @@ from investigation_agent_platform.infrastructure.persistence.models import (
     InvestigationConclusionORM,
 )
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,22 @@ class SqlAlchemyFindingConclusionRepository:
                 )
             )
             row = result.first()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "conclusion get completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "finding.get_conclusion",
+                            "outcome": "completed",
+                            "found": row is not None,
+                            "status": row.status if row is not None else None,
+                            "confidence": row.confidence if row is not None else None,
+                        }
+                    ),
+                )
             return self._conclusion_from_orm(row) if row is not None else None
 
     async def list_findings(
@@ -428,7 +445,43 @@ class SqlAlchemyFindingConclusionRepository:
                 .offset(offset)
                 .limit(limit)
             )
-            return [self._finding_from_orm(row) for row in result.all()], int(total or 0)
+            rows = result.all()
+            total_count = int(total or 0)
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "finding row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "finding_id": str(row.id),
+                                "event": "finding.list_findings",
+                                "outcome": "row",
+                                "finding_type": row.finding_type,
+                                "title": row.title[:120],
+                                "severity": row.severity,
+                                "confidence": row.confidence,
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "findings list completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "finding.list_findings",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                            "total_count": total_count,
+                        }
+                    ),
+                )
+            items = [self._finding_from_orm(row) for row in rows]
+            return items, total_count
 
     async def get_findings_by_ids(self, tenant_id: str, finding_ids: list[UUID]) -> list[Finding]:
         if not finding_ids:
@@ -440,7 +493,40 @@ class SqlAlchemyFindingConclusionRepository:
                     FindingORM.id.in_(finding_ids),
                 )
             )
-            return [self._finding_from_orm(row) for row in result.all()]
+            rows = result.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "finding row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "finding_id": str(row.id),
+                                "event": "finding.get_findings_by_ids",
+                                "outcome": "row",
+                                "finding_type": row.finding_type,
+                                "title": row.title[:120],
+                                "severity": row.severity,
+                                "confidence": row.confidence,
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "findings get by ids completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "finding.get_findings_by_ids",
+                            "outcome": "completed",
+                            "requested_count": len(finding_ids),
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
+            items = [self._finding_from_orm(row) for row in rows]
+            return items
 
     async def list_tenant_findings(
         self, tenant_id: str, limit: int = 100, offset: int = 0
@@ -458,4 +544,37 @@ class SqlAlchemyFindingConclusionRepository:
                 .offset(offset)
                 .limit(limit)
             )
-            return [self._finding_from_orm(row) for row in result.all()], int(total or 0)
+            rows = result.all()
+            total_count = int(total or 0)
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "finding row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "finding_id": str(row.id),
+                                "event": "finding.list_tenant_findings",
+                                "outcome": "row",
+                                "finding_type": row.finding_type,
+                                "title": row.title[:120],
+                                "severity": row.severity,
+                                "confidence": row.confidence,
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "tenant findings list completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "finding.list_tenant_findings",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                            "total_count": total_count,
+                        }
+                    ),
+                )
+            return [self._finding_from_orm(row) for row in rows], total_count

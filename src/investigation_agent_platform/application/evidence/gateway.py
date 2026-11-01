@@ -13,6 +13,7 @@ from uuid import UUID
 from opentelemetry import trace
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.evidence.code_recall import (
     FALLBACK_RUN_CAP,
     CodeRecallMiss,
@@ -39,6 +40,7 @@ from investigation_agent_platform.domain.evidence.requests import (
     SymbolRequest,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 from investigation_agent_platform.ports.correlation.engine import CorrelationExpander
 from investigation_agent_platform.ports.evidence.api_probe import (
     ApiProbeRequest,
@@ -412,14 +414,37 @@ class EvidenceDeduplicator:
     ) -> list[Evidence]:
         deduped: list[Evidence] = []
         seen_batch: set[str] = set()
+        dropped = 0
         for item in items:
             if item.fingerprint in seen_batch:
+                dropped += 1
                 continue
             if self._is_seen(tenant_id, investigation_id, item.fingerprint):
+                dropped += 1
                 continue
             seen_batch.add(item.fingerprint)
             self._mark_seen(tenant_id, investigation_id, item.fingerprint)
             deduped.append(item)
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "gateway deduplicate completed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": (
+                            str(investigation_id)
+                            if investigation_id is not None
+                            else None
+                        ),
+                        "event": "gateway.deduplicate",
+                        "outcome": "completed",
+                        "input_count": len(items),
+                        "kept_count": len(deduped),
+                        "dropped_count": dropped,
+                    }
+                ),
+            )
         return deduped
 
     def deduplicate_sync(
@@ -657,6 +682,21 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, application_id, request.environment
             )
             if not provider:
+                if logger.isEnabledFor(TRACE_LEVEL):
+                    logger.log(
+                        TRACE_LEVEL,
+                        "gateway runtime provider missing",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "application_id": application_id,
+                                "event": "gateway.search_runtime_evidence",
+                                "outcome": "provider_missing",
+                                "environment": request.environment,
+                            }
+                        ),
+                    )
                 raise ExecutionError(
                     f"No runtime provider available for environment '{request.environment}'"
                 )
@@ -678,6 +718,7 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 tenant_id, sanitized_items, investigation_id
             )
 
+            fallback_swapped = False
             if not deduped:
                 # Generic file-log fallback: when the default deployment has
                 # no rows for this context (e.g. no Elastic integration),
@@ -705,11 +746,28 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                         )
                         if deduped:
                             result = fallback_result
+                            fallback_swapped = True
                     except Exception as exc:
                         logger.warning(
                             "File-log fallback failed; keeping primary result",
                             extra={"error": str(exc)},
                         )
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "gateway runtime search completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "application_id": application_id,
+                            "event": "gateway.search_runtime_evidence",
+                            "outcome": "completed",
+                            "row_count": len(deduped),
+                            "fallback_swapped": fallback_swapped,
+                        }
+                    ),
+                )
 
             # P0-3: drop cross-run leakage — log rows naming a different
             # investigation than the one being run (own rows pass through).

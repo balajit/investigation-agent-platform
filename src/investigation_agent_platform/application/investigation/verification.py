@@ -1,4 +1,5 @@
 # src/investigation_agent_platform/application/investigation/verification.py
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.evidence.retrieval_ledger import (
     RETRYABLE_ACTIONS,
     WP_A3_DEFAULT_MAX_ATTEMPTS,
@@ -49,6 +51,9 @@ from investigation_agent_platform.domain.hypothesis.models import (
     HypothesisStatus,
 )
 from investigation_agent_platform.infrastructure.observability.tracing import traced
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from investigation_agent_platform.domain.finding.models import EliminatedRival
@@ -213,26 +218,69 @@ def select_verifiable_candidate(
         ]
     except Exception:
         return None
+    chosen: Any | None = None
+    path = "none_eligible"
     if prefer_id:
         try:
             for candidate in eligible:
                 if str(getattr(candidate, "id", "")) == str(prefer_id):
-                    return candidate
+                    chosen = candidate
+                    path = "prefer_id"
+                    break
         except Exception:
             pass
-    for candidate in eligible:
-        try:
-            raw_ids = getattr(candidate, "supporting_evidence_ids", None) or []
-        except Exception:
-            continue
-        for raw in raw_ids:
+    if chosen is None:
+        for candidate in eligible:
             try:
-                key = raw if not isinstance(raw, str) else UUID(raw)
-            except (ValueError, TypeError, AttributeError):
+                raw_ids = getattr(candidate, "supporting_evidence_ids", None) or []
+            except Exception:
                 continue
-            if key in (evidence_by_id or {}):
-                return _prefer_discriminating(candidate, eligible, evidence_by_id)
-    return eligible[0] if eligible else None
+            for raw in raw_ids:
+                try:
+                    key = raw if not isinstance(raw, str) else UUID(raw)
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                if key in (evidence_by_id or {}):
+                    chosen = _prefer_discriminating(candidate, eligible, evidence_by_id)
+                    path = "discriminating"
+                    break
+            if chosen is not None:
+                break
+    if chosen is None and eligible:
+        chosen = eligible[0]
+        path = "head_eligible"
+    if logger.isEnabledFor(TRACE_LEVEL):
+        logger.log(
+            TRACE_LEVEL,
+            "verification candidate selected",
+            extra=sanitize_extra(
+                {
+                    "event": "verification.select_verifiable_candidate",
+                    "outcome": path,
+                    "ranked_count": len(ranked or []),
+                    "eligible_count": len(eligible),
+                    "chosen_id": str(getattr(chosen, "id", "")) if chosen is not None else None,
+                    "chosen_title": (
+                        str(getattr(chosen, "title", ""))[:120]
+                        if chosen is not None
+                        else None
+                    ),
+                    "chosen_status": (
+                        str(
+                            getattr(
+                                getattr(chosen, "status", ""),
+                                "value",
+                                getattr(chosen, "status", ""),
+                            )
+                        )
+                        if chosen is not None
+                        else None
+                    ),
+                    "prefer_id": str(prefer_id) if prefer_id is not None else None,
+                }
+            ),
+        )
+    return chosen
 
 
 def apply_verification_outcome(candidate: Hypothesis, result: "VerificationResult") -> Hypothesis:
@@ -4262,6 +4310,23 @@ class VerificationEngine:
         )
         kind = VerificationEngine.resolve_claim_kind(hypothesis, strict=strict)
         legacy_extraction = not strict
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "verification claim kind resolved",
+                extra=sanitize_extra(
+                    {
+                        "event": "verification.check_claim_kind",
+                        "outcome": "kind_resolved",
+                        "hypothesis_id": str(getattr(hypothesis, "id", "")),
+                        "title": str(getattr(hypothesis, "statement", ""))[:120],
+                        "kind": (
+                            kind.value if hasattr(kind, "value") else str(kind)
+                        ),
+                        "strict": strict,
+                    }
+                ),
+            )
         if kind is None or kind == ClaimKind.CAUSAL:
             return None
         # Phase 4 (defense in depth): NOT_CHECKABLE never verifies. The
@@ -6707,28 +6772,43 @@ class VerificationEngine:
         rivals = [str(r or "").strip() for r in (untested_rivals or []) if str(r or "").strip()]
         sentences = [str(x or "").strip() for x in (unmapped or []) if str(x or "").strip()]
         if "RIVAL_UNTESTED" in codes and rivals:
-            return f"Evaluate the untested rival hypothesis against evidence, then re-verify: {rivals[0][:300]}"
-        if "RIVAL_UNTESTED" in codes:
-            return "Evaluate every rival hypothesis against evidence, then re-verify."
-        if "RIVAL_UNBEATEN" in codes:
-            return (
+            directive = f"Evaluate the untested rival hypothesis against evidence, then re-verify: {rivals[0][:300]}"
+        elif "RIVAL_UNTESTED" in codes:
+            directive = "Evaluate every rival hypothesis against evidence, then re-verify."
+        elif "RIVAL_UNBEATEN" in codes:
+            directive = (
                 "Rule out the strongest live rival with ruling-out evidence, "
                 "then re-verify: an established causal verdict requires a "
                 "recorded elimination."
             )
-        if "RELATION_UNDEMONSTRATED" in codes:
-            return "Cite the code/log rows showing each causal step's mechanism, then re-verify."
-        if "NO_RUNTIME_OBSERVATION" in codes:
-            return "Observe the behavior at runtime (log, trace, state, or probe), then re-verify."
-        if "CONCLUSION_UNMAPPED" in codes and sentences:
-            return (
+        elif "RELATION_UNDEMONSTRATED" in codes:
+            directive = "Cite the code/log rows showing each causal step's mechanism, then re-verify."
+        elif "NO_RUNTIME_OBSERVATION" in codes:
+            directive = "Observe the behavior at runtime (log, trace, state, or probe), then re-verify."
+        elif "CONCLUSION_UNMAPPED" in codes and sentences:
+            directive = (
                 f"Cite evidence for each conclusion sentence, then re-verify: {sentences[0][:300]}"
             )
-        if "CONCLUSION_UNMAPPED" in codes:
-            return "Cite evidence for each conclusion sentence, then re-verify."
-        if "SINGLE_PROVIDER" in codes:
-            return "Corroborate with an independent evidence provider, then re-verify."
-        return None
+        elif "CONCLUSION_UNMAPPED" in codes:
+            directive = "Cite evidence for each conclusion sentence, then re-verify."
+        elif "SINGLE_PROVIDER" in codes:
+            directive = "Corroborate with an independent evidence provider, then re-verify."
+        else:
+            directive = None
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "verification next check decided",
+                extra=sanitize_extra(
+                    {
+                        "event": "verification.next_check_for",
+                        "outcome": "directive" if directive is not None else "none",
+                        "limitation_codes": sorted(codes),
+                        "directive": directive[:200] if directive is not None else None,
+                    }
+                ),
+            )
+        return directive
 
     @staticmethod
     def next_check_for_abstention(kind: Any, reasons: list[Any] | None) -> str | None:
@@ -6820,14 +6900,47 @@ class VerificationEngine:
         without a claim-local kept edge is refused.
         """
         if self.claim_binding_version not in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3):
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "claim binding enforcement decided",
+                    extra=sanitize_extra(
+                        {
+                            "event": "verification.claim_binding_enforcement",
+                            "outcome": "legacy",
+                            "hypothesis_id": str(getattr(hypothesis, "id", "")),
+                            "binding_version": str(self.claim_binding_version),
+                        }
+                    ),
+                )
             return None
         try:
-            return self._claim_binding_partition(hypothesis, evidence_items, recorded_attempts)
+            enforcement = self._claim_binding_partition(
+                hypothesis, evidence_items, recorded_attempts
+            )
         except Exception:
             # Fail closed: a partitioning fault under cbv2 never degrades
             # to the legacy bank path (which could VERIFY on evaporated
             # rows). The caller turns a fault enforcement INCONCLUSIVE.
-            return ClaimBindingEnforcement(fault=True)
+            enforcement = ClaimBindingEnforcement(fault=True)
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "claim binding enforcement decided",
+                extra=sanitize_extra(
+                    {
+                        "event": "verification.claim_binding_enforcement",
+                        "outcome": (
+                            "fault"
+                            if getattr(enforcement, "fault", False)
+                            else "partition"
+                        ),
+                        "hypothesis_id": str(getattr(hypothesis, "id", "")),
+                        "binding_version": str(self.claim_binding_version),
+                    }
+                ),
+            )
+        return enforcement
 
     # -- Phase 3 (claim binding): misattribution repair --------------------
 

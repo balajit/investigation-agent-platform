@@ -18,6 +18,7 @@ from investigation_agent_platform.domain.hypothesis.models import (
 )
 from investigation_agent_platform.infrastructure.persistence.models import HypothesisORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,26 @@ class SqlAlchemyHypothesisRepository:
                 )
             )
             row = result.first()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "hypothesis get by id completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "hypothesis_id": str(hypothesis_id),
+                            "event": "hypothesis.get_by_id",
+                            "outcome": "completed",
+                            "found": row is not None,
+                            "title": row.title[:120] if row is not None else None,
+                            "status": row.status if row is not None else None,
+                            "confidence_score": (
+                                row.confidence_score if row is not None else None
+                            ),
+                            "support_score": row.support_score if row is not None else None,
+                        }
+                    ),
+                )
             return self._from_orm(row) if row else None
 
     async def find_by_investigation_id(
@@ -244,7 +265,47 @@ class SqlAlchemyHypothesisRepository:
                 # unspecified row order when selecting a candidate.
                 .order_by(HypothesisORM.created_at, HypothesisORM.id)
             )
-            return [self._from_orm(row) for row in result.all()]
+            rows = result.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "hypothesis row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "hypothesis_id": str(row.id),
+                                "event": "hypothesis.find_by_investigation_id",
+                                "outcome": "row",
+                                "title": row.title[:120],
+                                "status": row.status,
+                                "confidence_score": row.confidence_score,
+                                "support_score": row.support_score,
+                                "supporting_evidence_ids": list(
+                                    row.supporting_evidence_ids or []
+                                ),
+                                "refuting_evidence_ids": list(
+                                    row.refuting_evidence_ids or []
+                                ),
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "hypothesis find by investigation completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "hypothesis.find_by_investigation_id",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
+            items = [self._from_orm(row) for row in rows]
+            return items
 
     async def find_by_investigation_and_tenant(
         self, investigation_id: UUID, tenant_id: str, offset: int = 0, limit: int = 50
@@ -270,4 +331,46 @@ class SqlAlchemyHypothesisRepository:
                 .offset(offset)
                 .limit(limit)
             )
-            return [self._from_orm(row) for row in result.all()], int(total or 0)
+            rows = result.all()
+            total_count = int(total or 0)
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "hypothesis row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "hypothesis_id": str(row.id),
+                                "event": "hypothesis.find_by_investigation_and_tenant",
+                                "outcome": "row",
+                                "title": row.title[:120],
+                                "status": row.status,
+                                "confidence_score": row.confidence_score,
+                                "support_score": row.support_score,
+                                "supporting_evidence_ids": list(
+                                    row.supporting_evidence_ids or []
+                                ),
+                                "refuting_evidence_ids": list(
+                                    row.refuting_evidence_ids or []
+                                ),
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "hypothesis find by investigation and tenant completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "hypothesis.find_by_investigation_and_tenant",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                            "total_count": total_count,
+                        }
+                    ),
+                )
+            items = [self._from_orm(row) for row in rows]
+            return items, total_count

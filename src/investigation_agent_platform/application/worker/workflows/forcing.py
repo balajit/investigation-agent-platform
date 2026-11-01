@@ -13,9 +13,11 @@ from typing import Any, NewType
 
 from temporalio import workflow
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.worker.reasoning_failure import (
     TRANSIENT_FAILURE_TYPE,
 )
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -2233,6 +2235,38 @@ def _smallest_fetch_action_for(kind: str, params: dict[str, Any]) -> str:
         return ""
 
 
+def _trace_gap_pick(
+    outcome: str,
+    *,
+    kind: str,
+    order_count: int,
+    picked: WorkOrder | None = None,
+) -> None:
+    """Trace one gap-picker decision (no-op unless TRACE enabled)."""
+    if logger.isEnabledFor(TRACE_LEVEL):
+        logger.log(
+            TRACE_LEVEL,
+            "forcing gap order picked",
+            extra=sanitize_extra(
+                {
+                    "event": "forcing.pick_gap_order",
+                    "outcome": outcome,
+                    "kind": kind,
+                    "order_count": order_count,
+                    "picked_order_id": (
+                        picked.work_order_id.hex if picked is not None else None
+                    ),
+                    "picked_gap_id": (
+                        str(picked.gap_id) if picked is not None else None
+                    ),
+                    "picked_action": (
+                        str(picked.action_type) if picked is not None else None
+                    ),
+                }
+            ),
+        )
+
+
 def _pick_gap_order(
     orders: list[dict[str, Any]] | None,
     *,
@@ -2259,13 +2293,16 @@ def _pick_gap_order(
     """
     try:
         if int(forced_count or 0) >= _FORCED_SMALLEST_FETCH_DEFAULT_CAP:
+            _trace_gap_pick("cap_exceeded", kind=str(kind or ""), order_count=len(list(orders or [])))
             return None
     except Exception:
+        _trace_gap_pick("cap_check_error", kind=str(kind or ""), order_count=len(list(orders or [])))
         return None
 
     try:
         want = str(kind or "")
         if want not in SMALLEST_FETCH_ORDER:
+            _trace_gap_pick("unknown_kind", kind=str(kind or ""), order_count=len(list(orders or [])))
             return None
         hardened = bool(getattr(policy, "hardened", False))
         iteration = getattr(policy, "iteration", None)
@@ -2306,11 +2343,16 @@ def _pick_gap_order(
                     want, order.action_type, dict(order.action_parameters or {})
                 ):
                     continue
+                _trace_gap_pick(
+                    "picked", kind=want, order_count=len(list(orders or [])), picked=order
+                )
                 return order
             except Exception:
                 continue
+        _trace_gap_pick("none_dispatchable", kind=want, order_count=len(list(orders or [])))
         return None
     except Exception:
+        _trace_gap_pick("picker_error", kind=str(kind or ""), order_count=len(list(orders or [])))
         return None
 
 
@@ -2329,7 +2371,7 @@ def _frontier_candidate_key(order: WorkOrder) -> tuple[int, int, str]:
     return (cost, kind_order.get(str(order.addresses.claim_kind or ""), 99), f"{file_path}\x00{order.work_order_id.hex}")
 
 
-def _pick_frontier_gap_order(
+def _pick_frontier_gap_order_inner(
     orders: list[dict[str, Any]],
     *,
     forced_counts: dict[str, int] | None = None,
@@ -2366,6 +2408,42 @@ def _pick_frontier_gap_order(
         except Exception:
             continue
     return min(candidates, key=_frontier_candidate_key) if candidates else None
+
+
+def _pick_frontier_gap_order(
+    orders: list[dict[str, Any]],
+    *,
+    forced_counts: dict[str, int] | None = None,
+    **kwargs: Any,
+) -> WorkOrder | None:
+    """Traced wrapper over the pure frontier gap picker."""
+    picked = _pick_frontier_gap_order_inner(
+        orders, forced_counts=forced_counts, **kwargs
+    )
+    if logger.isEnabledFor(TRACE_LEVEL):
+        logger.log(
+            TRACE_LEVEL,
+            "forcing frontier order picked",
+            extra=sanitize_extra(
+                {
+                    "event": "forcing.pick_frontier_gap_order",
+                    "outcome": "picked" if picked is not None else "none",
+                    "order_count": len(list(orders or [])),
+                    "picked_order_id": (
+                        picked.work_order_id.hex if picked is not None else None
+                    ),
+                    "picked_gap_id": (
+                        str(picked.gap_id) if picked is not None else None
+                    ),
+                    "picked_key": (
+                        str(_frontier_candidate_key(picked))
+                        if picked is not None
+                        else None
+                    ),
+                }
+            ),
+        )
+    return picked
 
 
 def _smallest_fetch_dispatchable(kind: str, action: str, params: dict[str, Any]) -> bool:

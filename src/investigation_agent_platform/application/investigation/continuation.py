@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.finding.models import (
     _FETCH_ACTION_TOKEN,
     _FETCH_PATH_TOKEN,
 )
 from investigation_agent_platform.domain.investigation.models import ActionType
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
+
+logger = logging.getLogger(__name__)
 
 _CALL_SITES_SUFFIX = re.compile(r"\s+call\s+sites\s*$", re.IGNORECASE)
 _CALL_SITE_PAREN = re.compile(r"\s*\(\s*call\s+site\s+of\s+([^)]*)\)\s*", re.IGNORECASE)
@@ -84,7 +89,9 @@ def _qualifiers(remainder: str) -> tuple[str, dict[str, Any]]:
     return remainder, params
 
 
-def derive_continuation_params(next_fetch: str | None) -> tuple[ActionType, dict[str, Any]] | None:
+def _derive_continuation_params_inner(
+    next_fetch: str | None,
+) -> tuple[ActionType, dict[str, Any]] | None:
     """Parse one concrete next-fetch string into an executable action payload."""
     try:
         text = str(next_fetch or "").strip()
@@ -138,3 +145,23 @@ def derive_continuation_params(next_fetch: str | None) -> tuple[ActionType, dict
         return None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def derive_continuation_params(
+    next_fetch: str | None,
+) -> tuple[ActionType, dict[str, Any]] | None:
+    """Parse one concrete next-fetch string (traced wrapper)."""
+    result = _derive_continuation_params_inner(next_fetch)
+    if logger.isEnabledFor(TRACE_LEVEL):
+        logger.log(
+            TRACE_LEVEL,
+            "continuation params derived",
+            extra=sanitize_extra(
+                {
+                    "event": "continuation.derive_continuation_params",
+                    "outcome": "derived" if result is not None else "unparseable",
+                    "action": result[0].value if result is not None else None,
+                }
+            ),
+        )
+    return result

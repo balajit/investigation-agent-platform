@@ -22,12 +22,14 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.common.exceptions import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
 )
 from investigation_agent_platform.infrastructure.persistence.models import IdempotencyKeyORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,19 @@ class SqlAlchemyIdempotencyStore:
                 self._reserve_stmt(tenant_id, key, request_hash, now)
             )
             if result.first() is not None:
+                if logger.isEnabledFor(TRACE_LEVEL):
+                    logger.log(
+                        TRACE_LEVEL,
+                        "idempotency reserve completed",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "event": "idempotency.reserve_or_get",
+                                "outcome": "reserved",
+                                "operation": operation,
+                            }
+                        ),
+                    )
                 return None, True
 
             existing = await session.scalars(
@@ -142,6 +157,20 @@ class SqlAlchemyIdempotencyStore:
                 raise IdempotencyInProgressError(
                     f"A request with idempotency key '{key}' is already in progress"
                 )
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "idempotency existing key completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "idempotency.reserve_or_get",
+                            "outcome": "completed_existing",
+                            "operation": operation,
+                            "response_status": row.response_status,
+                        }
+                    ),
+                )
             return row.response_json, False
 
     async def complete(
@@ -169,6 +198,21 @@ class SqlAlchemyIdempotencyStore:
             if row is not None:
                 row.response_status = status_code
                 row.response_json = response
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "idempotency complete",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "idempotency.complete",
+                            "outcome": "completed",
+                            "operation": operation,
+                            "status_code": status_code,
+                            "found": row is not None,
+                        }
+                    ),
+                )
 
     async def abandon(
         self,
