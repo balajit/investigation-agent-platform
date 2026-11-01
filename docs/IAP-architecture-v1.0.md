@@ -802,3 +802,13 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **Tests.** `test_conclusion_uow_rebuilt_around_proxies` (offline-primary path: identity pins + commit_verdict round-trip through the UoW; verified to fail without the fix). Full unit 5490 green, ruff clean.
 
 **Live outcome.** Re-run after `--restart` (report `reports/live_battery_20261101T001028.md`): **7/10 PASS** (L1x2, L2x2, L4x2 incl. one serve-cached, L8 honest abstention), 0 platform errors. Remaining 3 FAILs are genuine verification-bar gaps, all INSUFFICIENT_EVIDENCE: L3 (recent-change history needs multi-commit fixtures the checkout cannot produce — same reason it is `live:false`-adjacent) and L5x2 (BEHAVIOR claim with code only, no runtime observation — policy bucket, by design). No baseline exists to claim improvement against; this is the post-tranche reference measurement for T-group paired comparisons (same cases, same model, same temperature).
+
+## 100. S4 enforce-by-default + off deleted (2026-11-01)
+
+**Version pinning.** None (configuration default + guard semantics).
+
+**What changed** (`config.py`, `role_guard.py`, `health.py`, 3 test files): `DatabaseConfig.rls_role_check` is now `Literal["warn", "enforce"]` defaulting to `"enforce"`; both env readers (`load_application_config_from_yaml`, `load_application_config_from_env`) and the health fallback default to `enforce`; `evaluate_role` raises `ValueError` on any unknown mode (the `"off"` value is deleted — a stale `off` now fails closed at config validation via Literal, and loudly at the guard). Test harness opts out explicitly where it boots production configs on mocked engines (`test_gateway_composition._production_config`, `test_infra_coverage.test_build_app_context_production` pin `rls_role_check="warn"`); `test_r11_role_guard` gains T00 (unknown mode raises) replacing the old off-passes line.
+
+**Verification.** Full unit 5491 green, ruff/mypy clean. Direct proof on dev: default is `enforce`; superuser `iap` evaluates REFUSE with zero coverage gaps (040 complete); `iap_app` evaluates ok. Dev `--restart` under least-privilege DSNs boots READY with no privileged-role CRITICALs.
+
+**Observation (open).** The check runs in `_build_production_context` only; dev (`IAP_ENVIRONMENT=development`) never executes it, so "boot refuses a privileged role" holds wherever the check runs, not literally everywhere. Wiring the guard into the dev buffered path is a separate tranche if the owner wants it.

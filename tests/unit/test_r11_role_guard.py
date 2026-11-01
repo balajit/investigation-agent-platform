@@ -16,7 +16,20 @@ def test_r11_t01_clean_role_ok() -> None:
     report = RoleReport(role="iap_app", superuser=False, bypass_rls=False, unprotected_tables=())
     assert evaluate_role(report, "warn") == RoleVerdict.OK
     assert evaluate_role(report, "enforce") == RoleVerdict.OK
-    assert evaluate_role(report, "off") == RoleVerdict.OK
+
+
+def test_r11_t00_unknown_mode_fails_closed() -> None:
+    """S4: the "off" value is deleted; an unknown mode raises, never passes."""
+    import pytest
+
+    from investigation_agent_platform.infrastructure.persistence.role_guard import (
+        RoleReport,
+        evaluate_role,
+    )
+
+    report = RoleReport(role="iap_app", superuser=False, bypass_rls=False, unprotected_tables=())
+    with pytest.raises(ValueError, match="unknown rls_role_check mode"):
+        evaluate_role(report, "off")
 
 
 def test_r11_t02_privileged_warns_then_refuses() -> None:

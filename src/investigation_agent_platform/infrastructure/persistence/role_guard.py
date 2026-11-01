@@ -46,8 +46,10 @@ async def inspect_runtime_role(engine: Any) -> RoleReport | None:
 
 
 def evaluate_role(report: RoleReport | None, mode: str) -> RoleVerdict:
-    if mode == "off":
-        return RoleVerdict.OK
+    if mode not in ("warn", "enforce"):
+        # S4: the "off" value is deleted. An unknown mode is a configuration
+        # error, never a silent pass — fail closed like a privileged role.
+        raise ValueError(f"unknown rls_role_check mode: {mode!r}")
     privileged = report is None or report.superuser or report.bypass_rls
     gaps = bool(report and report.unprotected_tables)
     if not privileged and not gaps:

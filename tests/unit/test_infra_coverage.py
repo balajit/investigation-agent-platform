@@ -682,7 +682,10 @@ class TestBootstrap:
             environment="production",
             application_id="test",
             database=DatabaseConfig(
-                connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db")
+                connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db"),
+                # S4: production default is enforce; this mocked-engine boot
+                # opts out explicitly (see test_gateway_composition).
+                rls_role_check="warn",
             ),
             llm=LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o"),
             budget=BudgetConfig(),

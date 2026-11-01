@@ -180,9 +180,9 @@ async def readiness(response: Response) -> HealthView:
 
         _mode = "warn"
         try:
-            _mode = str(getattr(getattr(ctx, "config", None), "database", None).rls_role_check or "warn")
+            _mode = str(getattr(getattr(ctx, "config", None), "database", None).rls_role_check or "enforce")
         except Exception:
-            _mode = str(__import__("os").environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"))
+            _mode = str(__import__("os").environ.get("IAP_DB_RLS_ROLE_CHECK", "enforce"))
         _report = getattr(ctx, "_role_report", None)
         if _report is None:
             checks["db_role"] = "unknown"

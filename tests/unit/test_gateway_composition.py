@@ -30,7 +30,10 @@ def _production_config(**over: object) -> ApplicationConfig:
         "environment": "production",
         "application_id": "test",
         "database": DatabaseConfig(
-            connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db")
+            connection_uri=SecretStr("postgresql+asyncpg://a:b@localhost/db"),
+            # S4: production default is enforce; tests opt out explicitly so
+            # mocked-engine boots do not halt on the (absent) role report.
+            rls_role_check="warn",
         ),
         "llm": LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o"),
         "budget": BudgetConfig(),
