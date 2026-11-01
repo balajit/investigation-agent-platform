@@ -801,4 +801,4 @@ class TestMigration015:
 
         cfg = Config("alembic.ini")
         script = ScriptDirectory.from_config(cfg)
-        assert script.get_heads() == ["041_s7_continuations"]
+        assert script.get_heads() == ["042_s7_continuation_grants"]
