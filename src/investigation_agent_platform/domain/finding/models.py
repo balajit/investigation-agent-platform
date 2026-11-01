@@ -6,7 +6,7 @@ from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,6 +15,26 @@ from investigation_agent_platform.domain.hypothesis.models import (
     ClaimTarget,
     HypothesisStatus,
 )
+
+_FINDING_NAMESPACE = uuid5(NAMESPACE_URL, "iap:finding:v1")
+
+
+def deterministic_finding_id(
+    tenant_id: str, investigation_id: UUID, *, role: str = "verdict",
+    hypothesis_id: UUID | None = None,
+) -> UUID:
+    """Stable id for the finding an investigation publishes (pure).
+
+    A conclude retry rebuilds the same finding, so the same id lets
+    ``on_conflict_do_nothing`` make the write idempotent on
+    (investigation, role, hypothesis) without a schema change. The
+    ``role`` keeps the verdict finding and the journey-fusion finding
+    from colliding.
+    """
+    return uuid5(
+        _FINDING_NAMESPACE,
+        f"{tenant_id}:{investigation_id}:{role}:{hypothesis_id or ''}",
+    )
 
 
 class FindingType(StrEnum):

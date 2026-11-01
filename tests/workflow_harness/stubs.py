@@ -36,6 +36,9 @@ class Script:
     reason: list[dict[str, Any]] = field(default_factory=list)
     execute: Callable[[ExecuteActionInput], dict[str, Any]] | None = None
     verify: list[dict[str, Any]] = field(default_factory=list)
+    # T12.12: when set, the capture stub calls it (may raise to prove the
+    # workflow survives a post-conclude capture failure).
+    capture: Callable[[CaptureKnowledgeInput], dict[str, Any]] | None = None
     calls: list[tuple[str, Any]] = field(default_factory=list)
 
 
@@ -128,6 +131,8 @@ def build_stubs(
     @activity.defn(name="capture_knowledge_activity")
     async def capture(p: CaptureKnowledgeInput) -> GenericActivityResult:
         script.calls.append(("capture", p))
+        if script.capture is not None:
+            return GenericActivityResult(success=True, data=script.capture(p))
         return GenericActivityResult(success=True, data={})
 
     @activity.defn(name="publish_event_activity")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 KEY_A = b"test-key-a-32-bytes-0123456789ab"
@@ -149,7 +150,7 @@ def _evidence(item_id):  # type: ignore[no-untyped-def]
     )
 
 
-def _capture(profile_opted_in, fingerprint, fail_profile=False):  # type: ignore[no-untyped-def]
+def _capture(profile_opted_in, fingerprint, fail_profile=False, conclusion_status="ANSWERED"):  # type: ignore[no-untyped-def]
     from investigation_agent_platform.application.knowledge.capture import (
         KnowledgeCaptureService,
     )
@@ -164,11 +165,20 @@ def _capture(profile_opted_in, fingerprint, fail_profile=False):  # type: ignore
         async def find_by_investigation_id(self, tenant_id, iid):  # type: ignore[no-untyped-def]
             return [_evidence(uuid4())]
 
+    class _FindingRepo:
+        async def get_conclusion(self, tenant_id, iid):  # type: ignore[no-untyped-def]
+            # T12: capture distills concluded state; the fixture models a
+            # concluded run so the R1 visibility assertions keep their meaning.
+            from investigation_agent_platform.domain.finding.models import ConclusionStatus
+
+            return SimpleNamespace(status=ConclusionStatus(conclusion_status))
+
     return KnowledgeCaptureService(
         artifact_repo=_artifact_repo(),
         evidence_repo=_EvRepo(),
         investigation_repo=_InvRepo(),
         profile_repo=_FakeProfile(profile_opted_in, fail_profile),
+        finding_repo=_FindingRepo(),
     ), inv_id
 
 

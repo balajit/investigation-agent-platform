@@ -510,6 +510,22 @@ class TestCapture:
             fingerprint="fp-ev-1",
         )
         await ctx.evidence_repo.save("tenant-a", evidence, inv_id)
+        # T12: capture distills concluded state; model the concluded run.
+        from investigation_agent_platform.domain.finding.models import (
+            ConclusionStatus,
+            InvestigationConclusion,
+        )
+
+        await ctx.finding_repo.save_conclusion(
+            "tenant-a",
+            InvestigationConclusion(
+                tenant_id="tenant-a",
+                investigation_id=inv_id,
+                status=ConclusionStatus.ANSWERED,
+                root_cause="Null pointer in OrderService",
+                supporting_evidence_ids=[evidence.evidence_id],
+            ),
+        )
         service = ctx.knowledge_capture_service()
         stored = await service.capture_for_investigation("tenant-a", inv_id)
         assert len(stored) >= 2  # error_signature + evidence_summary

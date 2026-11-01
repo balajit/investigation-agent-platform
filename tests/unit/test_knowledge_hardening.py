@@ -75,6 +75,22 @@ class TestIssue8TTL:
             fingerprint="fp-ev-1",
         )
         await ctx.evidence_repo.save("tenant-a", ev, inv_id)
+        # T12: capture distills concluded state; model the concluded run.
+        from investigation_agent_platform.domain.finding.models import (
+            ConclusionStatus,
+            InvestigationConclusion,
+        )
+
+        await ctx.finding_repo.save_conclusion(
+            "tenant-a",
+            InvestigationConclusion(
+                tenant_id="tenant-a",
+                investigation_id=inv_id,
+                status=ConclusionStatus.ANSWERED,
+                root_cause="Null pointer in OrderService",
+                supporting_evidence_ids=[ev.evidence_id],
+            ),
+        )
         stored = await ctx.knowledge_capture_service(
             clock_now=lambda: now
         ).capture_for_investigation("tenant-a", inv_id)
@@ -207,6 +223,7 @@ class TestIssue10Budgets:
         ctx.knowledge_store = None
         inv_id = uuid.uuid4()
         now = datetime.now(UTC)
+        banked_ids = []
         for i in range(4):
             ev = Evidence(
                 tenant_id="tenant-a",
@@ -235,6 +252,23 @@ class TestIssue10Budgets:
                 fingerprint=f"fp-{i}",
             )
             await ctx.evidence_repo.save("tenant-a", ev, inv_id)
+            banked_ids.append(ev.evidence_id)
+        # T12: capture distills concluded state; model the concluded run.
+        from investigation_agent_platform.domain.finding.models import (
+            ConclusionStatus,
+            InvestigationConclusion,
+        )
+
+        await ctx.finding_repo.save_conclusion(
+            "tenant-a",
+            InvestigationConclusion(
+                tenant_id="tenant-a",
+                investigation_id=inv_id,
+                status=ConclusionStatus.ANSWERED,
+                root_cause="events",
+                supporting_evidence_ids=banked_ids,
+            ),
+        )
         service = ctx.knowledge_capture_service()
         # Force a tiny cap: 4 evidence items -> 4 summaries + signatures.
         service.max_episodes_per_investigation = 2

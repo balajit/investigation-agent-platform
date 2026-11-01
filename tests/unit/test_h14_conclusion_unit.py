@@ -220,9 +220,11 @@ async def test_gate_uses_the_unit_once() -> None:
     assert len(ctx.conclusion_uow.calls) >= 1
     call = ctx.conclusion_uow.calls[0]
     assert call["finding"] is not None and call["conclusion"] is not None
-    from uuid import NAMESPACE_URL, uuid5
+    # T12: the H14 inline scheme converged into deterministic_finding_id
+    # (tenant + role namespaced); same stability, designed key shape.
+    from investigation_agent_platform.domain.finding.models import deterministic_finding_id
 
-    assert call["finding"].id == uuid5(NAMESPACE_URL, f"finding:{inv_id}:{hyp.id}")
+    assert call["finding"].id == deterministic_finding_id("t", inv_id, hypothesis_id=hyp.id)
 
 
 def test_postgres_atomicity_needs_owner_approval() -> None:

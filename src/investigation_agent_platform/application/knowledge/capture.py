@@ -42,6 +42,10 @@ def _capture_extra(artifacts: Any) -> dict[str, Any]:
 # by construction (see the domain validator).
 SHARED_KINDS = frozenset({"error_signature"})
 
+#: Verdicts whose evidence-derived artifacts may be shared across tenants
+#: (R1 owns the visibility rules; T12 only narrows what feeds it).
+SHAREABLE_STATUSES = frozenset({"ANSWERED", "ROOT_CAUSE_ESTABLISHED"})
+
 
 def _shared_signature(seed: dict[str, Any] | None) -> str | None:
     """Projection of the fingerprint inputs only; None when the seed lacks them."""
@@ -213,6 +217,20 @@ class KnowledgeCaptureService:
             self._group_locks[group_id] = lock
         return lock
 
+    async def _conclusion_state(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> tuple[bool, str]:
+        """(conclusion_known, status). ``(False, "")`` when no finding repository is configured."""
+        repo = self.finding_repo
+        if repo is None:
+            return False, ""
+        try:
+            conclusion = await repo.get_conclusion(tenant_id, investigation_id)
+        except Exception:
+            return True, ""  # repo present but unreadable: treat as no conclusion (fail closed)
+        raw = getattr(conclusion, "status", None)
+        return True, str(getattr(raw, "value", raw) or "").upper()
+
     async def _distill(
         self, tenant_id: str, investigation_id: UUID, now: datetime
     ) -> list[KnowledgeArtifact]:
@@ -225,6 +243,12 @@ class KnowledgeCaptureService:
         """
         if self.evidence_repo is None:
             return []
+        # T12: capture distills concluded state. A FAILED (or unreadable)
+        # conclusion means nothing was concluded: capture nothing.
+        known, cstatus = await self._conclusion_state(tenant_id, investigation_id)
+        if known and not cstatus:
+            return []
+        shareable = cstatus in SHAREABLE_STATUSES
         items: list[Evidence] = await self.evidence_repo.find_by_investigation_id(
             tenant_id, investigation_id
         )
@@ -242,6 +266,11 @@ class KnowledgeCaptureService:
             if isinstance(metadata, dict):
                 seed = metadata.get("intake_seed")
                 intake_seed = seed if isinstance(seed, dict) else None
+        # T12: SHARED artifacts require a shareable verdict; otherwise the
+        # existing fail-closed downgrade makes them TENANT. "Unknown"
+        # (no finding repository) never shares.
+        if not shareable:
+            fingerprint = None
         ttl_days = self.evidence_summary_ttl_days
         if self.profile_repo is not None and application_id:
             # Profile KnowledgeConfig.retention_days overrides the constructor

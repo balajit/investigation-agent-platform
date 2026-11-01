@@ -7,7 +7,7 @@ import logging
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import UUID
 
 from pydantic import ValidationError
 from temporalio import activity
@@ -862,6 +862,7 @@ async def _gate_conclusion_or_fail(
         InvestigationConclusion,
         classify_terminal_handoff,
         dedupe_and_cap_ids,
+        deterministic_finding_id,
         gap_claim_for_hypotheses,
         gap_fetch_for_hypotheses,
     )
@@ -1978,7 +1979,9 @@ async def _gate_conclusion_or_fail(
         finding = Finding(
             # H14/T12: deterministic id so a conclude retry after a committed
             # finding is a no-op instead of a duplicate.
-            id=uuid5(NAMESPACE_URL, f"finding:{investigation_id}:{candidate.id}"),
+            id=deterministic_finding_id(
+                tenant_id, investigation_id, hypothesis_id=candidate.id
+            ),
             tenant_id=tenant_id,
             investigation_id=investigation_id,
             finding_type=FindingType.OBSERVATION if _finding_as_observation else FindingType.ROOT_CAUSE,

@@ -567,8 +567,18 @@ async def _fuse_journey_findings(
     No-op otherwise. Fail-open by contract (caller catches).
     """
     from investigation_agent_platform.domain.evidence.models import EvidenceType
-    from investigation_agent_platform.domain.finding.models import Finding, FindingType
+    from investigation_agent_platform.domain.finding.models import (
+        Finding,
+        FindingType,
+        deterministic_finding_id,
+    )
 
+    # T12: the fusion never fuses itself. The deterministic id lets a retry
+    # land on the same row (on_conflict_do_nothing) instead of appending
+    # another, ever-larger fusion.
+    fused_id = deterministic_finding_id(
+        str(tenant_id), investigation_id, role="journey-fusion"
+    )
     observations: list[Any] = []
     try:
         found, _ = await finding_repo.list_findings(tenant_id, investigation_id, limit=50)
@@ -577,6 +587,7 @@ async def _fuse_journey_findings(
             for f in (found or [])
             if str(getattr(getattr(f, "finding_type", ""), "value", getattr(f, "finding_type", "")))
             == "OBSERVATION"
+            and str(getattr(f, "id", "")) != str(fused_id)
         ]
     except Exception:
         return
@@ -624,6 +635,7 @@ async def _fuse_journey_findings(
         if not statements:
             return
         fused = Finding(
+            id=fused_id,
             tenant_id=tenant_id,
             investigation_id=investigation_id,
             finding_type=FindingType.OBSERVATION,
