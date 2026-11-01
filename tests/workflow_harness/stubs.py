@@ -50,9 +50,17 @@ def build_stubs(
 
     @activity.defn(name="create_investigation_activity")
     async def create(p: CreateInvestigationInput) -> CreateInvestigationOutput:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            LOOP_VERSION_CURRENT,
+        )
+
         script.calls.append(("create", p))
+        # F10: the real activity records the resolved pin; an unmarked
+        # input resolves to current, exactly like _pinned_loop_version.
         return CreateInvestigationOutput(
-            investigation_id=p.investigation_id or "inv-harness", status="CREATED"
+            investigation_id=p.investigation_id or "inv-harness",
+            status="CREATED",
+            loop_version=LOOP_VERSION_CURRENT,
         )
 
     @activity.defn(name="transition_investigation_activity")
@@ -68,10 +76,17 @@ def build_stubs(
     async def reason(p: ReasonInput) -> GenericActivityResult:
         script.calls.append(("reason", p.iteration))
         await _tick("reason")
-        return GenericActivityResult(
-            success=True,
-            data=dict(script.reason[min(p.iteration, len(script.reason) - 1)]),
-        )
+        data = dict(script.reason[min(p.iteration, len(script.reason) - 1)])
+        # Production normalizes through the Decision model
+        # (hypotheses_evaluated: list[str]); the harness stub emits the
+        # same shape so payload conversion matches the real wire.
+        hyps = data.get("hypotheses_evaluated") or []
+        if isinstance(hyps, list):
+            data["hypotheses_evaluated"] = [
+                h.get("statement") or h.get("text") if isinstance(h, dict) else h
+                for h in hyps
+            ]
+        return GenericActivityResult(success=True, data=data)
 
     @activity.defn(name="execute_action_activity")
     async def execute(p: ExecuteActionInput) -> GenericActivityResult:

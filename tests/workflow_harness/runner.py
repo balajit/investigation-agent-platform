@@ -34,7 +34,10 @@ async def start(
     payload = RunInvestigationInput(
         application_id="app",
         tenant_id="t",
-        description="Where is SampleOrderFilter implemented?",
+        # Code-shaped so the floor force can fire on blocked D6 turns
+        # (dotted path + code keyword); tests may override.
+        description="Where is SampleOrderFilter implemented? "
+        "service/src/main/java/com/sample/orders/filter/SampleOrderFilter.java",
         investigation_id=inv,
         **input_overrides,
     )

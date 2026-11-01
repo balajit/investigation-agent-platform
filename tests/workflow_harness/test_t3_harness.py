@@ -16,7 +16,6 @@ from stubs import Script
 
 NC_STATEMENT = "the design is over-engineered"
 
-
 def _all_nc(next_action="CONCLUDE"):
     return {
         "next_action": next_action,
@@ -51,7 +50,9 @@ async def test_t310_turn0_all_nc_blocked_by_cap(temporal_env) -> None:
     handle, worker = await start(temporal_env, script, loop_version="lv13")
     async with worker:
         await handle.result()
-    assert _executions(script), "the blocked turn must still dispatch the gather"
+    executions = _executions(script)
+    assert executions, "the blocked turn must still dispatch the gather"
+    assert executions[0][1].iteration == 0
     concludes = _concludes(script)
     assert len(concludes) == 1
     payload = concludes[0][1]
@@ -63,7 +64,7 @@ async def test_t310_turn0_all_nc_blocked_by_cap(temporal_env) -> None:
 @pytest.mark.asyncio
 async def test_t311_turn0_all_nc_on_lv3_still_fires(temporal_env) -> None:
     """Pre-cap pin: turn 0 all-NC on lv3 fires D6 (no execute, conclude requested)."""
-    script = Script(reason=[_all_nc(), _all_nc()])
+    script = Script(reason=[_all_nc()])
     handle, worker = await start(temporal_env, script, loop_version="lv3")
     async with worker:
         await handle.result()
@@ -83,8 +84,14 @@ async def test_t312_all_nc_after_one_fetch_fires_d6(temporal_env) -> None:
     executions = _executions(script)
     assert len(executions) == 1
     assert executions[0][1].iteration == 0
-    assert [c for c in script.calls if c[0] == "retrieve"] == []
-    assert [c for c in script.calls if c[0] == "verify"] == []
+    # The D6 turn (iteration 1) skips execute/retrieve/verify; turn 0's
+    # gather turn runs the normal pipeline. Retrieve inputs carry no
+    # iteration, so order against the conclude call is the assertion.
+    assert [c for c in script.calls if c[0] == "execute" and c[1].iteration == 1] == []
+    assert [c for c in script.calls if c[0] == "verify" and c[1] == 1] == []
+    names = [c[0] for c in script.calls]
+    assert "conclude" in names
+    assert all(n != "retrieve" for n in names[names.index("conclude") :])
     concludes = _concludes(script)
     assert len(concludes) == 1
     payload = concludes[0][1]
