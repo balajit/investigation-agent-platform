@@ -684,6 +684,14 @@ class ReasoningCoordinator(InvestigationReasoner):
         observability: Any | None = None,
         profile_repo: Any | None = None,
     ) -> None:
+        if prompt_safety_policy is None or not callable(
+            getattr(prompt_safety_policy, "validate_prompt_safety", None)
+        ):
+            from investigation_agent_platform.domain.common.exceptions import (
+                PlatformConfigurationError,
+            )
+
+            raise PlatformConfigurationError("Prompt safety policy is required")
         self._prompt_safety_policy = prompt_safety_policy
         self._llm_gateway: Any | None = llm_gateway
         self._observability: Any | None = observability

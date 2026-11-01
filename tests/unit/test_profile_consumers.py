@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -211,7 +212,7 @@ class TestReasonApplicationContext:
         )
 
         coord = ReasoningCoordinator(
-            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
+            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=AsyncMock(return_value=True)),
             profile_repo=_ProfileRepo(
                 _DEFAULT_PROFILE.model_copy(
                     update={
@@ -237,7 +238,7 @@ class TestReasonApplicationContext:
         )
 
         coord = ReasoningCoordinator(
-            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
+            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=AsyncMock(return_value=True)),
         )
         assert await coord._application_context_block("tenant-a", "x") == {}
 
@@ -268,7 +269,7 @@ class TestReasonApplicationContext:
             ],
         )
         coord = ReasoningCoordinator(
-            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
+            prompt_safety_policy=SimpleNamespace(validate_prompt_safety=AsyncMock(return_value=True)),
             profile_repo=_ProfileRepo(profile),
         )
         block = await coord._application_context_block(

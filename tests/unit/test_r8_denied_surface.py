@@ -72,7 +72,11 @@ def _coordinator(revisions):  # type: ignore[no-untyped-def]
         ReasoningCoordinator,
     )
 
-    return ReasoningCoordinator(object(), profile_repo=_Repos(revisions))
+    # Allow-all safety double: these tests target capability gates, not the
+    # safety gate (WP-08 requires a usable policy at construction).
+    policy = AsyncMock()
+    policy.validate_prompt_safety = AsyncMock(return_value=True)
+    return ReasoningCoordinator(policy, profile_repo=_Repos(revisions))
 
 
 def _prompt_profile() -> ApplicationProfile:

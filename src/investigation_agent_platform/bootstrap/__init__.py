@@ -55,14 +55,43 @@ def _run_async(coro: Any) -> Any:
 
 
 class _DefaultPromptSafetyPolicy(PromptSafetyPolicyPort):
-    """In-process prompt safety policy — permissive default, production may replace."""
+    """Minimal fail-closed prompt policy used when no external policy is wired.
+
+    The policy rejects instruction-like content in retrieved prompt material
+    before the LLM gateway is called. It is intentionally conservative: a
+    tenant may inject a stricter policy through composition, but production
+    never receives an unconditional allow policy.
+    """
+
+    _BLOCKED_MARKERS = (
+        # Each entry is a distinct match string: "ignore all previous
+        # instructions" does NOT contain "ignore previous instructions" as
+        # a substring, so neither entry subsumes the other. Do not dedupe
+        # without re-checking substring relations.
+        # Known limits of this denylist (not a semantic filter): paraphrased
+        # injections miss, and benign security discussion can hit (e.g. a
+        # retrieved doc mentioning "jailbreak"). Prefer an allowlist-shaped
+        # policy for higher-stakes paths.
+        "ignore previous instructions",
+        "ignore all previous instructions",
+        "system message:",
+        "developer message:",
+        "jailbreak",
+        "reveal the system prompt",
+    )
 
     async def validate_prompt_safety(self, tenant_id: str, prompt_text: str) -> bool:
-        return True
+        _ = tenant_id
+        normalized = str(prompt_text or "").casefold()
+        return not any(marker in normalized for marker in self._BLOCKED_MARKERS)
 
 
 def build_reasoning_coordinator(config: ApplicationConfig) -> ReasoningCoordinator:
     """Create ReasoningCoordinator with provider-agnostic LLM gateway."""
+    if config is None:
+        from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
+
+        raise PlatformConfigurationError("Prompt safety policy requires valid application configuration")
     gateway: LLMGateway = create_llm_gateway(config.llm)
     prompt_safety_policy: PromptSafetyPolicyPort = _DefaultPromptSafetyPolicy()
     observability: ObservabilityPort = OpenTelemetryObservabilityAdapter(

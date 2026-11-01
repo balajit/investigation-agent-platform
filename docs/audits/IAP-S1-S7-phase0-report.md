@@ -34,7 +34,7 @@ Phase 0 source revalidation is complete. WP-01 was explicitly authorized and its
 | WP-05 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | Range remains production-called; cbv4 adds Delta diff witnesses, final-gate Contrast binding, and data-gated Mechanism-shift validation. Focused tests pass; live provider/telemetry acceptance remains outstanding. |
 | WP-06 | IMPLEMENTED SLICE; LIVE ACCEPTANCE UNVERIFIED | `lv14` adds deterministic frontier selection for locatable smallest-fetch work orders while preserving fixed-order fallback and older pins. Full forcing-to-frontier migration and live acceptance remain outstanding. |
 | WP-07 | IMPLEMENTED SLICE; QUALITY ACCEPTANCE UNVERIFIED | Structural `EvidenceBrief` projection, citations, dissent metadata, compression accounting, digest, and structural faithfulness status are implemented; semantic quality and feedback acceptance remain outstanding. |
-| WP-08 | VERIFIED DEFECT | Production coordinator builder injects `_DefaultPromptSafetyPolicy`, whose validator always returns `True`. |
+| WP-08 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | Default prompt safety now fails closed on instruction-like markers and missing policies; focused no-provider-call tests pass, while live production composition/provider acceptance remains outstanding. |
 | WP-09 | UNVERIFIED | Unit tests, bounded DB evidence, and partial replay harness exist; no actual end-to-end S1-S7 acceptance battery was established. |
 
 Detailed evidence is in `IAP-S1-S7-remediation-findings.md`, `IAP-S6-binding-contract-matrix.md`, and `IAP-distillation-contract-matrix.md`.

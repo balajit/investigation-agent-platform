@@ -89,13 +89,13 @@ Findings below were revalidated against the current source at HEAD `8d2c13fd004e
 ### F-08 — Production prompt-safety policy always allows
 
 - **Work package:** WP-08
-- **Classification:** VERIFIED DEFECT
+- **Classification:** IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED
 - **Severity:** P1 security blocker
-- **Evidence:** `_DefaultPromptSafetyPolicy.validate_prompt_safety` at `bootstrap/__init__.py:57-61` returns `True` unconditionally. `build_reasoning_coordinator` at `:64-77` injects it. The coordinator checks the policy before the gateway at `application/investigation/reasoning.py:1415-1473`; injected rejection can block the gateway, but normal production composition has no rejecting policy. Activity fallback construction is at `application/worker/activities/reasoning.py:567-602`.
-- **Tests:** Tests use injected doubles and do not demonstrate production composition plus no-provider-call rejection.
-- **Runtime:** Not verified.
-- **Risk:** Unsafe prompts or untrusted retrieved instructions can reach the provider through the default production path.
-- **Required evidence before closure:** explicit production policy injection, missing-policy fail-closed behavior, exception semantics, alternate-constructor coverage, and zero-provider-call rejection test.
+- **Evidence:** `_DefaultPromptSafetyPolicy` at `bootstrap/__init__.py:57-79` now applies a fail-closed marker policy instead of unconditional allow. `ReasoningCoordinator` rejects a missing/invalid policy at construction, and the coordinator checks the policy before the gateway at `application/investigation/reasoning.py:1415-1473`. Activity fallback construction remains fail-closed through `build_reasoning_coordinator` initialization errors.
+- **Tests:** `tests/unit/test_wp08_prompt_safety.py` proves marker rejection, missing-policy construction failure, and no-provider-call behavior; composition/regression tests also pass.
+- **Runtime:** Live production composition and provider integration remain unverified.
+- **Risk:** Substring denylist misses paraphrased injections (false negatives) and can block benign security discussion (false positives); semantic adjudication remains open. A missing/invalid policy fails closed at construction.
+- **Required evidence before closure:** live production policy construction, missing-policy/exception behavior across every alternate constructor, and provider integration proving zero provider calls for rejected prompts.
 
 ### F-09 — Integrated S1-S7 acceptance is not evidenced
 
