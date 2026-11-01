@@ -38,6 +38,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from tranche_b_battery import (
     APP_ID,
     TERMINAL,
+    _concrete_handoff,
     api,
     load_cases,
     score_supported,
@@ -298,7 +299,8 @@ async def _analyze_one(conn, iid: str) -> dict:
     concl = await conn.fetchrow(
         "SELECT status, limitations, next_check, recommended_next_steps, handoff,"
         " jsonb_array_length(supporting_evidence_ids) AS n_support,"
-        " jsonb_array_length(COALESCE(eliminated_rivals, '[]'::jsonb)) AS n_eliminated"
+        " jsonb_array_length(COALESCE(eliminated_rivals, '[]'::jsonb)) AS n_eliminated,"
+        " COALESCE(eliminated_rivals, '[]'::jsonb) AS eliminated_rivals"
         " FROM investigation_conclusions"
         " WHERE investigation_id::text = $1",
         iid,
@@ -312,9 +314,17 @@ async def _analyze_one(conn, iid: str) -> dict:
         handoff = _j(concl["handoff"], {}) or {}
         out["handoff_state"] = (handoff.get("state") if isinstance(handoff, dict) else None)
         out["handoff_version"] = (handoff.get("version") if isinstance(handoff, dict) else None)
-        out["has_handoff"] = bool(out["handoff_state"]) or bool(concl["next_check"]) or bool(
-            _j(concl["recommended_next_steps"], [])
+        # T2F(a)/D30: the priced-handoff definition lives in one place
+        # (tranche_b_battery._concrete_handoff, the G1 definition). A state
+        # label or next-check prose is not a handoff.
+        _ho_ok, _ho_detail = _concrete_handoff(
+            {
+                "handoff": handoff if isinstance(handoff, dict) else {},
+                "eliminated_rivals": _j(concl["eliminated_rivals"], []),
+            }
         )
+        out["has_handoff"] = _ho_ok
+        out["handoff_detail"] = _ho_detail
         out["n_support_db"] = concl["n_support"]
     return out
 
@@ -470,14 +480,17 @@ def build_report(meta, records):
     lines.append(f"- git: {meta['git_sha']} | prompt: {meta['prompt_version']} | llm: {meta['llm']}")
     lines.append(f"- run tag: {meta['run_tag']}")
     lines.append("")
-    lines.append("| case | rep | verdict | status | detail | dur_s | ev | hyps |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| case | rep | verdict | status | detail | dur_s | ev | hyps | ho |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for r in records:
+        _ho = r.get("has_handoff")
+        _ho_detail = str(r.get("handoff_detail") or "")
+        _ho_cell = ("Y:" + _ho_detail[:36].replace("|", "/")) if _ho else "-"
         lines.append(
             f"| {r['case']} | {r.get('rep', 1)} | {r.get('verdict', '?')} | "
             f"{r.get('status', '?')} | {r.get('detail', '')[:80]} | "
             f"{r.get('duration_s', '?')} | {r.get('evidence_total', '?')} | "
-            f"{len(r.get('hypotheses', []))} |"
+            f"{len(r.get('hypotheses', []))} | {_ho_cell} |"
         )
     counts: dict = {}
     for r in records:
