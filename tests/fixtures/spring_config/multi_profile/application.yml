@@ -1,0 +1,17 @@
+# JGF-T06 staged fixture (GATED: assertions enabled when the Spring gate lifts).
+app:
+  name: demo
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+app:
+  name: demo-dev
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+app:
+  name: demo-prod

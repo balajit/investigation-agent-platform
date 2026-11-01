@@ -1,0 +1,5 @@
+# JGF-T06 staged fixture (GATED).
+app:
+  name: demo-dev-override
+logging:
+  level: DEBUG

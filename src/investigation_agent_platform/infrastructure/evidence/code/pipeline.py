@@ -81,8 +81,15 @@ class CodebaseGraphPipeline:
         async def _process_file(file_path: Path) -> None:
             try:
                 content = file_path.read_text(encoding="utf-8", errors="ignore")
-                symbols = await self.parser.parse_symbols(content, language)
                 rel_path = str(file_path.relative_to(repo_root))
+                outcome = await self.parser.parse_symbols(content, language)
+                symbols = outcome.symbols
+                if outcome.has_errors:
+                    logger.warning(
+                        "syntax errors in %s: %d declaration(s) skipped; recoverable symbols kept",
+                        rel_path,
+                        outcome.skipped_error_nodes,
+                    )
 
                 # Update Graph Builder
                 self.builder.add_file_symbols(rel_path, symbols)

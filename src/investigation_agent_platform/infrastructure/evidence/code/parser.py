@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from opentelemetry import trace
@@ -50,6 +51,20 @@ class CodeSymbol(BaseModel):
     parent_symbol: str | None = None
 
 
+@dataclass(frozen=True)
+class ParseOutcome:
+    """What one parse produced (JPS-D25).
+
+    A node that itself contains an error is skipped, but its error-free
+    descendants are kept, so ``symbols`` is the recoverable set;
+    ``skipped_error_nodes`` says how many declarations were dropped.
+    """
+
+    symbols: list[CodeSymbol]
+    has_errors: bool
+    skipped_error_nodes: int
+
+
 class TreeSitterParser:
     """Asynchronous Tree-Sitter AST parser running off-thread for non-blocking analysis."""
 
@@ -71,7 +86,7 @@ class TreeSitterParser:
                 raise ExecutionError(f"Unsupported language parser '{language}': {exc}") from exc
         return self._parsers[language]
 
-    async def parse_symbols(self, code_content: str, language: str) -> list[CodeSymbol]:
+    async def parse_symbols(self, code_content: str, language: str) -> ParseOutcome:
         with tracer.start_as_current_span("TreeSitterParser.parse_symbols"):
             code_bytes = code_content.encode("utf-8")
             if len(code_bytes) > MAX_CODE_SIZE_BYTES:
@@ -80,13 +95,13 @@ class TreeSitterParser:
                 )
             return await asyncio.to_thread(self._parse_symbols_sync, code_bytes, language)
 
-    def _parse_symbols_sync(self, code_bytes: bytes, language: str) -> list[CodeSymbol]:
+    def _parse_symbols_sync(self, code_bytes: bytes, language: str) -> ParseOutcome:
         parser = self._get_parser(language)
         tree = parser.parse(code_bytes)
-        if getattr(tree.root_node, "has_error", False):
-            return []
+        has_errors = bool(getattr(tree.root_node, "has_error", False))
 
         symbols: list[CodeSymbol] = []
+        skipped = 0
         cursor = tree.walk()
         visited_children = False
         depth = 0
@@ -121,24 +136,30 @@ class TreeSitterParser:
                     # Determine parent symbol from active stack
                     current_parent = parent_stack[-1][0] if parent_stack else None
 
-                    # Extract line signature securely from bytes
-                    sig_bytes = code_bytes[
-                        node.start_byte : min(node.end_byte, node.start_byte + 128)
-                    ]
-                    signature_str = sig_bytes.decode("utf-8", errors="replace").split("\n")[0]
+                    # JPS-D25: a node that itself contains an error is
+                    # skipped, but its error-free descendants are kept, so
+                    # the walk always descends and the parent link survives.
+                    if getattr(node, "has_error", False):
+                        skipped += 1
+                    else:
+                        # Extract line signature securely from bytes
+                        sig_bytes = code_bytes[
+                            node.start_byte : min(node.end_byte, node.start_byte + 128)
+                        ]
+                        signature_str = sig_bytes.decode("utf-8", errors="replace").split("\n")[0]
 
-                    symbols.append(
-                        CodeSymbol(
-                            name=symbol_name,
-                            symbol_type=node.type,
-                            start_line=node.start_point[0] + 1,
-                            start_column=node.start_point[1],
-                            end_line=node.end_point[0] + 1,
-                            end_column=node.end_point[1],
-                            signature=signature_str,
-                            parent_symbol=current_parent,
+                        symbols.append(
+                            CodeSymbol(
+                                name=symbol_name,
+                                symbol_type=node.type,
+                                start_line=node.start_point[0] + 1,
+                                start_column=node.start_point[1],
+                                end_line=node.end_point[0] + 1,
+                                end_column=node.end_point[1],
+                                signature=signature_str,
+                                parent_symbol=current_parent,
+                            )
                         )
-                    )
 
                     # FIX 2: Push current symbol onto parent tracking stack
                     parent_stack.append((symbol_name, depth))
@@ -163,7 +184,7 @@ class TreeSitterParser:
             while parent_stack and parent_stack[-1][1] > depth:
                 parent_stack.pop()
 
-        return symbols
+        return ParseOutcome(symbols=symbols, has_errors=has_errors, skipped_error_nodes=skipped)
 
 
 def to_domain_symbol(

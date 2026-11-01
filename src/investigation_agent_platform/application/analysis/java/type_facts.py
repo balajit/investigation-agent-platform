@@ -231,7 +231,7 @@ def _permits_names(declaration: Any, source: bytes) -> list[str]:
         if node.type != "permits":
             continue
         for descendant in _p.walk(node):
-            if descendant.type == "type_identifier" and descendant.parent is not node:
+            if descendant.type == "type_identifier" and not _p.same_node(descendant.parent, node):
                 text = _p.node_text(descendant, source).strip()
                 if text and all(c not in text for c in "<>"):
                     names.append(_simple_name(text))

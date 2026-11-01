@@ -1,0 +1,5 @@
+# JGF-T07 staged fixture (GATED): module A defaults.
+server:
+  port: 8080
+app:
+  feature: alpha

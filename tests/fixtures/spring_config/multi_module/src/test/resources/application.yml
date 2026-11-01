@@ -1,0 +1,3 @@
+# JGF-T07 staged fixture (GATED): must never be read (test resources excluded).
+server:
+  port: 1

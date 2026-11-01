@@ -17,6 +17,7 @@ from investigation_agent_platform.application.analysis.java import (
     local_facts,
     method_facts,
     type_facts,
+    window_facts,
 )
 from investigation_agent_platform.application.investigation.verification import (
     VerificationEngine,
@@ -104,6 +105,9 @@ def _resolve(case: dict) -> object:
         return type_facts.resolve_java_type_fact(evidence, symbol, **kwargs)
     if resolver == "boundary":
         return boundary_facts.resolve_java_framework_boundary(evidence, symbol, **kwargs)
+    if resolver == "window":
+        # JGF: window enumeration has no symbol; kwargs carry subject_hint.
+        return window_facts.enumerate_java_window_facts(evidence, **kwargs)
     raise AssertionError(f"unknown resolver {resolver!r}")
 
 
@@ -111,10 +115,14 @@ def _resolve(case: dict) -> object:
 def test_fixture_battery(case):
     result = _resolve(case)
     assert result.status.value == case["expect_status"], (
-        f"{case['file']}::{case['symbol']}: {result.status} {result.limitation_codes}"
+        f"{case['file']}::{case['symbol']}: {result.status} {getattr(result, 'limitation_codes', getattr(result, 'limitations', ()))}"
     )
+    codes = getattr(result, "limitation_codes", None)
+    if codes is None:
+        # WindowAnalysis carries `limitations`, not `limitation_codes`.
+        codes = result.limitations
     for code in case.get("expect_codes", []):
-        assert code in result.limitation_codes
+        assert code in codes
     if "expect_value" in case:
         assert result.resolved_value == case["expect_value"]
     if "expect_target" in case:
@@ -125,6 +133,8 @@ def test_fixture_battery(case):
 
 def test_battery_never_claims_runtime_effective():
     for case in _MANIFEST["cases"]:
+        if case.get("resolver") == "window":
+            continue  # WindowAnalysis carries no verdict semantics.
         result = _resolve(case)
         assert result.value_semantics != CodeValueSemantics.RUNTIME_EFFECTIVE
         stage = getattr(result, "semantic_stage", None)

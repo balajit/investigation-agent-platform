@@ -1871,9 +1871,18 @@ class CategoryProofRule:
     """Per-category proof policy (Java D7).
 
     required_evidence_families names the evidence families that must be present;
-    source_only_verifiable False means source evidence alone can never verify;
+    source_only_verifiable False means source alone can never verify;
     max_verdict caps the final tier (possible effects and call targets cap at
     LIKELY; runtime/causal never verify from source alone).
+
+    JLS-D28: LANGUAGE_SEMANTIC_FACT keeps the VERIFIED ceiling by intent. The
+    category is "what the language rules say about declared source" — declared
+    shapes, initialization order from in-window declarations, C3 linearization
+    over in-window bases — which source plus the rule version proves. The
+    LIKELY categories describe possible behavior or applied configuration,
+    which source alone cannot prove. Every RESOLVED semantic record carries
+    assumptions disclaiming execution, and out-of-window input resolves
+    PARTIAL, never RESOLVED.
     """
 
     required_evidence_families: frozenset[str]
@@ -3043,6 +3052,25 @@ class VerificationEngine:
                         False,
                         f"claim statement conflicts with resolved source value {resolution.resolved_value!r}",
                     )
+                # JCV-D27: reconcile every literal the statement asserts as
+                # a return value (the field-phrasing check above does not
+                # read method-return prose). Bare comparison both sides.
+                if resolution.value_semantics == CodeValueSemantics.GUARDED_RETURN_LITERAL:
+                    asserted = VerificationEngine._asserted_return_literals(
+                        str(getattr(hypothesis, "statement", "") or "")
+                    )
+                    if any(
+                        VerificationEngine._bare_literal(value)
+                        != VerificationEngine._bare_literal(resolution.resolved_value)
+                        for value in asserted
+                    ):
+                        return (
+                            False,
+                            (
+                                "claim statement asserts a returned value that "
+                                f"conflicts with the resolved value {resolution.resolved_value!r}"
+                            ),
+                        )
                 subject = str(getattr(target, "symbol", "") or "") or str(
                     getattr(target, "subject_identity", "") or ""
                 )
@@ -3112,6 +3140,30 @@ class VerificationEngine:
             code=LimitationCode.RELATION_UNDEMONSTRATED,
             detail=(f"Java fact non-verifying ({codes_text or reason}).")[:500],
         )
+
+    _RETURN_LITERAL = re.compile(
+        r"(?i)\breturns?\s+(?:the\s+(?:string|value|literal)\s+)?"
+        r"(['\"][^'\"]+['\"]|[-+]?\d+(?:\.\d+)?(?:[fFdDlL])?|true|false|null)"
+    )
+
+    @staticmethod
+    def _asserted_return_literals(statement: str) -> list[str]:
+        """Literals the statement asserts as a return value (JCV-D27, pure).
+
+        The return-anchored match plus any other quoted span: a second
+        branch's quoted literal (``... and "X" otherwise``) is a return
+        assertion the anchor alone misses. Bare guard keywords (``null`` in
+        ``orderType is null``) are not return assertions and stay out.
+        """
+        values = []
+        for match in VerificationEngine._RETURN_LITERAL.finditer(statement or ""):
+            text = match.group(1).strip()
+            values.append(text[1:-1] if len(text) >= 2 and text[0] in "'\"" else text)
+        for match in re.finditer(r"""(['\"])([^'\"]+)\1""", statement or ""):
+            text = match.group(2).strip()
+            if text and text not in values:
+                values.append(text)
+        return values
 
     @staticmethod
     def _claimed_literal_from_statement(statement: str) -> str | None:

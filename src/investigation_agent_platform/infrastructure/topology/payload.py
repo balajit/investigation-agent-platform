@@ -218,10 +218,21 @@ async def build_payload_for_repo(
         if language == "unknown":
             continue  # MODULE-only fallback: counted, no symbols.
         try:
-            symbols = await parser.parse_symbols(text, language)
+            outcome = await parser.parse_symbols(text, language)
         except Exception as exc:  # per-file containment, never whole-repo fail
             diagnostics.append(ParseDiagnostic(file_path=rel[:1024], message=str(exc)[:1024]))
             continue
+        if outcome.has_errors:
+            diagnostics.append(
+                ParseDiagnostic(
+                    file_path=rel[:1024],
+                    message=(
+                        f"syntax errors; {outcome.skipped_error_nodes} declaration(s) "
+                        "skipped; recoverable symbols kept"
+                    )[:1024],
+                )
+            )
+        symbols = outcome.symbols
         for sym in symbols:
             if len(ast_nodes) >= MAX_NODE_SYMBOLS:
                 truncated = True

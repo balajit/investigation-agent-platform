@@ -356,7 +356,7 @@ def _with_field_context(declaration: Any, source: bytes, subtree_text: str) -> s
     fields = [
         _p.node_text(child, source)
         for child in body.children
-        if child.type == "field_declaration" and child is not declaration
+        if child.type == "field_declaration" and not _p.same_node(child, declaration)
     ]
     return subtree_text + "\n" + "\n".join(fields)
 
