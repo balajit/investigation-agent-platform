@@ -7727,7 +7727,19 @@ class VerificationEngine:
                 if own_rows:
                     rows = own_rows
                 elif needs_cited_rows:
-                    failures.append(f"{kind}|{target_key}: cites no bound row")
+                    # Name the unproven target's symbol when the group carries
+                    # one, so the abstention limitation identifies the group
+                    # (G-T6 GT6.08; T9-D22 limitation_mentions reads it).
+                    _sym = ""
+                    try:
+                        _tgt = getattr(asms[0], "claim_target", None) if asms else None
+                        _sym = str(getattr(_tgt, "symbol", "") or "")
+                    except Exception:
+                        _sym = ""
+                    failures.append(
+                        f"{kind}|{target_key}: cites no bound row"
+                        + (f" ({_sym})" if _sym else "")
+                    )
                     continue
                 else:
                     # Behavior/absence/causal/history proofs can rest on the

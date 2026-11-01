@@ -1904,6 +1904,19 @@ async def _gate_conclusion_or_fail(
                 _denial_reasons.append(_expl[:500])
         except Exception:
             pass
+        # H3/H4 + T9-D21: the abstention names the unverified group(s) with
+        # their codes, so the limitation survives on the persisted conclusion
+        # (the grader and G-T6 assert on UNVERIFIED_CLAIM_GROUP et al).
+        try:
+            for _vlim in list(getattr(verification, "limitations", None) or []):
+                _code = str(
+                    getattr(getattr(_vlim, "code", ""), "value", getattr(_vlim, "code", ""))
+                )
+                _detail = str(getattr(_vlim, "detail", "") or "")
+                if _code:
+                    _denial_reasons.append(f"{_code}: {_detail}"[:500])
+        except Exception:
+            pass
         _denial_reasons.extend(list(decision.blockers))
         await _persist_abstention("insufficient", _denial_reasons)
         return InvestigationStatus.COMPLETED

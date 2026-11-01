@@ -489,11 +489,21 @@ def _check_required_limitations(expect: dict, concl: dict) -> tuple[bool, str]:
 
 
 def _check_forbidden_root_text(expect: dict, root: str) -> tuple[bool, str]:
-    """An opinion claim's statement must not appear in the verdict (>= 60% of its content words)."""
+    """An opinion claim's statement must not appear in the verdict (>= 60% of its content words).
+
+    Location words (symbols and path parts from every checkable group's
+    target) are subtracted first: a location verdict legitimately repeats
+    them, and only the opinion remainder counts."""
+    loc_words: set[str] = set()
+    for group in expect.get("claim_groups") or []:
+        target = group.get("target") or {}
+        for field in ("symbol", "file_path", "scope"):
+            loc_words.update(re.findall(r"[a-z0-9]+", str(target.get(field, "") or "").lower()))
     for group in expect.get("claim_groups") or []:
         if group.get("kind") not in expect.get("forbid_root_text_from_groups", []):
             continue
         words = {w for w in re.findall(r"[a-z0-9]+", str(group.get("statement", "")).lower()) if len(w) > 3}
+        words -= loc_words
         if words and sum(1 for w in words if _word_in(w, root)) / len(words) >= 0.6:
             return (False, "verdict repeats an excluded opinion claim")
     return (True, "")
@@ -948,6 +958,22 @@ def _git_sha() -> str:
         return "unknown"
 
 
+def should_follow_primary(strict_fresh: bool, inv: dict) -> bool:
+    """GT6: in strict mode a cache-served/duplicate run is never followed."""
+    if not strict_fresh:
+        return True
+    valid, _ = run_validity({}, inv, True)
+    return valid
+
+
+def check_pin(pins: dict, case_id: str, requested: str | None) -> str:
+    """GT6.05: pin mismatch note ("" when the stamp matches or is unchecked)."""
+    _gid, _pin = (pins.get(case_id) or ("", ""))
+    if requested and _pin and _pin != requested:
+        return f"pin mismatch: want {requested}, got {_pin}"
+    return ""
+
+
 def _run_case(api_base: str, tenant: str, timeout: int, claim_binding_version: str | None,
               strict_fresh: bool, cell: str, git_sha: str, case: dict,
               results: list, g1_rows: list, pins: dict, records: list) -> None:
@@ -998,8 +1024,8 @@ def _run_case(api_base: str, tenant: str, timeout: int, claim_binding_version: s
     if inv.get("status") == "CANCELLED":
         # T9-D23 strict-fresh: a cache-served/duplicate run is INVALID:
         # excluded, counted, no primary followed.
-        valid, why = run_validity(case, inv, strict_fresh)
-        if not valid:
+        if not should_follow_primary(strict_fresh, inv):
+            _, why = run_validity({}, inv, True)
             print(f"  INVALID: {why} ({iid[:8]})")
             results.append((case["id"], "FAIL", f"invalid: {why}", iid))
             g1_rows.append((case["id"], False, "miss", f"invalid: {why}"))
@@ -1021,7 +1047,12 @@ def _run_case(api_base: str, tenant: str, timeout: int, claim_binding_version: s
             )
             g1_ok, g1_kind, g1_detail = g1_for_investigation(api_base, tenant, pid)
             g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
-            records.append(_record(case["id"], verdict, detail, iid, (g1_ok, g1_kind, g1_detail), True))
+            rec = _record(case["id"], verdict, detail, iid, (g1_ok, g1_kind, g1_detail), True)
+            note = check_pin(pins, case["id"], claim_binding_version)
+            if strict_fresh and note:
+                rec["valid"] = False
+                rec["detail"] = note + "; " + rec["detail"]
+            records.append(rec)
             return
         results.append((case["id"], "FAIL", "run CANCELLED, no followable primary", iid))
         g1_rows.append((case["id"], False, "miss", "run CANCELLED, no followable primary"))
@@ -1044,6 +1075,10 @@ def _run_case(api_base: str, tenant: str, timeout: int, claim_binding_version: s
     g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
     rec = _record(case["id"], verdict, detail, iid, (g1_ok, g1_kind, g1_detail), True)
     rec["loop_version"] = str((inv.get("metadata") or {}).get("loop_version") or "")
+    note = check_pin(pins, case["id"], claim_binding_version)
+    if strict_fresh and note:
+        rec["valid"] = False
+        rec["detail"] = note + "; " + rec["detail"]
     records.append(rec)
 
 

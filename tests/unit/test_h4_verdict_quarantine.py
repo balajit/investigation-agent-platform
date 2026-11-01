@@ -333,6 +333,9 @@ async def test_h4t12_correlation_edge_reason_is_quarantined(monkeypatch) -> None
 
 
 def test_h4t13_grader_xfails_unchanged() -> None:
+    # The five strict xfails were rewritten as passing assertions when the
+    # T9 grader (r2) learned to score them; this pins that none of them
+    # regressed to XPASS-strict or FAIL.
     import subprocess
     import sys
 
@@ -346,5 +349,5 @@ def test_h4t13_grader_xfails_unchanged() -> None:
         cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]),
     )
     assert proc.returncode == 0, proc.stdout[-2000:]
-    assert "xfailed" in proc.stdout
-    assert "XPASS" not in proc.stdout and "failed" not in proc.stdout.lower().replace("xfailed", "")
+    assert "xfailed" not in proc.stdout
+    assert "XPASS" not in proc.stdout and "failed" not in proc.stdout.lower()
