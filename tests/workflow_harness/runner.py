@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from stubs import Script, build_stubs
@@ -43,7 +44,21 @@ async def start(
     )
     return (
         await env.client.start_workflow(
-            RunInvestigationWorkflow.run, payload, id=f"wf-{inv}", task_queue=queue
+            RunInvestigationWorkflow.run,
+            payload,
+            id=f"wf-{inv}",
+            task_queue=queue,
+            # Mirror production dispatch: explicit outer bounds so no
+            # server default can kill a run mid-test. Workflow tasks never
+            # time out: activity calls carry their own start_to_close, and
+            # schedule_to_close bounds are applied per-activity by T5-D10.
+            # Tests may override (T5.11 disables the run timeout so the old
+            # unbounded pause genuinely hangs until terminate).
+            execution_timeout=input_overrides.pop(
+                "execution_timeout", timedelta(seconds=7200)
+            ),
+            run_timeout=input_overrides.pop("run_timeout", timedelta(seconds=7100)),
+            task_timeout=input_overrides.pop("task_timeout", timedelta(seconds=600)),
         ),
         worker,
     )

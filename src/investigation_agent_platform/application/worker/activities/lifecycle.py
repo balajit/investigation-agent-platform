@@ -2419,7 +2419,10 @@ def _epistemic_next_check(reason_lower: str) -> str:
         return "Gather the missing proof kind within the bounded repair budget, then re-verify."
     try:
         from investigation_agent_platform.application.worker.reasoning_failure import (
+            REASON_DURATION,
+            REASON_PAUSE_TIMEOUT,
             REASON_STALLED,
+            REASON_TOKENS,
         )
 
         if reason_lower == REASON_STALLED:
@@ -2428,6 +2431,18 @@ def _epistemic_next_check(reason_lower: str) -> str:
                 "the last two confident turns repeated a fetch that banked nothing. "
                 "Then re-verify."
             )
+        if reason_lower == REASON_DURATION:
+            return (
+                "Raise the duration budget and resume, then re-verify. "
+                "The run ended on active-time budget, not on evidence."
+            )
+        if reason_lower == REASON_TOKENS:
+            return (
+                "Raise the token budget and resume, then re-verify. "
+                "The run ended on token budget, not on evidence."
+            )
+        if reason_lower == REASON_PAUSE_TIMEOUT:
+            return "Resume the investigation (it was paused past the allowed window), then re-verify."
     except Exception:
         pass
     if reason_lower.startswith(REASON_REASONING_BLOCKED):

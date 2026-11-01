@@ -209,11 +209,14 @@ async def _dispatch_workflow(
     investigation_id: str,
     correlation_id: str | None,
     max_iterations_override: int | None = None,
+    max_duration_seconds_override: int | None = None,
+    max_llm_tokens_override: int | None = None,
 ) -> DispatchAck:
     """Start the Temporal workflow for an existing investigation (shared by
     manual start and error intake). A failed start is never reported as
     success (F-008). `max_iterations_override` (reprocess budgets) wins over
-    the profile-resolved value when positive."""
+    the profile-resolved value when positive; the duration/token overrides
+    behave the same."""
     # Lifecycle gate (§4): retired profiles block new starts (in-flight
     # workflow runs already underway are unaffected).
     profile_repo = getattr(ctx, "profile_repo", None)
@@ -324,16 +327,25 @@ async def _dispatch_workflow(
         # (global defaults plus the profile evidence_budget overlay), so a
         # per-app budget increase takes effect without code changes or
         # restarts. Falls back to the workflow guard default when the
-        # profile is unavailable.
+        # profile is unavailable. T5-D9 priced bound: duration/token
+        # budgets resolve the same way.
         max_iterations: int | None = None
+        max_duration_seconds: int | None = None
+        max_llm_tokens: int | None = None
         try:
             if revisions:
                 effective_limits = overlay_evidence_budget(InvestigationLimits(), revisions[0])
                 max_iterations = int(effective_limits.max_iterations)
+                max_duration_seconds = int(effective_limits.max_duration_seconds)
+                max_llm_tokens = int(effective_limits.max_llm_tokens)
         except Exception:
             max_iterations = None
         if max_iterations_override is not None and max_iterations_override >= 1:
             max_iterations = min(int(max_iterations_override), 100)
+        if max_duration_seconds_override is not None and max_duration_seconds_override >= 1:
+            max_duration_seconds = int(max_duration_seconds_override)
+        if max_llm_tokens_override is not None and max_llm_tokens_override >= 1:
+            max_llm_tokens = int(max_llm_tokens_override)
 
         wf_input = RunInvestigationInput(
             application_id=str(investigation.application_id),
@@ -350,6 +362,8 @@ async def _dispatch_workflow(
             correlation_id=correlation_id,
             investigation_id=investigation_id,
             max_iterations=max_iterations,
+            max_duration_seconds=max_duration_seconds,
+            max_llm_tokens=max_llm_tokens,
             # Loop-semantics pin recorded at creation; unmarked rows resolve
             # to the current version, an unknown pin fails the dispatch.
             loop_version=resolve_loop_version(getattr(investigation, "metadata", None)),
@@ -358,6 +372,10 @@ async def _dispatch_workflow(
             {"correlation_id": correlation_id, "tenant_id": tenant_id} if correlation_id else None
         )
         from datetime import timedelta as _timedelta
+
+        from investigation_agent_platform.application.worker.loop_budget import (
+            EXECUTION_TIMEOUT_SECONDS as _EXECUTION_TIMEOUT_SECONDS,
+        )
 
         # #9: dispatch span — the client TracingInterceptor propagates this
         # span's context into the workflow execution, joining API dispatch
@@ -389,9 +407,10 @@ async def _dispatch_workflow(
                 memo=memo,
                 # F-055: Temporal workflow execution timeout is the outer boundary
                 # for investigation wall-clock; application timestamps alone cannot
-                # bound provider calls, retries, or worker restarts.
-                execution_timeout=_timedelta(seconds=7200),
-                run_timeout=_timedelta(seconds=7200),
+                # bound provider calls, retries, or worker restarts. T5: the
+                # one definition lives in loop_budget.
+                execution_timeout=_timedelta(seconds=_EXECUTION_TIMEOUT_SECONDS),
+                run_timeout=_timedelta(seconds=_EXECUTION_TIMEOUT_SECONDS),
             )
     except Exception as exc:
         # A failed start must never be reported as success (F-008): the
@@ -1124,6 +1143,12 @@ async def reprocess_investigation(
     max_iterations_override = effective.get("max_iterations")
     if not isinstance(max_iterations_override, int):
         max_iterations_override = None
+    max_duration_seconds_override = effective.get("max_duration_seconds")
+    if not isinstance(max_duration_seconds_override, int):
+        max_duration_seconds_override = None
+    max_llm_tokens_override = effective.get("max_llm_tokens")
+    if not isinstance(max_llm_tokens_override, int):
+        max_llm_tokens_override = None
     return await _dispatch_workflow(
         ctx,
         new_investigation,
@@ -1131,6 +1156,8 @@ async def reprocess_investigation(
         str(new_investigation.id),
         correlation_id,
         max_iterations_override=max_iterations_override,
+        max_duration_seconds_override=max_duration_seconds_override,
+        max_llm_tokens_override=max_llm_tokens_override,
     )
 
 

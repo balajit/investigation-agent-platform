@@ -91,12 +91,24 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
+from investigation_agent_platform.application.worker.loop_budget import (
+    PAUSE_MAX_SECONDS,
+    active_seconds,
+    bounded_schedule_to_close,
+    budget_verdict,
+    is_schedule_to_close_timeout,
+    make_budget,
+    reason_usage,
+)
 from investigation_agent_platform.application.worker.opinion_only import (
     opinion_statements as _opinion_statements,
 )
 from investigation_agent_platform.application.worker.reasoning_failure import (
     KIND_OTHER,
     KIND_TRANSIENT,
+    REASON_DURATION,
+    REASON_PAUSE_TIMEOUT,
+    REASON_TOKENS,
     last_error_for,
 )
 
@@ -166,6 +178,10 @@ class RunInvestigationInput:
     # limits (global defaults plus the profile evidence_budget overlay).
     # None (legacy callers) means the local guard default.
     max_iterations: int | None = None
+    # T5-D9 priced bound: duration/token budgets resolved by the API at
+    # dispatch the same way. None (legacy callers) means the local guards.
+    max_duration_seconds: int | None = None
+    max_llm_tokens: int | None = None
     # Loop-semantics pin recorded on the investigation at creation and
     # resolved by the API at dispatch (domain.investigation.loop_version).
     # None (legacy callers / tests) means the current semantics.
@@ -671,6 +687,14 @@ class RunInvestigationWorkflow:
         stall_streak_max = 0
         stall_exits = 0
         _prev_dispatch_fp: str | None = None
+        # T5-D9 priced bound: the budget is resolved once from dispatch
+        # inputs (with local guards as fallback) and read on the workflow
+        # clock. Paused time is tracked separately and never consumes it.
+        _budget_on = _lv_t(loop_version)
+        _budget = make_budget(
+            workflow.now(), input_data.max_duration_seconds, input_data.max_llm_tokens
+        )
+        _paused_seconds = 0.0
         defer_repairs_used = 0
         max_defer_repairs = 2
         # Phase 1 (claim binding): cumulative per-turn binding counts from
@@ -686,6 +710,10 @@ class RunInvestigationWorkflow:
         # D3: triage route computed once at iteration 0 from the complaint
         # + intake seed; guides the reasoner, never decides alone.
         triage_route = "UNKNOWN"
+        # E1: strategy skeleton recorded once at iteration 0; rides history
+        # and telemetry. Initialized here so zero-iteration runs (e.g.
+        # immediate cancel) do not hit an unbound name in conclude telemetry.
+        investigation_plan: list[Any] = []
         # P6 2b-i: previous turn's point of focus (plain JSON dict or
         # None). Rebuilt every turn from reason output; replay-safe
         # because it derives from activity results, never wall-clock.
@@ -703,9 +731,35 @@ class RunInvestigationWorkflow:
                 # PAUSED -> INVESTIGATING -> CORRELATING). Already-PAUSED is a
                 # no-op inside the activity.
                 await _transition("PAUSED", "Workflow pause signal handled")
-            await workflow.wait_condition(lambda: not self._is_paused)
+            if _budget_on:
+                # T5-D11: cancel-aware, bounded pause. Older pins take the
+                # byte-identical old branch below (a StartTimer command would
+                # break replay of older paused histories).
+                if self._is_paused:
+                    _pause_started = workflow.now()
+                    try:
+                        await workflow.wait_condition(
+                            lambda: (not self._is_paused) or self._is_cancelled,
+                            timeout=timedelta(seconds=PAUSE_MAX_SECONDS),
+                        )
+                    except TimeoutError:
+                        last_error = REASON_PAUSE_TIMEOUT
+                    _paused_seconds += (workflow.now() - _pause_started).total_seconds()
+                    if last_error == REASON_PAUSE_TIMEOUT:
+                        break
+            else:
+                await workflow.wait_condition(lambda: not self._is_paused)
             if self._is_cancelled:
                 break
+            if _budget_on:
+                # T5-D9 priced bound: end the loop at the first loop top
+                # past the budget (active time; pauses do not consume it).
+                _spent = budget_verdict(
+                    _budget, workflow.now(), _paused_seconds, llm_tokens_total
+                )
+                if _spent is not None:
+                    last_error = _spent
+                    break
 
             # T4-D7: per-turn stall tracking. _turn_rows_banked stays None
             # when the turn never reaches the execute update (an unknown
@@ -768,6 +822,15 @@ class RunInvestigationWorkflow:
                         loop_version=loop_version,
                     ),
                     start_to_close_timeout=timedelta(seconds=120),
+                    # T5-D10: LV_T-gated schedule-to-close bound (None keeps
+                    # the old scheduling on older pins).
+                    schedule_to_close_timeout=(
+                        bounded_schedule_to_close(
+                            "reason", _budget, workflow.now(), _paused_seconds
+                        )
+                        if _budget_on
+                        else None
+                    ),
                     retry_policy=retry_policy,
                 )
             except ActivityError as exc:
@@ -776,10 +839,23 @@ class RunInvestigationWorkflow:
                 # degrades to a resumable abstention (or FAILED only when
                 # nothing is banked); it is not a WORKFLOW_ERROR. Anything
                 # else still raises.
+                # T5-D10: the budget's own schedule-to-close expiry is a
+                # budget exit, not a workflow error.
+                if _budget_on and is_schedule_to_close_timeout(exc) and budget_verdict(
+                    _budget, workflow.now(), _paused_seconds, llm_tokens_total
+                ) == REASON_DURATION:
+                    last_error = REASON_DURATION
+                    break
                 if not _caused_by_reasoning_transient(exc):
                     raise
                 last_error = last_error_for(KIND_TRANSIENT, "retries exhausted")
                 break
+            # T5-D12: accumulate usage immediately, on every path, before any
+            # break below. The old post-execution block is deleted so a turn
+            # is never counted twice.
+            _rt, _rc = reason_usage(reason_res.data)
+            llm_tokens_total += _rt
+            llm_cost_total += _rc
             # Budget guard: if reason signals budget exceeded, break.
             if reason_res.data.get("budget_exceeded"):
                 last_error = "budget_exceeded"
@@ -1101,11 +1177,6 @@ class RunInvestigationWorkflow:
                 "plan": list(investigation_plan) if iteration == 0 else [],
             }
             action_history.append(_this_turn)
-            try:
-                llm_tokens_total += int(_reason_data.get("llm_tokens", 0) or 0)
-                llm_cost_total += float(_reason_data.get("llm_cost", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                pass
 
             # Part 11.5: an activity may declare it needs caller-supplied
             # input before the run can proceed.
@@ -1158,9 +1229,25 @@ class RunInvestigationWorkflow:
                         ),
                     ),
                     start_to_close_timeout=timedelta(seconds=60),
+                    # T5-D10: LV_T-gated schedule-to-close bound (None keeps
+                    # the old scheduling on older pins).
+                    schedule_to_close_timeout=(
+                        bounded_schedule_to_close(
+                            "execute", _budget, workflow.now(), _paused_seconds
+                        )
+                        if _budget_on
+                        else None
+                    ),
                     retry_policy=retry_policy,
                 )
             except ActivityError as exc:
+                # T5-D10: the budget's own schedule-to-close expiry is a
+                # budget exit, not a workflow error.
+                if _budget_on and is_schedule_to_close_timeout(exc) and budget_verdict(
+                    _budget, workflow.now(), _paused_seconds, llm_tokens_total
+                ) == REASON_DURATION:
+                    last_error = REASON_DURATION
+                    break
                 # Tranche B doctrine: an idempotency wedge (slow owner still
                 # holding the key past the 3-attempt budget) degrades this
                 # turn to EMPTY instead of reconciling the run FAILED. The
@@ -1369,18 +1456,37 @@ class RunInvestigationWorkflow:
             await _transition("VERIFYING", f"Iteration {iteration} verifying ({_decision_summary})")
 
             # Verify root cause (VerificationEngine).
-            verify_res = await workflow.execute_activity(
-                verify_root_cause_activity,
-                VerifyRootCauseInput(
-                    tenant_id=tenant_id,
-                    investigation_id=inv_id,
-                    triage_route=triage_route,
-                    recent_actions=list(turn_view(action_history, loop_version))[-10:],
-                    iteration=iteration,
-                ),
-                start_to_close_timeout=timedelta(seconds=60),
-                retry_policy=retry_policy,
-            )
+            # T5-D10: the verify site gains the budget branch; anything else
+            # re-raises exactly as today (bare raise, no behavior change).
+            try:
+                verify_res = await workflow.execute_activity(
+                    verify_root_cause_activity,
+                    VerifyRootCauseInput(
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id,
+                        triage_route=triage_route,
+                        recent_actions=list(turn_view(action_history, loop_version))[-10:],
+                        iteration=iteration,
+                    ),
+                    start_to_close_timeout=timedelta(seconds=60),
+                    # LV_T-gated schedule-to-close bound (None keeps the old
+                    # scheduling on older pins).
+                    schedule_to_close_timeout=(
+                        bounded_schedule_to_close(
+                            "verify", _budget, workflow.now(), _paused_seconds
+                        )
+                        if _budget_on
+                        else None
+                    ),
+                    retry_policy=retry_policy,
+                )
+            except ActivityError as exc:
+                if _budget_on and is_schedule_to_close_timeout(exc) and budget_verdict(
+                    _budget, workflow.now(), _paused_seconds, llm_tokens_total
+                ) == REASON_DURATION:
+                    last_error = REASON_DURATION
+                    break
+                raise
             # G3: carry the verify-issued re-retrieval as a work
             # order (D3 lifecycle step 2, requery carrier). ONE new history
             # entry per directive — never merged into
@@ -1610,10 +1716,20 @@ class RunInvestigationWorkflow:
             # INSUFFICIENT_EVIDENCE (and an INPUT_DEFERRED handoff) instead of
             # taking the FAILED path. Nothing banked stays FAILED.
             final_status = "COMPLETED"
-        elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted", STALL_REASON}:
-            # T4: the stall exit lands here explicitly (readability + the
-            # exit-contract pin); the conclude activity converts all three
-            # to an abstention, never FAILED.
+        elif last_error in {
+            "budget_exceeded",
+            "defer_repair_budget_exhausted",
+            STALL_REASON,
+            # T5-D9: the priced-bound reasons land here explicitly for
+            # readability and the exit-contract pin; the conclude activity
+            # converts all of them to an abstention, never FAILED.
+            REASON_DURATION,
+            REASON_TOKENS,
+            REASON_PAUSE_TIMEOUT,
+        }:
+            # T4 + T5: the stall/budget exits land here explicitly (readability
+            # + the exit-contract pin); the conclude activity converts all of
+            # them to an abstention, never FAILED.
             final_status = "FAILED"
         else:
             # Not verified: reached max_iterations or readiness threshold without verification -> FAILED with limitations
@@ -1662,6 +1778,12 @@ class RunInvestigationWorkflow:
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,
                     "defer_repairs_limit": max_defer_repairs,
+                    # T5-D9 priced bound + D4: active/pause time ride the
+                    # stamped telemetry (whitelisted scalars).
+                    "active_seconds": round(
+                        active_seconds(_budget, workflow.now(), _paused_seconds), 3
+                    ),
+                    "paused_seconds": round(max(0.0, _paused_seconds), 3),
                     # T4-D7: stall telemetry (D4 whitelist).
                     "stall_streak_max": stall_streak_max,
                     "stall_exits": stall_exits,

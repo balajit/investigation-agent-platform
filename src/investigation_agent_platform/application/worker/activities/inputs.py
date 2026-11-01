@@ -258,11 +258,18 @@ def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> st
         return "UNVERIFIED"
     try:
         from investigation_agent_platform.application.worker.reasoning_failure import (
+            REASON_DURATION,
+            REASON_PAUSE_TIMEOUT,
             REASON_STALLED,
+            REASON_TOKENS,
         )
 
         if normalized == REASON_STALLED:
             return "UNVERIFIED"
+        if normalized in (REASON_DURATION, REASON_TOKENS, REASON_PAUSE_TIMEOUT):
+            # T5-D9: priced-bound endings are budget failures, like the
+            # iteration budget they replace.
+            return "BUDGET_EXCEEDED"
     except Exception:
         pass
     if normalized.startswith(

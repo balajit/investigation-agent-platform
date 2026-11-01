@@ -15,7 +15,6 @@ from runner import start
 from stubs import Script
 
 NC_STATEMENT = "the design is over-engineered"
-
 def _all_nc(next_action="CONCLUDE"):
     return {
         "next_action": next_action,
