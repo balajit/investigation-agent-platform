@@ -203,6 +203,10 @@ class ConcludeInvestigationInput:
     # ordered receipt chain (defaults keep legacy callers working).
     definition_receipt_start: int = 0
     conclude_iteration: int = 0
+    # T3: normalized statements of the D6 opinion-only turn; empty unless D6
+    # ended the loop. The activity joins them to persisted hypotheses; old
+    # workflow histories that did not send it decode to [].
+    opinion_only_statements: list[str] = field(default_factory=list)
 
 
 def _stamp_loop_telemetry(inv: Any, telemetry: dict[str, Any] | None) -> Any:

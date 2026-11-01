@@ -91,6 +91,9 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
+from investigation_agent_platform.application.worker.opinion_only import (
+    opinion_statements as _opinion_statements,
+)
 from investigation_agent_platform.application.worker.reasoning_failure import (
     KIND_OTHER,
     KIND_TRANSIENT,
@@ -602,6 +605,11 @@ class RunInvestigationWorkflow:
         # NOT_CHECKABLE_SKIPPED (D5/D7) instead of the epistemic FAILED
         # path. Plain bool, replay-safe.
         _d6_concluded = False
+        # T3: normalized statements of the D6 opinion-only turn. Set when
+        # the opinion-only break fires; rides to conclude so the gate can
+        # join the D6 turn's statements to persisted hypotheses. Plain
+        # JSON scalars; replay-safe.
+        _d6_statements: list[str] = []
         # Prior reason decisions (plain JSON scalars). Rebuilt deterministically
         # from activity results on replay; fed back into ReasonInput so the
         # model sees repetition and escalates capability instead of looping
@@ -845,7 +853,8 @@ class RunInvestigationWorkflow:
             # position — every downstream override below is guarded by
             # _d6_fired, so nothing downstream can change the outcome.
             # When every evaluated statement is matched by NOT_CHECKABLE
-            # claim dicts, force CONCLUDE with readiness 1.0; the loop
+            # claim dicts, force CONCLUDE (the model's own readiness is
+            # kept; T3-D6 deletes the old synthetic 1.0); the loop
             # exit below skips execute/retrieve/verify, and concluding
             # persists the honest abstention (D5/D7).
             # lv4 cap: D6 may not abstain before evidence was attempted
@@ -863,7 +872,9 @@ class RunInvestigationWorkflow:
                 _reason_data = dict(_reason_data)
                 _reason_data["next_action"] = "CONCLUDE"
                 _reason_data["action_parameters"] = {}
-                _reason_data["conclusion_readiness"] = 1.0
+                # T3-D6: no synthetic readiness. The history entry keeps the
+                # model's own reported readiness; nothing downstream reads a
+                # forced 1.0, and a false datum invites future misreads.
                 _reason_data["forced_not_checkable"] = True
             # G6-measure: freeze the model's pre-override proposal for the
             # shadow owed recomputation below. Trigger helpers read the
@@ -1094,6 +1105,7 @@ class RunInvestigationWorkflow:
             # _persist_abstention with NOT_CHECKABLE_SKIPPED (D5/D7).
             if _forced_conclude_break(_reason_data):
                 _d6_concluded = True
+                _d6_statements = _opinion_statements(_reason_data)
                 break
             _dispatched_action = str(_reason_data.get("next_action", "QUERY_STATE"))
             if _is_gathering_action(_dispatched_action):
@@ -1578,6 +1590,9 @@ class RunInvestigationWorkflow:
                 definition_receipt_start=definition_receipt_index,
                 conclude_iteration=iteration,
                 preferred_candidate_id=last_verified_candidate_id,
+                # T3: the D6 turn's statements ride to conclude for the
+                # opinion-only join; empty unless D6 ended the loop.
+                opinion_only_statements=list(_d6_statements),
                 # C-2: loop counters ride into metadata["loop_telemetry"]
                 # at conclude (plain scalars — replay-safe).
                 loop_telemetry={

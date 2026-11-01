@@ -781,6 +781,25 @@ def _answered_shape(
     return bool(extended and (history or state or caller_edge))
 
 
+def _log_no_hypotheses(tenant_id: str, investigation_id: UUID) -> None:
+    """Shared denial log for the no-hypotheses fail-closed path (T3)."""
+    story_log(
+        logger,
+        logging.WARNING,
+        "ConclusionGate: no hypotheses; denying COMPLETED",
+        comp=COMP_ACTVTY,
+        func="_gate_conclusion_or_fail",
+        stage="conclude",
+        step="gate",
+        outcome=OUTCOME_SKIPPED,
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        event="ConclusionGate denied COMPLETED",
+        outputs={"reason": "no_hypotheses"},
+        reason="no_hypotheses",
+    )
+
+
 async def _gate_conclusion_or_fail(
     tenant_id: str,
     investigation_id: UUID,
@@ -788,6 +807,7 @@ async def _gate_conclusion_or_fail(
     shadow_notes: list[dict[str, Any]] | None = None,
     triage_route: str = "",
     preferred_candidate_id: str = "",
+    opinion_only_statements: list[str] | None = None,
 ) -> Any:
     """Evaluate ConclusionGate for a requested COMPLETED conclusion (F-051).
 
@@ -848,22 +868,11 @@ async def _gate_conclusion_or_fail(
         evidence_items = await evidence_repo.find_by_investigation_id(tenant_id, investigation_id)
     if hypothesis_repo is not None:
         hypotheses = await hypothesis_repo.find_by_investigation_id(tenant_id, investigation_id)
-    if not hypotheses:
-        story_log(
-            logger,
-            logging.WARNING,
-            "ConclusionGate: no hypotheses; denying COMPLETED",
-            comp=COMP_ACTVTY,
-            func="_gate_conclusion_or_fail",
-            stage="conclude",
-            step="gate",
-            outcome=OUTCOME_SKIPPED,
-            tenant_id=tenant_id,
-            investigation_id=investigation_id,
-            event="ConclusionGate denied COMPLETED",
-            outputs={"reason": "no_hypotheses"},
-            reason="no_hypotheses",
-        )
+    # T3: D6 already decided the turn was opinion-only, so its statements
+    # ride along for the join below. Only the no-statement shape keeps the
+    # immediate fail-closed denial.
+    if not hypotheses and not opinion_only_statements:
+        _log_no_hypotheses(tenant_id, investigation_id)
         return InvestigationStatus.FAILED
 
     from investigation_agent_platform.application.investigation.verification import (
@@ -905,12 +914,15 @@ async def _gate_conclusion_or_fail(
     # so it must be bound (to None) before any call site can run.
     candidate: Any = None
 
-    async def _persist_abstention(
-        kind: str, limitations: list[str], hypothesis_id: Any = None
-    ) -> None:
+    async def _persist_abstention(kind: str, limitations: list[str]) -> None:
         """Honest abstention is a successful terminal outcome (P0-3): persist
         an INSUFFICIENT_EVIDENCE / NO_ROOT_CAUSE_FOUND conclusion with its
-        limitations instead of a generic FAILED."""
+        limitations instead of a generic FAILED.
+
+        T8: an abstention is never linked to a hypothesis it did not verify,
+        so the closure takes no hypothesis id and always persists an empty
+        link set. The candidate remains readable for diagnostics only.
+        """
         if finding_repo is None:
             return
         _proven_callers, _unresolved_callers, _caller_coverage = (
@@ -1037,7 +1049,7 @@ async def _gate_conclusion_or_fail(
                 status=status,
                 root_cause=None,
                 supporting_evidence_ids=[],
-                supporting_hypothesis_ids=([hypothesis_id] if hypothesis_id is not None else []),
+                supporting_hypothesis_ids=[],
                 contradicting_evidence_ids=[],
                 confidence=0.0,
                 limitations=(
@@ -1080,6 +1092,10 @@ async def _gate_conclusion_or_fail(
             pass
 
     def _ranked_alternative_statements() -> list[str]:
+        # T8: alternatives on an abstention are unverified by construction;
+        # label them so no reader mistakes one for a finding. The verdict
+        # path keeps plain status labels (it sits beside a published
+        # verdict and carries the status the reader needs).
         try:
             ranked_hyps = rank_hypotheses(list(hypotheses or []))
             out: list[str] = []
@@ -1093,7 +1109,7 @@ async def _gate_conclusion_or_fail(
                     _statement = str(getattr(_hyp, "statement", "") or "").strip()
                     if not _statement:
                         continue
-                    out.append(f"{_status}: {_statement}"[:500])
+                    out.append(f"UNVERIFIED ({_status}): {_statement}"[:500])
                     if len(out) >= 3:
                         break
                 except Exception:
@@ -1138,6 +1154,25 @@ async def _gate_conclusion_or_fail(
             return InvestigationStatus.FAILED
         _inv = _cb_inv
         policy = _policy_for_loop_version(policy, getattr(_cb_inv, "metadata", None))
+    # T3: route D6 opinion-only runs on the recorded loop pin. The workflow
+    # always sends the turn's statements; the activity decides. Older pins
+    # (and an unreadable pin) keep the old gate exactly.
+    _opinion_only = False
+    if opinion_only_statements:
+        try:
+            from investigation_agent_platform.domain.investigation.loop_version import (
+                LOOP_VERSION_LVT,
+                loop_version_at_least,
+            )
+
+            _opinion_only = loop_version_at_least(
+                getattr(_cb_inv, "metadata", None), LOOP_VERSION_LVT
+            )
+        except Exception:
+            _opinion_only = False
+    if not hypotheses and not _opinion_only:
+        _log_no_hypotheses(tenant_id, investigation_id)
+        return InvestigationStatus.FAILED
     engine = VerificationEngine(
         verifier_version=verifier_version,
         claim_binding_version=claim_binding_version,
@@ -1154,6 +1189,37 @@ async def _gate_conclusion_or_fail(
     except Exception:
         _prefer = ""
     candidate = select_verifiable_candidate(ranked, evidence_by_id, prefer_id=_prefer or None)
+    if _opinion_only:
+        # T3: honor D6's own decision. Join the turn's statements to the
+        # persisted set: the NC hypothesis D6 evaluated wins over a stale
+        # checkable one. Nothing matching means the statements were never
+        # persisted — still an honest abstention with the marker, never a
+        # FAILED run and never a laundered stale candidate.
+        from investigation_agent_platform.application.worker.opinion_only import (
+            select_opinion_candidate,
+        )
+
+        try:
+            from investigation_agent_platform.application.evidence.retrieval_ledger import (
+                all_typed_claims_not_checkable as _all_nc_join,
+            )
+        except Exception:
+            _all_nc_join = None  # type: ignore[assignment]
+
+        def _is_opinion_only(h: Any) -> bool:
+            try:
+                return bool(_all_nc_join is not None and _all_nc_join(h))
+            except Exception:
+                return False
+
+        candidate = select_opinion_candidate(
+            ranked, list(opinion_only_statements or []), _is_opinion_only
+        )
+        if candidate is None:
+            await _persist_abstention(
+                "insufficient", ["NOT_CHECKABLE_SKIPPED", "no bound supporting evidence"]
+            )
+            return InvestigationStatus.COMPLETED
     if candidate is None:
         await _persist_abstention("refuted", ["all hypotheses rejected or contradicted"])
         return InvestigationStatus.COMPLETED
@@ -1405,7 +1471,7 @@ async def _gate_conclusion_or_fail(
         except Exception:
             pass
         await _persist_abstention(
-            "refuted" if refuting else "insufficient", _nc_reasons, candidate.id
+            "refuted" if refuting else "insufficient", _nc_reasons
         )
         return InvestigationStatus.COMPLETED
     # G1: location-answer fast path (mirrors verify_root_cause_activity).
@@ -1447,7 +1513,6 @@ async def _gate_conclusion_or_fail(
         await _persist_abstention(
             "refuted" if refuting else "insufficient",
             ["code value claim lacks a matching deterministic resolution"],
-            candidate.id,
         )
         return InvestigationStatus.COMPLETED
     try:
@@ -1638,7 +1703,7 @@ async def _gate_conclusion_or_fail(
             _opinion_only = False
         if _opinion_only:
             reasons.append("NOT_CHECKABLE_SKIPPED")
-        await _persist_abstention("refuted" if refuting else "insufficient", reasons, candidate.id)
+        await _persist_abstention("refuted" if refuting else "insufficient", reasons)
         return InvestigationStatus.COMPLETED
     if caller_edge_validated or location_answered:
         verification = location_verification
@@ -1830,7 +1895,7 @@ async def _gate_conclusion_or_fail(
         except Exception:
             pass
         _denial_reasons.extend(list(decision.blockers))
-        await _persist_abstention("insufficient", _denial_reasons, candidate.id)
+        await _persist_abstention("insufficient", _denial_reasons)
         return InvestigationStatus.COMPLETED
 
     # P0-3: persist the Finding + InvestigationConclusion that back this
@@ -1908,7 +1973,7 @@ async def _gate_conclusion_or_fail(
         # Field names only: never echo model-authored values.
         _bad_fields = sorted({".".join(str(p) for p in err.get("loc", ())) for err in exc.errors()})
         await _persist_abstention(
-            "insufficient", [f"finding_invalid: {', '.join(_bad_fields)[:200]}"], candidate.id
+            "insufficient", [f"finding_invalid: {', '.join(_bad_fields)[:200]}"]
         )
         return InvestigationStatus.COMPLETED
     # H14: the VERIFIED transition is computed but not yet written; the
@@ -2745,6 +2810,10 @@ async def conclude_investigation_activity(
                             target = InvestigationStatus.FAILED
                             reason = "kernel_promotion_denied: " + "; ".join(_kernel_blockers[:5])
                         else:
+                            from investigation_agent_platform.application.worker.opinion_only import (
+                                OPINION_STATEMENT_CAP as _OPINION_CAP,
+                            )
+
                             target = await _gate_conclusion_or_fail(
                                 tenant_id,
                                 investigation_id,
@@ -2754,6 +2823,10 @@ async def conclude_investigation_activity(
                                 preferred_candidate_id=str(
                                     data.get("preferred_candidate_id", "") or ""
                                 ),
+                                opinion_only_statements=[
+                                    str(s)
+                                    for s in (data.get("opinion_only_statements") or [])
+                                ][:_OPINION_CAP],
                             )
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"

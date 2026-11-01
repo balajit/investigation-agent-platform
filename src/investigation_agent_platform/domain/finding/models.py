@@ -577,7 +577,7 @@ def classify_terminal_handoff(
             f"Frontier exhausted: {len(eliminated)} rival(s) ruled out; see the elimination record."
         )
     if alternatives:
-        record.append(f"Ranked alternatives: {alternatives[0][:300]}")
+        record.append(f"Ranked alternatives (unverified, not evidence-backed): {alternatives[0][:300]}")
     if directive is not None:
         record.append(directive[:500])
     if target_step is not None:
