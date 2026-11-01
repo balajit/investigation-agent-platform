@@ -405,6 +405,7 @@ class TestReasonReadiness:
             )
         ]
         out = _s4_readiness(rows, _Investigation())
+        assert out["s4_outcome"] == "READY"
         assert out["s4_ready"] is True
         assert out["s4_satisfied_by"] == "code"
         assert out["s4_shape"] == "code"
@@ -423,5 +424,17 @@ class TestReasonReadiness:
             request = _Request()
 
         out = _s4_readiness([], _Investigation())
+        assert out["s4_outcome"] == "NOT_READY"
         assert out["s4_ready"] is False
         assert out["s4_missing"] != ""
+
+    def test_readiness_failure_is_typed_and_fail_closed(self, monkeypatch):
+        from investigation_agent_platform.application.worker.activities import reasoning
+
+        class _BrokenInvestigation:
+            @property
+            def metadata(self):
+                raise RuntimeError("qualification failed")
+
+        result = reasoning._s4_readiness([], _BrokenInvestigation())
+        assert result["s4_outcome"] == "QUALIFICATION_FAILED"

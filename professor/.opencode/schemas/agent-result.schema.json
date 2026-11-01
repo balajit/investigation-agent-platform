@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-result.schema.json",
+  "title": "Professor Agent Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "agent",
+    "result_type",
+    "status",
+    "summary",
+    "findings",
+    "evidence",
+    "limitations",
+    "acceptance_criteria_check",
+    "recommended_next_steps"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "agent": { "type": "string", "minLength": 1 },
+    "result_type": {
+      "enum": ["GENERAL", "RESEARCH", "CODE_REVIEW", "ARCHITECTURE", "ADVERSARIAL_REVIEW", "VALIDATION"]
+    },
+    "status": { "enum": ["COMPLETED", "PARTIAL", "BLOCKED", "FAILED"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "claim", "classification", "confidence", "rationale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "claim": { "type": "string", "minLength": 1 },
+          "classification": {
+            "enum": ["OBSERVED_FACT", "SUPPORTED_CONCLUSION", "HYPOTHESIS", "RECOMMENDATION", "UNKNOWN"]
+          },
+          "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+          "rationale": { "type": "string" },
+          "impact": { "type": "string" },
+          "source_ids": { "type": "array", "items": { "type": "string" } },
+          "evidence_references": { "type": "array", "items": { "type": "string" } },
+          "finding_id": { "type": "string" },
+          "category": { "enum": ["FUNCTIONAL", "SECURITY", "RELIABILITY", "DATA", "ARCHITECTURE", "TESTING", "OPERATIONS", "RESEARCH", "VALIDATION"] },
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] },
+          "package_module": { "type": "string" },
+          "file": { "type": "string" },
+          "line_start": { "type": "integer", "minimum": 1 },
+          "line_end": { "type": "integer", "minimum": 1 },
+          "reviewed_revision": { "type": "string" },
+          "observed_behavior": { "type": "string" },
+          "expected_behavior": { "type": "string" },
+          "trigger_conditions": { "type": "string" },
+          "failure_mechanism": { "type": "string" },
+          "root_cause": { "type": "string" },
+          "remediation": { "type": "string" },
+          "regression_test": { "type": "string" },
+          "research_question": { "type": "string" },
+          "source_references": { "type": "array", "items": { "type": "string" } },
+          "source_quality": { "enum": ["PRIMARY", "AUTHORITATIVE_SECONDARY", "SECONDARY", "UNKNOWN"] },
+          "publication_date": { "type": "string" },
+          "retrieval_date": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "contradictions": { "type": "array", "items": { "type": "string" } },
+          "design_decision": { "type": "string" },
+          "requirement_references": { "type": "array", "items": { "type": "string" } },
+          "component_responsibilities": { "type": "array", "items": { "type": "string" } },
+          "interface_definitions": { "type": "array", "items": { "type": "string" } },
+          "alternatives": { "type": "array", "items": { "type": "string" } },
+          "trade_offs": { "type": "array", "items": { "type": "string" } },
+          "failure_behavior": { "type": "string" },
+          "security_considerations": { "type": "array", "items": { "type": "string" } },
+          "open_decisions": { "type": "array", "items": { "type": "string" } },
+          "review_disposition": { "enum": ["ACCEPTED", "REJECTED", "NEEDS_MORE_EVIDENCE", "RECLASSIFIED", "DUPLICATE"] },
+          "counterarguments": { "type": "array", "items": { "type": "string" } },
+          "requirement": { "type": "string" },
+          "validation_method": { "type": "string" },
+          "observed_result": { "type": "string" },
+          "validation_status": { "enum": ["MET", "PARTIAL", "NOT_MET", "NOT_VERIFIED"] },
+          "defects_identified": { "type": "array", "items": { "type": "string" } },
+          "limitations": { "type": "array", "items": { "type": "string" } }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["severity"] },
+            "then": {
+              "required": ["finding_id", "category", "package_module", "file", "reviewed_revision", "observed_behavior", "expected_behavior", "trigger_conditions", "failure_mechanism", "root_cause", "impact", "remediation", "regression_test", "limitations"]
+            }
+          },
+          {
+            "if": { "required": ["review_disposition"] },
+            "then": { "required": ["finding_id", "category", "counterarguments", "limitations"] }
+          },
+          {
+            "if": { "required": ["research_question"] },
+            "then": { "required": ["source_references", "source_quality", "retrieval_date", "contradictions", "limitations"] }
+          },
+          {
+            "if": { "required": ["design_decision"] },
+            "then": { "required": ["requirement_references", "component_responsibilities", "interface_definitions", "alternatives", "trade_offs", "failure_behavior", "security_considerations", "open_decisions"] }
+          },
+          {
+            "if": { "required": ["review_disposition"] },
+            "then": { "required": ["counterarguments", "limitations"] }
+          },
+          {
+            "if": { "required": ["validation_method"] },
+            "then": { "required": ["requirement", "observed_result", "validation_status", "defects_identified", "limitations"] }
+          },
+          {
+            "if": { "required": ["line_start"] },
+            "then": { "required": ["line_end"], "properties": { "line_end": { "minimum": 1 } } }
+          },
+          {
+            "if": { "required": ["line_end"] },
+            "then": { "required": ["line_start"] }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "locator", "source_type", "supports"],
+        "properties": {
+          "source_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" },
+          "publisher": { "type": "string" },
+          "locator": { "type": "string", "minLength": 1 },
+          "source_type": {
+            "enum": ["PRIMARY_SOURCE", "SECONDARY_SOURCE", "REPOSITORY_OBSERVATION", "COMMAND_OUTPUT", "USER_PROVIDED", "INFERENCE"]
+          },
+          "version_or_date": { "type": "string" },
+          "publication_date": { "type": "string" },
+          "retrieval_date": { "type": "string" },
+          "supports": { "type": "string", "minLength": 1 },
+          "limitations": { "type": "string" }
+        }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "acceptance_criteria_check": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "status", "rationale"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["MET", "PARTIAL", "NOT_MET", "NOT_VERIFIED"] },
+          "rationale": { "type": "string" },
+          "evidence_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "recommended_next_steps": { "type": "array", "items": { "type": "string" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "BLOCKED" } }, "required": ["status"] },
+      "then": { "properties": { "limitations": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "result_type": { "const": "CODE_REVIEW" } }, "required": ["result_type"] },
+      "then": { "properties": { "findings": { "items": { "required": ["finding_id", "severity", "category", "package_module", "file", "reviewed_revision", "observed_behavior", "expected_behavior", "trigger_conditions", "failure_mechanism", "root_cause", "impact", "evidence_references", "remediation", "regression_test", "limitations"] } } } }
+    },
+    {
+      "if": { "properties": { "result_type": { "const": "RESEARCH" } }, "required": ["result_type"] },
+      "then": { "properties": { "findings": { "items": { "required": ["research_question", "source_references", "source_quality", "retrieval_date", "contradictions", "limitations"] } } } }
+    },
+    {
+      "if": { "properties": { "result_type": { "const": "ARCHITECTURE" } }, "required": ["result_type"] },
+      "then": { "properties": { "findings": { "items": { "required": ["design_decision", "requirement_references", "component_responsibilities", "interface_definitions", "alternatives", "trade_offs", "failure_behavior", "security_considerations", "open_decisions"] } } } }
+    },
+    {
+      "if": { "properties": { "result_type": { "const": "ADVERSARIAL_REVIEW" } }, "required": ["result_type"] },
+      "then": { "properties": { "findings": { "items": { "required": ["finding_id", "severity", "category", "package_module", "evidence_references", "review_disposition", "counterarguments", "impact", "remediation", "regression_test", "limitations"], "properties": { "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] }, "evidence_references": { "minItems": 1 }, "impact": { "minLength": 1 }, "remediation": { "minLength": 1 }, "regression_test": { "minLength": 1 } } } } } }
+    },
+    {
+      "if": { "properties": { "result_type": { "const": "VALIDATION" } }, "required": ["result_type"] },
+      "then": { "properties": { "findings": { "items": { "required": ["requirement", "validation_method", "observed_result", "validation_status", "evidence_references", "defects_identified", "limitations"] } } } }
+    }
+  ]
+}

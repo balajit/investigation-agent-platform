@@ -42,3 +42,8 @@ reports/
 # Ledger exception: this .log is a durable project record, not scratch.
 !docs/IAP_Arch_Eng_Recommendations.log
 .idea/*
+
+# Agent tooling runtimes (e.g. professor/.opencode): vendored JS deps are
+# reinstallable via the tracked package-lock.json — never commit them.
+node_modules/
+.DS_Store

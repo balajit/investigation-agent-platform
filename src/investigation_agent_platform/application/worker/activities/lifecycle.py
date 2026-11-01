@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 from temporalio import activity
@@ -84,6 +84,132 @@ from .inputs import (
     _stamp_loop_telemetry,
 )
 from .verification import _load_definition_dispatch_table
+
+
+async def _save_continuation_conclusion(
+    ctx: Any,
+    tenant_id: str,
+    conclusion: Any,
+    continuation_id: UUID | None,
+) -> None:
+    """Use archive-then-replace only for a continuation re-entry."""
+    if continuation_id is not None:
+        continuation_repo = getattr(ctx, "continuation_repo", None)
+        if continuation_repo is None or not callable(
+            getattr(continuation_repo, "replace_conclusion_with_history", None)
+        ):
+            raise ApplicationFailure(
+                "Continuation conclusion history is unavailable",
+                type="CONTINUATION_CONCLUSION_HISTORY_UNAVAILABLE",
+                non_retryable=True,
+            )
+        await continuation_repo.replace_conclusion_with_history(
+            tenant_id, conclusion, continuation_id
+        )
+        return
+    finding_repo = getattr(ctx, "finding_repo", None)
+    if finding_repo is None:
+        raise ApplicationFailure(
+            "Finding repository is not configured; cannot publish conclusion",
+            type="CONCLUSION_STORE_UNAVAILABLE",
+            non_retryable=True,
+        )
+    await finding_repo.save_conclusion(tenant_id, conclusion)
+
+
+async def _create_continuation_if_resumable(
+    ctx: Any, tenant_id: str, conclusion: Any
+) -> None:
+    """Create the exact-fetch row after an abstention conclusion is durable."""
+    handoff = getattr(conclusion, "handoff", None)
+    next_fetch = getattr(handoff, "next_fetch", None)
+    if handoff is None or not next_fetch:
+        return
+    from investigation_agent_platform.application.investigation.continuation import (
+        continuation_idempotency_key,
+        derive_continuation_params,
+    )
+    from investigation_agent_platform.domain.continuation.models import (
+        S7_CONTINUATION_TTL_SECONDS,
+        S7Continuation,
+    )
+    from investigation_agent_platform.domain.finding.models import (
+        HandoffState,
+        names_concrete_fetch_target,
+        price_next_fetch,
+    )
+
+    if handoff.state not in {
+        HandoffState.BUDGET_DEFERRED,
+        HandoffState.TELEMETRY_DEFERRED,
+        HandoffState.CAPABILITY_DENIED,
+    } or not names_concrete_fetch_target(next_fetch):
+        return
+    derived = derive_continuation_params(next_fetch)
+    price = price_next_fetch(next_fetch)
+    if derived is None or price is None or price <= 0 or getattr(handoff, "price", None) != price:
+        return
+    repo = getattr(ctx, "continuation_repo", None)
+    if repo is None:
+        return
+    action, parameters = derived
+    now = datetime.now(UTC)
+    continuation_id = UUID(str(uuid4()))
+    row = S7Continuation(
+        continuation_id=continuation_id,
+        tenant_id=tenant_id,
+        investigation_id=conclusion.investigation_id,
+        handoff_version=str(handoff.version),
+        source_handoff_state=handoff.state,
+        action=action.value,
+        parameters=parameters,
+        target=str(next_fetch),
+        price=float(price),
+        idempotency_key=continuation_idempotency_key(
+            tenant_id, conclusion.investigation_id, str(handoff.version), action.value, parameters
+        ),
+        created_at=now,
+        expires_at=now + timedelta(seconds=S7_CONTINUATION_TTL_SECONDS),
+    )
+    supersede = getattr(repo, "supersede_pending", None)
+    if callable(supersede):
+        await supersede(tenant_id, conclusion.investigation_id, row.idempotency_key)
+    try:
+        await repo.insert(tenant_id, row)
+    except Exception as exc:
+        timeline_repo = getattr(ctx, "timeline_repo", None)
+        if timeline_repo is not None:
+            try:
+                from investigation_agent_platform.domain.timeline.models import (
+                    TimelineEvent,
+                    TimelineEventType,
+                )
+
+                await timeline_repo.append(
+                    tenant_id,
+                    TimelineEvent(
+                        tenant_id=tenant_id,
+                        investigation_id=conclusion.investigation_id,
+                        timestamp=datetime.now(UTC),
+                        event_type=TimelineEventType.LOG_EVENT,
+                        producer="s7-continuation",
+                        description="Continuation creation failed after conclusion persistence",
+                        correlation_id=None,
+                        attributes={
+                            "continuation_id": str(continuation_id),
+                            "error_code": "CONTINUATION_CREATE_FAILED",
+                            "phase": "create",
+                            "error_type": type(exc).__name__[:64],
+                        },
+                    ),
+                    conclusion.investigation_id,
+                )
+            except Exception:
+                pass
+        logger.warning(
+            "S7 continuation creation failed after conclusion persistence",
+            extra={"tenant_id": tenant_id, "investigation_id": str(conclusion.investigation_id)},
+        )
 
 
 @activity.defn
@@ -1051,9 +1177,7 @@ async def _gate_conclusion_or_fail(
             _abstention_denial_lines = _denial_limitation_lines(
                 _abstention_blocked, _abstention_reasons, _abstention_app_id
             )
-        await finding_repo.save_conclusion(
-            tenant_id,
-            InvestigationConclusion(
+        _abstention_conclusion = InvestigationConclusion(
                 tenant_id=tenant_id,
                 investigation_id=investigation_id,
                 status=status,
@@ -1076,8 +1200,14 @@ async def _gate_conclusion_or_fail(
                 unresolved_callers=_unresolved_callers,
                 caller_coverage=_caller_coverage,
                 verifier_version=verifier_version,
-            ),
         )
+        await _save_continuation_conclusion(
+            ctx,
+            tenant_id,
+            _abstention_conclusion,
+            getattr(ctx, "_continuation_conclusion_id", None),
+        )
+        await _create_continuation_if_resumable(ctx, tenant_id, _abstention_conclusion)
         # Debug story: abstention terminal. The honest-INSUFFICIENT_EVIDENCE
         # path is the most common story ending — log it like a conclusion.
         _story_debug(
@@ -2293,14 +2423,24 @@ async def _gate_conclusion_or_fail(
     )
     # H14: one unit of work for the hypothesis, the Finding and the
     # conclusion. The unit of work is required, never optional.
-    await ctx.conclusion_uow.commit_verdict(
-        tenant_id,
-        investigation_id=investigation_id,
-        hypothesis=hyp_to_commit,
-        expected_version=hyp.version,
-        finding=finding,
-        conclusion=conclusion,
-    )
+    _continuation_id = getattr(ctx, "_continuation_conclusion_id", None)
+    if _continuation_id is None:
+        await ctx.conclusion_uow.commit_verdict(
+            tenant_id,
+            investigation_id=investigation_id,
+            hypothesis=hyp_to_commit,
+            expected_version=hyp.version,
+            finding=finding,
+            conclusion=conclusion,
+        )
+        await _create_continuation_if_resumable(ctx, tenant_id, conclusion)
+    else:
+        if hyp_to_commit is not None:
+            await ctx.hypothesis_repo.save(
+                tenant_id, hyp_to_commit, investigation_id, hyp.version
+            )
+        await finding_repo.save_finding_record(tenant_id, finding)
+        await _save_continuation_conclusion(ctx, tenant_id, conclusion, _continuation_id)
     # G-4: incident fusion. Runs after the commit (best-effort) so it reads
     # committed findings. Fail-open: fusion never blocks the conclusion.
     try:
@@ -3027,9 +3167,7 @@ async def conclude_investigation_activity(
                                         )
                                     else:
                                         _epistemic_denial_extra = []
-                                    await finding_repo.save_conclusion(
-                                        tenant_id,
-                                        InvestigationConclusion(
+                                    _epistemic_conclusion = InvestigationConclusion(
                                             tenant_id=tenant_id,
                                             investigation_id=investigation_id,
                                             status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
@@ -3052,7 +3190,15 @@ async def conclude_investigation_activity(
                                             ),
                                             handoff=_epistemic_handoff,
                                             verifier_version=VERIFIER_VERSION_CURRENT,
-                                        ),
+                                    )
+                                    await _save_continuation_conclusion(
+                                        ctx,
+                                        tenant_id,
+                                        _epistemic_conclusion,
+                                        getattr(ctx, "_continuation_conclusion_id", None),
+                                    )
+                                    await _create_continuation_if_resumable(
+                                        ctx, tenant_id, _epistemic_conclusion
                                     )
                                     # Phase 4.2: abstention volume counter.
                                     try:

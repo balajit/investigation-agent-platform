@@ -387,6 +387,7 @@ class SqlAlchemyFindingConclusionRepository:
         async with rls_session(self._session_factory, tenant_id) as session:
             await self.save_conclusion_in_session(session, tenant_id, conclusion)
 
+
     # -- reads -----------------------------------------------------------
 
     async def get_conclusion(

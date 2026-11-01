@@ -135,10 +135,10 @@ def test_s7_handoff_round_trips_on_conclusion() -> None:
     )
     assert conclusion.handoff is not None
     assert conclusion.handoff.version == HANDOFF_VERSION_CURRENT
-    assert conclusion.handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert conclusion.handoff.state == HandoffState.REASONING_DEFERRED
     revived = InvestigationConclusion.model_validate(conclusion.model_dump(mode="json"))
     assert revived.handoff is not None
-    assert revived.handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert revived.handoff.state == HandoffState.REASONING_DEFERRED
     assert revived.handoff.next_fetch is None
     assert "Cite and bind supporting evidence, then re-verify." in (
         revived.handoff.recommended_next_steps
@@ -152,7 +152,7 @@ def test_s7_budget_handoff_prices_resume_pointer() -> None:
         reason="budget_exceeded",
         next_check=fetch,
     )
-    assert handoff.state == HandoffState.BUDGET_DEFERRED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
     assert handoff.target == "n/a"
     assert handoff.next_fetch is None  # prose names no concrete target
     assert handoff.resume_pointer is not None and fetch[:80] in handoff.resume_pointer
@@ -177,7 +177,7 @@ def test_s7_refusal_handoff_uses_elimination_record_not_filler() -> None:
         reason="refuted",
         ranked_alternatives=["Downstream latency"],
     )
-    assert handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
     assert handoff.target == "n/a"
     assert any("Ranked alternatives" in step for step in handoff.recommended_next_steps)
     assert not any(step.startswith("Resolve '") for step in handoff.recommended_next_steps)

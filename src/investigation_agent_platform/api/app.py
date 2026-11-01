@@ -66,6 +66,7 @@ from investigation_agent_platform.api.v1.routers.capabilities import (
 )
 from investigation_agent_platform.api.v1.routers.chat import router as chat_router
 from investigation_agent_platform.api.v1.routers.clusters import router as clusters_router
+from investigation_agent_platform.api.v1.routers.continuations import router as continuations_router
 from investigation_agent_platform.api.v1.routers.events import router as events_router
 from investigation_agent_platform.api.v1.routers.evidence import router as evidence_router
 from investigation_agent_platform.api.v1.routers.health import router as health_router
@@ -602,6 +603,7 @@ def create_app(
     app.include_router(capabilities_router, prefix=api_v1)
     app.include_router(jobs_router, prefix=api_v1)
     app.include_router(clusters_router, prefix=api_v1)
+    app.include_router(continuations_router, prefix=api_v1)
     app.include_router(aggregate_reports_router, prefix=api_v1)
     app.include_router(batch_intake_router, prefix=api_v1)
     app.include_router(chat_router, prefix=api_v1)

@@ -65,6 +65,7 @@ def test_t401_pre_override_read_sees_a_forced_override() -> None:
             "conclusion_readiness": 0.5,
             "hypotheses_evaluated": [],
             "claims": [],
+            "s4_outcome": "NOT_READY",
         },
     )
     out = apply_post_reason_cascade(floor)
@@ -234,7 +235,7 @@ async def test_t412_conclude_maps_the_stall_to_an_abstention() -> None:
     assert conclusion.status == ConclusionStatus.INSUFFICIENT_EVIDENCE
     assert "Change the retrieval approach" in (conclusion.next_check or "")
     assert conclusion.handoff is not None
-    assert conclusion.handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert conclusion.handoff.state == HandoffState.REASONING_DEFERRED
 
 
 def test_t413_new_telemetry_keys_are_stamped() -> None:

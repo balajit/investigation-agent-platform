@@ -1,0 +1,196 @@
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task-package.schema.json",
+  "title": "Professor Task Package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "task_id",
+    "task_type",
+    "objective",
+    "missing_context",
+    "context_and_inputs",
+    "scope",
+    "exclusions",
+    "questions",
+    "execution_steps",
+    "evidence_requirements",
+    "deliverable_contract",
+    "acceptance_criteria",
+    "safety_constraints",
+    "assumptions"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "READY",
+        "NEEDS_CONTEXT"
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_type": {
+      "enum": [
+        "RESEARCH",
+        "REPOSITORY_ANALYSIS",
+        "CODE_REVIEW",
+        "SPECIFICATION_EXTRACTION",
+        "ARCHITECTURE_DESIGN",
+        "IMPLEMENTATION_PLANNING",
+        "VALIDATION"
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "missing_context": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "context_and_inputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "execution_steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deliverable_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "required_sections"
+      ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "minLength": 1
+          },
+      "required_sections": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "minLength": 1
+          }
+        },
+        "destination": {
+          "type": "string"
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "safety_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+    "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NEEDS_CONTEXT"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "questions": {
+            "minItems": 1
+          },
+          "missing_context": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "READY"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "minItems": 1
+          },
+          "questions": {
+            "minItems": 1
+          },
+          "evidence_requirements": {
+            "minItems": 1
+          },
+          "safety_constraints": {
+            "minItems": 1
+          },
+          "missing_context": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

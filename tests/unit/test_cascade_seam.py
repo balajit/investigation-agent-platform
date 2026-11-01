@@ -22,6 +22,7 @@ def _state(**over):  # type: ignore[no-untyped-def]
                 "start_line": 1,
                 "end_line": 20,
             },
+            "s4_outcome": "NOT_READY",
         },
         action_history=[],
         evidence_banked_total=5,
@@ -293,7 +294,7 @@ class TestCompetingRules:
         )
         assert carrier is not None
         state = _state(
-            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS", "s4_outcome": "READY"},
             prev_focus=None,
             action_history=[carrier],
             formulated_count=1,
@@ -449,7 +450,7 @@ class TestDeterminism:
 class TestSeamParity:
     def test_floor_still_fires_without_pivot(self) -> None:
         state = _state(
-            reason_data={"next_action": "FORMULATE_HYPOTHESIS"},
+            reason_data={"next_action": "FORMULATE_HYPOTHESIS", "s4_outcome": "NOT_READY"},
             evidence_banked_total=1,
             knowledge_seed={"failing_symbol": "price"},
         )

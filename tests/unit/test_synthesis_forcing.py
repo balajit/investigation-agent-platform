@@ -595,7 +595,11 @@ def _floor(**overrides):
     )
 
     params = {
-        "reason_data": {"next_action": "VERIFY_HYPOTHESIS", "action_parameters": {}},
+        "reason_data": {
+            "next_action": "VERIFY_HYPOTHESIS",
+            "action_parameters": {},
+            "s4_outcome": "NOT_READY",
+        },
         "evidence_banked_total": 1,
         "triage_route": "BUG",
         "description": "Where is SampleOrderFilter implemented?",
@@ -638,8 +642,14 @@ def test_floor_prefers_path_over_symbol():
 
 
 def test_floor_passes_at_or_above_threshold():
-    assert _floor(evidence_banked_total=3) is None
-    assert _floor(evidence_banked_total=9) is None
+    assert _floor(
+        evidence_banked_total=3,
+        reason_data={"next_action": "VERIFY_HYPOTHESIS", "s4_outcome": "READY"},
+    ) is None
+    assert _floor(
+        evidence_banked_total=9,
+        reason_data={"next_action": "VERIFY_HYPOTHESIS", "s4_outcome": "READY"},
+    ) is None
 
 
 def test_floor_ignores_gathering_proposals():
@@ -647,7 +657,12 @@ def test_floor_ignores_gathering_proposals():
 
 
 def test_floor_ignores_non_code_incidents():
-    assert _floor(triage_route="DATA", description="Why is revenue down?", seed={}) is None
+    assert _floor(
+        triage_route="DATA",
+        description="Why is revenue down?",
+        seed={},
+        reason_data={"next_action": "VERIFY_HYPOTHESIS", "action_parameters": {}},
+    ) is None
 
 
 def test_floor_respects_cap():
@@ -660,7 +675,7 @@ def test_floor_skipped_when_s4_ready():
         reason_data={
             "next_action": "VERIFY_HYPOTHESIS",
             "action_parameters": {},
-            "s4_ready": True,
+            "s4_outcome": "READY",
         },
         evidence_banked_total=0,
     )
@@ -675,6 +690,7 @@ def test_floor_fires_when_s4_not_ready_despite_counts():
             "next_action": "VERIFY_HYPOTHESIS",
             "action_parameters": {},
             "s4_ready": False,
+            "s4_outcome": "NOT_READY",
             "s4_missing": "qualified code row (4 pinned fields) or pinned history row",
         },
         evidence_banked_total=5,
@@ -690,6 +706,7 @@ def test_floor_fires_for_non_code_shape_when_s4_not_ready():
             "next_action": "VERIFY_HYPOTHESIS",
             "action_parameters": {},
             "s4_ready": False,
+            "s4_outcome": "NOT_READY",
             "s4_shape": "log",
             "s4_missing": "window-pinned runtime row or scoped absence proof",
         },
@@ -709,6 +726,7 @@ def test_floor_targets_state_layer_for_state_shape():
             "next_action": "VERIFY_HYPOTHESIS",
             "action_parameters": {},
             "s4_ready": False,
+            "s4_outcome": "NOT_READY",
             "s4_shape": "state",
             "s4_missing": "qualified state row with source identity",
         },
@@ -728,6 +746,7 @@ def test_floor_targets_code_chain_for_unknown_shape():
             "next_action": "VERIFY_HYPOTHESIS",
             "action_parameters": {},
             "s4_ready": False,
+            "s4_outcome": "NOT_READY",
             "s4_shape": "unknown",
             "s4_missing": "any qualified evidence row",
         },

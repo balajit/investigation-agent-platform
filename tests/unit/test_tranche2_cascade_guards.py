@@ -162,7 +162,7 @@ class TestF6FloorSkipsAlreadyReadTargets:
 
     def _floor(self, history):  # type: ignore[no-untyped-def]
         return forcing._explore_floor_target(
-            {"next_action": "VERIFY_HYPOTHESIS"},
+            {"next_action": "VERIFY_HYPOTHESIS", "s4_outcome": "NOT_READY"},
             0,
             "BUG",
             self.DESCRIPTION,

@@ -35,13 +35,23 @@ from investigation_agent_platform.infrastructure.persistence.finding_repository 
 
 
 def test_price_defaults_to_unpriced() -> None:
-    assert S7Handoff(state=HandoffState.FRONTIER_EXHAUSTED).price is None
+    assert S7Handoff(
+        state=HandoffState.REASONING_DEFERRED,
+        resume_pointer="record the missing limitation",
+        recommended_next_steps=["record the missing limitation"],
+    ).price is None
 
 
 @pytest.mark.parametrize("bad", [-0.1, MAX_FETCH_PRICE + 1, float("nan")])
 def test_price_rejects_out_of_range_values(bad: float) -> None:
     with pytest.raises(ValidationError):
-        S7Handoff(state=HandoffState.BUDGET_DEFERRED, price=bad)
+        S7Handoff(
+            state=HandoffState.BUDGET_DEFERRED,
+            next_fetch="GET_CODE svc/Foo.java",
+            price=bad,
+            resume_pointer="resume at the fetch",
+            recommended_next_steps=["resume at the fetch"],
+        )
 
 
 # --- what is concrete, what it costs -----------------------------------------
@@ -129,7 +139,7 @@ def test_pre_price_rows_still_rehydrate_unpriced() -> None:
     stored = _priced().model_dump(mode="json")
     stored.pop("price")
     revived = _handoff_from_row(SimpleNamespace(handoff=stored))
-    assert revived is not None and revived.price is None
+    assert revived is None
 
 
 def test_priced_handoff_survives_the_conclusion_api_dump() -> None:
@@ -263,7 +273,7 @@ def test_builder_uses_the_gap_target_and_keeps_prose_in_the_steps() -> None:
         next_check=PROSE,
         gap_fetch="GET_CODE svc/Foo.java lines 10-40",
     )
-    assert handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
     assert handoff.next_fetch == "GET_CODE svc/Foo.java lines 10-40"
     assert handoff.price == 1.0
     assert PROSE in handoff.recommended_next_steps
@@ -277,6 +287,29 @@ def test_builder_never_stores_prose_as_next_fetch() -> None:
         )
         assert handoff.next_fetch is None, reason
         assert handoff.price is None, reason
+
+
+def test_budget_prose_without_fetch_is_not_budget_deferred() -> None:
+    handoff = classify_terminal_handoff(
+        status="INSUFFICIENT_EVIDENCE",
+        reason="budget_exceeded",
+        next_check=PROSE,
+    )
+    assert handoff.state == HandoffState.REASONING_DEFERRED
+
+
+def test_unknown_terminal_status_fails_closed() -> None:
+    handoff = classify_terminal_handoff(status="NOT_A_REAL_STATUS")
+    assert handoff.state == HandoffState.REASONING_DEFERRED
+
+
+def test_frontier_requires_elimination_record() -> None:
+    handoff = classify_terminal_handoff(
+        status="NO_ROOT_CAUSE_FOUND",
+        reason="refuted",
+        ranked_alternatives=["Downstream latency"],
+    )
+    assert handoff.state == HandoffState.REASONING_DEFERRED
 
 
 def test_non_concrete_gap_fetch_is_ignored() -> None:

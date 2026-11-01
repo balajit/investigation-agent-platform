@@ -118,6 +118,12 @@ from .bulk_intake import (
     BulkIntakeWorkflow,
     should_continue_as_new,
 )
+from .continuation import (
+    ContinuationReasoningWorkflow,
+    ContinuationReasoningWorkflowInput,
+    ContinuationWorkflow,
+    ContinuationWorkflowInput,
+)
 from .forcing import (
     _FLOOR_MIN_EVIDENCE,
     _FLOOR_TERMINAL_ACTIONS,

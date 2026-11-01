@@ -804,6 +804,7 @@ class TestMigrationChain:
             down = rev.down_revision
             rev = script.get_revision(down) if down else None
         assert chain == [
+            "041_s7_continuations",
             "040_rls_remaining_tenant_tables",
             "039_knowledge_shared_split",
             "038_conclusion_s7_handoff",

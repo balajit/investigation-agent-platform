@@ -89,6 +89,24 @@ class TestGatewayComposition:
             assert gateway._query_safety_policy is not None
             assert gateway._sanitizer is not None
 
+    def test_production_assigns_transactional_conclusion_uow(self) -> None:
+        from investigation_agent_platform.bootstrap import build_app_context
+        from investigation_agent_platform.infrastructure.persistence.conclusion_unit_of_work import (
+            PostgresConclusionUnitOfWork,
+        )
+
+        p1, p2, p3, p4 = _patched_production()
+        with p1 as mock_engine, p2 as MockCtx, p3, p4:
+            mock_engine.return_value = MagicMock()
+            mock_ctx = MagicMock()
+            MockCtx.return_value = mock_ctx
+            ctx = build_app_context(_production_config())
+
+            assert isinstance(ctx.conclusion_uow, PostgresConclusionUnitOfWork)
+            constructor_kwargs = MockCtx.call_args.kwargs
+            assert ctx.conclusion_uow._hypotheses is constructor_kwargs["hypothesis_repo"]
+            assert ctx.conclusion_uow._findings is ctx.finding_repo
+
     def test_hop_resolver_armed_with_gateway(self) -> None:
         from investigation_agent_platform.bootstrap import _hop_resolver_for
         from investigation_agent_platform.infrastructure.topology.trace_hop import (

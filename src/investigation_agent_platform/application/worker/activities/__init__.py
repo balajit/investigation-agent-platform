@@ -110,6 +110,11 @@ from .common import (
     classify_reasoning_failure,
     overlay_evidence_budget,
 )
+from .continuation import (
+    continuation_reasoning_activity,
+    execute_continuation_activity,
+    normalize_correlation_id,
+)
 from .execution import (
     _absence_proof_row,
     _banked_positive,
@@ -137,9 +142,13 @@ from .inputs import (
     CaptureKnowledgeInput,
     CheckpointInput,
     ConcludeInvestigationInput,
+    ContinuationReasoningInput,
+    ContinuationWorkflowInput,
     CreateInvestigationInput,
     CreateInvestigationOutput,
     ExecuteActionInput,
+    ExecuteContinuationInput,
+    ExecuteContinuationOutput,
     GenericActivityResult,
     PublishEventInput,
     ReasonInput,

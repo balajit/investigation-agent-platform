@@ -463,8 +463,8 @@ def _s4_readiness(
     """P2 (S4): shape-aware readiness over the reasoner's evidence set.
 
     Computes qualify-per-row plus s4_ready(shape, …) from the banked rows,
-    P1 anchors, and the question shape. Returns {} when undecidable so
-    legacy behavior (count-based floor) is preserved. Never raises.
+    P1 anchors, and the question shape. Always returns a typed outcome;
+    qualification failures are not converted into an empty result.
     """
     try:
         from datetime import UTC as _UTC
@@ -505,6 +505,7 @@ def _s4_readiness(
             if qual.qualified:
                 layers[qual.layer] = layers.get(qual.layer, 0) + 1
         return {
+            "s4_outcome": "READY" if ready else "NOT_READY",
             "s4_ready": bool(ready),
             "s4_missing": str(missing),
             "s4_satisfied_by": str(satisfied_by),
@@ -512,8 +513,17 @@ def _s4_readiness(
             "s4_qualified_layers": layers,
             "s4_qualifier_version": str(QUALIFIER_VERSION),
         }
-    except Exception:
-        return {}
+    except Exception as exc:
+        logger.warning("S4 qualification failed: %s", type(exc).__name__)
+        return {
+            "s4_outcome": "QUALIFICATION_FAILED",
+            "s4_ready": False,
+            "s4_missing": "qualification failed; additional evidence is required",
+            "s4_satisfied_by": "",
+            "s4_shape": "unknown",
+            "s4_qualified_layers": {},
+            "s4_qualifier_version": "",
+        }
 
 
 @activity.defn
@@ -1002,9 +1012,8 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
             except Exception:
                 pass
             limits = apply_effective_limits(limits, state.investigation)
-            # P2 (S4): shape-aware readiness over the reasoner's evidence
-            # set. Flows into reason_data; the floor forcing consults it
-            # instead of raw row counts. Fail-open: {} preserves legacy.
+            # P2 (S4): typed shape-aware readiness over the reasoner's
+            # evidence set. Qualification failure is explicit and fail-closed.
             _s4_lookback = 3600
             try:
                 _s4_cfg = getattr(_budget_profile, "investigation", None)
@@ -1180,7 +1189,8 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                     "llm_tokens": call_tokens,
                     "llm_cost": call_cost,
                     # P2 (S4): shape-aware readiness for the floor forcing.
-                    # Absent (legacy/undecidable) preserves count-based floor.
+                    # Every result carries an explicit outcome.
+                    "s4_outcome": _s4.get("s4_outcome"),
                     "s4_ready": _s4.get("s4_ready"),
                     "s4_missing": _s4.get("s4_missing"),
                     "s4_satisfied_by": _s4.get("s4_satisfied_by"),

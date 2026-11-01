@@ -13,7 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -34,6 +34,10 @@ from investigation_agent_platform.domain.common.exceptions import (
     IdempotencyInProgressError,
 )
 from investigation_agent_platform.domain.common.extension import CapabilityScope
+from investigation_agent_platform.domain.continuation.models import (
+    ContinuationStatus,
+    S7Continuation,
+)
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.finding.clustering import (
     UNASSIGNED_CLUSTER_ID,
@@ -288,6 +292,125 @@ class _InMemoryTransitionRepository(TransitionEventRepository):
         self, tenant_id: str, investigation_id: UUID, from_state: str, to_state: str, reason: str
     ) -> None:
         return None
+
+
+class InMemoryContinuationRepository:
+    """Tenant-scoped continuation store for dev/test composition."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, UUID], S7Continuation] = {}
+        self._lock = asyncio.Lock()
+        self._run_ids: dict[tuple[str, UUID], str | None] = {}
+
+    async def insert(self, tenant_id: str, continuation: S7Continuation) -> S7Continuation:
+        if continuation.tenant_id != tenant_id:
+            raise ValueError("Continuation tenant mismatch")
+        async with self._lock:
+            for row in self._rows.values():
+                if (
+                    row.tenant_id == tenant_id
+                    and row.investigation_id == continuation.investigation_id
+                    and row.idempotency_key == continuation.idempotency_key
+                ):
+                    return row
+            self._rows[(tenant_id, continuation.continuation_id)] = continuation
+            self._run_ids[(tenant_id, continuation.continuation_id)] = None
+            return continuation
+
+    async def supersede_pending(
+        self, tenant_id: str, investigation_id: UUID, idempotency_key: str
+    ) -> int:
+        async with self._lock:
+            count = 0
+            for key, row in list(self._rows.items()):
+                if (
+                    key[0] == tenant_id
+                    and row.investigation_id == investigation_id
+                    and row.status == ContinuationStatus.PENDING
+                    and row.idempotency_key != idempotency_key
+                ):
+                    self._rows[key] = row.model_copy(
+                        update={
+                            "status": ContinuationStatus.SUPERSEDED,
+                            "last_error_code": "CONTINUATION_SUPERSEDED",
+                        }
+                    )
+                    count += 1
+            return count
+
+    async def get(self, tenant_id: str, continuation_id: UUID) -> S7Continuation | None:
+        return self._rows.get((tenant_id, continuation_id))
+
+    async def claim(
+        self,
+        tenant_id: str,
+        continuation_id: UUID,
+        investigation_id: UUID,
+        handoff_version: str,
+        idempotency_key: str,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int = 20,
+    ) -> bool:
+        async with self._lock:
+            row = self._rows.get((tenant_id, continuation_id))
+            if row is None or row.investigation_id != investigation_id:
+                return False
+            lease_expired = row.claimed_at is not None and row.claimed_at + timedelta(
+                seconds=lease_seconds
+            ) < now
+            eligible = row.status.value in {"PENDING", "FAILED", "DENIED"} or (
+                row.status.value == "CLAIMED" and lease_expired
+            )
+            if (
+                row.handoff_version != handoff_version
+                or row.idempotency_key != idempotency_key
+                or row.expires_at <= now
+                or row.attempt_count >= max_attempts
+                or not eligible
+            ):
+                return False
+            self._rows[(tenant_id, continuation_id)] = row.model_copy(
+                update={
+                    "status": ContinuationStatus.CLAIMED,
+                    "claimed_at": now,
+                    "attempt_count": row.attempt_count + 1,
+                    "completed_at": None,
+                    "last_error_code": None,
+                }
+            )
+            return True
+
+    async def set_status(
+        self,
+        tenant_id: str,
+        continuation_id: UUID,
+        status: str,
+        *,
+        completed_at: datetime | None = None,
+        error_code: str | None = None,
+        run_id: str | None = None,
+    ) -> bool:
+        async with self._lock:
+            row = self._rows.get((tenant_id, continuation_id))
+            if row is None:
+                return False
+            self._rows[(tenant_id, continuation_id)] = row.model_copy(
+                update={
+                    "status": ContinuationStatus(status),
+                    "completed_at": completed_at,
+                    "last_error_code": error_code,
+                }
+            )
+            if run_id is not None:
+                self._run_ids[(tenant_id, continuation_id)] = run_id
+            return True
+
+    async def acquire_reasoning_lease(self, *args: Any, **kwargs: Any) -> bool:
+        return True
+
+    async def release_reasoning_lease(self, *args: Any, **kwargs: Any) -> bool:
+        return True
 
 
 def _artifact_valid_to(artifact: Any) -> datetime:
@@ -1022,6 +1145,7 @@ class InMemoryFindingConclusionRepository(FindingConclusionRepository):
     def __init__(self) -> None:
         self._findings: dict[tuple[str, UUID], Finding] = {}
         self._conclusions: dict[tuple[str, UUID], InvestigationConclusion] = {}
+        self._conclusion_history: dict[tuple[str, UUID], list[dict[str, Any]]] = {}
 
     async def save_finding(
         self, tenant_id: str, investigation_id: UUID, finding_type: str, details: dict[str, Any]
@@ -1072,6 +1196,36 @@ class InMemoryFindingConclusionRepository(FindingConclusionRepository):
         if conclusion is not None and conclusion.tenant_id != tenant_id:
             return None
         return conclusion
+
+    async def replace_conclusion_with_history(
+        self,
+        tenant_id: str,
+        conclusion: InvestigationConclusion,
+        continuation_id: UUID,
+        archived_at: datetime | None = None,
+    ) -> UUID:
+        current = await self.get_conclusion(tenant_id, conclusion.investigation_id)
+        if current is None:
+            raise ValueError("Conclusion row required for replacement")
+        history_id = uuid4()
+        self._conclusion_history.setdefault((tenant_id, conclusion.investigation_id), []).append(
+            {
+                "id": history_id,
+                "tenant_id": tenant_id,
+                "investigation_id": conclusion.investigation_id,
+                "archived_at": archived_at or datetime.now(UTC),
+                "superseded_by_continuation_id": continuation_id,
+                "status": getattr(current.status, "value", current.status),
+                "snapshot": current.model_dump(mode="json"),
+            }
+        )
+        await self.save_conclusion(tenant_id, conclusion)
+        return history_id
+
+    async def list_conclusion_history(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[dict[str, Any]]:
+        return list(self._conclusion_history.get((tenant_id, investigation_id), []))
 
     async def list_findings(
         self,
@@ -1928,6 +2082,7 @@ class AppContext:
         hypothesis_repo: HypothesisRepository | Any | None = None,
         onboarding_service: Any | None = None,
         cleanup_service: Any | None = None,
+        continuation_repo: Any | None = None,
     ) -> None:
         self.investigation_repo = investigation_repo or InMemoryInvestigationRepository()
         self.profile_repo = profile_repo or InMemoryApplicationProfileRepository()
@@ -1939,6 +2094,7 @@ class AppContext:
         self.onboarding_service: Any | None = onboarding_service
         # Tenant cleanup (Phase 5): same pattern for deletion preview/approval.
         self.cleanup_service: Any | None = cleanup_service
+        self.continuation_repo: Any = continuation_repo or InMemoryContinuationRepository()
         # Part 11.2: findings/conclusions — durable Postgres in production,
         # process-local store in dev/test (mirrors every other Part 6+ repo).
         self.finding_repo: FindingConclusionRepository = InMemoryFindingConclusionRepository()

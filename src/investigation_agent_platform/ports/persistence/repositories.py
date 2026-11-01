@@ -11,6 +11,7 @@ from investigation_agent_platform.domain.common.background_job import (
     BackgroundJob,
     BackgroundJobStatus,
 )
+from investigation_agent_platform.domain.continuation.models import S7Continuation
 from investigation_agent_platform.domain.evidence.models import Evidence
 from investigation_agent_platform.domain.finding.clustering import (
     FindingCluster,
@@ -271,6 +272,19 @@ class FindingConclusionRepository(Protocol):
         self, tenant_id: str, investigation_id: UUID
     ) -> InvestigationConclusion | None: ...
 
+    async def replace_conclusion_with_history(
+        self,
+        tenant_id: str,
+        conclusion: InvestigationConclusion,
+        continuation_id: UUID,
+        archived_at: datetime | None = None,
+    ) -> UUID: ...
+
+    async def list_conclusion_history(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[dict[str, Any]]: ...
+
+
     async def list_findings(
         self,
         tenant_id: str,
@@ -291,6 +305,67 @@ class FindingConclusionRepository(Protocol):
     ) -> tuple[list[Finding], int]:
         """Tenant-wide findings, newest first (Part 11.7 clustering input)."""
         ...
+
+
+@runtime_checkable
+class S7ContinuationRepository(Protocol):
+    """Tenant-scoped continuation claims, leases, and conclusion history."""
+
+    async def insert(self, tenant_id: str, continuation: S7Continuation) -> S7Continuation: ...
+
+    async def supersede_pending(
+        self, tenant_id: str, investigation_id: UUID, idempotency_key: str
+    ) -> int: ...
+
+    async def get(self, tenant_id: str, continuation_id: UUID) -> S7Continuation | None: ...
+
+    async def claim(
+        self,
+        tenant_id: str,
+        continuation_id: UUID,
+        investigation_id: UUID,
+        handoff_version: str,
+        idempotency_key: str,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int = 20,
+    ) -> bool: ...
+
+    async def set_status(
+        self,
+        tenant_id: str,
+        continuation_id: UUID,
+        status: str,
+        *,
+        completed_at: datetime | None = None,
+        error_code: str | None = None,
+        run_id: str | None = None,
+    ) -> bool: ...
+
+    async def acquire_reasoning_lease(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        continuation_id: UUID,
+        attempt: int,
+        now: datetime,
+        lease_seconds: int,
+        run_id: str | None = None,
+    ) -> bool: ...
+
+    async def release_reasoning_lease(self, tenant_id: str, investigation_id: UUID) -> bool: ...
+
+    async def replace_conclusion_with_history(
+        self,
+        tenant_id: str,
+        conclusion: InvestigationConclusion,
+        continuation_id: UUID,
+        archived_at: datetime | None = None,
+    ) -> UUID: ...
+
+    async def list_conclusion_history(
+        self, tenant_id: str, investigation_id: UUID
+    ) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable

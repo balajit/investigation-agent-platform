@@ -16,8 +16,10 @@ from investigation_agent_platform.application.worker.activities import (
     checkpoint_activity,
     collect_snapshots_activity,
     conclude_investigation_activity,
+    continuation_reasoning_activity,
     create_investigation_activity,
     execute_action_activity,
+    execute_continuation_activity,
     load_batch_records_activity,
     mark_batch_record_result_activity,
     mark_batch_records_activity,
@@ -45,6 +47,8 @@ from investigation_agent_platform.application.worker.activities import (
 from investigation_agent_platform.application.worker.workflows import (
     AggregateReportWorkflow,
     BulkIntakeWorkflow,
+    ContinuationReasoningWorkflow,
+    ContinuationWorkflow,
     FindingClusteringWorkflow,
     KnowledgeArtifactJanitorWorkflow,
     ReferenceDocsIndexWorkflow,
@@ -74,6 +78,8 @@ WORKFLOWS: Sequence[type] = [
     TopologySnapshotRetentionWorkflow,
     KnowledgeArtifactJanitorWorkflow,
     BulkIntakeWorkflow,
+    ContinuationWorkflow,
+    ContinuationReasoningWorkflow,
 ]
 
 # Part 11.7: analytics-queue workflows run on a separate Worker (see
@@ -89,6 +95,8 @@ ACTIVITIES: Sequence[Callable[..., Any]] = [
     retrieve_evidence_activity,
     reason_activity,
     execute_action_activity,
+    execute_continuation_activity,
+    continuation_reasoning_activity,
     verify_root_cause_activity,
     checkpoint_activity,
     conclude_investigation_activity,

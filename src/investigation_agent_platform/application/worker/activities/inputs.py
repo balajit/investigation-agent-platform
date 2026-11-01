@@ -48,6 +48,41 @@ class GenericActivityResult:
     error: str | None = None
 
 
+@dataclass
+class ContinuationWorkflowInput:
+    tenant_id: str
+    continuation_id: str
+    principal_id: str
+    correlation_id: str | None = None
+
+
+@dataclass
+class ExecuteContinuationInput:
+    tenant_id: str
+    continuation_id: str
+    principal_id: str
+    correlation_id: str | None = None
+
+
+@dataclass
+class ExecuteContinuationOutput:
+    continuation_id: str
+    status: str
+    action: str = ""
+    evidence_added: int = 0
+    error_code: str | None = None
+
+
+@dataclass
+class ContinuationReasoningInput:
+    tenant_id: str
+    investigation_id: str
+    continuation_id: str
+    principal_id: str
+    correlation_id: str | None = None
+    loop_version: str = ""
+
+
 # Typed activity inputs — tenant_id + investigation_id consistently required.
 
 
@@ -140,6 +175,7 @@ class ExecuteActionInput:
     # rows from this context; it is never forwarded to providers,
     # never enters extract_search_query, and never touches ledger keys.
     smallest_fetch_context: dict[str, Any] | None = None
+    principal_id: str = "worker"
 
 
 @dataclass

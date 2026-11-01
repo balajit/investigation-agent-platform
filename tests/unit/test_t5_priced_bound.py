@@ -302,16 +302,16 @@ async def test_t519_terminal_mapping() -> None:
     duration = await _run("duration_budget_exceeded")
     assert duration.status == ConclusionStatus.INSUFFICIENT_EVIDENCE
     assert duration.handoff is not None
-    assert duration.handoff.state == HandoffState.BUDGET_DEFERRED
+    assert duration.handoff.state == HandoffState.REASONING_DEFERRED
 
     tokens = await _run("token_budget_exceeded")
     assert tokens.handoff is not None
-    assert tokens.handoff.state == HandoffState.BUDGET_DEFERRED
+    assert tokens.handoff.state == HandoffState.REASONING_DEFERRED
 
     paused = await _run("pause_timeout")
     assert paused.status == ConclusionStatus.INSUFFICIENT_EVIDENCE
     assert paused.handoff is not None
-    assert paused.handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert paused.handoff.state == HandoffState.REASONING_DEFERRED
     assert "paused past the allowed window" in (paused.next_check or "")
 
 

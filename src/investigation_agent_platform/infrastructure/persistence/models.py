@@ -482,6 +482,94 @@ class InvestigationConclusionORM(Base):
     )
 
 
+class S7ContinuationORM(Base):
+    """Durable, tenant-scoped exact-fetch continuation state."""
+
+    __tablename__ = "s7_continuations"
+
+    continuation_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    handoff_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_handoff_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    target: Mapped[str] = mapped_column(String(1024), nullable=False)
+    price: Mapped[float] = mapped_column(Numeric(10, 2, asdecimal=False), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "investigation_id",
+            "idempotency_key",
+            name="uq_s7_continuation_tenant_investigation_key",
+        ),
+        CheckConstraint("price > 0", name="ck_s7_continuation_positive_price"),
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= 20",
+            name="ck_s7_continuation_attempt_bounds",
+        ),
+        Index("idx_s7_continuation_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class ConclusionHistoryORM(Base):
+    """Immutable predecessor snapshots for continuation conclusion replacement."""
+
+    __tablename__ = "conclusion_history"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    superseded_by_continuation_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    handoff_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        Index("idx_conclusion_history_tenant_inv", "tenant_id", "investigation_id"),
+    )
+
+
+class ContinuationReasoningLeaseORM(Base):
+    """Per-investigation lease preventing concurrent continuation reasoning."""
+
+    __tablename__ = "continuation_reasoning_leases"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    investigation_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    continuation_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+
+
 class InvestigationActionORM(Base):
     """Requested action proposed by the LLM reasoner."""
 

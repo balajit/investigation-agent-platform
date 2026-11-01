@@ -3,6 +3,7 @@
 
 import pytest
 import test_h7_reasoning_degrade as h7
+from pydantic import ValidationError
 
 from investigation_agent_platform.application.worker.activities.common import (
     classify_reasoning_failure,
@@ -99,10 +100,10 @@ def test_reasoning_blocked_stays_epistemic() -> None:
 
 
 def test_old_handoff_rows_still_parse() -> None:
-    h = S7Handoff.model_validate(
-        {"state": "TELEMETRY_DEFERRED", "next_fetch": None, "recommended_next_steps": []}
-    )
-    assert h.state == HandoffState.TELEMETRY_DEFERRED
+    with pytest.raises(ValidationError):
+        S7Handoff.model_validate(
+            {"state": "TELEMETRY_DEFERRED", "next_fetch": None, "recommended_next_steps": []}
+        )
 
 
 def test_failure_code_for_new_prefix() -> None:

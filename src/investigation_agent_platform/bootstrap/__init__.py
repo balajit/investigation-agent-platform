@@ -155,6 +155,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         # engine (passing the engine raises TypeError on first use).
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
+        from investigation_agent_platform.infrastructure.persistence.conclusion_unit_of_work import (
+            PostgresConclusionUnitOfWork,
+        )
         from investigation_agent_platform.infrastructure.persistence.evidence_repository import (
             SqlAlchemyEvidenceRepository,
         )
@@ -200,6 +203,9 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         from investigation_agent_platform.infrastructure.persistence.checkpoint_repository import (
             SqlAlchemyCheckpointRepository,
         )
+        from investigation_agent_platform.infrastructure.persistence.continuation_repository import (
+            SqlAlchemyContinuationRepository,
+        )
         from investigation_agent_platform.infrastructure.persistence.idempotency_repository import (
             SqlAlchemyIdempotencyStore,
         )
@@ -208,6 +214,7 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
         )
 
         checkpoint_repo = SqlAlchemyCheckpointRepository(session_factory)
+        continuation_repo = SqlAlchemyContinuationRepository(session_factory)
         transition_repo = SqlAlchemyTransitionRepository(session_factory)
         idempotency_store = SqlAlchemyIdempotencyStore(session_factory)
         action_repo = SqlAlchemyActionExecutionRepository(session_factory)
@@ -247,6 +254,7 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     # F-011/F-012/F-013: production must never operate on the process-local
     # no-op checkpoint/transition repos or in-memory idempotency store.
     ctx.checkpoint_repo = checkpoint_repo  # type: ignore[attr-defined]
+    ctx.continuation_repo = continuation_repo
     ctx.transition_repo = transition_repo  # type: ignore[attr-defined]
     ctx.idempotency_store = idempotency_store  # type: ignore[attr-defined]
     ctx.action_repo = action_repo  # type: ignore[attr-defined]
@@ -254,6 +262,13 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     # Part 11.2: durable finding/conclusion store (production must never
     # operate on the process-local in-memory store).
     ctx.finding_repo = finding_repo
+    # H14: replace the UoW created by AppContext with the transactional
+    # PostgreSQL implementation after all production repositories exist.
+    ctx.conclusion_uow = PostgresConclusionUnitOfWork(
+        session_factory,
+        hypothesis_repo,
+        finding_repo,
+    )
     from investigation_agent_platform.infrastructure.persistence.contradiction_repository import (
         SqlAlchemyContradictionRepository,
     )

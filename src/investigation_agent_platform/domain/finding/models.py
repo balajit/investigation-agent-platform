@@ -373,6 +373,35 @@ class S7Handoff(BaseModel):
     resume_pointer: str | None = Field(default=None, max_length=1024)
     recommended_next_steps: list[str] = Field(default_factory=list, max_length=20)
 
+    @model_validator(mode="after")
+    def validate_state_invariants(self) -> "S7Handoff":
+        if self.state == HandoffState.PROVED:
+            if any((self.target != "n/a", self.next_fetch, self.price, self.resume_pointer,
+                    self.recommended_next_steps)):
+                raise ValueError("PROVED handoff cannot carry follow-up fields")
+        elif self.state == HandoffState.BUDGET_DEFERRED:
+            if not self.next_fetch or not names_concrete_fetch_target(self.next_fetch):
+                raise ValueError("BUDGET_DEFERRED requires a concrete next_fetch")
+            if self.price is None or self.price <= 0:
+                raise ValueError("BUDGET_DEFERRED requires a positive price")
+            if not self.resume_pointer or not self.recommended_next_steps:
+                raise ValueError("BUDGET_DEFERRED requires a reason and resume pointer")
+        elif self.state == HandoffState.FRONTIER_EXHAUSTED:
+            if not any("frontier exhausted" in step.lower() for step in self.recommended_next_steps):
+                raise ValueError("FRONTIER_EXHAUSTED requires an elimination record")
+        elif self.state == HandoffState.CROSS_BOUNDARY:
+            if not self.target or self.target == "n/a":
+                raise ValueError("CROSS_BOUNDARY requires an upstream target")
+        elif self.state in (
+            HandoffState.TELEMETRY_DEFERRED,
+            HandoffState.REASONING_DEFERRED,
+            HandoffState.INPUT_DEFERRED,
+            HandoffState.CAPABILITY_DENIED,
+        ):
+            if not self.resume_pointer or not self.recommended_next_steps:
+                raise ValueError(f"{self.state.value} requires a recorded limitation")
+        return self
+
 
 def classify_terminal_handoff(
     *,
@@ -460,6 +489,13 @@ def classify_terminal_handoff(
         ConclusionStatus.ROOT_CAUSE_ESTABLISHED.value,
     ):
         return S7Handoff(state=HandoffState.PROVED)
+
+    if status_text not in {item.value for item in ConclusionStatus}:
+        return S7Handoff(
+            state=HandoffState.REASONING_DEFERRED,
+            resume_pointer="Resolve the malformed terminal status before resuming.",
+            recommended_next_steps=[f"Malformed terminal status: {status_text or 'missing'}"],
+        )
 
     # Steps keep the prose directive; the concrete target is added once when
     # it is not already the directive itself.
@@ -577,7 +613,7 @@ def classify_terminal_handoff(
         or "verification_failed_or_limit_reached" in signal_text
         or "limit_reached" in signal_text
     ):
-        if directive is not None:
+        if directive is not None and target is not None:
             resume = (
                 f"Resume with a larger iteration/evidence budget at the "
                 f"blocked fetch: {(target or directive)[:300]}"
@@ -605,12 +641,22 @@ def classify_terminal_handoff(
     # Review T2: no filler sentence. When no rival was ruled out, no
     # alternative ranked and no fetch named, the handoff records nothing -
     # a generic line here made every abstention look like a handoff.
+    if eliminated:
+        return S7Handoff(
+            state=HandoffState.FRONTIER_EXHAUSTED,
+            next_fetch=target,
+            price=price_next_fetch(target),
+            resume_pointer=None,
+            recommended_next_steps=record[:20],
+        )
     return S7Handoff(
-        state=HandoffState.FRONTIER_EXHAUSTED,
+        state=HandoffState.REASONING_DEFERRED,
         next_fetch=target,
         price=price_next_fetch(target),
-        resume_pointer=None,
-        recommended_next_steps=record[:20],
+        resume_pointer=(directive or "Record the missing frontier evidence before resuming.")[:1024],
+        recommended_next_steps=(record or [
+            "Frontier exhaustion was not established; record an elimination or gather more evidence."
+        ])[:20],
     )
 
 

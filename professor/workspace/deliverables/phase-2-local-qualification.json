@@ -1,0 +1,85 @@
+{
+  "results": [
+    {
+      "case": "no supporting evidence",
+      "status": "PASS",
+      "input_status": "PARTIAL",
+      "observed_disposition": "PARTIAL",
+      "expected_disposition": "PARTIAL",
+      "assertion": "preserve evidence limitation",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "incomplete specialist findings",
+      "status": "PASS",
+      "input_status": "PARTIAL",
+      "observed_disposition": "PARTIAL",
+      "expected_disposition": "PARTIAL",
+      "assertion": "preserve missing acceptance criteria",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "conflicting specialist conclusions",
+      "status": "PASS",
+      "input_status": "PARTIAL",
+      "observed_disposition": "PARTIAL",
+      "expected_disposition": "PARTIAL",
+      "assertion": "preserve disagreement for adjudication",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "adversarial reviewer rejection",
+      "status": "PASS",
+      "input_status": "PARTIAL",
+      "observed_disposition": "PARTIAL",
+      "expected_disposition": "PARTIAL",
+      "assertion": "record disposition and re-evaluate",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "validation failure",
+      "status": "PASS",
+      "input_status": "PARTIAL",
+      "observed_disposition": "PARTIAL",
+      "expected_disposition": "PARTIAL",
+      "assertion": "do not deliver as fully validated",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "unavailable research capability",
+      "status": "PASS",
+      "input_status": "BLOCKED",
+      "observed_disposition": "BLOCKED",
+      "expected_disposition": "BLOCKED",
+      "assertion": "explain unavailable capability",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "blocked specialist",
+      "status": "PASS",
+      "input_status": "BLOCKED",
+      "observed_disposition": "BLOCKED",
+      "expected_disposition": "BLOCKED",
+      "assertion": "retain blocked status",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "malformed specialist response",
+      "status": "PASS",
+      "input_status": "FAILED",
+      "observed_disposition": "FAILED",
+      "expected_disposition": "FAILED",
+      "assertion": "reject malformed output",
+      "execution_mode": "provider-independent procedural fixture"
+    },
+    {
+      "case": "task/result schema enforcement fixtures",
+      "status": "PASS",
+      "observed_disposition": "Schema checks: 28 passed, 0 failed.",
+      "expected_disposition": "28 schema checks pass",
+      "assertion": "valid typed results pass and malformed/incomplete fixtures fail",
+      "execution_mode": "local jsonschema validator"
+    }
+  ],
+  "live_runtime": "NOT_VERIFIED"
+}

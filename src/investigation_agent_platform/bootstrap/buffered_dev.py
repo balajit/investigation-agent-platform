@@ -50,6 +50,7 @@ BUFFERED_ATTRS: tuple[str, ...] = (
     "artifact_repo",
     "session_repo",
     "code_issue_index",
+    "continuation_repo",
 )
 
 
@@ -105,6 +106,9 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
     )
     from investigation_agent_platform.infrastructure.persistence.checkpoint_repository import (
         SqlAlchemyCheckpointRepository,
+    )
+    from investigation_agent_platform.infrastructure.persistence.continuation_repository import (
+        SqlAlchemyContinuationRepository,
     )
     from investigation_agent_platform.infrastructure.persistence.contradiction_repository import (
         SqlAlchemyContradictionRepository,
@@ -170,6 +174,7 @@ def _build_sqlalchemy_stores(session_factory: Any) -> dict[str, Any]:
         "artifact_repo": SqlAlchemyArtifactRepository(session_factory),
         "session_repo": SqlAlchemySessionRepository(session_factory),
         "code_issue_index": SqlAlchemyCodeIssueIndex(session_factory),
+        "continuation_repo": SqlAlchemyContinuationRepository(session_factory),
     }
 
 

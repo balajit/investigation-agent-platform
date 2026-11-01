@@ -91,7 +91,7 @@ def test_r9_t01_denied_acquiring_actions_produce_the_state(monkeypatch) -> None:
     from investigation_agent_platform.domain.finding import models
 
     monkeypatch.setattr(models, "capability_denied_for", lambda *args: [])
-    assert _classify_denied().state == HandoffState.FRONTIER_EXHAUSTED
+    assert _classify_denied().state == HandoffState.REASONING_DEFERRED
 
 
 def test_r9_t02_available_alternative_prevents_it() -> None:
@@ -155,7 +155,7 @@ def test_r9_t05_no_claim_kind_falls_through() -> None:
         unavailable_actions=_DENIED,
         gap_fetch=_FETCH,
     )
-    assert handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
 
 
 def test_r9_t06_loose_telemetry_match_removed() -> None:
@@ -164,7 +164,7 @@ def test_r9_t06_loose_telemetry_match_removed() -> None:
         reason="insufficient",
         limitations=["the claim about the telemetry exporter retry loop was not verified"],
     )
-    assert loose.state == HandoffState.FRONTIER_EXHAUSTED
+    assert loose.state == HandoffState.REASONING_DEFERRED
     typed = classify_terminal_handoff(
         status="INSUFFICIENT_EVIDENCE",
         reason="provider_blocked:auth_failed",
@@ -313,7 +313,7 @@ async def test_r9_t08_pre_lvr_run_is_unchanged() -> None:
         reason="insufficient",
         gap_fetch=_FETCH,
     )
-    assert handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
 
 
 @pytest.mark.asyncio
@@ -334,7 +334,7 @@ async def test_r9_t09_context_lookup_failure_fails_open() -> None:
         deny_reasons=reasons,
         gap_fetch="SEARCH_CODE Widget call sites",
     )
-    assert handoff.state == HandoffState.FRONTIER_EXHAUSTED
+    assert handoff.state == HandoffState.REASONING_DEFERRED
 
 
 def test_r9_t10_profile_lint() -> None:
