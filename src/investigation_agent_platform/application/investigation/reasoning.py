@@ -1273,6 +1273,14 @@ class ReasoningCoordinator(InvestigationReasoner):
             classify=boundary_classifier(_profile),
             roots_status=roots_status,
         )
+        # WP-07: the brief is a bounded projection for reasoning context only.
+        # Verification continues to read durable raw evidence and bindings.
+        brief = compiled_context.get("evidence_brief") if isinstance(compiled_context, dict) else None
+        if not isinstance(brief, dict) or brief.get("faithfulness_status") != "PASS":
+            logger.warning(
+                "Evidence brief failed structural faithfulness gate; using bounded compiler context",
+                extra={"tenant_id": tenant_id, "investigation_id": str(state.investigation.id)},
+            )
         # Phase 4.2: packet disposition for the budget dashboard. Included
         # vs truncated vs dropped partitions the visible excerpts; dropped
         # counts input rows that never became excerpts.

@@ -10,6 +10,8 @@ Postgres and are referenced by evidence ID.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from typing import Any
@@ -36,6 +38,7 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 # with typed reasons (R8 prompt honesty); older pins keep the raw list.
 REASONER_PROMPT_VERSION = "v3-claim-grounded-021"
 CODE_PACKET_VERSION = "code-packet-v1"
+EVIDENCE_BRIEF_VERSION = "evidence-brief-v1"
 
 MAX_CODE_EXCERPTS = 8
 # A code packet carries the requested range, not a 1,500-char head. The
@@ -913,6 +916,56 @@ def enforce_context_budget(
     return ctx
 
 
+def build_evidence_brief(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Build a deterministic, citation-preserving brief projection.
+
+    This first WP-07 slice is structural rather than semantic: it reuses the
+    compiler's already-ranked excerpts, preserves dissent candidates, reports
+    compression, and fails closed when visible citations do not resolve to the
+    brief. It never replaces raw evidence or verifier authority.
+    """
+    try:
+        excerpts = [e for e in (ctx.get("evidence_excerpts") or []) if isinstance(e, dict)]
+        visible = {str(e.get("evidence_id") or "") for e in excerpts if e.get("evidence_id")}
+        citations = sorted(visible)
+        dissent = [
+            {"evidence_id": str(e.get("evidence_id")), "summary": str(e.get("summary") or "")[:500]}
+            for e in excerpts
+            if str(e.get("evidence_type") or "").upper() in {"CONTRADICTORY", "DIVERGENCE"}
+        ]
+        raw_tokens = max(
+            estimate_tokens(json.dumps(ctx.get("evidence_excerpts") or [], sort_keys=True, default=str)),
+            0,
+        )
+        brief_tokens = max(estimate_tokens(json.dumps(excerpts, sort_keys=True, default=str)), 0)
+        faithfulness = "PASS" if all(str(e.get("evidence_id") or "") in visible for e in excerpts) else "FAIL"
+        payload = {
+            "brief_version": EVIDENCE_BRIEF_VERSION,
+            "prompt_version": ctx.get("prompt_version", ""),
+            "evidence_units": excerpts,
+            "citations": citations,
+            "dissent": dissent,
+            "raw_token_estimate": raw_tokens,
+            "brief_token_estimate": brief_tokens,
+            "compression_ratio": (brief_tokens / raw_tokens) if raw_tokens else 0.0,
+            "faithfulness_status": faithfulness,
+            "faithfulness_code": None if faithfulness == "PASS" else "CITATION_NOT_VISIBLE",
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+        payload["brief_digest"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return payload
+    except Exception:
+        return {
+            "brief_version": EVIDENCE_BRIEF_VERSION,
+            "evidence_units": [],
+            "citations": [],
+            "dissent": [],
+            "faithfulness_status": "UNAVAILABLE",
+            "faithfulness_code": "BRIEF_BUILD_FAILED",
+            "brief_digest": "",
+        }
+
+
 def boundary_classifier(profile: Any | None) -> Any:
     """Boundary classifier for a profile (J9 D16).
 
@@ -1139,7 +1192,7 @@ def compile_reasoning_context(
             "event": "compile_reasoning_context completed",
         },
     )
-    return enforce_context_budget(
+    compiled = enforce_context_budget(
         {
             "prompt_version": REASONER_PROMPT_VERSION,
             "plan": classify_surfaces(problem),
@@ -1161,3 +1214,5 @@ def compile_reasoning_context(
         },
         bound=bound,
     )
+    compiled["evidence_brief"] = build_evidence_brief(compiled)
+    return compiled

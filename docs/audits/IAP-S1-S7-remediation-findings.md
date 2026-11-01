@@ -77,13 +77,14 @@ Findings below were revalidated against the current source at HEAD `8d2c13fd004e
 ### F-07 — Accepted distillation contract is only partially implemented
 
 - **Work package:** WP-07
-- **Classification:** PARTIALLY IMPLEMENTED
+- **Classification:** IMPLEMENTED STRUCTURAL SLICE; QUALITY ACCEPTANCE UNVERIFIED
 - **Severity:** P2
-- **Evidence:** `application/investigation/context_compiler.py:379-433,812-876,1075-1122` implements deterministic selection, tiering, grouping, excerpts, provenance, and token budgeting. The accepted design at `docs/design/DES-distill-brief-v1.0.md:7-21` also requires cross-encoder reranking, sentence-level pruning, extractive briefs with citations/dissent, a raw-token reduction target, recall-at-brief, faithfulness validation, and used/unused/incorrect-claim feedback. Those capabilities were not found in the inspected production path.
+- **Evidence:** `application/investigation/context_compiler.py` now emits a deterministic structural `evidence_brief` (`evidence-brief-v1`) with visible citations, dissent entries, raw/brief token estimates, compression ratio, canonical digest, and structural faithfulness status. The WP-07 study artifact defines the remaining semantic reranking, sentence pruning, labeled recall, semantic faithfulness, and feedback contracts. Those quality capabilities are not implemented.
 - **Callers:** `application/investigation/reasoning.py:1258-1271`, `application/worker/activities/reasoning.py:521-730`, and `application/worker/workflows/run_investigation.py:812-835` establish production source wiring for the existing compiler.
 - **Runtime:** Not verified.
 - **Risk:** Token budgeting may be mistaken for evidence-faithful distillation quality.
-- **Required evidence before closure:** contract matrix, measurable recall/faithfulness tests, dissent/citation preservation, and feedback-path evidence.
+- **Required evidence before closure:** semantic reranking/pruning implementation; labeled-corpus recall/compression and faithfulness evidence; independent faithfulness adjudication; feedback-path integration; replay-consistent production-path evidence; and quality acceptance at the selected operating point.
+- **Current verification:** Focused compiler/qualification/claim-binding suites pass (`191 passed`); Ruff and bytecode compilation pass. Targeted mypy reports four pre-existing broad-module errors in `reasoning.py`; no new WP-07-specific typing error was introduced.
 
 ### F-08 — Production prompt-safety policy always allows
 

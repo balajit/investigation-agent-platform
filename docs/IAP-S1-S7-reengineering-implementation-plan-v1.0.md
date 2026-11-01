@@ -93,6 +93,8 @@ WP-06 design reconciliation is recorded in `docs/design/DES-production-collectio
 - Feedback edges: brief usage signals (used/unused/wrong) reweight collector/distiller scoring.
 - Battery movement: G2 recall-at-brief vs compression curve; G3 end-to-end quality-per-cost.
 
+WP-07 study scope and unresolved quality/feedback contracts are recorded in `docs/design/DES-production-distillation-study-v1.0.md`. Production implementation remains separately authorized.
+
 ### P8 — Composition decision (parallel, research-gated)
 
 - `DES-composition-decision` stays DRAFT until the three inputs are measured against live customer telemetry: trace→range attribution coverage (do spans carry filepath/line — early evidence: code location absent, trace ids present), retention reach for pre-onset estimation (~12d IAP-only retention noted), parent-set curation cost per metric family.

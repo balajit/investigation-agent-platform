@@ -6,16 +6,16 @@ Source contract: `docs/design/DES-distill-brief-v1.0.md:7-21`. The matrix distin
 | --- | --- | --- | --- | --- |
 | Selection | Select relevant evidence with provenance | `context_compiler.py:379-433` | Implemented in bounded form | Selection quality is not measured against recall |
 | Tiering | Preserve bound/high-value evidence ahead of lower-value context | `context_compiler.py:384-399` | Implemented | Tiering is not equivalent to faithfulness validation |
-| Cross-encoder reranking | Rerank evidence beyond lexical/heuristic selection | No implementation symbol or caller found | Not established | Ranking may miss semantically decisive evidence |
-| Sentence-level pruning | Prune at sentence granularity while preserving support | No implementation symbol or caller found | Not established | Excerpts may be too coarse or omit decisive context |
-| Extractive brief | Produce an extractive brief with citations and structured support | Compiler emits excerpts/context sections; no distinct accepted brief object found | Partially implemented | Context compilation may be mistaken for the required brief artifact |
-| Citation preservation | Retain evidence IDs/provenance through the brief | Evidence IDs/provenance are preserved in compiler output | Partially implemented | End-to-end citation preservation in a generated brief is not proven |
+| Cross-encoder reranking | Rerank evidence beyond lexical/heuristic selection | No implementation symbol or caller found; study contract in `DES-production-distillation-study-v1.0.md` §5B | Not established; study defined | Ranking may miss semantically decisive evidence |
+| Sentence-level pruning | Prune at sentence granularity while preserving support | No implementation symbol or caller found; study contract in `DES-production-distillation-study-v1.0.md` §5C | Not established; study defined | Excerpts may be too coarse or omit decisive context |
+| Extractive brief | Produce an extractive brief with citations and structured support | `context_compiler.py` now emits deterministic `evidence_brief` (`evidence-brief-v1`) with evidence units, citations, dissent, compression accounting, digest, and structural faithfulness status | Implemented structural slice; semantic quality unverified | Brief is still a projection and not proof authority |
+| Citation preservation | Retain evidence IDs/provenance through the brief | `evidence_brief.citations` derives from visible evidence units; source/provenance remains in each unit | Implemented structural slice | Full reasoning/replay path remains unverified |
 | Dissent/contradiction | Preserve dissent and contradictory evidence | No dedicated dissent output in the compiler was identified | Partially implemented elsewhere at most | Distillation can erase disagreement while retaining a summary |
-| Raw-token reduction | Operate at the accepted 5–10% raw-token point | Internal estimated token ceiling exists at `context_compiler.py:65-67,812-876`; no raw-token ratio measurement found | Not established | Compression cannot be evaluated against the accepted operating point |
-| Recall-at-brief | Measure retained relevant evidence | No measurement path found | Not established | Reduced context may silently lose required evidence |
-| Faithfulness | Treat faithfulness as a hard gate | No distillation-specific faithfulness gate found | Not established | Unsupported or altered meaning can reach reasoning |
-| Used/unused/wrong feedback | Feed claim usage and correctness back into selection | No feedback path found in compiler/reasoning composition | Not established | Distiller cannot learn from downstream evidence use or errors |
-| Determinism/replay | Stable output for identical input and replay | Compiler has deterministic budgeting tests; no complete distillation replay proof found | Partially implemented | Full workflow replay remains unverified |
+| Raw-token reduction | Operate at the accepted 5–10% raw-token point | Brief reports raw/brief token estimates and compression ratio; no labeled operating-point sweep exists | Measurement instrumentation added; target unverified | Ratio alone does not establish quality |
+| Recall-at-brief | Measure retained relevant evidence | No measurement path found; labeled-corpus and curve protocol in `DES-production-distillation-study-v1.0.md` §§5A, 7 | Not established; measurement study defined | Reduced context may silently lose required evidence |
+| Faithfulness | Treat faithfulness as a hard gate | Structural `evidence_brief.faithfulness_status`/failure code are emitted; semantic adjudication and authoritative brief gating are not implemented | Structural slice implemented; semantic gate not established | Unsupported or altered meaning can reach reasoning until semantic gate integration |
+| Used/unused/wrong feedback | Feed claim usage and correctness back into selection | No feedback path found; event contract in `DES-production-distillation-study-v1.0.md` §5F | Not established; study contract defined | Distiller cannot learn from downstream evidence use or errors |
+| Determinism/replay | Stable output for identical input and replay | Brief canonical digest is deterministic; focused compiler test covers identical input equality | Implemented pure slice; workflow replay unverified | Temporal replay and model-path evidence remain open |
 
 ## Production source path
 
@@ -35,8 +35,9 @@ Evidence: `application/worker/workflows/run_investigation.py:812-835`, `applicat
 
 ## Required closure evidence
 
-1. A contract decision for reranking, sentence pruning, brief shape, dissent, and feedback.
+1. Approve or revise the study contract for reranking, sentence pruning, brief shape, dissent, and feedback.
 2. Raw-token reduction and recall-at-brief measurement without inventing thresholds beyond the accepted design.
 3. Faithfulness validation as an explicit gate.
 4. Citation and contradiction preservation tests.
 5. Replay-consistent production-path evidence.
+6. Labeled-corpus evidence for the selected operating point and an explicit implementation authorization pass.

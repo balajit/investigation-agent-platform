@@ -18,6 +18,23 @@ from investigation_agent_platform.domain.provenance.models import (
 )
 
 
+def test_evidence_brief_is_citation_preserving_and_deterministic() -> None:
+    state = _state([_evidence(summary="decisive")])
+    first = compile_reasoning_context(state)["evidence_brief"]
+    second = compile_reasoning_context(state)["evidence_brief"]
+    assert first["brief_version"] == "evidence-brief-v1"
+    assert first["faithfulness_status"] == "PASS"
+    assert first["citations"] == [str(state.evidence[0].evidence_id)]
+    assert first["brief_digest"] == second["brief_digest"]
+    assert first["brief_token_estimate"] >= 0
+
+
+def test_evidence_brief_keeps_dissent_units_visible() -> None:
+    row = _evidence(summary="contradictory", etype=EvidenceType.DIVERGENCE)
+    brief = compile_reasoning_context(_state([row]))["evidence_brief"]
+    assert brief["dissent"][0]["evidence_id"] == str(row.evidence_id)
+
+
 def _evidence(summary="log line", snippet="", etype=EvidenceType.LOG):
     iid = uuid4()
     return Evidence(
