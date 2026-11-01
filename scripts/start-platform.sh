@@ -90,6 +90,14 @@ if [[ -z "${IAP_DATABASE_URI:-}" ]]; then
   echo "error: IAP_DATABASE_URI must be set" >&2
   exit 2
 fi
+# S3 least-privilege dev roles: per-process DSNs, each defaulting to the
+# single IAP_DATABASE_URI. Operator sets IAP_API_DATABASE_URI
+# (iap_app), IAP_WORKER_DATABASE_URI (iap_worker), and
+# IAP_MIGRATION_DATABASE_URI (iap_migrator) in the secret environment;
+# the superuser DSN stays available for operator tooling only.
+IAP_API_DSN="${IAP_API_DATABASE_URI:-$IAP_DATABASE_URI}"
+IAP_WORKER_DSN="${IAP_WORKER_DATABASE_URI:-$IAP_DATABASE_URI}"
+IAP_MIGRATION_DSN="${IAP_MIGRATION_DATABASE_URI:-$IAP_DATABASE_URI}"
 provider_key="IAP_$(echo "${IAP_LLM_PROVIDER:-openai}" | tr '[:lower:]' '[:upper:]')_API_KEY"
 if [[ -z "${!provider_key:-}" ]]; then
   echo "error: ${provider_key} must be set for IAP_LLM_PROVIDER=${IAP_LLM_PROVIDER:-openai}" >&2
@@ -132,13 +140,13 @@ if [[ "$RESTART_ONLY" == true ]]; then
   [[ "$RUN_WORKER" == true ]] && rotate_logs worker
   if [[ "$RUN_API" == true ]]; then
     echo "Starting API on :$PORT ..."
-    nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
+    IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
     echo $! > tmp/api.pid
     echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
   fi
   if [[ "$RUN_WORKER" == true ]]; then
     echo "Starting Temporal worker ..."
-    nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
+    IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
     echo $! > tmp/worker.pid
     echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
   fi
@@ -176,19 +184,21 @@ fi
 echo "Infrastructure ready."
 
 echo "Running migrations..."
-uv run alembic upgrade head
+# Sanctioned dev-stack use of the dev database (port 5452): inline override
+# with reason, never exported. Disposable databases need no override.
+IAP_PG_GUARD_OVERRIDE="start-platform.sh dev-stack migration on the dev database" IAP_DATABASE_URI="$IAP_MIGRATION_DSN" uv run alembic upgrade head
 
 [[ "$RUN_API" == true ]] && rotate_logs api
 [[ "$RUN_WORKER" == true ]] && rotate_logs worker
 if [[ "$RUN_API" == true ]]; then
   echo "Starting API on :$PORT ..."
-  nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
+  IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
   echo $! > tmp/api.pid
   echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
 fi
 if [[ "$RUN_WORKER" == true ]]; then
   echo "Starting Temporal worker ..."
-  nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
+  IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
   echo $! > tmp/worker.pid
   echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
 fi

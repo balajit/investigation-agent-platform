@@ -829,9 +829,11 @@ async def _gate_conclusion_or_fail(
         ConclusionStatus,
         Finding,
         FindingType,
+        HandoffState,
         InvestigationConclusion,
         classify_terminal_handoff,
         dedupe_and_cap_ids,
+        gap_claim_for_hypotheses,
         gap_fetch_for_hypotheses,
     )
     from investigation_agent_platform.domain.hypothesis.models import ClaimKind
@@ -988,6 +990,28 @@ async def _gate_conclusion_or_fail(
             )
         except Exception:
             _abstention_eliminated = []
+        # R9-D2: authorization denial context for the terminal handoff.
+        # LV_R-gated inside the helper; older pins classify exactly as
+        # before.
+        _abstention_denial_inputs: dict[str, Any] = {}
+        _abstention_denial_lines: list[str] = []
+        _abstention_app_id: str | None = None
+        _abstention_blocked: tuple[str, ...] = ()
+        _abstention_reasons: dict[str, str] = {}
+        try:
+            _abstention_app_id = str(getattr(_inv, "application_id", "") or "") or None
+            _abstention_blocked, _abstention_reasons = await _denial_context(
+                ctx, tenant_id, investigation_id, _abstention_app_id
+            )
+            _abstention_denial_inputs = _denial_handoff_inputs(
+                getattr(_inv, "metadata", None),
+                gap_claim_for_hypotheses(list(hypotheses or [])),
+                _abstention_blocked,
+                _abstention_reasons,
+                _abstention_app_id,
+            )
+        except Exception:
+            _abstention_denial_inputs = {}
         # P4: the handoff is explicit. Abstention/refusal conclusions carry
         # the S7 handoff in recommended_next_steps with target "n/a"; the
         # helper never mutates the investigation status target.
@@ -999,7 +1023,12 @@ async def _gate_conclusion_or_fail(
             ranked_alternatives=_ranked_alternatives,
             eliminated_rivals=list(_abstention_eliminated or []),
             gap_fetch=gap_fetch_for_hypotheses(list(hypotheses or [])),
+            **_abstention_denial_inputs,
         )
+        if _abstention_handoff.state == HandoffState.CAPABILITY_DENIED:
+            _abstention_denial_lines = _denial_limitation_lines(
+                _abstention_blocked, _abstention_reasons, _abstention_app_id
+            )
         await finding_repo.save_conclusion(
             tenant_id,
             InvestigationConclusion(
@@ -1011,7 +1040,9 @@ async def _gate_conclusion_or_fail(
                 supporting_hypothesis_ids=([hypothesis_id] if hypothesis_id is not None else []),
                 contradicting_evidence_ids=[],
                 confidence=0.0,
-                limitations=[str(l)[:500] for l in limitations][:20],
+                limitations=(
+                    [str(l)[:500] for l in limitations] + _abstention_denial_lines
+                )[:20],
                 # F: abstention still publishes ranked alternatives so
                 # partial answers survive instead of evaporating.
                 ranked_alternatives=_ranked_alternatives,
@@ -2079,6 +2110,25 @@ async def _gate_conclusion_or_fail(
     # P4: every terminal verdict persists its structured handoff. PROVED
     # verdicts carry an empty follow-up; LIKELY verdicts fall through the
     # classifier so their next fetch survives instead of being dropped.
+    # R9-D2: the verdict site passes the same denial context, which only
+    # matters for a provisional (LIKELY) verdict.
+    _verdict_app_id: str | None = str(getattr(_inv, "application_id", "") or "") or None
+    _verdict_blocked: tuple[str, ...] = ()
+    _verdict_reasons: dict[str, str] = {}
+    _verdict_denial_inputs: dict[str, Any] = {}
+    try:
+        _verdict_blocked, _verdict_reasons = await _denial_context(
+            ctx, tenant_id, investigation_id, _verdict_app_id
+        )
+        _verdict_denial_inputs = _denial_handoff_inputs(
+            getattr(_inv, "metadata", None),
+            gap_claim_for_hypotheses(list(hypotheses or [])),
+            _verdict_blocked,
+            _verdict_reasons,
+            _verdict_app_id,
+        )
+    except Exception:
+        _verdict_denial_inputs = {}
     _verdict_handoff = classify_terminal_handoff(
         status=_conclusion_status,
         next_check=_next_check,
@@ -2086,7 +2136,15 @@ async def _gate_conclusion_or_fail(
         ranked_alternatives=list(_alternatives or []),
         eliminated_rivals=list(_eliminated_rivals or []),
         gap_fetch=gap_fetch_for_hypotheses(list(hypotheses or [])),
+        **_verdict_denial_inputs,
     )
+    if _verdict_handoff.state == HandoffState.CAPABILITY_DENIED:
+        _verification_limitations = (
+            list(_verification_limitations or [])
+            + _denial_limitation_lines(
+                _verdict_blocked, _verdict_reasons, _verdict_app_id
+            )
+        )[:20]
     conclusion = InvestigationConclusion(
         tenant_id=tenant_id,
         investigation_id=investigation_id,
@@ -2392,6 +2450,194 @@ async def _collect_open_gap_fetch(
         return None
 
 
+async def _observed_denied_actions(
+    ctx: Any, tenant_id: str, investigation_id: Any
+) -> tuple[str, ...]:
+    """Action names the timeline shows were actually denied (R9-D2).
+
+    Reads RETRIEVAL_ATTEMPT markers with miss_reason authorization_denied
+    (written by the R8 denial stamp). Fail-open: any fault yields ().
+    """
+    try:
+        from investigation_agent_platform.domain.timeline.models import TimelineEventType
+
+        timeline_repo = getattr(ctx, "timeline_repo", None)
+        if timeline_repo is None:
+            return ()
+        try:
+            wanted = TimelineEventType.RETRIEVAL_ATTEMPT.value
+        except Exception:
+            wanted = "RETRIEVAL_ATTEMPT"
+        events = await timeline_repo.find_by_investigation_id(tenant_id, investigation_id)
+        denied: list[str] = []
+        for evt in events or []:
+            try:
+                event_type = getattr(evt, "event_type", None)
+                if str(getattr(event_type, "value", event_type) or "") != wanted:
+                    continue
+                attributes = getattr(evt, "attributes", None) or {}
+                if not isinstance(attributes, dict):
+                    continue
+                if str(attributes.get("miss_reason") or "") != "authorization_denied":
+                    continue
+                name = str(attributes.get("action_type") or "").strip().upper()
+                if name and name not in denied:
+                    denied.append(name)
+            except Exception:
+                continue
+        return tuple(denied)
+    except Exception:
+        return ()
+
+
+async def _denial_context(
+    ctx: Any, tenant_id: str, investigation_id: Any, application_id: str | None
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    """(blocked actions, reasons) for the terminal handoff (R9-D2).
+
+    The union of the profile's current unavailable set (steering_snapshot,
+    fail open: unknown means no filtering) and actions the timeline shows
+    were actually denied. Reasons are DenyReason values from
+    capability_available on the resolved profile, else "denied_by_policy".
+    Never raises.
+    """
+    try:
+        from investigation_agent_platform.application.security.capability_steering import (
+            steering_snapshot,
+        )
+        from investigation_agent_platform.domain.profile.capability_policy import (
+            capability_available,
+            newest_active_revision,
+        )
+
+        unavailable: tuple[str, ...] = ()
+        known = False
+        try:
+            unavailable, known = await steering_snapshot(
+                getattr(ctx, "profile_repo", None), tenant_id, application_id
+            )
+        except Exception:
+            unavailable, known = (), False
+        observed = await _observed_denied_actions(ctx, tenant_id, investigation_id)
+        blocked = tuple(sorted(set(unavailable if known else ()) | set(observed)))
+        if not blocked:
+            return (), {}
+        profile = None
+        try:
+            profile_repo = getattr(ctx, "profile_repo", None)
+            revisions = (
+                await profile_repo.list_revisions(tenant_id, application_id)
+                if profile_repo is not None and application_id
+                else []
+            )
+            profile = newest_active_revision(revisions)
+        except Exception:
+            profile = None
+        reasons: dict[str, str] = {}
+        for action in blocked:
+            if profile is None:
+                reasons[action] = "denied_by_policy"
+                continue
+            try:
+                from investigation_agent_platform.domain.investigation.models import (
+                    ActionType,
+                )
+
+                decision = capability_available(profile, ActionType(action))
+                reasons[action] = (
+                    decision.reason.value
+                    if decision.reason is not None
+                    else "denied_by_policy"
+                )
+            except Exception:
+                reasons[action] = "denied_by_policy"
+        return blocked, reasons
+    except Exception:
+        return (), {}
+
+
+def _denial_handoff_inputs(
+    metadata: Any,
+    gap_claim_kind: Any,
+    blocked: tuple[str, ...] | list[str],
+    reasons: dict[str, str] | None,
+    application_id: str | None,
+) -> dict[str, Any]:
+    """classify_terminal_handoff kwargs for the denial rule, LV_R-gated.
+
+    Callers resolve the kind first (gap_claim_for_hypotheses over the
+    in-scope hypotheses, or _collect_open_gap_claim from the store).
+    {} when the run predates LV_R (call sites pass nothing: legacy
+    classification byte for byte). Never raises.
+    """
+    try:
+        from investigation_agent_platform.domain.investigation.loop_version import (
+            LOOP_VERSION_LVR,
+            loop_version_at_least,
+        )
+
+        if not loop_version_at_least(metadata, LOOP_VERSION_LVR):
+            return {}
+        return {
+            "gap_claim_kind": gap_claim_kind,
+            "unavailable_actions": tuple(blocked or ()),
+            "deny_reasons": dict(reasons or {}),
+            "application_id": application_id,
+        }
+    except Exception:
+        return {}
+
+
+def _denial_limitation_lines(
+    blocked: tuple[str, ...] | list[str],
+    reasons: dict[str, str] | None,
+    application_id: str | None,
+) -> list[str]:
+    """One typed line per blocked action for the conclusion limitations (R9-D2).
+
+    This is the first time authorization_denied reaches a limitation.
+    """
+    try:
+        app = str(application_id or "").strip()
+        lines: list[str] = []
+        for action in blocked or ():
+            try:
+                name = str(action or "").strip()
+                if not name:
+                    continue
+                reason = (reasons or {}).get(name, "unavailable")
+                lines.append(
+                    f"Capability {name} unavailable for application {app}: {reason}."
+                )
+            except Exception:
+                continue
+        return lines
+    except Exception:
+        return []
+
+
+async def _collect_open_gap_claim(ctx: Any, tenant_id: str, investigation_id: Any) -> Any:
+    """Claim kind of the strongest unproven hypothesis, from the store.
+
+    Fail-open like the fetch collector: any fault yields None and the
+    handoff simply carries no denial context (never a fabricated kind).
+    """
+    try:
+        from investigation_agent_platform.domain.finding.models import (
+            gap_claim_for_hypotheses,
+        )
+
+        hypothesis_repo = getattr(ctx, "hypothesis_repo", None)
+        if hypothesis_repo is None:
+            return None
+        hypotheses = await hypothesis_repo.find_by_investigation_id(
+            tenant_id, investigation_id
+        )
+        return gap_claim_for_hypotheses(list(hypotheses or []))
+    except Exception:
+        return None
+
+
 async def _collect_hypothesis_gate_reasons(
     ctx: Any, tenant_id: str, investigation_id: Any
 ) -> list[str]:
@@ -2541,6 +2787,7 @@ async def conclude_investigation_activity(
                             )
                             from investigation_agent_platform.domain.finding.models import (
                                 ConclusionStatus,
+                                HandoffState,
                                 InvestigationConclusion,
                                 classify_terminal_handoff,
                                 gap_fetch_for_hypotheses,
@@ -2577,13 +2824,52 @@ async def conclude_investigation_activity(
                                             investigation_id,
                                             gap_fetch_for_hypotheses,
                                         )
+                                    # R9-D2: the epistemic call site passes the
+                                    # same denial context (LV_R-gated).
+                                    _epistemic_app_id: str | None = (
+                                        str(getattr(inv, "application_id", "") or "")
+                                        or None
+                                    )
+                                    _epistemic_blocked: tuple[str, ...] = ()
+                                    _epistemic_reasons: dict[str, str] = {}
+                                    _epistemic_denial_inputs: dict[str, Any] = {}
+                                    try:
+                                        (
+                                            _epistemic_blocked,
+                                            _epistemic_reasons,
+                                        ) = await _denial_context(
+                                            ctx,
+                                            tenant_id,
+                                            investigation_id,
+                                            _epistemic_app_id,
+                                        )
+                                        _epistemic_denial_inputs = _denial_handoff_inputs(
+                                            getattr(inv, "metadata", None),
+                                            await _collect_open_gap_claim(
+                                                ctx, tenant_id, investigation_id
+                                            ),
+                                            _epistemic_blocked,
+                                            _epistemic_reasons,
+                                            _epistemic_app_id,
+                                        )
+                                    except Exception:
+                                        _epistemic_denial_inputs = {}
                                     _epistemic_handoff = classify_terminal_handoff(
                                         status=ConclusionStatus.INSUFFICIENT_EVIDENCE,
                                         reason=_epistemic_reason,
                                         next_check=_epistemic_check,
                                         limitations=[f"Investigation ended: {reason}."],
                                         gap_fetch=_epistemic_gap,
+                                        **_epistemic_denial_inputs,
                                     )
+                                    if _epistemic_handoff.state == HandoffState.CAPABILITY_DENIED:
+                                        _epistemic_denial_extra = _denial_limitation_lines(
+                                            _epistemic_blocked,
+                                            _epistemic_reasons,
+                                            _epistemic_app_id,
+                                        )
+                                    else:
+                                        _epistemic_denial_extra = []
                                     await finding_repo.save_conclusion(
                                         tenant_id,
                                         InvestigationConclusion(
@@ -2595,9 +2881,14 @@ async def conclude_investigation_activity(
                                             supporting_hypothesis_ids=[],
                                             contradicting_evidence_ids=[],
                                             confidence=0.0,
-                                            limitations=[
-                                                _epistemic_limitation(reason, _epistemic_reason)
-                                            ],
+                                            limitations=(
+                                                [
+                                                    _epistemic_limitation(
+                                                        reason, _epistemic_reason
+                                                    )
+                                                ]
+                                                + _epistemic_denial_extra
+                                            )[:20],
                                             next_check=_epistemic_check,
                                             recommended_next_steps=list(
                                                 _epistemic_handoff.recommended_next_steps or []

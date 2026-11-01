@@ -3,6 +3,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -273,6 +276,50 @@ def _cognee_fallback_enabled() -> bool:
 _FUZZY_RUN_TRACKING_MAX = 5_000
 
 
+async def _authorizer_deny_reason(
+    authorizer: Any,
+    tenant_id: str,
+    capability: str,
+    resource: str,
+    context: dict[str, Any],
+) -> str | None:
+    """None when allowed; the typed reason string when denied (R6-D3).
+
+    The boolean ``authorize_action`` stays the decision: a ``decide`` method is
+    consulted only to name the reason, and only when the author's type
+    declares one (test doubles that stub ``authorize_action`` alone keep the
+    legacy ``authorization_denied`` value instead of tripping an auto-created
+    mock attribute).
+    """
+    if not await authorizer.authorize_action(tenant_id, capability, resource, context):
+        decide = getattr(type(authorizer), "decide", None)
+        if callable(decide):
+            decision = await authorizer.decide(tenant_id, capability, resource, context)
+            reason = decision.reason
+            return reason.value if reason is not None else "authorization_denied"
+        return "authorization_denied"
+    return None
+
+
+async def _registry_deny_reason(
+    registry: Any, tenant_id: str, capability: str, application_id: str | None
+) -> str:
+    """Typed reason string for a registry denial (R6-D3). Same decide-if-declared rule."""
+    decide = getattr(type(registry), "decide", None)
+    if callable(decide):
+        decision = await registry.decide(tenant_id, capability, application_id)
+        reason = decision.reason
+        return reason.value if reason is not None else "authorization_denied"
+    return "authorization_denied"
+
+
+#: Marks made inside one dispatch (R10e). The scope owner rolls
+#: them back when the dispatch fails, so a retry re-banks.
+_DEDUP_SCOPE: ContextVar[list[tuple[str, str, str]] | None] = ContextVar(
+    "iap_dedup_scope", default=None
+)
+
+
 class EvidenceDeduplicator:
     """Fingerprint-based deduplicator scoped per investigation.
 
@@ -309,8 +356,52 @@ class EvidenceDeduplicator:
         key = self._key(tenant_id, investigation_id, fingerprint)
         if key not in self._seen:
             self._seen[key] = None
+            scope = _DEDUP_SCOPE.get()
+            if scope is not None:
+                scope.append(key)
             while len(self._seen) > self.MAX_REMEMBERED:
                 self._seen.pop(next(iter(self._seen)))
+
+    @asynccontextmanager
+    async def scope(self) -> AsyncIterator[None]:
+        """Marks made inside survive only if the block completes.
+
+        A dispatch wraps its bank in this scope: when the save raises
+        (or anything else fails), the marks roll back so a retry
+        re-banks instead of reading manufactured absence. Within one
+        investigation a successful repeat still dedupes, exactly as
+        today. Never raises.
+        """
+        marks: list[tuple[str, str, str]] = []
+        token = _DEDUP_SCOPE.set(marks)
+        try:
+            yield
+        except BaseException:
+            for key in marks:
+                self._seen.pop(key, None)
+            raise
+        finally:
+            _DEDUP_SCOPE.reset(token)
+
+    def release(self, tenant_id: Any, investigation_id: Any, items: Any) -> None:
+        """Forget fingerprints for rows the evidence room dropped (R10e).
+
+        Truncation is a room decision, not a banking decision: released
+        rows reappear on a later identical query instead of vanishing.
+        Never raises.
+        """
+        try:
+            for item in items or []:
+                try:
+                    fingerprint = getattr(item, "fingerprint", None)
+                except Exception:
+                    continue
+                if fingerprint:
+                    self._seen.pop(
+                        self._key(tenant_id, investigation_id, str(fingerprint)), None
+                    )
+        except Exception:
+            pass
 
     @traced("gateway", component="deduplicator", extra_from=_dedupe_extra)
     async def deduplicate(
@@ -437,8 +528,13 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         from the live revision so declarations stay single-sourced.
         Fail-open (None) — callers treat absence as "no declared sources".
         """
+        # R12G: a construction-time profile belongs to exactly one
+        # tenant and application. Accept it only for its own request;
+        # anything else falls through to the repository lookup so a
+        # future caller cannot silently apply one tenant's profile to
+        # another tenant (or application).
         profile = getattr(provider, "profile", None)
-        if profile is not None:
+        if profile is not None and getattr(profile, "tenant_id", None) == tenant_id and getattr(profile, "id", None) == application_id:
             return profile
         repo = self._profile_repo
         if repo is None:
@@ -473,6 +569,20 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
                 },
             )
 
+    @asynccontextmanager
+    async def dedup_scope(self) -> AsyncIterator[None]:
+        """Dispatch scope for dedup marks (R10e).
+
+        The execute activity wraps the bank in this scope so a failed
+        save rolls marks back. Delegates to the deduplicator.
+        """
+        async with self._deduplicator.scope():
+            yield
+
+    def dedup_release(self, tenant_id: Any, investigation_id: Any, items: Any) -> None:
+        """Release fingerprints for rows the evidence room dropped (R10e)."""
+        self._deduplicator.release(tenant_id, investigation_id, items)
+
     async def _enforce_authorization(
         self,
         tenant_id: str,
@@ -486,17 +596,27 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
         # omitting it denies all provider calls unconditionally.
         context = {"application_id": application_id} if application_id else {}
         if self._authorizer is not None:
-            authorized = await self._authorizer.authorize_action(
-                tenant_id, capability, resource, context
+            deny_reason = await _authorizer_deny_reason(
+                self._authorizer, tenant_id, capability, resource, context
             )
-            if not authorized:
+            if deny_reason is not None:
                 raise SecurityPolicyViolationException(
-                    f"Agent unauthorized for capability '{capability}'"
+                    f"Agent unauthorized for capability '{capability}'",
+                    details={"deny_reason": deny_reason},
                 )
         if self._capability_registry is not None:
-            enabled = await self._capability_registry.is_capability_enabled(tenant_id, capability)
+            enabled = await self._capability_registry.is_capability_enabled(
+                tenant_id, capability, application_id
+            )
             if not enabled:
-                raise SecurityPolicyViolationException(f"Capability '{capability}' is disabled")
+                raise SecurityPolicyViolationException(
+                    f"Capability '{capability}' is disabled",
+                    details={
+                        "deny_reason": await _registry_deny_reason(
+                            self._capability_registry, tenant_id, capability, application_id
+                        )
+                    },
+                )
 
     async def _validate_structured_output(self, raw: Any) -> None:
         if self._structured_output_validator is not None:

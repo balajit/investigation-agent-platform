@@ -59,6 +59,9 @@ class RetrievalOutcome(str, Enum):
     SCOPED_EMPTY = "SCOPED_EMPTY"
     UNSCOPED_EMPTY = "UNSCOPED_EMPTY"
     SEARCH_FAILED = "SEARCH_FAILED"
+    #: A denied dispatch (R8-D5): the action never ran, so the miss is not
+    #: absence and never a retryable failure. Appended; frozen vocabulary.
+    AUTH_DENIED = "AUTH_DENIED"
 
 
 class RetrievalAttempt(BaseModel):
@@ -68,6 +71,11 @@ class RetrievalAttempt(BaseModel):
     same normalized (query, scope) key in this investigation;
     ``over_budget`` marks attempts past the bound; ``lifted`` marks a
     re-query that turned a previously-empty key into rows.
+
+    The in-investigation ledger behind these indexes is deliberately
+    process-local: ``attempt_index``, ``over_budget`` and ``lifted`` are
+    diagnostics that no decision reads — every decision path counts
+    durable timeline attempts instead (R10h).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -160,11 +168,15 @@ def classify_retrieval_outcome(
 ) -> RetrievalOutcome:
     """Map (action status, miss reason, row count, scope, signals) to outcome.
 
-    Pure and total. Rows with any partial signal classify PARTIAL_ROWS —
-    never ordinary success. Rows beat failure statuses only when no
-    partial signal exists. Otherwise failures first, then scope presence
-    decides the empty flavor.
+    Pure and total. A denial classifies first, ahead of the generic failure
+    markers: ``authorization_denied`` would otherwise map to SEARCH_FAILED
+    and make the requery loop treat a denial as a retryable failure (R8-D5).
+    Rows with any partial signal classify PARTIAL_ROWS — never ordinary
+    success. Rows beat failure statuses only when no partial signal exists.
+    Otherwise failures first, then scope presence decides the empty flavor.
     """
+    if str(miss_reason or "").strip().lower() == "authorization_denied":
+        return RetrievalOutcome.AUTH_DENIED
     try:
         rows = int(rows_returned or 0)
     except (TypeError, ValueError):
@@ -257,6 +269,21 @@ class RetrievalLedger:
 
 
 _LEDGERS: dict[str, RetrievalLedger] = {}
+
+#: Attempts that cannot be deduplicated (R10f). An attempt without a
+#: stable ``attempt_id`` is skipped by the durable counter and the merge
+#: instead of joining; the producer always stamps an id, so a skip means
+#: a malformed writer, never a legacy shape. Counter-only: the skip is
+#: recorded here, not logged per attempt.
+_IDLESS_ATTEMPTS_SKIPPED: int = 0
+
+
+def _note_idless_skipped() -> None:
+    global _IDLESS_ATTEMPTS_SKIPPED
+    try:
+        _IDLESS_ATTEMPTS_SKIPPED += 1
+    except Exception:
+        pass
 
 
 def _ledger_for(investigation_id: str, max_attempts: int) -> RetrievalLedger:
@@ -639,6 +666,7 @@ def build_claim_ledger(
     target_ref: str | None = None,
     stored_query: str | None = None,
     stored_scope: str | None = None,
+    keep_newest: bool = False,
 ) -> tuple[ClaimRetrievalLedger, ClaimRetrievalBinding, list[str]]:
     """Join one claim to the investigation's recorded attempts (pure).
 
@@ -655,6 +683,9 @@ def build_claim_ledger(
     confers locality — ID overlap still exclusively decides the
     authoritative partition; query matches only link attempts for
     directive purposes.
+
+    ``keep_newest`` (R10d, LV_R) keeps the newest linked attempts;
+    the default keeps the oldest 10.
     """
     key = claim_key(statement, claim_kind)
     ref = claim_ref(key)
@@ -690,7 +721,7 @@ def build_claim_ledger(
             if _normalize_stored_query(attempt.get("search_query"), 1024) == norm_query:
                 linked.append(index)
                 link_source = "stored_query_match" if query_source == "stored" else "query_match"
-    linked = linked[:MAX_CLAIM_ATTEMPTS]
+    linked = linked[-MAX_CLAIM_ATTEMPTS:] if keep_newest else linked[:MAX_CLAIM_ATTEMPTS]
     bank_set = {str(i or "") for i in (bank_ids or set()) if str(i or "")}
     if not linked:
         bank_fallback = sorted(set(cited) & bank_set)
@@ -936,6 +967,7 @@ def re_retrieval_directive(
     action_type: str,
     parameters: dict[str, object] | None,
     max_attempts: int = WP_A3_DEFAULT_MAX_ATTEMPTS,
+    executed: tuple[str, str | None] | None = None,
 ) -> dict[str, object] | None:
     """Bounded re-query directive for one unsatisfied claim, or None.
 
@@ -944,12 +976,27 @@ def re_retrieval_directive(
     the timeline-backed list (see :func:`recorded_retrieval_attempts`);
     there is no caller-index fallback. Process-local indexes are
     telemetry only and never enter this function.
+
+    ``executed`` (R10a, LV_R) is the (query, scope) the matched action
+    will actually dispatch under. The budget counts the executed key,
+    the directive stamps it, and the marker carries it, so the three
+    agree by construction. Without it the ledger key is used (legacy).
     """
     try:
         budget = max(1, int(max_attempts))
     except (TypeError, ValueError):
         budget = WP_A3_DEFAULT_MAX_ATTEMPTS
-    durable = count_persisted_attempts(recorded_attempts, ledger.search_query, ledger.scope)
+    if executed is not None:
+        try:
+            key_query, key_scope = str(executed[0] or ""), executed[1]
+        except Exception:
+            key_query, key_scope = ledger.search_query, ledger.scope
+        durable = count_persisted_attempts(
+            recorded_attempts, key_query, key_scope, action_type=action_type
+        )
+    else:
+        key_query, key_scope = ledger.search_query, ledger.scope
+        durable = count_persisted_attempts(recorded_attempts, key_query, key_scope)
     if durable >= budget:
         return None
     if not ledger.search_query:
@@ -981,8 +1028,8 @@ def re_retrieval_directive(
         "action": "RETRIEVE",
         "action_type": str(action_type).upper(),
         "action_parameters": {str(k): v for k, v in parameters.items()},
-        "query": ledger.search_query,
-        "scope": _normalize_scope(ledger.scope),
+        "query": key_query,
+        "scope": _normalize_scope(key_scope),
         "claim_ref": binding.claim_ref,
         "attempt_index": durable,
         "max_attempts": budget,
@@ -993,11 +1040,11 @@ def recorded_retrieval_attempts(events: list) -> list[tuple[list[str], dict]]:
     """(banked evidence_ids, attempt dict) for RETRIEVAL_ATTEMPT events only.
 
     The marker carries the stable attempt id at top-level
-    ``attributes["attempt_id"]`` (the nested ``attempt`` dump predates it
-    and has no id field of its own). It is stamped into the returned
+    ``attributes["attempt_id"]`` (the nested ``attempt`` dump predates
+    it and has no id field of its own). It is stamped into the returned
     dict when absent so the durable counter can de-duplicate retries
     and same-turn/persisted pairs; a nested id already present is never
-    overwritten.
+    overwritten. The action type rides the same path (R10g).
     """
     out: list[tuple[list[str], dict]] = []
     for event in events or []:
@@ -1012,6 +1059,9 @@ def recorded_retrieval_attempts(events: list) -> list[tuple[list[str], dict]]:
             top_id = attributes.get("attempt_id")
             if top_id and not attempt_dict.get("attempt_id"):
                 attempt_dict["attempt_id"] = str(top_id)
+            top_action = attributes.get("action_type")
+            if top_action and not attempt_dict.get("action_type"):
+                attempt_dict["action_type"] = str(top_action).strip().upper()
         out.append(([str(i) for i in (banked or []) if str(i)], attempt_dict))
     return out
 
@@ -1024,7 +1074,8 @@ def recorded_attempt_summaries(entries: list) -> list[tuple[list[str], dict]] | 
     ``entry["evidence_ids"]``. Entries without an attempt dict
     contribute nothing. The entry's top-level ``attempt_id`` is carried
     into the attempt dict when absent so the durable counter
-    de-duplicates same-turn/persisted pairs.
+    de-duplicates same-turn/persisted pairs; the entry's ``action`` is
+    carried as ``action_type`` the same way (R10g).
 
     Returns None when no entry yields a pair — unavailable history,
     distinct from confirmed-empty — so directive selection fails
@@ -1041,6 +1092,9 @@ def recorded_attempt_summaries(entries: list) -> list[tuple[list[str], dict]] | 
         top_id = entry.get("attempt_id")
         if top_id and not attempt_dict.get("attempt_id"):
             attempt_dict["attempt_id"] = str(top_id)
+        top_action = entry.get("action")
+        if top_action and not attempt_dict.get("action_type"):
+            attempt_dict["action_type"] = str(top_action).strip().upper()
         banked = entry.get("evidence_ids") or []
         out.append(([str(i) for i in (banked or []) if str(i)], attempt_dict))
     return out or None
@@ -1055,8 +1109,9 @@ def merge_recorded_attempts(
     A summary pair whose ``attempt_id`` matches a persisted pair is the
     same attempt before/after flushing — kept once (persisted copy
     wins; both carry the same payload). Pairs without an id cannot be
-    matched and always join. Persisted order is preserved first so the
-    durable attempt index keeps its meaning; summaries append after.
+    matched and are skipped with a counter-only warning (R10f).
+    Preserved order is persisted first so the durable attempt index
+    keeps its meaning; summaries append after.
     """
     seen_ids: set[str] = set()
     for _banked, attempt in persisted or []:
@@ -1066,13 +1121,16 @@ def merge_recorded_attempts(
                 seen_ids.add(str(attempt_id_value))
     out = list(persisted or [])
     for banked, attempt in summaries or []:
-        if isinstance(attempt, dict):
-            attempt_id_value = attempt.get("attempt_id")
-            if attempt_id_value:
-                key = str(attempt_id_value)
-                if key in seen_ids:
-                    continue
-                seen_ids.add(key)
+        if not isinstance(attempt, dict):
+            continue
+        attempt_id_value = attempt.get("attempt_id")
+        if not attempt_id_value:
+            _note_idless_skipped()
+            continue
+        key = str(attempt_id_value)
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
         out.append((banked, attempt))
     return out
 
@@ -1081,15 +1139,24 @@ def count_persisted_attempts(
     recorded_attempts: list[tuple[list[str], dict[str, object] | None]],
     query: str,
     scope: object,
+    action_type: str | None = None,
 ) -> int:
-    """Count durable attempts for one normalized query/scope key.
+    """Count durable attempts for one normalized (query, scope) key.
 
     Attempts carrying the same stable ``attempt_id`` (retries, or a
     same-turn attempt echoed next to its persisted marker) count once.
-    Attempts without an id keep legacy behavior and each count.
+    Attempts without an id cannot be deduplicated and are skipped with
+    a counter-only warning (R10f) — the producer always stamps one.
+    When ``action_type`` is given (R10g, LV_R executed-key path), only
+    attempts for that action count, so one action's attempts never spend
+    another's budget; without it the count is shared (legacy).
     """
     normalized_query = str(query or "").strip()
     normalized_scope = _normalize_scope(scope)
+    try:
+        wanted = str(action_type or "").strip().upper() or None
+    except Exception:
+        wanted = None
     seen_ids: set[str] = set()
     count = 0
     for _banked, attempt in recorded_attempts or []:
@@ -1099,12 +1166,16 @@ def count_persisted_attempts(
             continue
         if _normalize_scope(attempt.get("scope")) != normalized_scope:
             continue
+        if wanted and str(attempt.get("action_type") or "").strip().upper() != wanted:
+            continue
         attempt_id_value = attempt.get("attempt_id")
-        if attempt_id_value:
-            key = str(attempt_id_value)
-            if key in seen_ids:
-                continue
-            seen_ids.add(key)
+        if not attempt_id_value:
+            _note_idless_skipped()
+            continue
+        key = str(attempt_id_value)
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
         count += 1
     return count
 
@@ -1114,7 +1185,14 @@ def directive_consumed(
     history_entries: list[dict[str, object]],
     recorded_attempts: list[tuple[list[str], dict[str, object] | None]],
 ) -> bool:
-    """True only when the directive's requery already happened or budgeted out."""
+    """True only when the directive's requery already happened or budgeted out.
+
+    Counts the same (query, scope, action_type) key the directive
+    stamped (R10g): a marker carrying an action type only consumes on
+    attempts for that action, so one action's attempts never spend
+    another's budget. A marker without a type falls back to the legacy
+    untyped count.
+    """
     claim_ref_value = str(marker.get("claim_ref") or "")
     query = str(marker.get("query") or "").strip()
     scope = _normalize_scope(marker.get("scope"))
@@ -1128,7 +1206,13 @@ def directive_consumed(
         budget = max(1, int(budget))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         budget = WP_A3_DEFAULT_MAX_ATTEMPTS
-    if count_persisted_attempts(recorded_attempts or [], query, scope) >= budget:
+    try:
+        wanted_action = str(marker.get("action_type") or "").strip().upper() or None
+    except Exception:
+        wanted_action = None
+    if count_persisted_attempts(
+        recorded_attempts or [], query, scope, action_type=wanted_action
+    ) >= budget:
         return True
     for entry in history_entries or []:
         if not isinstance(entry, dict):

@@ -16,47 +16,18 @@ import logging
 from typing import Any
 
 from investigation_agent_platform.domain.investigation.models import ActionType
-from investigation_agent_platform.domain.profile.models import ProfileStatus
+from investigation_agent_platform.domain.profile.capability_policy import (
+    INTERNAL_ACTIONS,
+    CapabilityDecision,
+    DenyReason,
+    capability_available,
+    capability_available_by_name,
+    effective_capabilities,
+    newest_active_revision,
+)
 from investigation_agent_platform.ports.persistence.repositories import ApplicationProfileRepository
 
 logger = logging.getLogger(__name__)
-
-# Actions that only manipulate in-process reasoning state and never reach an
-# external evidence provider or action-execution surface.
-_INTERNAL_ACTION_TYPES = {
-    ActionType.FORMULATE_HYPOTHESIS,
-    ActionType.VERIFY_HYPOTHESIS,
-    ActionType.CONCLUDE,
-}
-
-# Evidence-producing actions must be backed by an explicitly enabled
-# evidence type on the tenant's application profile.
-_ACTION_REQUIRED_EVIDENCE_TYPE: dict[ActionType, str] = {
-    ActionType.SEARCH_LOGS: "LOG",
-    ActionType.QUERY_STATE: "DATABASE_STATE",
-    ActionType.GET_CODE: "COMMIT_HISTORY",
-    ActionType.CORRELATE: "TRACE",
-    # P1-1: code-navigation actions gate on the same evidence-type scheme;
-    # capability names equal ActionType values (profile validation enforces).
-    ActionType.SEARCH_CODE: "SOURCE_CODE",
-    ActionType.FIND_SYMBOL: "SOURCE_CODE",
-    ActionType.FIND_CALL_GRAPH: "CALL_GRAPH",
-    ActionType.GET_CODE_HISTORY: "COMMIT_HISTORY",
-    # D2: stack walk banks EXCEPTION_PATH rows resolved through code search;
-    # logic trace banks code rows. Both gate on code-backed evidence.
-    ActionType.WALK_STACK: "SOURCE_CODE",
-    ActionType.TRACE_LOGIC: "SOURCE_CODE",
-    # G-1: journey spine banks JOURNEY rows resolved through log search.
-    ActionType.TRACE_JOURNEY: "LOG",
-    # G-3: session-graph walk executes profile-declared join templates.
-    ActionType.WALK_SESSION_GRAPH: "DATABASE_STATE",
-    # T1-1: refdoc search banks DOCUMENTATION rows.
-    ActionType.SEARCH_REF_DOCS: "DOCUMENTATION",
-    # P2-2: live probe gates on its own evidence type; profiles opt in by
-    # listing it in investigation.enabled_evidence_types (default lists do
-    # not include it — probing is never on unless declared).
-    ActionType.PROBE_API: "API_PROBE",
-}
 
 
 class ProfileBasedActionAuthorizer:
@@ -73,93 +44,89 @@ class ProfileBasedActionAuthorizer:
         Revisions arrive newest-first; the first ACTIVE one wins.
         """
         revisions = await self._profile_repo.list_revisions(tenant_id, application_id)
-        for revision in revisions:
-            if getattr(revision, "status", None) == ProfileStatus.ACTIVE:
-                return revision
-        return None
+        return newest_active_revision(revisions)
 
-    async def authorize_action(
+    async def decide(
         self, tenant_id: str, action_type: str, target_resource: str, context: dict[str, Any]
-    ) -> bool:
+    ) -> CapabilityDecision:
+        """Typed authorization decision; ``authorize_action`` is the boolean wrapper."""
         try:
             action = ActionType(action_type)
         except ValueError:
             logger.warning("Denying unknown action_type", extra={"action_type": action_type})
-            return False
-
-        if action in _INTERNAL_ACTION_TYPES:
-            return True
-
+            return CapabilityDecision.deny(DenyReason.UNKNOWN_ACTION)
+        # Internal reasoning actions never reach a provider: allowed without
+        # any application context, exactly as capability_available decides.
+        if action in INTERNAL_ACTIONS:
+            return CapabilityDecision.allow()
         application_id = context.get("application_id")
         if not application_id:
             logger.warning(
                 "Denying action: no application_id in authorization context",
                 extra={"tenant_id": tenant_id, "action_type": action_type},
             )
-            return False
-
+            return CapabilityDecision.deny(DenyReason.NO_APPLICATION)
         profile = await self._active_profile(tenant_id, str(application_id))
         if profile is None:
             logger.warning(
                 "Denying action: no ACTIVE application profile revision",
                 extra={"tenant_id": tenant_id, "application_id": application_id},
             )
-            return False
+            return CapabilityDecision.deny(DenyReason.NO_ACTIVE_PROFILE)
+        decision = capability_available(profile, action)
+        if not decision.allowed and decision.reason == DenyReason.CAPABILITY_NOT_DECLARED:
+            if not getattr(profile, "allowed_capabilities", None):
+                logger.warning(
+                    "Denying action: profile declares no allowed_capabilities",
+                    extra={"tenant_id": tenant_id, "application_id": application_id},
+                )
+        return decision
 
-        required_type = _ACTION_REQUIRED_EVIDENCE_TYPE.get(action)
-        if required_type is None:
-            # Unrecognized-but-valid action type with no explicit policy: deny by default.
-            return False
-
-        enabled_types = set(profile.investigation.enabled_evidence_types)
-        if required_type not in enabled_types:
-            return False
-        # R4: an unset or empty capability list means "no capabilities
-        # declared", which is a denial. It used to fall back to the
-        # evidence-type gate alone, so a profile update that omitted the field
-        # silently widened access to everything its evidence types allow.
-        allowed = set(profile.allowed_capabilities or [])
-        if not allowed:
-            logger.warning(
-                "Denying action: profile declares no allowed_capabilities",
-                extra={"tenant_id": tenant_id, "application_id": application_id},
-            )
-            return False
-        capability_for_action = {
-            ActionType.SEARCH_LOGS: "SEARCH_LOGS",
-            ActionType.QUERY_STATE: "QUERY_STATE",
-            ActionType.GET_CODE: "GET_CODE",
-            ActionType.CORRELATE: "CORRELATE",
-            ActionType.SEARCH_CODE: "SEARCH_CODE",
-            ActionType.FIND_SYMBOL: "FIND_SYMBOL",
-            ActionType.FIND_CALL_GRAPH: "FIND_CALL_GRAPH",
-            ActionType.GET_CODE_HISTORY: "GET_CODE_HISTORY",
-            ActionType.PROBE_API: "PROBE_API",
-            ActionType.WALK_STACK: "WALK_STACK",
-            ActionType.TRACE_LOGIC: "TRACE_LOGIC",
-            ActionType.TRACE_JOURNEY: "TRACE_JOURNEY",
-            ActionType.WALK_SESSION_GRAPH: "WALK_SESSION_GRAPH",
-            ActionType.SEARCH_REF_DOCS: "SEARCH_REF_DOCS",
-        }.get(action)
-        return capability_for_action in allowed
+    async def authorize_action(
+        self, tenant_id: str, action_type: str, target_resource: str, context: dict[str, Any]
+    ) -> bool:
+        return (
+            await self.decide(tenant_id, action_type, target_resource, context)
+        ).allowed
 
 
 class ProfileBasedCapabilityRegistry:
-    """Capability registry mirroring the same profile-driven policy.
+    """Capability registry enforcing the same profile-driven policy.
 
-    A capability is enabled only if it maps to an evidence type/action the
-    tenant's profile explicitly enables (or is an internal reasoning action).
+    A capability is enabled only when the tenant's newest ACTIVE profile
+    passes both gates (evidence type + declaration). The redundancy with
+    the authorizer is deliberate defense in depth: the second reason
+    becomes reachable whenever the authorizer is permissive.
     """
 
     def __init__(self, profile_repo: ApplicationProfileRepository) -> None:
         self._profile_repo = profile_repo
 
-    async def is_capability_enabled(self, tenant_id: str, capability_name: str) -> bool:
-        try:
-            action = ActionType(capability_name)
-        except ValueError:
-            return False
-        return action in _INTERNAL_ACTION_TYPES or action in _ACTION_REQUIRED_EVIDENCE_TYPE
+    async def decide(
+        self, tenant_id: str, capability_name: str, application_id: str | None
+    ) -> CapabilityDecision:
+        if not application_id:
+            return CapabilityDecision.deny(DenyReason.NO_APPLICATION)
+        revisions = await self._profile_repo.list_revisions(tenant_id, application_id)
+        profile = newest_active_revision(revisions)
+        if profile is None:
+            return CapabilityDecision.deny(DenyReason.NO_ACTIVE_PROFILE)
+        # allow_platform=True: the registry serves the gateway, which invokes
+        # platform operations through its own methods. Model-facing name
+        # resolution (ActionType-typed actions) can never name one, and the
+        # default False in capability_available_by_name keeps it that way.
+        return capability_available_by_name(profile, capability_name, allow_platform=True)
 
-    async def list_allowed_capabilities(self, tenant_id: str) -> list[str]:
-        return [a.value for a in ActionType]
+    async def is_capability_enabled(
+        self, tenant_id: str, capability_name: str, application_id: str | None = None
+    ) -> bool:
+        return (await self.decide(tenant_id, capability_name, application_id)).allowed
+
+    async def list_allowed_capabilities(
+        self, tenant_id: str, application_id: str | None = None
+    ) -> list[str]:
+        if not application_id:
+            return []
+        revisions = await self._profile_repo.list_revisions(tenant_id, application_id)
+        profile = newest_active_revision(revisions)
+        return list(effective_capabilities(profile))

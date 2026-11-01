@@ -86,12 +86,65 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
 
         raise PlatformConfigurationError("IAP_DATABASE_URI is required in production")
 
+    # R1: fingerprint key required outside dev environments (names the
+    # variable only, never a value). Dev falls back to the documented
+    # non-secret key via resolve_fingerprint_key.
+    from investigation_agent_platform.infrastructure.configuration.config import (
+        _validate_knowledge_secrets,
+        resolve_fingerprint_key,
+    )
+
+    _validate_knowledge_secrets(config.knowledge, config.environment)
+
     engine: AsyncEngine = create_async_engine(
         _normalize_async_uri(db_uri),
         pool_size=config.database.pool_size,
         max_overflow=config.database.max_overflow,
         pool_pre_ping=True,
     )
+
+    # R11-D1: staged role check (warn first, then enforce). Runs once after
+    # the engine is created; warn logs, enforce halts boot.
+    try:
+        import asyncio as _asyncio
+
+        from investigation_agent_platform.infrastructure.persistence.role_guard import (
+            RoleVerdict,
+            evaluate_role,
+            inspect_runtime_role,
+        )
+
+        _report = _asyncio.run(inspect_runtime_role(engine))
+        _verdict = evaluate_role(_report, config.database.rls_role_check)
+        if _verdict == RoleVerdict.REFUSE:
+            from investigation_agent_platform.domain.common.exceptions import (
+                PlatformConfigurationError,
+            )
+
+            raise PlatformConfigurationError(
+                "Boot halted: database role is privileged or RLS coverage is incomplete"
+            )
+        if _verdict == RoleVerdict.WARN:
+            logger.critical(
+                "Database role is privileged or RLS coverage incomplete",
+                extra={
+                    "context": {
+                        "role": getattr(_report, "role", "unknown"),
+                        "superuser": getattr(_report, "superuser", True),
+                        "bypass_rls": getattr(_report, "bypass_rls", True),
+                        "unprotected_tables": list(
+                            getattr(_report, "unprotected_tables", ())
+                        ),
+                    }
+                },
+            )
+    except Exception as exc:
+        from investigation_agent_platform.domain.common.exceptions import (
+            PlatformConfigurationError as _PCE,
+        )
+
+        if isinstance(exc, _PCE):
+            raise
 
     # Import real repos. Any failure here is a fatal production startup error —
     # production must never silently degrade to in-memory repositories (F-001).
@@ -259,6 +312,10 @@ def _build_production_context(config: ApplicationConfig) -> AppContext:
     ctx.artifact_repo = artifact_repo  # type: ignore[attr-defined]
     ctx.session_repo = session_repo  # type: ignore[attr-defined]
     ctx.code_issue_index = code_issue_index  # type: ignore[attr-defined]
+
+    # R1: resolved HMAC key rides the context so intake uses the deployment
+    # secret (dev: documented non-secret fallback). Never logged.
+    ctx.fingerprint_key = resolve_fingerprint_key(config.knowledge, config.environment)  # type: ignore[attr-defined]
 
     # Attach engine and observability for health probes. Observability
     # construction failure is fatal in production — it must not silently
@@ -586,6 +643,7 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
             if root.strip()
         ]
         if file_roots:
+            from investigation_agent_platform.api.tenant import DEV_ENVIRONMENTS
             from investigation_agent_platform.infrastructure.evidence.logs.file_provider import (
                 FileLogAdapter,
                 FileLogSettings,
@@ -596,6 +654,12 @@ def _wire_evidence_gateway(ctx: AppContext, config: ApplicationConfig) -> None:
                 FileLogAdapter(
                     settings=FileLogSettings(
                         roots=file_roots,
+                        tenant_roots=dict(config.evidence.file_log_tenant_roots or {}),
+                        # R12F: the global roots are dev-only (the same
+                        # allowlist enrichment uses); elsewhere a tenant
+                        # without a mapping resolves no files.
+                        allow_global_roots=str(config.environment or "").strip().lower()
+                        in DEV_ENVIRONMENTS,
                         max_bytes_per_file=config.evidence.file_log_max_bytes_per_file,
                         max_files=config.evidence.file_log_max_files,
                         cursor_signing_key=config.evidence.cursor_signing_key,

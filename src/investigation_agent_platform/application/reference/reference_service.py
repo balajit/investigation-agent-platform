@@ -411,7 +411,7 @@ class ReferenceDocumentService:
         limit = max(1, min(limit, 200))
         offset = _cursor_decode(cursor)
         lexical = await self._chunk_repo.lexical_candidates(
-            tenant_id, query.strip(), _LEXICAL_CANDIDATES
+            tenant_id, query.strip(), _LEXICAL_CANDIDATES, application_id
         )
         vector_rows: list[Any] = []
         if self._embedder is not None:
@@ -424,6 +424,7 @@ class ReferenceDocumentService:
                         self._embedding_model,
                         self._embedding_version,
                         _VECTOR_CANDIDATES,
+                        application_id,
                     )
             except Exception as exc:
                 logger.warning(
@@ -437,12 +438,9 @@ class ReferenceDocumentService:
                 item["source_id"] for item in sources if str(item.get("kind", "")).lower() in wanted
             }
             fused = [(row, score) for row, score in fused if _row_source(row) in allowed]
-        if application_id is not None:
-            fused = [
-                (row, score)
-                for row, score in fused
-                if getattr(row, "application_id", None) == application_id
-            ]
+        # R12B: application scoping now happens in SQL (both
+        # branches); no post-fusion filter. The kinds filter stays — it
+        # depends on source metadata, not the row.
         page = fused[offset : offset + limit]
         hits = [
             ReferenceSearchHit(

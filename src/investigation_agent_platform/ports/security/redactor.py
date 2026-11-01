@@ -47,9 +47,13 @@ class ActionAuthorizerPort(Protocol):
 class CapabilityRegistryPort(Protocol):
     """Port interface for managing dynamic tenant capabilities and allowed tool lists."""
 
-    async def is_capability_enabled(self, tenant_id: str, capability_name: str) -> bool: ...
+    async def is_capability_enabled(
+        self, tenant_id: str, capability_name: str, application_id: str | None = None
+    ) -> bool: ...
 
-    async def list_allowed_capabilities(self, tenant_id: str) -> list[str]: ...
+    async def list_allowed_capabilities(
+        self, tenant_id: str, application_id: str | None = None
+    ) -> list[str]: ...
 
 
 @runtime_checkable

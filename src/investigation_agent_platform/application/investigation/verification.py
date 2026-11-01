@@ -28,6 +28,7 @@ from investigation_agent_platform.application.evidence.retrieval_ledger import (
 from investigation_agent_platform.application.evidence.retrieval_ledger import (
     all_typed_claims_not_checkable as _all_typed_claims_not_checkable,
 )
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.code.models import (
     CODE_FACT_RESOLUTION_V2_KEY,
     CODE_FACT_RESOLUTIONS_KEY,
@@ -1634,6 +1635,14 @@ def _match_recent_action(
         for entry in reversed(entries):
             if not isinstance(entry, dict):
                 continue
+            # R10b: a lossy history entry is never re-dispatchable. Skip it
+            # fail-closed: a directive built from truncated input is not
+            # dispatched. Entries without the flag predate the stamp.
+            try:
+                if bool(entry.get("params_lossy")):
+                    continue
+            except Exception:
+                continue
             try:
                 attempt = entry.get("retrieval_attempt")
                 if isinstance(attempt, dict):
@@ -1682,6 +1691,8 @@ def select_ledger_requery(
     recorded_attempts: list[tuple[list[str], dict[str, Any] | None]] | None,
     recent_actions: list[Any] | None,
     max_attempts: int = WP_A3_DEFAULT_MAX_ATTEMPTS,
+    unavailable_actions: frozenset[str] | None = None,
+    executed_key_budget: bool = False,
 ) -> dict[str, Any] | None:
     """First dispatchable bounded re-retrieval directive, or None (pure).
 
@@ -1689,12 +1700,24 @@ def select_ledger_requery(
     claim whose binding is unsatisfied (unknown citations with zero
     durable attempts, or a failed latest attempt under budget) and whose
     query maps to a typed, validated recent action yields the directive.
+    A directive whose matched action is unavailable is skipped (R8-D4)
+    and the walk continues to the next claim, so the ledger requery can
+    never re-dispatch a denied search. ``executed_key_budget`` (R10a,
+    LV_R) counts the budget under the key the matched action will
+    actually dispatch under, so the executed attempts agree with the
+    count by construction; without it the ledger key is used (legacy).
     Fail-closed on unavailable history: ``recorded_attempts=None``
     (attempt history unavailable, distinct from confirmed-empty) yields
     None — an unknown-citation retry is never authorized without durable
     data. Fail-open on internal error: returns None, never a directive.
     """
     try:
+        try:
+            _denied_actions = frozenset(
+                str(u or "").strip().upper() for u in (unavailable_actions or frozenset())
+            )
+        except Exception:
+            _denied_actions = frozenset()
         if recorded_attempts is None:
             return None
         recorded = list(recorded_attempts)
@@ -1729,6 +1752,7 @@ def select_ledger_requery(
                     target_ref=str(group.get("target_key") or "") or None,
                     stored_query=str(group.get("stored_query") or "") or None,
                     stored_scope=str(group.get("stored_scope") or "") or None,
+                    keep_newest=executed_key_budget,
                 )
             except Exception:
                 continue
@@ -1765,9 +1789,39 @@ def select_ledger_requery(
                 continue
             if action_type is None or params is None:
                 continue
+            if str(action_type or "").strip().upper() in _denied_actions:
+                continue
+            # R10a: budget under the key the action will actually dispatch
+            # under (LV_R); legacy counts the ledger key.
+            exec_pair: tuple[str, Any] | None = None
+            if executed_key_budget:
+                try:
+                    exec_query, exec_scope, _provider = extract_search_query(
+                        action_type, params
+                    )
+                    exec_pair = (exec_query, exec_scope)
+                    durable = count_persisted_attempts(
+                        recorded, exec_query, exec_scope, action_type=action_type
+                    )
+                except Exception:
+                    exec_pair = None
+                    durable = count_persisted_attempts(
+                        recorded, ledger.search_query, ledger.scope
+                    )
+            else:
+                durable = count_persisted_attempts(recorded, ledger.search_query, ledger.scope)
+            if durable >= budget:
+                continue
             try:
                 directive = re_retrieval_directive(
-                    binding, ledger, latest, recorded, action_type, params, budget
+                    binding,
+                    ledger,
+                    latest,
+                    recorded,
+                    action_type,
+                    params,
+                    budget,
+                    executed=exec_pair,
                 )
             except Exception:
                 continue
@@ -2268,8 +2322,10 @@ class VerificationEngine:
     def _subject_identifies(requested: str | None, candidates: set[str]) -> bool:
         """Subject match across qualification levels (pure).
 
-        Claims carry short symbols (``OrderLookupServiceImpl.findOrder``)
-        while analyzer resolutions carry fully-qualified identities
+        Delegates to the analyzer-shared matcher so the live claim flow and
+        window budget allocation agree. Claims carry short symbols
+        (``OrderLookupServiceImpl.findOrder``) while analyzer resolutions
+        carry fully-qualified identities
         (``com.example.retail.order.OrderLookupServiceImpl.findOrder``), or the
         reverse for method-anchored windows. Exact match wins; otherwise a
         dot-boundary suffix in either direction matches — except a bare
@@ -2279,20 +2335,11 @@ class VerificationEngine:
         Selection-only — revision, path, window, and value checks below
         still bind the evidence.
         """
-        req = str(requested or "").strip()
-        if not req:
-            return False
-        for candidate in candidates:
-            cand = str(candidate or "").strip()
-            if not cand:
-                continue
-            if cand == req:
-                return True
-            if "." in req and cand.endswith("." + req):
-                return True
-            if req.endswith("." + cand):
-                return True
-        return False
+        from investigation_agent_platform.application.analysis.subjects import (
+            subject_identifies,
+        )
+
+        return subject_identifies(requested, candidates)
 
     @staticmethod
     def _v2_any_from_evidence(
@@ -3558,7 +3605,7 @@ class VerificationEngine:
         for sep in ("::", ".", "#"):
             if sep in callee:
                 names.add(callee.rsplit(sep, 1)[-1])
-        for raw in (snippet or "").splitlines():
+        for raw in split_source_lines(snippet or ""):
             line = (
                 raw.split("| ", 1)[1]
                 if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
@@ -3595,7 +3642,7 @@ class VerificationEngine:
                 try:
                     path = VerificationEngine._item_file(item)
                     text = str(getattr(item, "content_snippet", "") or "")
-                    for raw in text.splitlines():
+                    for raw in split_source_lines(text):
                         line = (
                             raw.split("| ", 1)[1]
                             if "| " in raw and raw.split("|", 1)[0].strip().isdigit()
@@ -3617,7 +3664,7 @@ class VerificationEngine:
                     path = VerificationEngine._item_file(item)
                     text = str(getattr(item, "content_snippet", "") or "")
                     used: set[str] = set()
-                    for raw in text.splitlines():
+                    for raw in split_source_lines(text):
                         line = (
                             raw.split("| ", 1)[1]
                             if "| " in raw and raw.split("|", 1)[0].strip().isdigit()

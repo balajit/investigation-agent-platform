@@ -110,7 +110,13 @@ class ReferenceChunkRepository(Protocol):
         """Tombstone active chunks whose hash was not observed; returns count."""
         ...
 
-    async def lexical_candidates(self, tenant_id: str, query: str, limit: int) -> list[Any]:
+    async def lexical_candidates(
+        self,
+        tenant_id: str,
+        query: str,
+        limit: int,
+        application_id: str | None = None,
+    ) -> list[Any]:
         """Bounded full-text candidates over ACTIVE chunks (tombstones out)."""
         ...
 
@@ -121,6 +127,7 @@ class ReferenceChunkRepository(Protocol):
         embedding_model: str,
         embedding_version: str,
         limit: int,
+        application_id: str | None = None,
     ) -> list[Any]:
         """Bounded cosine candidates over ACTIVE chunks (tombstones out)."""
         ...

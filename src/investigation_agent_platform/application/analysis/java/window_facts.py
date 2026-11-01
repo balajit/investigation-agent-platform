@@ -110,15 +110,29 @@ def _shift(ctx: _Context, span: Any) -> Any:
 def _class_fallback(model: Any, file_path: str) -> str:
     """Basename stem when the window names no class at all (unclosed tail).
 
-    Mirrors the selector resolver's fallback: multi-class windows keep
-    failing closed (no guess across classes). J8 labels inferred owners;
-    until then the fallback preserves the method-only window live runs
-    depend on.
+    Mirrors the selector resolver's basename fallback: multi-class windows keep
+    failing closed (no guess across classes). The stem feeds _owner_of, which
+    labels inferred owners (D14); the method-only window live runs depend on
+    keeps resolving, now with an explicit inference stamp.
     """
     stem = (file_path or "").rsplit("/", 1)[-1]
     if "." in stem:
         stem = stem.rsplit(".", 1)[0]
     return stem if not model.classes and stem else ""
+
+
+_INFERRED_OWNER_ASSUMPTION = (
+    "declaring class inferred from the file name; a nested or secondary class is not excluded"
+)
+
+
+def _owner_of(enclosing: str | None, package: str, stem: str) -> tuple[str | None, bool]:
+    """(qualified owner, inferred). ``enclosing_class`` already carries package and nesting."""
+    if enclosing:
+        return enclosing, False
+    if stem:
+        return (f"{package}.{stem}" if package else stem, True)
+    return None, False
 
 
 def _declaration_subtree_clean(tree: Any, node_type: str, span: Any) -> bool:
@@ -130,8 +144,8 @@ def _declaration_subtree_clean(tree: Any, node_type: str, span: Any) -> bool:
     vouch for it (e.g. two methods on one line).
     """
     try:
-        start = (int(span.line_start) - 1, int(span.col_start))
-        end = (int(span.line_end) - 1, int(span.col_end))
+        start = (int(span.line_start) - 1, int(span.byte_col_start))
+        end = (int(span.line_end) - 1, int(span.byte_col_end))
         for node in _p.walk(tree.root_node):
             if (
                 node.type == node_type
@@ -160,16 +174,24 @@ def _guard_candidates(ctx: _Context) -> list[_Candidate]:
             continue
         if not _declaration_subtree_clean(ctx.tree, "method_declaration", host.span):
             continue
-        # enclosing_class already carries the package and nesting
-        # ("com.sample.orders.OrderServiceHandler.Inner"); only a bare
-        # name (no class on record, or the basename fallback) takes the
-        # package prefix. J8 removes bare subjects at the source.
-        class_name = host.enclosing_class or host.nearest_class or class_fallback
-        if class_name and "." not in class_name and package:
-            qualified = f"{package}.{class_name}"
-        else:
-            qualified = class_name or package
-        subject = f"{qualified}.{host.name}" if qualified else host.name
+        owner, inferred = _owner_of(host.enclosing_class, package, class_fallback)
+        if owner is None:
+            # No class on record and no file stem: a bare name would let any
+            # qualified claim match, so the declaration becomes a marker.
+            candidates.append(
+                _marker(
+                    host.name,
+                    "declaring_type_not_in_window",
+                    repository=ctx.repository or None,
+                    revision=ctx.revision,
+                    source_evidence_ids=ctx.evidence_ids,
+                    declaration_location=_shift(ctx, host.span),
+                )
+            )
+            continue
+        assumptions: tuple[str, ...] = (_INFERRED_OWNER_ASSUMPTION,) if inferred else ()
+        subject = f"{owner}.{host.name}"
+        class_attribution = "file_stem_inferred" if inferred else None
         for ret in branch.returns:
             value = _model.literal_return_value(ret.value_shape, ret.value_text)
             if value is None:
@@ -178,10 +200,18 @@ def _guard_candidates(ctx: _Context) -> list[_Candidate]:
             def _build(
                 _ret: Any = ret,
                 _subject: str = subject,
-                _qualified: str | None = qualified or None,
+                _owner: str | None = owner,
                 _branch: Any = branch,
                 _value: Any = value,
+                _assumptions: tuple[str, ...] = assumptions,
+                _attribution: str | None = class_attribution,
             ) -> _Candidate:
+                _structured: dict[str, Any] = {
+                    "guard_text": _branch.guard_text,
+                    "path_conditions": [pc.model_dump() for pc in _branch.path_conditions],
+                }
+                if _attribution is not None:
+                    _structured["class_attribution"] = _attribution
                 return _Candidate(
                     "guard",
                     _subject,
@@ -190,15 +220,13 @@ def _guard_candidates(ctx: _Context) -> list[_Candidate]:
                         repository=ctx.repository or None,
                         revision=ctx.revision,
                         fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
-                        declaring_type=_qualified,
+                        declaring_type=_owner,
                         subject_identity=_subject or None,
                         value_semantics=CodeValueSemantics.GUARDED_RETURN_LITERAL,
                         raw_initializer=_ret.raw_text[:512],
                         resolved_value=_value,
-                        structured_fact={
-                            "guard_text": _branch.guard_text,
-                            "path_conditions": [pc.model_dump() for pc in _branch.path_conditions],
-                        },
+                        structured_fact=_structured,
+                        assumptions=_assumptions,
                         source_evidence_ids=ctx.evidence_ids,
                         declaration_location=_shift(ctx, _ret.span),
                         parser_version=_p.parser_version(),
@@ -213,6 +241,7 @@ def _guard_candidates(ctx: _Context) -> list[_Candidate]:
                     revision=ctx.revision,
                     source_evidence_ids=ctx.evidence_ids,
                     declaration_location=_shift(ctx, ret.span),
+                    assumptions=assumptions,
                 )
             )
     return candidates
@@ -232,8 +261,22 @@ def _field_candidates(ctx: _Context) -> list[_Candidate]:
         )
         if not _declaration_subtree_clean(ctx.tree, node_type, field.span):
             continue
-        enclosing = field.enclosing_class or class_fallback
-        subject = f"{enclosing}.{field.name}" if enclosing else field.name
+        owner, inferred = _owner_of(field.enclosing_class, model.package or "", class_fallback)
+        if owner is None:
+            candidates.append(
+                _marker(
+                    field.name,
+                    "declaring_type_not_in_window",
+                    repository=ctx.repository or None,
+                    revision=ctx.revision,
+                    source_evidence_ids=ctx.evidence_ids,
+                    declaration_location=_shift(ctx, field.span),
+                )
+            )
+            continue
+        assumptions: tuple[str, ...] = (_INFERRED_OWNER_ASSUMPTION,) if inferred else ()
+        subject = f"{owner}.{field.name}"
+        class_attribution = "file_stem_inferred" if inferred else None
         raw_initializer = field.raw_initializer
         if raw_initializer is None:
             value, semantics = _language_default(field.field_type)
@@ -252,11 +295,16 @@ def _field_candidates(ctx: _Context) -> list[_Candidate]:
         def _build(
             _field: Any = field,
             _subject: str = subject,
-            _enclosing: str | None = enclosing or None,
+            _owner: str | None = owner,
             _raw: Any = raw_initializer,
             _value: Any = value,
             _semantics: Any = semantics,
+            _assumptions: tuple[str, ...] = assumptions,
+            _attribution: str | None = class_attribution,
         ) -> _Candidate:
+            _structured: dict[str, Any] = {}
+            if _attribution is not None:
+                _structured["class_attribution"] = _attribution
             return _Candidate(
                 "field",
                 _subject,
@@ -265,7 +313,7 @@ def _field_candidates(ctx: _Context) -> list[_Candidate]:
                     repository=ctx.repository or None,
                     revision=ctx.revision,
                     fact_category=JavaFactCategory.SOURCE_VALUE_FACT,
-                    declaring_type=_enclosing,
+                    declaring_type=_owner,
                     subject_identity=_subject or None,
                     field_name=_field.name,
                     field_type=_field.field_type,
@@ -273,6 +321,8 @@ def _field_candidates(ctx: _Context) -> list[_Candidate]:
                     value_semantics=_semantics,
                     raw_initializer=_raw,
                     resolved_value=_value,
+                    structured_fact=_structured or None,
+                    assumptions=_assumptions,
                     source_evidence_ids=ctx.evidence_ids,
                     declaration_location=_shift(ctx, _field.span),
                     parser_version=_p.parser_version(),
@@ -287,6 +337,7 @@ def _field_candidates(ctx: _Context) -> list[_Candidate]:
                 revision=ctx.revision,
                 source_evidence_ids=ctx.evidence_ids,
                 declaration_location=_shift(ctx, field.span),
+                assumptions=assumptions,
             )
         )
     return candidates

@@ -20,6 +20,15 @@ from investigation_agent_platform.domain.evidence.models import LogSeverity
 # registry, in every resolver. Requests and profiles default here, so the
 # entire pre-Part-10 path works with no configuration at all.
 GENERIC_ECS_SOURCE_ID = "generic-ecs"
+GENERIC_ECS_DELIMITED_SOURCE_ID = "generic-ecs-delimited"
+
+
+class IndexSynthesis(StrEnum):
+    """How the index scope is synthesized for a mapping (R2-ops)."""
+
+    NONE = "none"
+    DASH = "dash"
+    DELIMITED = "delimited"
 
 
 class FieldValueType(StrEnum):
@@ -165,6 +174,9 @@ class ObservabilitySourceMapping(BaseModel):
     # are synthesized per-request by the legacy builder. Operator-authored
     # mappings must always declare explicit patterns (enforced at load).
     legacy_index_synthesis: bool = False
+    # R2-ops version pin: which synthesis the mapping selects. Stored on the
+    # profile revision via mapping_source_id; no environment switch.
+    index_synthesis: IndexSynthesis = IndexSynthesis.NONE
     tenant_scope: TenantScope
     timestamp: FieldMapping
     message: FieldMapping | None = None
@@ -190,6 +202,7 @@ def generic_ecs_mapping() -> ObservabilitySourceMapping:
         source_id=GENERIC_ECS_SOURCE_ID,
         index_patterns=[],
         legacy_index_synthesis=True,
+        index_synthesis=IndexSynthesis.DASH,
         tenant_scope=TenantScope(strategy=TenantScopeStrategy.INDEX_PATTERN),
         timestamp=FieldMapping(candidates=["@timestamp"], value_type=FieldValueType.DATE_ISO),
         message=FieldMapping(
@@ -273,4 +286,16 @@ def generic_ecs_mapping() -> ObservabilitySourceMapping:
                 "user",
             }
         ),
+    )
+
+
+def generic_ecs_delimited_mapping() -> ObservabilitySourceMapping:
+    """Built-in delimited mapping (R2-ops): same contract, `--` synthesis."""
+    base = generic_ecs_mapping()
+    return base.model_copy(
+        update={
+            "source_id": GENERIC_ECS_DELIMITED_SOURCE_ID,
+            "legacy_index_synthesis": False,
+            "index_synthesis": IndexSynthesis.DELIMITED,
+        }
     )

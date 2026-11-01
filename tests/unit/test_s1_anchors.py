@@ -237,11 +237,8 @@ class TestIntakeStampsAnchors:
                 async def sessions_for_fingerprint(self, fp):
                     return []
 
-                async def next_session_number(self, fp):
+                async def allocate_session(self, fp, iid, now):
                     return 1
-
-                async def record_session(self, fp, n, iid, now):
-                    return None
 
             svc = ErrorIntakeService(
                 investigation_repo=_Repo(),

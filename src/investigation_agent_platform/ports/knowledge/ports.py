@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from investigation_agent_platform.domain.knowledge.models import (
+    ArtifactStatus,
     ArtifactView,
     InvestigationSession,
     KnowledgeArtifact,
@@ -49,7 +50,20 @@ class ArtifactRepository(Protocol):
     SQL, via explicit filter in memory).
     """
 
-    async def save(self, tenant_id: str, artifact: KnowledgeArtifact) -> None: ...
+    async def save(self, tenant_id: str, artifact: KnowledgeArtifact) -> None:
+        """Write-once envelope insert. Never overwrites: a second save of
+        the same id raises an integrity error."""
+        ...
+
+    async def update_status(
+        self, tenant_id: str, artifact_id: UUID, status: ArtifactStatus
+    ) -> bool:
+        """Tenant-predicated status transition (R12A).
+
+        Updates only the row owned by ``tenant_id``; a foreign SHARED row
+        is never written. Returns True when a row changed.
+        """
+        ...
 
     async def get_by_id(self, tenant_id: str, artifact_id: UUID) -> KnowledgeArtifact | None: ...
 
@@ -106,13 +120,20 @@ class CodeIssueIndex(Protocol):
     directly to callers; intake and redacted-placeholder assembly only.
     """
 
-    async def record_session(
+    async def allocate_session(
         self,
         code_issue_fingerprint: str,
-        session_number: int,
         investigation_id: UUID,
         occurred_at: Any,
-    ) -> None: ...
+    ) -> int:
+        """Allocate the next session number and record the session, atomically.
+
+        One transaction: the advisory lock is held until the row commits,
+        so concurrent allocations never share a number and no session is
+        lost (R12I). Replaces the split next_session_number/record_session
+        pair, whose lock release-then-insert window dropped rows.
+        """
+        ...
 
     async def sessions_for_fingerprint(
         self, code_issue_fingerprint: str

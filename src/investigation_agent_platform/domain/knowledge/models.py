@@ -99,8 +99,14 @@ class KnowledgeArtifact(BaseModel):
         if self.visibility == ArtifactVisibility.SHARED_CODE_ISSUE:
             if self.kind in TENANT_ONLY_KINDS:
                 raise ValueError(f"kind '{self.kind}' is runtime content and cannot be shared")
+            if self.kind != "error_signature":
+                raise ValueError("only error_signature artifacts may be shared")
             if not self.code_issue_fingerprint:
                 raise ValueError("SHARED_CODE_ISSUE artifacts require a code_issue_fingerprint")
+            if self.source_evidence_ids or self.source_log_refs:
+                raise ValueError("shared artifacts carry no evidence or log references")
+            if len(self.statement) > 600:
+                raise ValueError("shared statements are bounded structured projections")
         for pattern in _SECRET_PATTERNS:
             if pattern.search(self.statement):
                 raise ValueError("statement appears to contain secrets/credentials")

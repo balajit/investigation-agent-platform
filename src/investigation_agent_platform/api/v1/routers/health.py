@@ -171,6 +171,28 @@ async def readiness(response: Response) -> HealthView:
     else:
         checks["buffer"] = "DISABLED"
 
+    # R11-D1: database role posture. `db_role: privileged` when the runtime
+    # role bypasses RLS or coverage is incomplete; never prints the DSN.
+    try:
+        from investigation_agent_platform.infrastructure.persistence.role_guard import (
+            evaluate_role,
+        )
+
+        _mode = "warn"
+        try:
+            _mode = str(getattr(getattr(ctx, "config", None), "database", None).rls_role_check or "warn")
+        except Exception:
+            _mode = str(__import__("os").environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"))
+        _report = getattr(ctx, "_role_report", None)
+        if _report is None:
+            checks["db_role"] = "unknown"
+        else:
+            checks["db_role"] = (
+                "ok" if evaluate_role(_report, _mode).value == "ok" else "privileged"
+            )
+    except Exception:
+        checks["db_role"] = "unknown"
+
     if not all_healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return _health_body("UNHEALTHY", checks)

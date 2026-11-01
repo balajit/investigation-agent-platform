@@ -19,6 +19,7 @@ from investigation_agent_platform.infrastructure.configuration.config import (
     BudgetConfig,
     DatabaseConfig,
     EvidenceConfig,
+    KnowledgeConfig,
     LLMConfig,
     TelemetryConfig,
 )
@@ -33,6 +34,7 @@ def _production_config(**over: object) -> ApplicationConfig:
         ),
         "llm": LLMConfig(api_key=SecretStr("sk"), model_name="gpt-4o"),
         "budget": BudgetConfig(),
+        "knowledge": KnowledgeConfig(fingerprint_key=SecretStr("test-wiring-key")),
         "telemetry": TelemetryConfig(enabled=False),
         "evidence": EvidenceConfig(
             elasticsearch_url="http://localhost:9200",

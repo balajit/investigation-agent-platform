@@ -17,8 +17,10 @@ from pydantic import ValidationError
 
 from investigation_agent_platform.domain.common.exceptions import PlatformConfigurationError
 from investigation_agent_platform.domain.observability.mapping import (
+    GENERIC_ECS_DELIMITED_SOURCE_ID,
     GENERIC_ECS_SOURCE_ID,
     ObservabilitySourceMapping,
+    generic_ecs_delimited_mapping,
     generic_ecs_mapping,
 )
 
@@ -47,6 +49,8 @@ class MappingProfileRegistry:
         """
         if source_id is None or source_id == GENERIC_ECS_SOURCE_ID:
             return generic_ecs_mapping()
+        if source_id == GENERIC_ECS_DELIMITED_SOURCE_ID:
+            return generic_ecs_delimited_mapping()
         try:
             return self._mappings[source_id]
         except KeyError:
@@ -98,9 +102,9 @@ def load_mapping_profiles(directory: str | Path) -> MappingProfileRegistry:
             raise PlatformConfigurationError(
                 f"Duplicate mapping source_id {mapping.source_id!r} in {path}."
             )
-        if mapping.source_id == GENERIC_ECS_SOURCE_ID:
+        if mapping.source_id in (GENERIC_ECS_SOURCE_ID, GENERIC_ECS_DELIMITED_SOURCE_ID):
             raise PlatformConfigurationError(
-                f"Mapping in {path} claims the reserved builtin id {GENERIC_ECS_SOURCE_ID!r}."
+                f"Mapping in {path} claims the reserved builtin id {mapping.source_id!r}."
             )
         if mapping.legacy_index_synthesis:
             raise PlatformConfigurationError(

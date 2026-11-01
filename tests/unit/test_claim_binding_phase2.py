@@ -820,10 +820,10 @@ class TestDirectiveTriggerC:
         hyp = _hyp_with(assessments=[_asm(quote="Widget", eid=unknown)])
         recent = _recent("SEARCH_CODE", {"query": "Widget"})
         # Durable count at max: no directive even with a stored query.
+        # R10f: the attempts carry ids (id-less attempts do not count).
         recorded = [
-            ([], {"search_query": "Widget"}),
-            ([], {"search_query": "Widget"}),
-            ([], {"search_query": "Widget"}),
+            ([], {"search_query": "Widget", "attempt_id": f"gate-{i}"})
+            for i in range(3)
         ]
         assert select_ledger_requery(hyp, [], recorded, recent, 3) is None
 

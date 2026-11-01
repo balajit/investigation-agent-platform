@@ -318,6 +318,13 @@ class InMemoryArtifactRepository:
             raise ConcurrencyError("Artifact tenant mismatch")
         self._store[artifact.id] = artifact
 
+    async def update_status(self, tenant_id: str, artifact_id: Any, status: Any) -> bool:
+        row = self._store.get(artifact_id)
+        if row is None or getattr(row, "tenant_id", None) != tenant_id:
+            return False
+        self._store[artifact_id] = row.model_copy(update={"status": status})
+        return True
+
     async def get_by_id(self, tenant_id: str, artifact_id: UUID) -> Any | None:
         from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
 
@@ -354,19 +361,37 @@ class InMemoryArtifactRepository:
     async def list_shared_for_fingerprint(
         self, tenant_id: str, code_issue_fingerprint: str
     ) -> list[Any]:
+        from datetime import UTC, datetime
+
         from investigation_agent_platform.domain.knowledge.models import (
             ArtifactStatus,
             ArtifactVisibility,
         )
 
         _ = tenant_id  # binds the (no-op, in-memory) session scope; see docstring
+        now = datetime.now(UTC)
         return [
             a
             for a in self._store.values()
             if a.code_issue_fingerprint == code_issue_fingerprint
             and a.visibility == ArtifactVisibility.SHARED_CODE_ISSUE
             and a.status == ArtifactStatus.ACTIVE
+            and (a.valid_to is None or a.valid_to > now)
         ]
+
+    async def demote_shared(self, tenant_id: str, application_id: str) -> int:
+        from investigation_agent_platform.domain.knowledge.models import ArtifactVisibility
+
+        count = 0
+        for artifact_id, row in list(self._store.items()):
+            if (
+                getattr(row, "tenant_id", None) == tenant_id
+                and getattr(row, "application_id", None) == application_id
+                and getattr(row, "visibility", None) == ArtifactVisibility.SHARED_CODE_ISSUE
+            ):
+                self._store[artifact_id] = row.model_copy(update={"visibility": ArtifactVisibility.TENANT})
+                count += 1
+        return count
 
     async def list_expired_ttl(self, tenant_id: str, cutoff: Any, limit: int = 500) -> list[Any]:
         from investigation_agent_platform.domain.knowledge.models import (
@@ -423,17 +448,19 @@ class InMemoryCodeIssueIndex:
         self._lock = asyncio.Lock()
         self._rows: dict[tuple[str, int], tuple[UUID, Any]] = {}
 
-    async def record_session(
+    async def allocate_session(
         self,
         code_issue_fingerprint: str,
-        session_number: int,
         investigation_id: UUID,
         occurred_at: Any,
-    ) -> None:
+    ) -> int:
         async with self._lock:
+            numbers = [num for (fp, num) in self._rows if fp == code_issue_fingerprint]
+            number = (max(numbers) if numbers else 0) + 1
             self._rows.setdefault(
-                (code_issue_fingerprint, session_number), (investigation_id, occurred_at)
+                (code_issue_fingerprint, number), (investigation_id, occurred_at)
             )
+            return number
 
     async def sessions_for_fingerprint(
         self, code_issue_fingerprint: str
@@ -452,12 +479,6 @@ class InMemoryCodeIssueIndex:
         _ = open_only  # status filtering is the caller's job
         rows = await self.sessions_for_fingerprint(code_issue_fingerprint)
         return rows[-1][1] if rows else None
-
-    async def next_session_number(self, code_issue_fingerprint: str) -> int:
-        async with self._lock:
-            numbers = [num for (fp, num) in self._rows if fp == code_issue_fingerprint]
-            return (max(numbers) if numbers else 0) + 1
-
 
 class _InMemoryOutboxRepository:
     """Process-local outbox (durable Postgres version in production)."""
@@ -782,6 +803,12 @@ class InMemoryEvidenceRepository(EvidenceRepository):
             if ev is not None and ev.tenant_id == tenant_id:
                 result.append(ev)
         return result
+
+    async def get_for_investigation(
+        self, tenant_id: str, investigation_id: UUID, evidence_id: UUID
+    ) -> Evidence | None:
+        rows = await self.find_by_investigation_id(tenant_id, investigation_id)
+        return next((e for e in rows if e.evidence_id == evidence_id), None)
 
     async def find_by_investigation_id(
         self, tenant_id: str, investigation_id: UUID
@@ -1554,7 +1581,9 @@ class InMemoryReferenceDocRepository:
                 count += 1
         return count
 
-    async def lexical_candidates(self, tenant_id: str, query: str, limit: int) -> list[object]:
+    async def lexical_candidates(
+        self, tenant_id: str, query: str, limit: int, application_id: str | None = None
+    ) -> list[object]:
         from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
 
         def _generation_active(source_id: str, generation: int) -> bool:
@@ -1571,6 +1600,7 @@ class InMemoryReferenceDocRepository:
                 if tenant == tenant_id
                 and chunk.lifecycle == ChunkLifecycle.ACTIVE
                 and _generation_active(source, gen)
+                and (application_id is None or chunk.application_id == application_id)
             ),
             key=lambda pair: pair[0],
             reverse=True,
@@ -1584,6 +1614,7 @@ class InMemoryReferenceDocRepository:
         embedding_model: str,
         embedding_version: str,
         limit: int,
+        application_id: str | None = None,
     ) -> list[object]:
         from investigation_agent_platform.domain.reference.documents import ChunkLifecycle
 
@@ -1611,6 +1642,10 @@ class InMemoryReferenceDocRepository:
                 and self._chunks[key].embedding_model == embedding_model
                 and self._chunks[key].embedding_version == embedding_version
                 and _generation_active(key[1], key[2])
+                and (
+                    application_id is None
+                    or self._chunks[key].application_id == application_id
+                )
             ),
             key=lambda pair: pair[0],
             reverse=True,
@@ -1964,6 +1999,9 @@ class AppContext:
         # Part 6 Slice 2: Graphiti temporal projection. None = envelopes
         # only (wired in bootstrap when graphiti_enabled).
         self.temporal_port: TemporalKnowledgePort | None = None
+        # R1: deployment HMAC key for code-issue fingerprints. None =
+        # dev fallback (bootstrap sets the resolved key in production).
+        self.fingerprint_key: bytes | None = None
 
         self.outbox_queue: asyncio.Queue[WorkflowStatusEvent] = asyncio.Queue()
         self.outbox_worker = InvestigationOutboxWorker(
@@ -2114,12 +2152,16 @@ class AppContext:
     def error_intake_service(self, clock: Any = None) -> Any:
         from investigation_agent_platform.application.knowledge.intake import ErrorIntakeService
 
+        key = getattr(self, "fingerprint_key", None)
+        if key is None:
+            key = b"iap-dev-fingerprint-key-not-a-secret"
         return ErrorIntakeService(
             investigation_repo=self.investigation_repo,
             session_repo=self.session_repo,
             code_issue_index=self.code_issue_index,
             clock=clock,
             profile_repo=self.profile_repo,
+            fingerprint_key=key,
         )
 
     def knowledge_capture_service(
@@ -2410,7 +2452,9 @@ _DEFAULT_PROFILE = ApplicationProfile(
         defaultTimeWindow=3600,
         maximumEvidencePerQuery=50,
         maximumInvestigationDuration=7200,
-        enabledEvidenceTypes=["LOG", "TRACE", "DATABASE_STATE", "COMMIT_HISTORY"],
+        # R6-D4: GET_CODE reads source, so the dev default that declares
+        # GET_CODE must enable SOURCE_CODE (repo fixture, not a tenant profile).
+        enabledEvidenceTypes=["LOG", "TRACE", "DATABASE_STATE", "COMMIT_HISTORY", "SOURCE_CODE"],
         correlationDepth=2,
         maximumHypotheses=5,
     ),

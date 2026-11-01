@@ -78,7 +78,7 @@ def _system_prompt_for(problem):
 
 
 def test_prompt_version_bumped_for_g1():
-    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-019"
+    assert REASONER_PROMPT_VERSION == "v3-claim-grounded-021"
 
 
 def test_explicit_path_short_circuits_to_get_code_first():
@@ -161,5 +161,6 @@ def test_application_context_includes_allowed_capabilities():
 
     coordinator = ReasoningCoordinator.__new__(ReasoningCoordinator)
     coordinator._profile_repo = FakeRepo()
-    block = _asyncio.run(coordinator._application_context_block("t", "app"))
+    # Legacy pin: the pre-LV_R block keeps the raw declared list byte for byte.
+    block = _asyncio.run(coordinator._application_context_block("t", "app", loop_version="lv7"))
     assert block["allowed_capabilities"] == ["SEARCH_CODE", "GET_CODE"]

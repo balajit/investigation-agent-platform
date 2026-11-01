@@ -197,35 +197,53 @@ def resolve_java_data_flow(
         )
 
     first_line = lines[0].number
+    line_text_by_number = {line.number: line.text for line in lines}
+
+    def _column(line_number: int, byte_col: int) -> int:
+        """Code-point column for a byte column on a known line (pure)."""
+        text = line_text_by_number.get(line_number)
+        if text is None:
+            return byte_col
+        return _model.code_point_column(text, byte_col)
+
+    def _span_point(line_number: int, byte_col: int) -> tuple[int, int]:
+        return (line_number, _column(line_number, byte_col))
+
     definitions: list[dict[str, Any]] = []
     uses: list[dict[str, Any]] = []
     early_returns: list[dict[str, int]] = []
     if binding.kind == "local" and binding.has_initializer:
+        line_start = first_line + binding.span.line_start - 1
+        line_end = first_line + binding.span.line_end - 1
         definitions.append(
             {
                 "kind": "initializer",
-                "line_start": first_line + binding.span.line_start - 1,
-                "col_start": binding.span.col_start,
-                "line_end": first_line + binding.span.line_end - 1,
-                "col_end": binding.span.col_end,
+                "line_start": line_start,
+                "col_start": _column(line_start, binding.span.byte_col_start),
+                "line_end": line_end,
+                "col_end": _column(line_end, binding.span.byte_col_end),
             }
         )
     elif binding.kind == "parameter":
+        line_start = first_line + binding.span.line_start - 1
+        line_end = first_line + binding.span.line_end - 1
         definitions.append(
             {
                 "kind": "parameter_binding",
-                "line_start": first_line + binding.span.line_start - 1,
-                "col_start": binding.span.col_start,
-                "line_end": first_line + binding.span.line_end - 1,
-                "col_end": binding.span.col_end,
+                "line_start": line_start,
+                "col_start": _column(line_start, binding.span.byte_col_start),
+                "line_end": line_end,
+                "col_end": _column(line_end, binding.span.byte_col_end),
             }
         )
     for event in method_events:
+        line_start = first_line + event.span.line_start - 1
+        line_end = first_line + event.span.line_end - 1
         span = {
-            "line_start": first_line + event.span.line_start - 1,
-            "col_start": event.span.col_start,
-            "line_end": first_line + event.span.line_end - 1,
-            "col_end": event.span.col_end,
+            "line_start": line_start,
+            "col_start": _column(line_start, event.span.byte_col_start),
+            "line_end": line_end,
+            "col_end": _column(line_end, event.span.byte_col_end),
         }
         if event.kind in {"assignment", "compound_assignment", "update"}:
             definitions.append({"kind": event.kind, **span})
@@ -241,6 +259,59 @@ def resolve_java_data_flow(
             revision,
             subject,
             "interprocedural_aliasing",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
+    _IMMUTABLE_RECEIVERS = frozenset(
+        {
+            "String",
+            "Integer",
+            "Long",
+            "Double",
+            "Float",
+            "Short",
+            "Byte",
+            "Boolean",
+            "Character",
+            "BigDecimal",
+            "BigInteger",
+            "LocalDate",
+            "LocalDateTime",
+            "Instant",
+            "UUID",
+        }
+    )
+    kinds = {event.kind for event in method_events}
+    declared_type = binding.var_type.split("<", 1)[0].strip()
+    if "member_store" in kinds or (
+        "receiver_call" in kinds and declared_type not in _IMMUTABLE_RECEIVERS
+    ):
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "receiver_mutation_possible",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
+    if "alias_store" in kinds:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "alias_escape",
+            evidence_ids,
+            level_text,
+            partial=True,
+        )
+    if "lambda_capture" in kinds:
+        return _unresolved(
+            repository,
+            revision,
+            subject,
+            "lambda_capture_not_modeled",
             evidence_ids,
             level_text,
             partial=True,
@@ -320,6 +391,7 @@ def resolve_java_data_flow(
         "kind": "local_data_flow",
         "symbol": symbol_name,
         "method": method.name,
+        "column_unit": "code_point",
         "definitions": definitions,
         "uses": uses,
         "early_returns": sorted(early_returns, key=lambda item: item["line_start"]),

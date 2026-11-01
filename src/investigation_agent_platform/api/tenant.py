@@ -25,6 +25,8 @@ from fastapi import Depends, Header, Request, status
 from jwt import PyJWKClient
 
 from investigation_agent_platform.api.errors import ApiError
+from investigation_agent_platform.api.rate_limit import check_rate_limit as _check_rate_limit
+from investigation_agent_platform.api.rate_limit import rate_limit_enabled as _rate_limit_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,10 @@ def _get_jwk_client(jwks_url: str) -> PyJWKClient:
 class VerifiedIdentity:
     tenant_id: str
     principal_id: str
+    #: Role claims from the verified token (``roles``/``groups`` list or a
+    #: single ``role`` string; empty for header-only dev identities and for
+    #: tokens that carry none). Never invented — only what the token states.
+    roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,7 @@ async def get_verified_identity(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> VerifiedIdentity:
     identity = await _resolve_verified_identity(x_tenant_id, authorization)
+    await _enforce_verified_rate_limit(request, identity)
     # F-017: only now — after verification has actually succeeded — is the
     # authenticated tenant recorded on request state for downstream logging.
     request.state.authenticated_tenant_id = identity.tenant_id
@@ -208,13 +215,21 @@ async def _resolve_verified_identity(
                 http_status=status.HTTP_401_UNAUTHORIZED,
                 message="Token does not contain a subject",
             )
+        roles: list[str] = []
+        for key in ("roles", "groups"):
+            claimed = claims.get(key)
+            if isinstance(claimed, list):
+                roles.extend(str(r) for r in claimed if str(r or "").strip())
+        single = claims.get("role")
+        if isinstance(single, str) and single.strip():
+            roles.append(single.strip())
         if header_tenant is not None and header_tenant != tenant:
             raise ApiError(
                 code="TENANT_MISMATCH",
                 http_status=status.HTTP_403_FORBIDDEN,
                 message="Tenant mismatch between X-Tenant-ID and verified token",
             )
-        return VerifiedIdentity(tenant_id=tenant, principal_id=principal.strip())
+        return VerifiedIdentity(tenant_id=tenant, principal_id=principal.strip(), roles=tuple(roles))
 
     # Named dev environment with JWT verification off: the header alone
     # identifies the caller (development convenience only).
@@ -227,6 +242,37 @@ async def _resolve_verified_identity(
     return VerifiedIdentity(tenant_id=header_tenant, principal_id="dev-principal")
 
 
+async def _enforce_verified_rate_limit(request: Request, identity: VerifiedIdentity) -> None:
+    """Post-auth rate limit (AD1): per-tenant + per-principal bucket.
+
+    Skipped when the limiter is disabled. Fails open on store errors
+    (availability over strictness). Raises 429 with the verified
+    identity's own bucket when exhausted — a spoofed caller can never
+    spend another tenant's quota here because the key comes from the
+    verified identity, not a header.
+    """
+    if not _rate_limit_enabled():
+        return
+    store = getattr(getattr(request, "app", None), "state", None)
+    store = getattr(store, "rate_limit_store", None) if store is not None else None
+    if store is None:
+        return
+    try:
+        path = str(getattr(getattr(request, "url", None), "path", "") or "")
+    except Exception:
+        path = ""
+    allowed, retry_after, klass = await _check_rate_limit(
+        store, identity.tenant_id, identity.principal_id, path or "/api/"
+    )
+    if not allowed:
+        raise ApiError(
+            code="RATE_LIMITED",
+            http_status=status.HTTP_429_TOO_MANY_REQUESTS,
+            message=f"Rate limit exceeded for {klass}; retry later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 async def require_tenant(identity: VerifiedIdentity = Depends(get_verified_identity)) -> str:  # noqa: B008 - FastAPI Depends idiom
     """FastAPI dependency returning the verified tenant ID for the request."""
     return identity.tenant_id
@@ -235,6 +281,37 @@ async def require_tenant(identity: VerifiedIdentity = Depends(get_verified_ident
 async def require_principal(identity: VerifiedIdentity = Depends(get_verified_identity)) -> str:  # noqa: B008 - FastAPI Depends idiom
     """FastAPI dependency returning the verified principal ID for the request."""
     return identity.principal_id
+
+
+async def require_approver_role(
+    identity: VerifiedIdentity = Depends(get_verified_identity),  # noqa: B008 - FastAPI Depends idiom
+) -> str:
+    """FastAPI dependency gating human-in-the-loop approvals (R12D).
+
+    In dev (header-auth allowed) any verified identity may approve, as
+    today. Elsewhere the ``IAP_AUTH_APPROVER_ROLE`` role must be
+    configured *and* present on the verified token; otherwise 403.
+    The approver-role contract itself is an open owner decision, so an
+    unset role fails closed rather than guessing.
+    """
+    settings = _load_auth_settings()
+    if settings.header_auth_allowed:
+        return "dev-approver"
+    required = (os.environ.get("IAP_AUTH_APPROVER_ROLE", "") or "").strip()
+    if not required:
+        raise ApiError(
+            code="APPROVER_ROLE_UNCONFIGURED",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Approvals are disabled: no approver role is configured",
+        )
+    held = {str(r or "").strip() for r in (getattr(identity, "roles", None) or ())}
+    if required not in held:
+        raise ApiError(
+            code="APPROVER_ROLE_REQUIRED",
+            http_status=status.HTTP_403_FORBIDDEN,
+            message="Approving this action requires the approver role",
+        )
+    return required
 
 
 async def get_verified_principal(

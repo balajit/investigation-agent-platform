@@ -24,6 +24,7 @@ class DatabaseConfig(BaseModel):
     connection_uri: SecretStr = Field(..., min_length=1)
     pool_size: int = Field(default=10, ge=1, le=100)
     max_overflow: int = Field(default=20, ge=0)
+    rls_role_check: str = Field(default="warn")
 
 
 class LLMConfig(BaseModel):
@@ -341,6 +342,9 @@ class EvidenceConfig(BaseModel):
     # resolved file must stay inside one of them. Empty roots means the
     # provider stays unregistered (fail closed, same rule as optionals).
     file_log_roots: str = Field(default="data", max_length=1024)
+    # R12F: per-tenant roots as a JSON object {tenant: [roots]}. Parsed
+    # leniently: unparseable input means no mapping (fail closed).
+    file_log_tenant_roots: dict[str, list[str]] = Field(default_factory=dict)
     file_log_max_bytes_per_file: int = Field(default=2097152, ge=1024, le=104857600)
     file_log_max_files: int = Field(default=20, ge=1, le=200)
     # YAML listing Oracle SQLcl MCP servers (no secrets — mounts carry those).
@@ -512,6 +516,58 @@ class KnowledgeConfig(BaseModel):
     graphiti_neo4j_password: SecretStr = Field(default=SecretStr(""))
     graphiti_neo4j_database: str = Field(default="neo4j", min_length=1)
     graphiti_semaphore_limit: int = Field(default=5, ge=1, le=100)
+    fingerprint_key: SecretStr = Field(default=SecretStr(""))
+
+
+def _validate_knowledge_secrets(knowledge: KnowledgeConfig, environment: str) -> None:
+    if environment.strip().lower() not in {"development", "dev", "local", "test", "testing"} and not knowledge.fingerprint_key.get_secret_value():
+        msg = "Boot halted: IAP_KNOWLEDGE_FINGERPRINT_KEY is required outside dev environments"
+        import logging as _logging
+
+        _logging.getLogger(__name__).critical(msg)
+        from investigation_agent_platform.domain.common.exceptions import (
+            PlatformConfigurationError,
+        )
+
+        raise PlatformConfigurationError(msg)
+
+
+def resolve_fingerprint_key(knowledge: KnowledgeConfig, environment: str) -> bytes:
+    secret = knowledge.fingerprint_key.get_secret_value()
+    if secret:
+        return secret.encode("utf-8")
+    if environment.strip().lower() in {"development", "dev", "local", "test", "testing"}:
+        return b"iap-dev-fingerprint-key-not-a-secret"
+    from investigation_agent_platform.domain.common.exceptions import (
+        PlatformConfigurationError,
+    )
+
+    raise PlatformConfigurationError("fingerprint key unavailable")
+
+
+def _tenant_roots_from_env() -> dict[str, list[str]]:
+    """Parse IAP_FILE_LOG_TENANT_ROOTS ({tenant: [roots]}); {} on any fault."""
+    import json as _json
+
+    raw = (os.environ.get("IAP_FILE_LOG_TENANT_ROOTS", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for tenant, roots in parsed.items():
+        try:
+            name = str(tenant or "").strip()
+            paths = [str(r) for r in (roots or []) if str(r or "").strip()]
+            if name and paths:
+                out[name] = paths
+        except Exception:
+            continue
+    return out
 
 
 def _evidence_config_from_env() -> EvidenceConfig:
@@ -536,6 +592,7 @@ def _evidence_config_from_env() -> EvidenceConfig:
         postgres_query_timeout=float(os.environ.get("IAP_POSTGRES_QUERY_TIMEOUT", "30.0")),
         gateway_timeout_seconds=float(os.environ.get("IAP_GATEWAY_TIMEOUT_SECONDS", "30.0")),
         file_log_roots=os.environ.get("IAP_FILE_LOG_ROOTS", "data"),
+        file_log_tenant_roots=_tenant_roots_from_env(),
         file_log_max_bytes_per_file=int(os.environ.get("IAP_FILE_LOG_MAX_BYTES", "2097152")),
         file_log_max_files=int(os.environ.get("IAP_FILE_LOG_MAX_FILES", "20")),
         mapping_profiles_path=os.environ.get(
@@ -649,6 +706,7 @@ def _knowledge_config_from_env() -> KnowledgeConfig:
         ),
         graphiti_neo4j_database=os.environ.get("IAP_KNOWLEDGE_GRAPHITI_NEO4J_DATABASE", "neo4j"),
         graphiti_semaphore_limit=int(os.environ.get("IAP_KNOWLEDGE_GRAPHITI_SEMAPHORE_LIMIT", "5")),
+        fingerprint_key=SecretStr(os.environ.get("IAP_KNOWLEDGE_FINGERPRINT_KEY", "")),
     )
 
 
@@ -863,6 +921,7 @@ def load_application_config_from_yaml(
                     max_overflow=int(
                         os.environ.get("IAP_DB_MAX_OVERFLOW", str(persistence.max_overflow))
                     ),
+                    rls_role_check=os.environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"),
                 ),
                 llm=_llm_config_from_env(
                     model_default=reasoning.model,
@@ -951,6 +1010,7 @@ def load_application_config_from_env() -> ApplicationConfig:
                     connection_uri=SecretStr(db_uri),
                     pool_size=int(os.environ.get("IAP_DB_POOL_SIZE", "10")),
                     max_overflow=int(os.environ.get("IAP_DB_MAX_OVERFLOW", "20")),
+                    rls_role_check=os.environ.get("IAP_DB_RLS_ROLE_CHECK", "warn"),
                 ),
                 llm=_llm_config_from_env(api_key_override=llm_key),
                 budget=BudgetConfig(

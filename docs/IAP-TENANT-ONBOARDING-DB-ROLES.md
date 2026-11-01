@@ -44,3 +44,44 @@ The initial platform grant is minted offline by two distinct authorized operator
 **Canonical digest and scope:** The v0.1 approval digest uses the utility's self-consistent canonical payload serialization; it is not RFC 8785 JCS and is an explicit carve-out until a versioned JCS adapter and vectors are adopted. Platform grants bind exact application and environment values; v0.1 defines no wildcard convention. Do not infer all-applications authority from an empty or special value.
 
 Do not mint the first grant by direct SQL without the dual-person record. The first platform grant must be created by the operator utility after the two-person payload review is complete.
+
+## S0 runtime least-privilege matrix (review R11, 2026-10-31)
+
+Derived from the repository survey (each `SqlAlchemy*Repository` method's verbs); the worker uses the same SQL repos as the API except where noted. Verbs are the minimum the code paths need: no `TRUNCATE`, no `REFERENCES`, no DDL for runtime roles; `USAGE` only on sequences in use. Tables with no repository access path get no grants. Onboarding tables keep their migration-024 grants (referenced, not repeated). `iap_tenant_directory` is `NOLOGIN` (function owner only; created by migration 040, ensured by the provision script).
+
+| Table | iap_app | iap_worker | Notes |
+|---|---|---|---|
+| investigations | SELECT, INSERT, UPDATE, DELETE | same | UPDATE = version-guarded save + soft-delete; DELETE = purge_expired |
+| investigation_facts | SELECT, INSERT | same | append-only |
+| investigation_checkpoints | SELECT, INSERT | same | insert-only |
+| investigation_transitions | SELECT, INSERT | same | insert-only |
+| evidence | SELECT, INSERT, UPDATE, DELETE | same | UPDATE = rehome/merge; DELETE = purge |
+| evidence_relationships | SELECT, INSERT | same | worker lifecycle writes CORROBORATES edges |
+| timeline_events | SELECT, INSERT, DELETE | same | DELETE = purge |
+| hypotheses | SELECT, INSERT, UPDATE | same | UPDATE = version-guarded save |
+| findings | SELECT, INSERT | same | no UPDATE path in repo |
+| investigation_conclusions | SELECT, INSERT, UPDATE | same | UPDATE = guarded rewrite |
+| investigation_contradictions | SELECT, INSERT, UPDATE | same | UPDATE = resolve via save |
+| log_exemplars | SELECT, INSERT | same | 040 adds RLS; verbs unchanged |
+| evidence_bank_interest | SELECT, INSERT | same | 040 adds RLS; verbs unchanged |
+| application_profiles | SELECT, INSERT, DELETE | SELECT | DELETE = DRAFT-only profile delete (API router only) |
+| idempotency_keys | SELECT, INSERT, UPDATE, DELETE | same | DELETE = abandon/reclaim |
+| outbox_events | SELECT, INSERT, UPDATE | same | UPDATE = dispatch marks |
+| action_executions | SELECT, INSERT | same | append-only |
+| knowledge_artifacts | SELECT, INSERT, UPDATE | same | UPDATE = update_status/demote_shared |
+| investigation_sessions | SELECT, INSERT | same | append-only |
+| code_issue_index | SELECT, INSERT | same | advisory-lock allocate |
+| background_jobs | SELECT, INSERT, UPDATE | same | UPDATE = version-guarded save |
+| quota_counters | SELECT, INSERT, UPDATE | same | atomic check/release |
+| input_requirements | SELECT, INSERT, UPDATE | same | UPDATE = set_state |
+| input_fulfillments | SELECT, INSERT | same | insert-or-ignore |
+| finding_clusters, finding_cluster_assignments, finding_embeddings | SELECT, INSERT, UPDATE | same | analytics clustering |
+| chat_sessions, chat_messages | SELECT, INSERT, DELETE | — | API/chat service only; worker has no access path |
+| reference_document_chunks, reference_index_generations | SELECT, INSERT, UPDATE, DELETE | same | DELETE = reindex purge |
+| batch_intake_records | SELECT, INSERT, UPDATE, DELETE | same | DELETE = record trim |
+| proof_derivations, proof_publication_commits | SELECT, INSERT, UPDATE | same | UPDATE = guarded advance |
+| sequences in public | USAGE, SELECT | same | via ALTER DEFAULT PRIVILEGES for migrator-owned sequences |
+| topology_snapshots, investigation_entities, evidence_references, investigation_actions, investigation_tool_executions, evidence_attributes, agent_actions, hypothesis_evidence | — | — | no repository access path; no grants |
+| onboarding_* tables | per migration 024 | per migration 024 | unchanged by S0 |
+
+`iap_migrator` owns the core tables (transferred `IF EXISTS`, same pattern as the onboarding transfer) and runs migrations; `iap_registry_admin` keeps its 024 registry grants and gains no core-table grants (no repository). The provision script (`scripts/provision-onboarding-db-roles.sql`, S0 section) is the executable form of this matrix; `tests/unit/test_s0_grants_matrix.py` pins script-vs-matrix parity, and the db dry-run pins clean execution plus `has_table_privilege` spot checks on a disposable database.

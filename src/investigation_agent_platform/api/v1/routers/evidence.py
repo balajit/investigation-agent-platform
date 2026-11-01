@@ -147,7 +147,9 @@ async def get_evidence(
             http_status=status.HTTP_400_BAD_REQUEST,
             message="Invalid evidence id",
         ) from exc
-    evidence = await ctx.evidence_repo.get_by_id(x_tenant_id, evidence_uuid)
+    evidence = await ctx.evidence_repo.get_for_investigation(
+        x_tenant_id, investigation_uuid, evidence_uuid
+    )
     if not evidence:
         raise ApiError(
             code="EVIDENCE_NOT_FOUND",

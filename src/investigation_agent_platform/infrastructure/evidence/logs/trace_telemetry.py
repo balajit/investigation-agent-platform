@@ -39,10 +39,12 @@ from investigation_agent_platform.domain.evidence.telemetry import (
     TraceTelemetry,
 )
 from investigation_agent_platform.domain.observability.mapping import (
+    GENERIC_ECS_DELIMITED_SOURCE_ID,
     GENERIC_ECS_SOURCE_ID,
     CodeLocationMapping,
     FieldMapping,
     ObservabilitySourceMapping,
+    generic_ecs_delimited_mapping,
     generic_ecs_mapping,
 )
 from investigation_agent_platform.domain.profile.models import ApplicationProfile
@@ -380,6 +382,8 @@ class TraceTelemetryExtractor(TraceTelemetryPort, TraceTelemetryDerivationPort):
         """Resolve a stamped mapping id; fail closed before any derivation."""
         if source_id is None or source_id == GENERIC_ECS_SOURCE_ID:
             return generic_ecs_mapping()
+        if source_id == GENERIC_ECS_DELIMITED_SOURCE_ID:
+            return generic_ecs_delimited_mapping()
         if self.mapping_registry is None:
             raise PlatformConfigurationError(
                 "Trace derivation names an observability mapping but this "

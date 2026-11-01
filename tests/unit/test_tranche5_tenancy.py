@@ -136,30 +136,27 @@ class TestR5OnlyActiveRevisionAuthorizes:
 
 
 class TestR2IndexPatternTenantIsolation:
-    """Reproduced, not yet fixable in code alone (needs an operator decision)."""
+    """R2-ops: delimited `--` convention (code half IMPLEMENTED)."""
 
     @staticmethod
     def _pattern(tenant: str, environment: str = "prod") -> str:
         from investigation_agent_platform.infrastructure.evidence.runtime.validation import (
+            build_delimited_pattern,
+        )
+
+        return build_delimited_pattern(tenant, environment)
+
+    def test_probe_reproduces_the_prefix_collision(self) -> None:
+        # Legacy DASH shape still collides (migration aid until cutover):
+        # Index naming convention: logs-{tenant}-{service}-{env}-{n}.
+        # Tenant "acme-eu" with service "svc" owns this index ...
+        from investigation_agent_platform.infrastructure.evidence.runtime.validation import (
             build_index_pattern,
         )
 
-        return build_index_pattern(tenant, environment)
-
-    def test_probe_reproduces_the_prefix_collision(self) -> None:
-        # Index naming convention: logs-{tenant}-{service}-{env}-{n}.
-        # Tenant "acme-eu" with service "svc" owns this index ...
         sibling_index = "logs-acme-eu-svc-prod-1"
         # ... and tenant "acme"'s wildcard also matches it.
-        assert fnmatch.fnmatchcase(sibling_index, self._pattern("acme"))
+        assert fnmatch.fnmatchcase(sibling_index, build_index_pattern("acme", "prod"))
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "R2: needs a reserved tenant/service delimiter in the index naming "
-            "convention (re-index + filebeat change) or forbidding '-' in tenant IDs "
-            "(breaks existing tenants such as n-a); operator decision pending"
-        ),
-    )
     def test_tenant_pattern_must_not_match_a_sibling_tenants_index(self) -> None:
-        assert not fnmatch.fnmatchcase("logs-acme-eu-svc-prod-1", self._pattern("acme"))
+        assert not fnmatch.fnmatchcase("logs-acme-eu--svc-prod-1", self._pattern("acme"))

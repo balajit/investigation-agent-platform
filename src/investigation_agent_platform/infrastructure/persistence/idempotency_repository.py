@@ -39,6 +39,36 @@ class SqlAlchemyIdempotencyStore:
         self._session_factory = db_session_factory
         self._ttl_seconds = ttl_seconds
 
+    def _reserve_stmt(self, tenant_id: str, key: str, request_hash: str, now: datetime):  # type: ignore[no-untyped-def]
+        return (
+            pg_insert(IdempotencyKeyORM)
+            .values(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                idempotency_key=key,
+                request_hash=request_hash,
+                response_status=_PENDING_STATUS,
+                response_json={},
+                created_at=now,
+                expires_at=now + timedelta(seconds=self._ttl_seconds),
+            )
+            .on_conflict_do_nothing(constraint="uq_idempotency_tenant_key")
+            .returning(IdempotencyKeyORM.id)
+        )
+
+    async def _reclaim_and_reserve(self, session: Any, row: Any, tenant_id: str, key: str, request_hash: str, now: datetime) -> tuple[dict[str, Any] | None, bool]:
+        # R12C: one transaction — delete, flush, re-insert. The unique
+        # constraint arbitrates concurrent reclaimers; the loser sees an
+        # empty insert and reports in-progress below.
+        await session.delete(row)
+        await session.flush()
+        inserted = await session.execute(self._reserve_stmt(tenant_id, key, request_hash, now))
+        if inserted.first() is not None:
+            return None, True
+        raise IdempotencyInProgressError(
+            f"A request with idempotency key '{key}' is already in progress"
+        )
+
     # P0-1b: a PENDING row older than this cannot be a live owner — the
     # longest activity timeout in the system is 120s, so 180s clears any
     # genuine owner with margin. Owners die without completing on worker
@@ -61,24 +91,10 @@ class SqlAlchemyIdempotencyStore:
 
         key = scoped_idempotency_key(key, operation, application_id)
         now = datetime.now(UTC)
-        expires_at = now + timedelta(seconds=self._ttl_seconds)
         async with rls_session(self._session_factory, tenant_id) as session:
-            stmt = (
-                pg_insert(IdempotencyKeyORM)
-                .values(
-                    id=uuid4(),
-                    tenant_id=tenant_id,
-                    idempotency_key=key,
-                    request_hash=request_hash,
-                    response_status=_PENDING_STATUS,
-                    response_json={},
-                    created_at=now,
-                    expires_at=expires_at,
-                )
-                .on_conflict_do_nothing(constraint="uq_idempotency_tenant_key")
-                .returning(IdempotencyKeyORM.id)
+            result = await session.execute(
+                self._reserve_stmt(tenant_id, key, request_hash, now)
             )
-            result = await session.execute(stmt)
             if result.first() is not None:
                 return None, True
 
@@ -96,11 +112,11 @@ class SqlAlchemyIdempotencyStore:
                     f"Idempotency key '{key}' reservation could not be resolved"
                 )
             if row.expires_at is not None and row.expires_at.replace(tzinfo=UTC) < now:
-                # Expired: safe to reuse — delete and let caller retry the
-                # reservation on the next call rather than racing an UPDATE here.
-                await session.delete(row)
-                raise IdempotencyInProgressError(
-                    f"Idempotency key '{key}' expired; retry the request"
+                # Expired: reclaim in the same transaction (R12C). An
+                # expired key is reusable regardless of the old request
+                # hash — no conflict error.
+                return await self._reclaim_and_reserve(
+                    session, row, tenant_id, key, request_hash, now
                 )
             if row.request_hash != request_hash:
                 raise IdempotencyConflictError(
@@ -119,28 +135,10 @@ class SqlAlchemyIdempotencyStore:
                     age = 0.0
                 if age > self._ORPHAN_AFTER_SECONDS:
                     # Orphaned owner (restart/timeout without complete):
-                    # reclaim and re-attempt the insert below instead of
-                    # wedging retries until the 24h TTL.
-                    await session.delete(row)
-                    await session.flush()
-                    stmt = (
-                        pg_insert(IdempotencyKeyORM)
-                        .values(
-                            id=uuid4(),
-                            tenant_id=tenant_id,
-                            idempotency_key=key,
-                            request_hash=request_hash,
-                            response_status=_PENDING_STATUS,
-                            response_json={},
-                            created_at=now,
-                            expires_at=now + timedelta(seconds=self._ttl_seconds),
-                        )
-                        .on_conflict_do_nothing(constraint="uq_idempotency_tenant_key")
-                        .returning(IdempotencyKeyORM.id)
+                    # reclaim exactly like an expired row (R12C).
+                    return await self._reclaim_and_reserve(
+                        session, row, tenant_id, key, request_hash, now
                     )
-                    result = await session.execute(stmt)
-                    if result.first() is not None:
-                        return None, True
                 raise IdempotencyInProgressError(
                     f"A request with idempotency key '{key}' is already in progress"
                 )

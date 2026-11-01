@@ -222,7 +222,9 @@ class TestReasonApplicationContext:
                 )
             ),
         )
-        block = await coord._application_context_block("tenant-a", "example-app")
+        block = await coord._application_context_block(
+            "tenant-a", "example-app", loop_version="lv7"
+        )
         assert block["services"] == [{"name": "payments-service", "role": "edge"}]
         assert block["domain"] == "payments"
         assert block["planes"] == ["backend"]
@@ -269,7 +271,9 @@ class TestReasonApplicationContext:
             prompt_safety_policy=SimpleNamespace(validate_prompt_safety=None),
             profile_repo=_ProfileRepo(profile),
         )
-        block = await coord._application_context_block("tenant-a", "example-app")
+        block = await coord._application_context_block(
+            "tenant-a", "example-app", loop_version="lv7"
+        )
         assert block["state_templates"] == [
             {
                 "template_id": "primary.by_status",

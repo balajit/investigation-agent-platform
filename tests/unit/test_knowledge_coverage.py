@@ -66,6 +66,7 @@ class TestFingerprint:
         )
 
         fp_a = build_code_issue_fingerprint(
+            key=b"test-key-a-32-bytes-0123456789ab",
             error_class="NPE",
             repository="org/svc",
             revision="abc",
@@ -74,6 +75,7 @@ class TestFingerprint:
             top_frame_file="src/a.py",
         )
         fp_b = build_code_issue_fingerprint(
+            key=b"test-key-a-32-bytes-0123456789ab",
             error_class="NPE",
             repository="org/svc",
             revision="abc",
@@ -82,7 +84,8 @@ class TestFingerprint:
             top_frame_file="src/a.py",
         )
         assert fp_a == fp_b
-        assert len(fp_a) == 64
+        assert fp_a.startswith("hk1:")
+        assert len(fp_a) == 68
 
     def test_sensitive_inputs_change_nothing_or_reject(self) -> None:
         # Tenant/customer/timestamp data must never be fingerprint inputs:
@@ -104,6 +107,7 @@ class TestFingerprint:
         )
 
         base = {
+            "key": b"test-key-a-32-bytes-0123456789ab",
             "error_class": "NPE",
             "repository": "org/svc",
             "revision": "abc",
@@ -120,6 +124,7 @@ class TestFingerprint:
 
         with pytest.raises(ValueError):
             build_code_issue_fingerprint(
+                key=b"test-key-a-32-bytes-0123456789ab",
                 error_class="E",
                 repository="r",
                 revision="rev",
@@ -217,7 +222,8 @@ class TestIntakeMerge:
         result = await service.intake(**_intake_kwargs())
         assert result.merged is False
         assert result.session_number == 1
-        assert len(result.code_issue_fingerprint) == 64
+        assert result.code_issue_fingerprint.startswith("hk1:")
+        assert len(result.code_issue_fingerprint) == 68
 
     @pytest.mark.asyncio
     async def test_second_tenant_merges_and_annotates(self) -> None:
@@ -419,12 +425,12 @@ class TestValidityGating:
             refresh_policy="IMMUTABLE",
             valid_from=datetime.now(UTC),
             visibility="SHARED_CODE_ISSUE",
-            code_issue_fingerprint="fp-123",
+            code_issue_fingerprint="hk1:" + "1" * 64,
         )
         await ctx.artifact_repo.save("tenant-a", shared)
-        # Tenant B holds a session on fp-123: membership proof passed explicitly.
+        # Tenant B holds a session on the fingerprint: membership proof passed explicitly.
         context = await self._service(ctx).retrieve_for_reasoning(
-            "tenant-b", "app-1", uuid.uuid4(), code_issue_fingerprints=["fp-123"]
+            "tenant-b", "app-1", uuid.uuid4(), code_issue_fingerprints=["hk1:" + "1" * 64]
         )
         assert [v.artifact_id for v in context.verified_facts] == [shared.id]
 
@@ -443,7 +449,7 @@ class TestValidityGating:
             refresh_policy="IMMUTABLE",
             valid_from=datetime.now(UTC),
             visibility="SHARED_CODE_ISSUE",
-            code_issue_fingerprint="fp-123",
+            code_issue_fingerprint="hk1:" + "1" * 64,
         )
         await ctx.artifact_repo.save("tenant-a", shared)
         context = await self._service(ctx).retrieve_for_reasoning("tenant-b", "app-1", uuid.uuid4())
@@ -551,7 +557,8 @@ class TestKnowledgeEndpoints:
         body = resp.json()
         assert body["merged"] is False
         assert body["session_number"] == 1
-        assert len(body["code_issue_fingerprint"]) == 64
+        assert body["code_issue_fingerprint"].startswith("hk1:")
+        assert len(body["code_issue_fingerprint"]) == 68
 
     def test_intake_rejects_non_service_principal(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         client, _ = self._client(monkeypatch, principal="mallory")
@@ -613,10 +620,8 @@ class TestKnowledgeEndpoints:
         ).json()
         assert len(body["sessions"]) == 1
         assert body["sessions"][0]["session_number"] == 1
-        assert len(body["other_tenant_sessions"]) == 1
-        assert body["other_tenant_sessions"][0]["session_number"] == 2
-        assert body["other_tenant_sessions"][0]["tenant"] == "[redacted]"
-        assert "log_refs" not in body["other_tenant_sessions"][0]
+        # R1-D6: presence oracle gated — no opt-in, no other-tenant sessions.
+        assert len(body["other_tenant_sessions"]) == 0
 
     def test_knowledge_search_scoped(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         client, ctx = self._client(monkeypatch)
@@ -756,7 +761,13 @@ class TestKnowledgeMigrationChain:
         newest38 = script.get_revision("038_conclusion_s7_handoff")
         assert newest38 is not None
         assert newest38.down_revision == "037_conclusion_eliminated_rivals"
-        assert script.get_heads() == ["038_conclusion_s7_handoff"]
+        newest39 = script.get_revision("039_knowledge_shared_split")
+        assert newest39 is not None
+        assert newest39.down_revision == "038_conclusion_s7_handoff"
+        newest40 = script.get_revision("040_rls_remaining_tenant_tables")
+        assert newest40 is not None
+        assert newest40.down_revision == "039_knowledge_shared_split"
+        assert script.get_heads() == ["040_rls_remaining_tenant_tables"]
 
     def test_orm_tables_registered(self) -> None:
         from investigation_agent_platform.infrastructure.persistence.models import Base

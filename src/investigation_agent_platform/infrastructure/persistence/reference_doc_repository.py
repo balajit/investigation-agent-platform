@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
@@ -216,7 +216,11 @@ class SqlAlchemyReferenceDocRepository:
             return count
 
     async def lexical_candidates(
-        self, tenant_id: str, query: str, limit: int
+        self,
+        tenant_id: str,
+        query: str,
+        limit: int,
+        application_id: str | None = None,
     ) -> list[ReferenceDocumentChunkORM]:
         async with rls_session(self._session_factory, tenant_id) as session:
             tsquery = func.plainto_tsquery("english", query[:1000])
@@ -227,18 +231,23 @@ class SqlAlchemyReferenceDocRepository:
                 ReferenceIndexGenerationORM.tenant_id == tenant_id,
                 ReferenceIndexGenerationORM.status == GenerationStatus.ACTIVE.value,
             )
+            conditions = [
+                ReferenceDocumentChunkORM.tenant_id == tenant_id,
+                ReferenceDocumentChunkORM.lifecycle == ChunkLifecycle.ACTIVE.value,
+                tuple_(
+                    ReferenceDocumentChunkORM.source_id,
+                    ReferenceDocumentChunkORM.generation,
+                ).in_(active_gens),
+                ReferenceDocumentChunkORM.lexical_tsv.op("@@")(tsquery),
+            ]
+            if application_id is not None:
+                conditions.append(
+                    ReferenceDocumentChunkORM.application_id == application_id
+                )
             rows = (
                 await session.scalars(
                     select(ReferenceDocumentChunkORM)
-                    .where(
-                        ReferenceDocumentChunkORM.tenant_id == tenant_id,
-                        ReferenceDocumentChunkORM.lifecycle == ChunkLifecycle.ACTIVE.value,
-                        tuple_(
-                            ReferenceDocumentChunkORM.source_id,
-                            ReferenceDocumentChunkORM.generation,
-                        ).in_(active_gens),
-                        ReferenceDocumentChunkORM.lexical_tsv.op("@@")(tsquery),
-                    )
+                    .where(*conditions)
                     .order_by(func.ts_rank(ReferenceDocumentChunkORM.lexical_tsv, tsquery).desc())
                     .limit(max(1, min(limit, 60)))
                 )
@@ -252,12 +261,17 @@ class SqlAlchemyReferenceDocRepository:
         embedding_model: str,
         embedding_version: str,
         limit: int,
+        application_id: str | None = None,
     ) -> list[ReferenceDocumentChunkORM]:
         if len(vector) != REFERENCE_EMBEDDING_DIMS:
             raise ConcurrencyError(
                 f"Query vector has {len(vector)} dims, expected {REFERENCE_EMBEDDING_DIMS}"
             )
         async with rls_session(self._session_factory, tenant_id) as session:
+            # R12B: iterative scan so a small tenant competes for recall
+            # instead of losing ef_search candidates to bigger tenants.
+            await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+            await session.execute(text("SET LOCAL hnsw.max_scan_tuples = 20000"))
             active_gens = select(
                 ReferenceIndexGenerationORM.source_id,
                 ReferenceIndexGenerationORM.generation,
@@ -265,20 +279,25 @@ class SqlAlchemyReferenceDocRepository:
                 ReferenceIndexGenerationORM.tenant_id == tenant_id,
                 ReferenceIndexGenerationORM.status == GenerationStatus.ACTIVE.value,
             )
+            conditions = [
+                ReferenceDocumentChunkORM.tenant_id == tenant_id,
+                ReferenceDocumentChunkORM.lifecycle == ChunkLifecycle.ACTIVE.value,
+                ReferenceDocumentChunkORM.embedding_model == embedding_model,
+                ReferenceDocumentChunkORM.embedding_version == embedding_version,
+                ReferenceDocumentChunkORM.embedding.is_not(None),
+                tuple_(
+                    ReferenceDocumentChunkORM.source_id,
+                    ReferenceDocumentChunkORM.generation,
+                ).in_(active_gens),
+            ]
+            if application_id is not None:
+                conditions.append(
+                    ReferenceDocumentChunkORM.application_id == application_id
+                )
             rows = (
                 await session.scalars(
                     select(ReferenceDocumentChunkORM)
-                    .where(
-                        ReferenceDocumentChunkORM.tenant_id == tenant_id,
-                        ReferenceDocumentChunkORM.lifecycle == ChunkLifecycle.ACTIVE.value,
-                        ReferenceDocumentChunkORM.embedding_model == embedding_model,
-                        ReferenceDocumentChunkORM.embedding_version == embedding_version,
-                        ReferenceDocumentChunkORM.embedding.is_not(None),
-                        tuple_(
-                            ReferenceDocumentChunkORM.source_id,
-                            ReferenceDocumentChunkORM.generation,
-                        ).in_(active_gens),
-                    )
+                    .where(*conditions)
                     .order_by(ReferenceDocumentChunkORM.embedding.cosine_distance(vector))
                     .limit(max(1, min(limit, 60)))
                 )

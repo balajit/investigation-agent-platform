@@ -49,15 +49,20 @@ _EVALUATED_STATIC_TYPE = {
 
 
 class Span(BaseModel):
-    """File-scoped location for a model record."""
+    """File-scoped location for a model record (tree-sitter byte columns)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     file_path: str = Field(min_length=1, max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
-    col_start: int = Field(default=0, ge=0)
-    col_end: int = Field(default=0, ge=0)
+    byte_col_start: int = Field(default=0, ge=0)
+    byte_col_end: int = Field(default=0, ge=0)
+
+
+def code_point_column(line_text: str, byte_col: int) -> int:
+    """Convert a UTF-8 byte offset within ``line_text`` to a code-point column."""
+    return len(line_text.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
 class LiteralValue(BaseModel):
@@ -188,6 +193,7 @@ class DataflowBinding(BaseModel):
     symbol: str = Field(max_length=512)
     kind: Literal["local", "parameter"]
     has_initializer: bool = False
+    var_type: str = Field(default="unknown", max_length=512)
     span: Span
     # Start bytes of every control-flow construct enclosing the declaration
     # (J3). Compared with an event's set to tell straight-line definitions
@@ -211,6 +217,10 @@ class DataflowEvent(BaseModel):
         "read_modify_write",
         "method_argument",
         "early_return",
+        "receiver_call",
+        "member_store",
+        "alias_store",
+        "lambda_capture",
     ]
     value_role: Literal["lvalue", "rvalue", "read_modify_write", "unknown"] = "unknown"
     span: Span
@@ -467,8 +477,8 @@ def _span(node: Any, file_path: str) -> Span:
         file_path=file_path,
         line_start=int(node.start_point[0]) + 1,
         line_end=int(node.end_point[0]) + 1,
-        col_start=int(node.start_point[1]),
-        col_end=int(node.end_point[1]),
+        byte_col_start=int(node.start_point[1]),
+        byte_col_end=int(node.end_point[1]),
     )
 
 
@@ -1040,6 +1050,7 @@ def _build_dataflow_records(
                         (child for child in param.children if child.type == "identifier"), None
                     )
                 if name_node is not None:
+                    param_type_node = param.child_by_field_name("type")
                     bindings.append(
                         DataflowBinding(
                             method_identity=identity,
@@ -1047,6 +1058,11 @@ def _build_dataflow_records(
                             symbol=_p.node_text(name_node, source).strip(),
                             kind="parameter",
                             has_initializer=False,
+                            var_type=(
+                                _p.node_text(param_type_node, source).strip()
+                                if param_type_node is not None
+                                else "unknown"
+                            ),
                             span=_span(param, file_path),
                         )
                     )
@@ -1057,6 +1073,12 @@ def _build_dataflow_records(
             if name_node is None:
                 continue
             scope_id = scope_of(method_node, node, identity)
+            declaration = node.parent
+            local_type_node = (
+                declaration.child_by_field_name("type")
+                if declaration is not None
+                else None
+            )
             bindings.append(
                 DataflowBinding(
                     method_identity=scope_id,
@@ -1064,6 +1086,11 @@ def _build_dataflow_records(
                     symbol=_p.node_text(name_node, source).strip(),
                     kind="local",
                     has_initializer=node.child_by_field_name("value") is not None,
+                    var_type=(
+                        _p.node_text(local_type_node, source).strip()
+                        if local_type_node is not None
+                        else "unknown"
+                    ),
                     span=_span(node, file_path),
                     control_context=_control_context(node),
                 )
@@ -1085,6 +1112,100 @@ def _build_dataflow_records(
                 return current
             current = scope_parents.get(current)
         return scope_id
+
+    def bound_outside(symbol: str, scope_id: str) -> bool:
+        """True when a scope enclosing ``scope_id`` binds the symbol."""
+        current = scope_parents.get(scope_id)
+        seen: set[str] = set()
+        while current is not None and current not in seen:
+            seen.add(current)
+            if symbol in bound.get(current, ()):
+                return True
+            current = scope_parents.get(current)
+        return False
+
+    def bound_in_chain(symbol: str, scope_id: str) -> bool:
+        """True when ``scope_id`` or any scope enclosing it binds the symbol."""
+        current: str | None = scope_id
+        seen: set[str] = set()
+        while current is not None and current not in seen:
+            seen.add(current)
+            if symbol in bound.get(current, ()):
+                return True
+            current = scope_parents.get(current)
+        return False
+
+    def lambda_bound_names(lambda_node: Any) -> set[str]:
+        """Names bound by one lambda: inferred/typed params plus block locals."""
+        names: set[str] = set()
+        has_formal = False
+        for child in lambda_node.children:
+            if child.type == "formal_parameters":
+                has_formal = True
+                for param in child.children:
+                    if param.type not in {"formal_parameter", "spread_parameter"}:
+                        continue
+                    name_node = param.child_by_field_name("name")
+                    if name_node is not None:
+                        names.add(_p.node_text(name_node, source).strip())
+            elif child.type == "identifier" and not has_formal:
+                names.add(_p.node_text(child, source).strip())
+        body = lambda_node.child_by_field_name("body")
+        if body is not None:
+            for sub in _p.walk(body):
+                if sub.type == "variable_declarator":
+                    name_node = sub.child_by_field_name("name")
+                    if name_node is not None:
+                        names.add(_p.node_text(name_node, source).strip())
+        return names
+
+    def is_capture(symbol: str, node: Any, walk_root: Any, scope_id: str) -> bool:
+        """True when the use reads an outer binding through a lambda/anonymous scope.
+
+        A lambda body shares its enclosing method's scope, so a use of a
+        method binding inside one is a capture (unless the lambda binds the
+        name itself as a parameter or block local). An anonymous class body
+        contains methods with their own scopes, so only uses bound strictly
+        outside the occurrence scope count. Names bound nowhere keep their
+        old value_use shape.
+        """
+        current = node.parent
+        while current is not None and not _same_node(current, walk_root):
+            if current.type == "lambda_expression":
+                if symbol in lambda_bound_names(current):
+                    return False
+                return bound_in_chain(symbol, scope_id)
+            if (
+                current.type == "class_body"
+                and current.parent is not None
+                and current.parent.type == "object_creation_expression"
+            ):
+                return bound_outside(symbol, scope_id)
+            current = current.parent
+        return False
+
+    def access_base(node: Any) -> Any | None:
+        """Leftmost identifier of a field/array access chain, else None."""
+        current = node
+        while current is not None and current.type in {"field_access", "array_access"}:
+            field = "object" if current.type == "field_access" else "array"
+            current = current.child_by_field_name(field)
+        return current if current is not None and current.type == "identifier" else None
+
+    def in_aliased_right(node: Any) -> bool:
+        """True when node sits in the right of an assignment whose lvalue is not plain."""
+        current = node
+        parent = current.parent
+        while parent is not None:
+            if parent.type == "assignment_expression":
+                left = parent.child_by_field_name("left")
+                right = parent.child_by_field_name("right")
+                if right is not None and _contains(right, node):
+                    return left is None or left.type != "identifier"
+                return False
+            current = parent
+            parent = current.parent
+        return False
 
     for method_node, method, identity in paired:
         for node in _p.walk(method_node):
@@ -1125,6 +1246,21 @@ def _build_dataflow_records(
                                 kind="read_modify_write",
                                 value_role="read_modify_write",
                                 span=_span(left, file_path),
+                            )
+                        )
+                elif left is not None:
+                    base = access_base(left)
+                    if base is not None:
+                        symbol = _p.node_text(base, source).strip()
+                        scope_id = attribute(symbol, scope_of(method_node, base, identity))
+                        events.append(
+                            DataflowEvent(
+                                method_identity=scope_id,
+                                symbol=symbol,
+                                kind="member_store",
+                                value_role="read_modify_write",
+                                span=_span(base, file_path),
+                                control_context=_control_context(node),
                             )
                         )
             if node.type == "update_expression":
@@ -1187,18 +1323,68 @@ def _build_dataflow_records(
                     "compact_constructor_declaration",
                 }:
                     continue
+                symbol = _p.node_text(node, source).strip()
+                occurrence_scope = scope_of(method_node, node, identity)
+                scope_id = attribute(symbol, occurrence_scope)
+                if parent is not None and parent.type == "method_invocation":
+                    object_node = parent.child_by_field_name("object")
+                    if object_node is not None and _same_node(object_node, node):
+                        events.append(
+                            DataflowEvent(
+                                method_identity=scope_id,
+                                symbol=symbol,
+                                kind="receiver_call",
+                                value_role="rvalue",
+                                span=_span(node, file_path),
+                                control_context=_control_context(node),
+                            )
+                        )
+                        if is_capture(symbol, node, method_node, occurrence_scope):
+                            events.append(
+                                DataflowEvent(
+                                    method_identity=scope_id,
+                                    symbol=symbol,
+                                    kind="lambda_capture",
+                                    value_role="rvalue",
+                                    span=_span(node, file_path),
+                                    control_context=_control_context(node),
+                                )
+                            )
+                    continue
                 if parent is not None and parent.type in {
                     "variable_declarator",
                     "formal_parameter",
-                    "method_invocation",
                 }:
                     continue
                 if parent is not None and parent.type == "assignment_expression":
                     left = parent.child_by_field_name("left")
                     if left is not None and _same_node(left, node):
                         continue
+                if in_aliased_right(node):
+                    events.append(
+                        DataflowEvent(
+                            method_identity=scope_id,
+                            symbol=symbol,
+                            kind="alias_store",
+                            value_role="rvalue",
+                            span=_span(node, file_path),
+                            control_context=_control_context(node),
+                        )
+                    )
+                    continue
+                if is_capture(symbol, node, method_node, occurrence_scope):
+                    events.append(
+                        DataflowEvent(
+                            method_identity=scope_id,
+                            symbol=symbol,
+                            kind="lambda_capture",
+                            value_role="rvalue",
+                            span=_span(node, file_path),
+                            control_context=_control_context(node),
+                        )
+                    )
+                    continue
                 in_return = parent is not None and parent.type == "return_statement"
-                symbol = _p.node_text(node, source).strip()
                 events.append(
                     DataflowEvent(
                         method_identity=attribute(symbol, scope_of(method_node, node, identity)),
@@ -1221,8 +1407,8 @@ def _build_dataflow_records(
             binding.kind,
             binding.span.line_start,
             binding.span.line_end,
-            binding.span.col_start,
-            binding.span.col_end,
+            binding.span.byte_col_start,
+            binding.span.byte_col_end,
         )
         if key not in seen_bindings:
             seen_bindings.add(key)
@@ -1237,8 +1423,8 @@ def _build_dataflow_records(
             event.value_role,
             event.span.line_start,
             event.span.line_end,
-            event.span.col_start,
-            event.span.col_end,
+            event.span.byte_col_start,
+            event.span.byte_col_end,
         )
         if key not in seen_events:
             seen_events.add(key)

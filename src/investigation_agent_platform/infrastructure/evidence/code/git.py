@@ -14,6 +14,7 @@ from uuid import UUID
 import pygit2
 from opentelemetry import trace
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.common.exceptions import (
     CodePathNotFoundError,
     ExecutionError,
@@ -75,18 +76,10 @@ class PyGit2Adapter:
 
     @staticmethod
     def _split_repo_entry(svc_org: str, repo: str) -> str:
-        """Locator for one repos entry.
+        """Locator for one repos entry (delegates to the profile scope rule)."""
+        from investigation_agent_platform.domain.profile.scope import repo_locator
 
-        Entries may carry their own org (``otherorg/shared-libs`` for
-        cross-org checkouts); otherwise the service org applies. Bare
-        names stay bare. One slash max — deeper paths are not locators.
-        """
-        repo = str(repo or "").strip().strip("/")
-        if "/" in repo:
-            org, name = repo.split("/", 1)
-            if org and name and "/" not in name:
-                return f"{org}/{name}"
-            return repo
+        return repo_locator(svc_org, repo)
         if svc_org and repo:
             return f"{svc_org}/{repo}"
         return repo
@@ -512,7 +505,7 @@ class PyGit2Adapter:
                 f"Path not found in any declared repository [{tried}]: {file_path}"
             ) from last_miss
 
-        lines = raw_text.splitlines()
+        lines = split_source_lines(raw_text)
         # P1-2: explicit 1-indexed inclusive ranges return exactly the
         # requested window with numbered lines; otherwise the bounded head
         # (previous behavior). Provenance always records the ACTUAL range.

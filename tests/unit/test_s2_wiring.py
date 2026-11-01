@@ -5,10 +5,13 @@ reasoning-context section, budget pricing. No live model calls."""
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from test_j9_scope import _profile as _j9_profile
+from test_j9_scope import _svc as _j9_svc
+
 from investigation_agent_platform.application.investigation.context_compiler import (
+    boundary_classifier,
     compile_dormant_templates,
     compile_reasoning_context,
-    external_classifier_for_roots,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence, EvidenceType
 from investigation_agent_platform.domain.investigation.models import (
@@ -18,6 +21,7 @@ from investigation_agent_platform.domain.investigation.models import (
     InvestigationRequest,
     InvestigationState,
 )
+from investigation_agent_platform.domain.profile.scope import BoundaryClass
 from investigation_agent_platform.domain.provenance.models import (
     EvidenceFreshness,
     EvidenceProvenance,
@@ -184,7 +188,8 @@ def test_anchors_and_budget_rendered():
 
 
 def test_grouped_cross_boundary_handoff_never_fetches():
-    is_external = external_classifier_for_roots(["tenant/"])
+    profile = _j9_profile([_j9_svc("svc", "tenant", ["repo"], roots=["tenant/"])])
+    classify = boundary_classifier(profile)
     rows = [
         _range_row(
             "30| resp = httpClient.post(path, body)\n"
@@ -195,10 +200,11 @@ def test_grouped_cross_boundary_handoff_never_fetches():
             line_end=40,
         ),
     ]
-    section = compile_dormant_templates(rows, anchors=_anchors(), is_external=is_external)
+    section = compile_dormant_templates(rows, anchors=_anchors(), classify=classify)
     assert len(section["templates"]) == 1
     entry = section["templates"][0]
     assert entry["discriminating_fetch"] is None
+    assert entry["boundary"] == "external"
     assert entry["assumptions"] == []
     handoff = entry["handoff"]
     assert handoff is not None
@@ -210,25 +216,27 @@ def test_grouped_cross_boundary_handoff_never_fetches():
     assert "fetch_kind" not in handoff
 
 
-def test_in_tenant_default_when_no_roots():
-    assert external_classifier_for_roots(None)("tenant/svc/c.py") is True
-    assert external_classifier_for_roots([])("tenant/svc/c.py") is True
+def test_unknown_roots_keep_fetch_and_mark_unknown():
     section = compile_dormant_templates(
         [_range_row(EXTERNAL_SNIPPET, file_path="tenant/svc/c.py")],
         anchors=_anchors(),
-        is_external=external_classifier_for_roots([]),
+        classify=boundary_classifier(None),
+        roots_status="unavailable",
     )
-    assert section["templates"][0]["discriminating_fetch"] is None
-    assert section["templates"][0]["handoff"] is not None
+    assert section["roots_status"] == "unavailable"
+    assert section["templates"][0]["discriminating_fetch"] is not None
+    assert section["templates"][0]["handoff"] is None
+    assert section["templates"][0]["boundary"] == "unknown"
 
 
 def test_classifier_roots_mirror_validator():
-    is_external = external_classifier_for_roots(["tenant/"])
-    assert is_external is not None
-    assert is_external("tenant/svc/app.py") is False
-    assert is_external("tenant") is False
-    assert is_external("upstream/lib/a.py") is True
-    assert is_external("tenant-evil/x.py") is True
+    profile = _j9_profile([_j9_svc("svc", "tenant", ["repo"], roots=["tenant/"])])
+    classify = boundary_classifier(profile)
+    assert classify is not None
+    assert classify("", "tenant/svc/app.py") == BoundaryClass.IN_TENANT
+    assert classify("", "tenant") == BoundaryClass.IN_TENANT
+    assert classify("", "upstream/lib/a.py") == BoundaryClass.EXTERNAL
+    assert classify("", "tenant-evil/x.py") == BoundaryClass.EXTERNAL
 
 
 def test_template_count_capped():

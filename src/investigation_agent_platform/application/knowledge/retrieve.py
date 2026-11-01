@@ -478,9 +478,12 @@ class KnowledgeRetrievalService:
     async def _transition(
         self, tenant_id: str, artifact: KnowledgeArtifact, status: ArtifactStatus
     ) -> None:
-        transitioned = artifact.model_copy(update={"status": status})
+        # R12A: a foreign SHARED row is excluded, never written by the
+        # reader (R1's policy split would block the write anyway).
+        if artifact.tenant_id != tenant_id:
+            return
         try:
-            await self.artifact_repo.save(tenant_id, transitioned)
+            await self.artifact_repo.update_status(tenant_id, artifact.id, status)
         except Exception as exc:
             logger.warning(
                 "Artifact status transition failed",

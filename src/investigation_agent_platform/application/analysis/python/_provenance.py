@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.evidence.models import EvidenceType
 
 _RANGE_OPERATIONS = frozenset({"GET_CODE", "GET_SOURCE", "READ_FILE"})
@@ -56,7 +57,7 @@ def python_source_lines(evidence: Any) -> tuple[list[ParsedLine], str | None]:
         return [], "source_range_truncated"
 
     parsed: list[ParsedLine] = []
-    for raw in str(getattr(evidence, "content_snippet", "") or "").splitlines():
+    for raw in split_source_lines(str(getattr(evidence, "content_snippet", "") or "")):
         match = _LINE_RE.match(raw)
         if not match:
             return [], "source_range_missing_numbered_lines"

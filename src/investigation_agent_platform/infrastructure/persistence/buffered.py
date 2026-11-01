@@ -61,7 +61,6 @@ MUTATING_METHODS: dict[str, frozenset[str]] = {
     "idempotency_store": frozenset({"reserve_or_get", "complete"}),
     "artifact_repo": frozenset({"save"}),
     "session_repo": frozenset({"append"}),
-    "code_issue_index": frozenset({"record_session"}),
 }
 
 # Methods that must run against the primary only: never buffered, never
@@ -307,10 +306,10 @@ def _entity_id(repo: str, op: str, args: tuple[Any, ...], kwargs: dict[str, Any]
     if repo == "idempotency_store" and op in ("reserve_or_get", "complete"):
         key = kwargs.get("key") or (args[1] if len(args) > 1 else None)
         return str(key) if key is not None else None
-    if repo == "code_issue_index" and op == "record_session":
+    if repo == "code_issue_index" and op == "allocate_session":
         fp = kwargs.get("code_issue_fingerprint") or (args[0] if args else None)
-        num = kwargs.get("session_number") or (args[1] if len(args) > 1 else None)
-        return f"{fp}:{num}" if fp is not None else None
+        inv = kwargs.get("investigation_id") or (args[1] if len(args) > 1 else None)
+        return f"{fp}:{inv}" if fp is not None else None
     if repo == "checkpoint_repo" and op == "save_checkpoint":
         inv = kwargs.get("investigation_id") or (args[1] if len(args) > 1 else None)
         step = kwargs.get("step_number") or (args[2] if len(args) > 2 else None)

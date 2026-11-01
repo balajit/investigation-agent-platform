@@ -16,6 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
 from investigation_agent_platform.domain.hypothesis.templates import (
     TEMPLATES_VERSION_CURRENT,
     classify_banked_sites,
@@ -28,7 +29,12 @@ from investigation_agent_platform.infrastructure.observability.tracing import tr
 # shape changes; persisted per decision for replay/evaluation.
 # v3-claim-grounded-019: adds the S2 dormant_templates section and its
 # deterministic budget trimming contract.
-REASONER_PROMPT_VERSION = "v3-claim-grounded-019"
+# v3-claim-grounded-020: dormant templates carry roots_status and per-template
+# boundary (J9 boundary honesty); nothing branches on them.
+# v3-claim-grounded-021: the application block offers only actions both
+# capability gates allow (newest ACTIVE revision) plus unavailable_actions
+# with typed reasons (R8 prompt honesty); older pins keep the raw list.
+REASONER_PROMPT_VERSION = "v3-claim-grounded-021"
 CODE_PACKET_VERSION = "code-packet-v1"
 
 MAX_CODE_EXCERPTS = 8
@@ -209,7 +215,7 @@ def _read_mode(e: Any, snippet: str) -> str:
         if bool(attrs.get("discovery_only")):
             return "path_only"
     # Legacy rows: numbered lines are the provider's range-read shape.
-    first = snippet.splitlines()[0] if snippet else ""
+    first = split_source_lines(snippet)[0] if snippet else ""
     parts = first.split("|", 1)
     if len(parts) == 2 and parts[0].strip().isdigit():
         return "range"
@@ -218,7 +224,7 @@ def _read_mode(e: Any, snippet: str) -> str:
 
 def _last_visible_line(content: str) -> int | None:
     """Last numbered line in provider range content (``480| text``)."""
-    for raw in reversed(content.splitlines()):
+    for raw in reversed(split_source_lines(content)):
         head = raw.split("|", 1)[0].strip()
         if head.isdigit():
             return int(head)
@@ -907,30 +913,22 @@ def enforce_context_budget(
     return ctx
 
 
-def external_classifier_for_roots(roots: Any) -> Any:
-    """Build an ``is_external`` classifier over tenant source roots.
+def boundary_classifier(profile: Any | None) -> Any:
+    """Boundary classifier for a profile (J9 D16).
 
-    Returns a classifier that marks every file external when no roots are
-    configured, because the dispatch validator rejects all code paths in that
-    case. Otherwise a file is external when it sits outside every root.
+    ``None`` (roots not declared or not loadable) yields UNKNOWN for every
+    row: say so, do not guess, and never invent a handoff on it.
     """
-    normed: list[str] = []
-    for root in roots or []:
-        text = str(root or "").strip().strip("/")
-        if text:
-            normed.append(text)
-    if not normed:
-        return lambda _file_path: True
+    if profile is None:
+        from investigation_agent_platform.domain.profile.scope import BoundaryClass
 
-    def is_external(file_path: str) -> bool:
-        normalized = f"/{str(file_path or '').lstrip('/')}"
-        for root in normed:
-            root_norm = f"/{root}"
-            if normalized == root_norm or normalized.startswith(f"{root_norm}/"):
-                return False
-        return True
+        return lambda _repository, _file_path: BoundaryClass.UNKNOWN
+    classify_source = getattr(profile, "classify_source", None)
+    if not callable(classify_source):
+        from investigation_agent_platform.domain.profile.scope import BoundaryClass
 
-    return is_external
+        return lambda _repository, _file_path: BoundaryClass.UNKNOWN
+    return classify_source
 
 
 @traced("reason", require_scope=False)
@@ -938,6 +936,8 @@ def compile_dormant_templates(
     evidence: list[Any],
     *,
     anchors: Any | None = None,
+    classify: Any | None = None,
+    roots_status: str = "unknown",
     is_external: Any | None = None,
 ) -> dict[str, Any]:
     """Render S2 dormant templates as a model-facing section (chunk 2).
@@ -968,7 +968,9 @@ def compile_dormant_templates(
         pass
     rendered: list[dict[str, Any]] = []
     try:
-        paths = classify_banked_sites(list(evidence or []), is_external=is_external)
+        paths = classify_banked_sites(
+            list(evidence or []), classify=classify, is_external=is_external
+        )
     except Exception:
         paths = []
     for path in paths:
@@ -984,10 +986,18 @@ def compile_dormant_templates(
             )
             fetch = template.discriminating_fetch
             handoff = template.handoff_candidate
+            template_sites = [sites_by_id[nid] for nid in template.site_node_ids if nid in sites_by_id]
+            if handoff is not None:
+                boundary = "external"
+            elif any(getattr(s, "boundary_unknown", False) for s in template_sites):
+                boundary = "unknown"
+            else:
+                boundary = "in_tenant"
             rendered.append(
                 {
                     "kind": template.kind.value,
                     "template_version": template.version,
+                    "boundary": boundary,
                     "suspect_path": {
                         "repository": path.repository,
                         "revision": path.revision,
@@ -1024,6 +1034,7 @@ def compile_dormant_templates(
             break
     return {
         "templates_version": TEMPLATES_VERSION_CURRENT,
+        "roots_status": roots_status,
         "anchors": {
             "onset_t": onset_t or "unknown",
             "last_good_g": last_good_g or "unknown",
@@ -1061,12 +1072,18 @@ def compile_case_state(state: Any, evidence: list[Any]) -> dict[str, Any]:
     }
 
 
-def compile_reasoning_context(state: Any, is_external: Any | None = None) -> dict[str, Any]:
+def compile_reasoning_context(
+    state: Any,
+    is_external: Any | None = None,
+    classify: Any | None = None,
+    roots_status: str = "unknown",
+) -> dict[str, Any]:
     """Assemble the P0-1 context sections from hydrated investigation state.
 
-    ``is_external`` optionally marks banked code files outside tenant
-    source roots as cross-boundary for S2 template instantiation; when
-    omitted every site stays in-tenant (conservative default).
+    ``classify`` (a ``(repository, file_path) -> BoundaryClass``) marks
+    banked code files outside tenant source roots as cross-boundary for S2
+    template instantiation; UNKNOWN keeps the discriminating fetch. The
+    legacy ``is_external`` predicate is honored when ``classify`` is omitted.
     """
     problem = str(
         getattr(
@@ -1097,7 +1114,11 @@ def compile_reasoning_context(state: Any, is_external: Any | None = None) -> dic
     except Exception:
         anchors = None
     dormant_templates = compile_dormant_templates(
-        evidence, anchors=anchors, is_external=is_external
+        evidence,
+        anchors=anchors,
+        classify=classify,
+        roots_status=roots_status,
+        is_external=is_external,
     )
     tier_counts: dict[int, int] = {}
     grouped = 0

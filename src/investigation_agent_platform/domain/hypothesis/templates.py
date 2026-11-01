@@ -25,9 +25,12 @@ prove pinned source identity.
 import re
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from investigation_agent_platform.domain.code.lines import split_source_lines
 
 #: Version pin for every template this module emits. In-flight rows keep
 #: the semantics they started with; unmarked rows resolve to current.
@@ -98,6 +101,9 @@ class SuspectSite(BaseModel):
     cross_boundary: bool = False
     #: Upstream identity for cross-boundary sites; required when set.
     upstream_identity: str | None = Field(default=None, max_length=512)
+    #: True when the boundary classifier abstained: the site stays in-tenant
+    #: (the discriminating fetch is kept) and the renderer exposes "unknown".
+    boundary_unknown: bool = False
 
     @model_validator(mode="after")
     def _require_upstream_identity(self) -> "SuspectSite":
@@ -445,7 +451,7 @@ def _is_range_row(attrs: dict[str, object], snippet: str) -> bool:
         return True
     if declared == "path_only" or bool(attrs.get("discovery_only")):
         return False
-    first = snippet.splitlines()[0] if snippet else ""
+    first = split_source_lines(snippet)[0] if snippet else ""
     head = first.split("|", 1)[0].strip()
     return bool(head) and head.isdigit()
 
@@ -455,7 +461,7 @@ def _code_lines(snippet: str) -> tuple[list[tuple[int | None, str]], int | None]
     numbered line, if any."""
     lines: list[tuple[int | None, str]] = []
     first_numbered: int | None = None
-    for raw in snippet.splitlines():
+    for raw in split_source_lines(snippet):
         match = _NUMBERED_LINE.match(raw)
         if match is not None:
             try:
@@ -511,6 +517,7 @@ def classify_banked_sites(
     rows: list[object],
     *,
     is_external: Callable[[str], bool] | None = None,
+    classify: Callable[[str, str], Any] | None = None,
 ) -> list[SuspectPath]:
     """Classify banked rows into suspect paths (conservative, never raises).
 
@@ -518,8 +525,11 @@ def classify_banked_sites(
     determinable line: path-only/discovery rows, unpinned revisions, and
     rows without snippet syntax matches are skipped, never guessed.
     Sites group by (repository, revision, file), ordered by line; one
-    SuspectPath per file. ``is_external`` marks files outside tenant
-    repos as cross-boundary; when omitted everything stays in-tenant.
+    SuspectPath per file. ``classify`` (a ``(repository, file_path) ->
+    BoundaryClass``) marks files outside tenant repos as cross-boundary;
+    the legacy ``is_external`` predicate is honored when ``classify`` is
+    omitted. Only EXTERNAL sets ``cross_boundary`` and builds a handoff;
+    UNKNOWN keeps the discriminating fetch and sets ``boundary_unknown``.
     """
     groups: dict[tuple[str, str, str], list[SuspectSite]] = {}
     for row in rows or []:
@@ -548,8 +558,25 @@ def classify_banked_sites(
         text = "\n".join(_matchable_code(body) for _, body in lines)
         if not text.strip():
             continue
-        external = bool(is_external(file_path)) if is_external is not None else False
         repository = _row_repository(row)
+        external = False
+        unknown = False
+        if classify is not None:
+            try:
+                from investigation_agent_platform.domain.profile.scope import (
+                    BoundaryClass,
+                )
+
+                boundary = classify(repository, file_path)
+                external = boundary == BoundaryClass.EXTERNAL
+                unknown = boundary == BoundaryClass.UNKNOWN
+            except Exception:
+                external, unknown = False, False
+        elif is_external is not None:
+            try:
+                external = bool(is_external(file_path))
+            except Exception:
+                external = False
         candidates: list[tuple[int, str, SuspectSiteKind, str]] = []
         for kind, pattern in _SITE_SYNTAX:
             for lineno, body in lines:
@@ -578,6 +605,7 @@ def classify_banked_sites(
                     upstream_identity=(
                         _upstream_identity(snippet, file_path) if external else None
                     ),
+                    boundary_unknown=unknown,
                 )
             except ValueError:
                 continue

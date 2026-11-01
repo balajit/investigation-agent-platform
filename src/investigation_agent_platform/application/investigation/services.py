@@ -54,6 +54,42 @@ from investigation_agent_platform.ports.security.redactor import (
 logger = logging.getLogger("iap.application")
 
 
+async def _authorizer_deny_reason(
+    authorizer: Any,
+    tenant_id: str,
+    capability: str,
+    target_resource: str,
+    context: dict[str, Any],
+) -> str | None:
+    """None when allowed; the typed reason string when denied (R6-D3).
+
+    Same decide-if-declared rule as the gateway helper: the boolean stays
+    the decision, ``decide`` only names the reason.
+    """
+    if not await authorizer.authorize_action(
+        tenant_id, capability, target_resource, context
+    ):
+        decide = getattr(type(authorizer), "decide", None)
+        if callable(decide):
+            decision = await authorizer.decide(tenant_id, capability, target_resource, context)
+            reason = decision.reason
+            return reason.value if reason is not None else "authorization_denied"
+        return "authorization_denied"
+    return None
+
+
+async def _registry_deny_reason(
+    registry: Any, tenant_id: str, capability: str, application_id: str | None
+) -> str:
+    """Typed reason string for a registry denial (R6-D3)."""
+    decide = getattr(type(registry), "decide", None)
+    if callable(decide):
+        decision = await registry.decide(tenant_id, capability, application_id)
+        reason = decision.reason
+        return reason.value if reason is not None else "authorization_denied"
+    return "authorization_denied"
+
+
 def _create_extra(investigation: Any) -> dict[str, Any]:
     """Create outcome: status + disposition action (never problem text)."""
     try:
@@ -145,6 +181,23 @@ class CreateInvestigationService:
         self.code_reader = code_reader
         self.probe_runner = probe_runner
 
+    async def _owned_fingerprint(self, tenant_id: str, candidate: str | None) -> str | None:
+        """Return the candidate only when this tenant owns a row with it."""
+        if not candidate or not candidate.startswith("hk1:") or len(candidate) > 128:
+            return None
+        try:
+            if self.code_issue_index is None:
+                return None
+            sessions_for = getattr(self.code_issue_index, "sessions_for_fingerprint", None)
+            if sessions_for is None:
+                return None
+            for _n, inv_id, _ts in await sessions_for(candidate):
+                if await self.investigation_repo.get_by_id(tenant_id, inv_id) is not None:
+                    return candidate
+        except Exception:
+            return None
+        return None
+
     @traced("reason", component="create_service", extra_from=_create_extra)
     async def execute(
         self,
@@ -211,7 +264,16 @@ class CreateInvestigationService:
         )
 
         raw_fingerprint = (request.parameters or {}).get("code_issue_fingerprint")
-        fingerprint = str(raw_fingerprint).strip() or None if raw_fingerprint is not None else None
+        candidate = str(raw_fingerprint).strip() or None if raw_fingerprint is not None else None
+        # R1-D4: a caller-supplied fingerprint is accepted only if it equals
+        # the fingerprint of an investigation this tenant already owns
+        # (resolved through the tenant-free index + tenant-scoped repo).
+        fingerprint = await self._owned_fingerprint(tenant_id, candidate)
+        if candidate is not None and fingerprint is None:
+            logger.warning(
+                "Unproven caller fingerprint dropped",
+                extra={"context": {"tenant_id": tenant_id}},
+            )
         declined = bool((request.parameters or {}).get("declined_as_not_needed", False))
         if skip_disposition:
             disposition = Disposition(
@@ -502,21 +564,34 @@ class ExecuteActionService:
             "action_id": str(action.action_id),
             "application_id": application_id,
         }
-        authorized = await self.authorizer.authorize_action(
-            tenant_id, action.action_type.value, target_resource, context
+        deny_reason = await _authorizer_deny_reason(
+            self.authorizer, tenant_id, action.action_type.value, target_resource, context
         )
-        if not authorized:
+        if deny_reason is not None:
             raise SecurityPolicyViolationException(
                 f"Action '{action.action_type.value}' denied by authorization policy",
-                details={"tenant_id": tenant_id, "action_type": action.action_type.value},
+                details={
+                    "tenant_id": tenant_id,
+                    "action_type": action.action_type.value,
+                    "deny_reason": deny_reason,
+                },
             )
         enabled = await self.capability_registry.is_capability_enabled(
-            tenant_id, action.action_type.value
+            tenant_id, action.action_type.value, application_id
         )
         if not enabled:
             raise SecurityPolicyViolationException(
                 f"Capability '{action.action_type.value}' is disabled for tenant",
-                details={"tenant_id": tenant_id, "action_type": action.action_type.value},
+                details={
+                    "tenant_id": tenant_id,
+                    "action_type": action.action_type.value,
+                    "deny_reason": await _registry_deny_reason(
+                        self.capability_registry,
+                        tenant_id,
+                        action.action_type.value,
+                        application_id,
+                    ),
+                },
             )
         return {
             "authorized": True,

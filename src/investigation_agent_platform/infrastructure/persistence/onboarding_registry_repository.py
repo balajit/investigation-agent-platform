@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from investigation_agent_platform.infrastructure.persistence.models import (
     ApplicationProfileORM,
@@ -49,20 +49,18 @@ class SqlAlchemyOnboardingRegistryRepository:
     async def list_known_tenant_ids(self) -> list[str]:
         """Return every tenant id the platform knows, cross-tenant (SELECT only).
 
-        The union of ``tenant_registry`` ids and the tenant ids carried by
-        investigations and application profiles. The registry alone is not the
-        real sibling universe: tenants predate or bypass registration, and an
-        empty registry would make the index-scope collision guard inert. A
-        tenant that appears in any of the three can own indexes.
-
-        Deliberately opens a session WITHOUT a tenant context: the caller is
-        the platform itself (index-scope collision guard, onboarding id gate),
-        not a tenant. All three tables have FORCE RLS keyed on the tenant id,
-        so this sees every row only while the app role bypasses RLS (the
-        current deployment). When least-privilege roles land (review R11) this
-        read needs an explicit grant path (registry-admin principal or a narrow
-        SECURITY DEFINER lookup), or it will silently see no sibling tenants.
+        Prefers the narrow ``iap_known_tenant_ids()`` SECURITY DEFINER lookup
+        (R11-D4); falls back to the three-table union on deployments without
+        the function (dev). Deliberately opens a session WITHOUT a tenant
+        context: the caller is the platform itself (index-scope collision
+        guard, onboarding id gate), not a tenant.
         """
+        try:
+            async with self._session_factory() as session:
+                rows = await session.scalars(text("SELECT iap_known_tenant_ids()"))
+                return sorted({str(r) for r in rows.all()})
+        except Exception:
+            pass
         async with self._session_factory() as session:
             ids: set[str] = set()
             for column in (

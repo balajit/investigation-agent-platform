@@ -45,8 +45,11 @@ def _profile(paths: list[str]) -> ApplicationProfile:
 
 
 def _adapter(tmp_path, **overrides):  # type: ignore[no-untyped-def]
+    # R12F: tests simulate the dev layout, so they opt into the global
+    # roots explicitly; unmapped tenants stay fail-closed (see T02).
     settings = FileLogSettings(
         roots=["."],
+        allow_global_roots=True,
         cursor_signing_key=SecretStr("test-signing-key"),
         **overrides,
     )

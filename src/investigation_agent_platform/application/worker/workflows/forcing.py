@@ -43,6 +43,7 @@ with workflow.unsafe.imports_passed_through():
         LOOP_VERSION_LV6,
         LOOP_VERSION_LV7,
         LOOP_VERSION_LV8,
+        LOOP_VERSION_LVR,
         LOOP_VERSION_LVW,
         loop_version_at_least,
     )
@@ -63,6 +64,48 @@ with workflow.unsafe.imports_passed_through():
         WorkOrderKind,
         WorkOrderStatus,
     )
+
+
+def _evidence_state_for(
+    history: list[Any] | None, banked_total: int, loop_version: Any
+) -> tuple[Any, bool]:
+    """Evidence state for the advisory frontier, pinned to LV_J (J10 D22).
+
+    Below LV_J the row-count derivation applies exactly (pre-LV_J pins keep
+    it byte for byte). At LV_J+ the state derives from analyzer status on
+    banked turns (``gave_up`` when the analyzer refused). Pure: the workflow
+    stays deterministic and replayable from recorded results. W1-A removed
+    the advisory ranker that consumed this, so the pin lives here until a
+    consumer arrives; no rule reads ``gave_up`` today.
+    """
+    from investigation_agent_platform.domain.collection.evidence_state import (
+        AnalysisStamp,
+        derive_evidence_state,
+    )
+    from investigation_agent_platform.domain.investigation.loop_version import (
+        LOOP_VERSION_LVJ,
+        loop_version_at_least,
+    )
+
+    try:
+        derived = bool(
+            loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVJ)
+        )
+    except Exception:
+        derived = False
+    if not derived:
+        state = derive_evidence_state(banked_total=banked_total, stamps=[])
+        return state, False
+    stamps = [
+        stamp
+        for entry in history or []
+        if isinstance(entry, dict) and int(entry.get("evidence_added", 0) or 0) > 0
+        for stamp in [AnalysisStamp.parse(entry.get("analysis"))]
+        if stamp is not None
+    ]
+    state = derive_evidence_state(banked_total=banked_total, stamps=stamps)
+    # No frontier import here (W6 fence): match on the state value.
+    return state, state.value in {"ANALYSIS_INCOMPLETE", "ANALYSIS_BLOCKED"}
 
 
 def _reason_summary(reason_data: dict[str, Any]) -> str:
@@ -470,6 +513,53 @@ def turn_entries(history: Any) -> list[dict[str, Any]]:
         return []
 
 
+def _authz_aware(loop_version: Any) -> bool:
+    """Whether the run's pin filters forced overrides by capability (lv12+), fail-safe.
+
+    An unrecognized or unreadable pin returns False (keep the old behavior).
+    """
+    try:
+        return bool(loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVR))
+    except Exception:
+        return False
+
+
+#: Bounds for history_params (R10b): kept entries stay re-dispatchable.
+_MAX_PARAM_KEYS = 20
+_MAX_PARAM_STR = 1024
+
+
+def history_params(params: Any, *, typed: bool) -> tuple[dict[str, Any], bool]:
+    """(parameters, lossy) for one workflow history entry (R10b, pure).
+
+    typed=False is the pre-LV_R stringified shape (every value cut to 200
+    characters). typed=True keeps JSON scalars at full fidelity (strings
+    to 1024) and reports lossy=True when anything was cut, dropped, or
+    flattened (lists and objects are never re-dispatchable, so they are
+    stored stringified and flagged). Non-dict input yields ({}, False).
+    """
+    try:
+        if not isinstance(params, dict):
+            return {}, False
+        if not typed:
+            return {str(k): str(v)[:200] for k, v in params.items()}, False
+        out: dict[str, Any] = {}
+        lossy = False
+        for key, value in list(params.items())[:_MAX_PARAM_KEYS]:
+            name = str(key)[:64]
+            if value is None or isinstance(value, (bool, int, float)):
+                out[name] = value
+            elif isinstance(value, str):
+                out[name] = value[:_MAX_PARAM_STR]
+                lossy = lossy or len(value) > _MAX_PARAM_STR
+            else:
+                out[name] = str(value)[:200]
+                lossy = True
+        return out, lossy or len(params) > _MAX_PARAM_KEYS
+    except Exception:
+        return {}, False
+
+
 def _carriers_separated(loop_version: Any) -> bool:
     """Whether the run's pin reads turns apart from carriers (lv6+), fail-safe.
 
@@ -805,6 +895,10 @@ def _carry_requery_order(
             "claim_ref": claim_ref,
             "query": query,
             "scope": scope,
+            # R10g: the directive's action rides at top level so
+            # directive_consumed counts the same (query, scope,
+            # action_type) key the directive stamped.
+            "action_type": action_type,
             "max_attempts": max_attempts,
             "consumed": False,
             "order": {
@@ -1002,19 +1096,40 @@ _ROUTE_PLANS: dict[str, list[str]] = {
 }
 
 
-def _investigation_plan(triage_route: str, intake_seed: dict | None) -> list[str]:
+def _investigation_plan(
+    triage_route: str,
+    intake_seed: dict | None,
+    unavailable: frozenset[str] | None = None,
+) -> list[str]:
     """Strategy skeleton for the run (pure, deterministic).
 
     E1: route selects the skeleton; intake frames prepend WALK_STACK when
     present (mirrors the forcing priority). Bounded at 5 steps.
+
+    R8-D3: unavailable external steps are dropped (and WALK_STACK is not
+    prepended for frames when it is unavailable); at least the internal
+    steps survive so the plan is never empty.
     """
     try:
+        try:
+            _denied_steps = frozenset(
+                str(u or "").strip().upper() for u in (unavailable or frozenset())
+            )
+        except Exception:
+            _denied_steps = frozenset()
+        _internal = frozenset({"FORMULATE_HYPOTHESIS", "VERIFY_HYPOTHESIS", "CONCLUDE"})
         route = str(triage_route or "UNKNOWN").upper()
         plan = list(_ROUTE_PLANS.get(route, _ROUTE_PLANS["UNKNOWN"]))
         seed = intake_seed or {}
         frames = [f for f in (seed.get("frames") or []) if isinstance(f, dict)]
-        if frames and plan and plan[0] != "WALK_STACK":
+        if frames and plan and plan[0] != "WALK_STACK" and "WALK_STACK" not in _denied_steps:
             plan = ["WALK_STACK"] + [step for step in plan if step != "WALK_STACK"]
+        plan = [step for step in plan if step in _internal or step not in _denied_steps]
+        if not plan:
+            plan = [step for step in _ROUTE_PLANS.get(route, _ROUTE_PLANS["UNKNOWN"])
+                    if step in _internal]
+        if not plan:
+            plan = ["FORMULATE_HYPOTHESIS"]
         return plan[:5]
     except Exception:
         return list(_ROUTE_PLANS["UNKNOWN"])
@@ -1605,17 +1720,21 @@ def _should_force_replan(
     reason_data: dict | None,
     turns: Turns,
     forced_count: int,
+    unavailable: frozenset[str] | None = None,
 ) -> dict | None:
     """Alternative gathering action after repeated empties, or None.
 
     Fires when the two most recent enriched turns share one action with no
     evidence banked on either, and the current proposal repeats it. The
-    production call site runs before the current action is appended, so
-    the proposal arrives via reason_data (not history): history holds only
+    production call site runs before the current action is appended, so the
+    proposal arrives via reason_data (not history): history holds only
     completed enriched turns. Takes the typed ``Turns`` view (F2-D18), never
     a raw history: carriers cannot displace a turn. Returns {next_action,
     params} for the first alternative family, or None. Bounded (max 2 per
     run). Pure.
+
+    R8-D3: a denied alternative family is not a replan (returns None) —
+    replan no longer forces a denied family.
     """
     try:
         if int(forced_count or 0) >= 2:
@@ -1646,6 +1765,14 @@ def _should_force_replan(
             return None
         alternative = next((a for a in _REPLAN_ALTERNATIVES if a != actions[0]), None)
         if alternative is None:
+            return None
+        try:
+            _denied_families = frozenset(
+                str(u or "").strip().upper() for u in (unavailable or frozenset())
+            )
+        except Exception:
+            _denied_families = frozenset()
+        if alternative in _denied_families:
             return None
         keywords = _description_keywords(description)
         if not keywords:
@@ -2675,6 +2802,10 @@ class PostReasonCascadeState:
     #: "claim_ref": str, "turn_issued": int, "age": int | None}.
     #: The workflow appends them to loop telemetry; nothing else reads them.
     order_events: list = field(default_factory=list)
+    #: Unavailable actions carried as plain data from the reason activity's
+    #: steering snapshot (R8-D1). Only LV_R runs filter on it; the
+    #: authoritative gate downstream still denies, fail-closed.
+    unavailable_actions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2688,6 +2819,7 @@ class CascadeContext:
     turns: Turns  # positional readers use this view, never the raw history (F2-D18)
     pivot_v2: bool  # lv7 hardened pivot
     policy: WorkOrderPolicy  # carrier semantics for this pin (W2-D2)
+    unavailable: frozenset[str] = frozenset()  # R8-D3: denied dispatch targets
 
     def count(self, key: str) -> int:
         try:
@@ -2817,6 +2949,7 @@ def _t_log_search(ctx: CascadeContext) -> Fire | None:
 def _t_replan(ctx: CascadeContext) -> Fire | None:
     out = _should_force_replan(
         str(ctx.state.description or ""), ctx.reason, ctx.turns, ctx.count("replan"),
+        unavailable=ctx.unavailable,
     )
     return Fire(out["next_action"], out["action_parameters"], counter="replan") if out else None
 
@@ -2830,6 +2963,13 @@ def _t_smallest_fetch(ctx: CascadeContext) -> Fire | None:
             orders = [o for o in raw if isinstance(o, dict)] if isinstance(raw, list) else []
             carrier_turn = _safe_int(evt.get("turn_issued", evt.get("iteration")))
             break
+    # R8-D3: orders for denied actions are not candidates, so a later kind
+    # can fire instead of the loop dropping the pick after the fact.
+    if ctx.unavailable:
+        orders = [
+            o for o in orders
+            if str(o.get("action_type") or "").strip().upper() not in ctx.unavailable
+        ]
     if ctx.policy.hardened and carrier_turn is not None:
         try:
             feed_age = None if ctx.policy.iteration is None else int(ctx.policy.iteration) - int(carrier_turn)
@@ -2959,6 +3099,28 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
         events: list[dict[str, Any]] = []
         fired_counter: dict[Any, str] = {}  # force -> counter bumped by the rule that wrote it
         fired: dict[str, Fire] = {}
+        # R8-D3: the authorization filter, from the snapshot the reason
+        # activity carried as plain data. Only LV_R runs filter; anything
+        # else keeps the old behavior byte for byte.
+        try:
+            _unavailable = (
+                frozenset(
+                    str(a or "").strip().upper()
+                    for a in (state.unavailable_actions or ())
+                    if str(a or "").strip()
+                )
+                if _authz_aware(state.loop_version)
+                else frozenset()
+            )
+        except Exception:
+            _unavailable = frozenset()
+
+        def _denied(action: object) -> bool:
+            try:
+                return str(action or "").strip().upper() in _unavailable
+            except Exception:
+                return False
+
         for rule in RULES:
             if _stands_down(
                 rule.name,
@@ -2968,9 +3130,38 @@ def apply_post_reason_cascade(state: PostReasonCascadeState) -> PostReasonCascad
                 d6_fired=_d6_fired,
             ):
                 continue
-            ctx = CascadeContext(state, reason, counts, _history, _turns, _pivot_v2, _wo_policy)
+            ctx = CascadeContext(
+                state, reason, counts, _history, _turns, _pivot_v2, _wo_policy, _unavailable
+            )
             fire = TRIGGERS[rule.name](ctx)
             if fire is None:
+                continue
+            if fire.next_action is not None and _denied(fire.next_action):
+                # A denied dispatch is dropped before it burns a counter or
+                # rewrites the dispatch. Carrier effects still commit:
+                # retirements stamp in place, and a carried order that would
+                # have dispatched stamps consumed so it cannot resurrect next
+                # turn (the W2 hazard for this cause).
+                if fire.event is not None:
+                    events.append(dict(fire.event))
+                if fire.consume is not None:
+                    try:
+                        _retire_reason = ConsumeReason(fire.retire_reason)
+                    except Exception:
+                        _retire_reason = ConsumeReason.BUDGET_EXHAUSTED
+                    pending_consume.append((fire.consume, _retire_reason, fire.retire_detail))
+                    events.append(
+                        _retirement_event(
+                            fire.consume, _retire_reason,
+                            {"detail": fire.retire_detail}, _wo_policy,
+                        )
+                    )
+                if fire.consumed_ref is not None:
+                    try:
+                        fire.consumed_ref["consumed"] = True
+                        fire.consumed_ref["consumed_reason"] = "denied_by_policy"
+                    except Exception:
+                        pass
                 continue
             if fire.event is not None:
                 events.append(dict(fire.event))

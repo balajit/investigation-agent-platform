@@ -6,7 +6,7 @@
 
 ## 1. Terminal states
 
-Proved (possibly by contrast, with elimination record of beaten rivals); budget-deferred (single highest-value next fetch given the failure character, priced); frontier-exhausted (elimination record: what was checked, what held); cross-boundary handoff (upstream identity + localizing evidence); telemetry-deferred (resume pointer at the blocked fetch).
+Proved (possibly by contrast, with elimination record of beaten rivals); budget-deferred (single highest-value next fetch given the failure character, priced); frontier-exhausted (elimination record: what was checked, what held); cross-boundary handoff (upstream identity + localizing evidence); telemetry-deferred (resume pointer at the blocked fetch); capability-denied (the only way to fetch the proof for the leading unproven claim is not available to the application; names the denied capability and the owner action).
 
 ## 2. Discriminating-check construction
 
@@ -14,7 +14,7 @@ The next fetch is computed from the actual gap — no rival ruled out → name i
 
 ## 3. Handoff as loop edge
 
-Budget-deferred and telemetry-deferred states are resumable work orders, not verdicts. Resume re-enters at the blocked fetch, never from scratch. Elimination records persist as evidence for subsequent sessions.
+Budget-deferred and telemetry-deferred states are resumable work orders, not verdicts. Resume re-enters at the blocked fetch, never from scratch. Elimination records persist as evidence for subsequent sessions. Capability-denied is a resumable work order like budget- and telemetry-deferred (resume re-enters at the blocked fetch after the capability is enabled).
 
 ## 4. Price and the concrete next fetch
 

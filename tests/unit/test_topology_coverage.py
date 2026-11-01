@@ -784,13 +784,11 @@ class TestWorkflowInvestigationIdentity:
 
     @pytest.mark.asyncio
     async def test_activity_reports_duplicate_routing_for_cancelled_create(self) -> None:
-        """P0 create-race: a duplicate-of-active create closes CANCELLED and
-        the activity surfaces the disposition routing (action + primary) so
-        the workflow can report CANCELED-with-link instead of FAILED."""
-        from investigation_agent_platform.application.worker.activities import (
-            CreateInvestigationInput,
-            create_investigation_activity,
-        )
+        """R1-D4: unproven caller fingerprints are dropped — no duplicate.
+
+        A caller-supplied fingerprint that the tenant does not own is not
+        stored and cannot route the second create as a duplicate.
+        """
         from investigation_agent_platform.domain.investigation.models import InvestigationRequest
 
         ctx = AppContext()
@@ -802,26 +800,14 @@ class TestWorkflowInvestigationIdentity:
                 problem_description="duplicate routing check",
                 session_id="sess-duplicate",
                 requested_by="tester",
-                parameters={"code_issue_fingerprint": "fp-duplicate-routing"},
+                parameters={"code_issue_fingerprint": "hk1:" + "3" * 64},
             )
 
         first = await ctx.create_investigation_service().execute(_req(), tenant_id="tenant-a")
         second = await ctx.create_investigation_service().execute(_req(), tenant_id="tenant-a")
-        assert second.status.value == "CANCELLED"
-
-        out = await create_investigation_activity(
-            CreateInvestigationInput(
-                application_id="example-app",
-                session_id="sess-duplicate",
-                tenant_id="tenant-a",
-                description="duplicate routing check",
-                investigation_id=str(second.id),
-            )
-        )
-        assert out.investigation_id == str(second.id)
-        assert out.status == "CANCELLED"
-        assert out.disposition_action == "duplicate"
-        assert out.primary_target_id == str(first.id)
+        assert first.code_issue_fingerprint is None
+        assert second.code_issue_fingerprint is None
+        assert second.status.value == "CREATED"
 
     def test_workflow_input_carries_investigation_id(self) -> None:
         from investigation_agent_platform.application.worker.workflows import RunInvestigationInput

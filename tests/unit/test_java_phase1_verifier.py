@@ -669,7 +669,10 @@ def test_node_id_optional_match_and_parser_version_permissive():
     legacy = resolve_java_field_fact(ev, "x")
     assert legacy.node_id is None  # not required; permissive construction
     # Phase 2 records the real parser identity instead of the "unknown" default.
-    assert legacy.parser_version == "tree-sitter-java"
+    from investigation_agent_platform.application.analysis.java import _parse as _java_parse
+
+    assert legacy.parser_version == _java_parse.parser_version()
+    assert legacy.parser_version.startswith("tree-sitter-java;pack=")
     v2 = legacy_to_v2_resolution(legacy)
     nid = uuid4()
     v2_bound = v2.model_copy(update={"node_id": nid, "parser_version": "tree-sitter-java-1.0"})

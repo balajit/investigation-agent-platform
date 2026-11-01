@@ -317,6 +317,19 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
             repository=ctx.investigation_repo,
             event_queue=ctx.outbox_queue,
         )
+        # H14: the conclude path's unit of work captured the bare in-memory
+        # repos at AppContext construction, before the proxies above were
+        # installed. Rebuild it around the proxies so commit_verdict versions
+        # agree with the buffered primaries; otherwise every dev conclude
+        # with a banked hypothesis dies on "version mismatch" (store empty
+        # while the proxy holds version >= 1).
+        from investigation_agent_platform.api.dependencies import (
+            InMemoryConclusionUnitOfWork,
+        )
+
+        ctx.conclusion_uow = InMemoryConclusionUnitOfWork(
+            ctx.hypothesis_repo, ctx.finding_repo
+        )
         if engine is not None and getattr(ctx, "engine", None) is None:
             ctx.engine = engine
 

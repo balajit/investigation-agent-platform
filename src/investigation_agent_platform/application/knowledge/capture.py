@@ -37,10 +37,34 @@ def _capture_extra(artifacts: Any) -> dict[str, Any]:
         return {}
 
 
-# Kinds captured from conclusion-linked evidence. Static attribution is
-# shareable across tenants on a merged code issue; everything else stays
-# tenant-private by construction (see the domain validator).
-SHARED_KINDS = frozenset({"error_signature", "domain_attribution", "code_reference"})
+# Kinds that may ever be shared across tenants. Only the structured
+# error_signature projection (R1-D2); everything else stays tenant-private
+# by construction (see the domain validator).
+SHARED_KINDS = frozenset({"error_signature"})
+
+
+def _shared_signature(seed: dict[str, Any] | None) -> str | None:
+    """Projection of the fingerprint inputs only; None when the seed lacks them."""
+    if not isinstance(seed, dict):
+        return None
+    error_class = str(seed.get("error_class") or "").strip()
+    symbol = str(seed.get("failing_symbol") or seed.get("symbol") or "").strip()
+    repo = str(seed.get("repository") or "").strip() or "UNPINNED"
+    rev = str(seed.get("revision") or "").strip() or "UNPINNED"
+    if not error_class or not symbol:
+        return None
+    return sanitize_statement(
+        f"Code issue: {error_class[:200]} at {symbol[:200]} ({repo[:120]}@{rev[:60]})"
+    )
+
+
+async def _sharing_opted_in(profile_repo: Any, tenant_id: str, application_id: str | None) -> bool:
+    """True only when the newest ACTIVE profile revision explicitly opts in. Any fault -> False."""
+    from investigation_agent_platform.application.knowledge.sharing import (
+        sharing_opted_in as _opt_in,
+    )
+
+    return await _opt_in(profile_repo, tenant_id, application_id)
 
 
 class KnowledgeCaptureService:
@@ -204,14 +228,20 @@ class KnowledgeCaptureService:
         items: list[Evidence] = await self.evidence_repo.find_by_investigation_id(
             tenant_id, investigation_id
         )
-        # SHARED artifacts require the investigation's code-issue fingerprint;
-        # without one they downgrade to TENANT (fail closed, never share keyless).
+        # SHARED artifacts require the investigation's code-issue fingerprint,
+        # the server-stamped intake seed, and an explicit opt-in on the
+        # newest ACTIVE profile revision (R1-D1). Anything else stays TENANT.
         fingerprint: str | None = None
         application_id: str | None = None
+        intake_seed: dict[str, Any] | None = None
         if self.investigation_repo is not None:
             investigation = await self.investigation_repo.get_by_id(tenant_id, investigation_id)
             fingerprint = getattr(investigation, "code_issue_fingerprint", None)
             application_id = getattr(investigation, "application_id", None)
+            metadata = getattr(investigation, "metadata", None)
+            if isinstance(metadata, dict):
+                seed = metadata.get("intake_seed")
+                intake_seed = seed if isinstance(seed, dict) else None
         ttl_days = self.evidence_summary_ttl_days
         if self.profile_repo is not None and application_id:
             # Profile KnowledgeConfig.retention_days overrides the constructor
@@ -248,11 +278,7 @@ class KnowledgeCaptureService:
                         refresh_policy=RefreshPolicy.IMMUTABLE,
                         valid_from=now,
                         source_evidence_ids=[item.evidence_id],
-                        visibility=(
-                            ArtifactVisibility.SHARED_CODE_ISSUE
-                            if fingerprint
-                            else ArtifactVisibility.TENANT
-                        ),
+                        visibility=ArtifactVisibility.TENANT,
                         code_issue_fingerprint=fingerprint,
                     )
                 )
@@ -271,6 +297,30 @@ class KnowledgeCaptureService:
                     visibility=ArtifactVisibility.TENANT,
                 )
             )
+        # R1-D2: at most one SHARED projection from the server-stamped seed.
+        shared_ok = bool(fingerprint) and intake_seed is not None and await _sharing_opted_in(
+            self.profile_repo, tenant_id, application_id
+        )
+        if shared_ok and fingerprint is not None:
+            projection = _shared_signature(intake_seed)
+            if projection is not None:
+                artifacts.append(
+                    KnowledgeArtifact(
+                        tenant_id=tenant_id,
+                        application_id=application_id or "unknown",
+                        investigation_id=investigation_id,
+                        kind="error_signature",
+                        statement=projection,
+                        confidence=0.7,
+                        refresh_policy=RefreshPolicy.TTL,
+                        valid_from=now,
+                        valid_to=now + timedelta(days=ttl_days),
+                        source_evidence_ids=[],
+                        source_log_refs=[],
+                        visibility=ArtifactVisibility.SHARED_CODE_ISSUE,
+                        code_issue_fingerprint=fingerprint,
+                    )
+                )
         # F: verified premises. VERIFIED hypotheses become defeasible
         # starting points for future runs (TENANT-scoped; staleness is
         # handled by TTL + the reverify flow, never by deletion here).

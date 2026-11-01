@@ -18,6 +18,46 @@ INVESTIGATION_EVENTS_TOPIC = "investigation.events"
 AUDIT_GROUP_ID = "investigation-audit-listeners"
 
 
+#: Allowlisted envelope fields for consumer logging (AD2). Only
+#: identifiers, the event type, counts and timestamps — payload values
+#: never ride a log line.
+_LOGGABLE_FIELDS = (
+    "event_id",
+    "event_type",
+    "investigation_id",
+    "tenant_id",
+    "application_id",
+    "schema_version",
+    "timestamp",
+    "correlation_id",
+)
+
+
+def envelope_for_log(msg: object) -> dict[str, Any]:
+    """Allowlisted envelope for consumer logging (AD2).
+
+    Identifiers, the event type and the payload key count only; payload
+    values never. Never raises: an unreadable model yields the
+    ``unreadable`` marker so logging can never fail the consumer.
+    """
+    from investigation_agent_platform.api.errors import sanitize_extra
+
+    # No model to dump is not an envelope at all: unreadable, like a
+    # raising dump (T03 pins both). Only allowlisted keys ever leave here.
+    if not hasattr(msg, "model_dump"):
+        return {"unreadable": True}
+    try:
+        data = msg.model_dump(mode="json")
+        if not isinstance(data, dict):
+            return {"unreadable": True}
+    except Exception:
+        return {"unreadable": True}
+    out: dict[str, Any] = {k: str(data[k])[:128] for k in _LOGGABLE_FIELDS if k in data}
+    payload = data.get("payload")
+    out["payload_keys"] = len(payload) if isinstance(payload, dict) else 0
+    return sanitize_extra(out)
+
+
 class InvestigationCreatedEvent(BaseModel):
     """Payload for the investigation.events envelope."""
 
@@ -88,6 +128,19 @@ class KafkaEventPublisher(EventPublisher):
         await self.publish_raw(topic, payload.model_dump(mode="json"))
 
 
+def log_received(msg: object) -> None:
+    """Log one consumed event as its allowlisted envelope (AD2).
+
+    Never raises: envelope extraction is total, so logging can never
+    fail the consumer.
+    """
+    try:
+        logged = envelope_for_log(msg)
+    except Exception:
+        logged = {"unreadable": True}
+    logger.info("Received investigation event", extra={"context": {"event": logged}})
+
+
 def build_faststream_app(
     broker: KafkaBroker,
     envelope_model: type[BaseModel] = InvestigationCreatedEvent,
@@ -98,7 +151,7 @@ def build_faststream_app(
 
     @broker.subscriber(topic, group_id=group_id)
     async def handle_investigation_event(msg: BaseModel) -> None:
-        logger.info("Received investigation event", extra={"context": {"event": msg.model_dump()}})
+        log_received(msg)
 
     return FastStream(broker)
 

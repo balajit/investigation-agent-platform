@@ -410,3 +410,70 @@ def test_offline_boot_stays_tolerated(monkeypatch) -> None:
 
     monkeypatch.setattr(buffered_dev, "_postgres_reachable", _unreachable)
     asyncio.run(_run())
+
+
+def test_conclusion_uow_rebuilt_around_proxies(monkeypatch, tmp_path) -> None:
+    """Dev buffered wiring rebuilds conclusion_uow around the proxies.
+
+    Regression: commit_verdict held the pre-proxy in-memory repos, so every
+    dev conclude with a banked hypothesis (version >= 1 on the primary,
+    empty fallback store) died on 'Hypothesis version mismatch'.
+    """
+    import asyncio
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from investigation_agent_platform.api.dependencies import AppContext
+    from investigation_agent_platform.bootstrap import buffered_dev
+    from investigation_agent_platform.domain.finding.models import (
+        ConclusionStatus,
+        Finding,
+        FindingType,
+        InvestigationConclusion,
+    )
+    from investigation_agent_platform.domain.hypothesis.models import (
+        Hypothesis,
+        HypothesisStatus,
+    )
+
+    async def _unreachable(uri: str, timeout_seconds: float = 3.0) -> bool:
+        return False
+
+    async def _run() -> None:
+        cfg = SimpleNamespace(
+            buffer=SimpleNamespace(
+                enabled=True,
+                path=str(tmp_path / "buf.sqlite3"),
+                flush_interval_seconds=5.0,
+            ),
+            database=_SplitBrainConfig(buffering_enabled=True, db_uri="").database,
+        )
+        ctx = await buffered_dev.ensure_buffered_dev_context(AppContext(), cfg)
+        assert ctx.conclusion_uow._hypotheses is ctx.hypothesis_repo
+        assert ctx.conclusion_uow._findings is ctx.finding_repo
+
+        inv_id = uuid4()
+        hyp = Hypothesis(
+            tenant_id="t", investigation_id=inv_id, title="t", description="d",
+            statement="s", status=HypothesisStatus.SUPPORTED,
+        )
+        finding = Finding(
+            id=uuid4(), tenant_id="t", investigation_id=inv_id,
+            finding_type=FindingType.OBSERVATION, title="t", statement="s",
+            evidence_ids=[], related_hypothesis_ids=[hyp.id], confidence=0.9,
+        )
+        conclusion = InvestigationConclusion(
+            tenant_id="t", investigation_id=inv_id, status=ConclusionStatus.ANSWERED,
+            root_cause="r", supporting_evidence_ids=[uuid4()],
+        )
+        # New hypothesis (version 0): commits through the proxies without a
+        # version-mismatch, journaling to the WAL while the primary is down.
+        await ctx.conclusion_uow.commit_verdict(
+            "t", investigation_id=inv_id, hypothesis=hyp,
+            expected_version=0, finding=finding, conclusion=conclusion,
+        )
+        stored = await ctx.hypothesis_repo.get_by_id("t", hyp.id)
+        assert stored is not None and stored.version == 1
+
+    monkeypatch.setattr(buffered_dev, "_postgres_reachable", _unreachable)
+    asyncio.run(_run())

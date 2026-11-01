@@ -14,7 +14,7 @@ def test_query_substrate_captures_methods_and_parser_identity():
         "(method_declaration name: (identifier) @name)",
     )
     assert [_parse.node_text(node, source) for node in captures["name"]] == ["run"]
-    assert _parse.parser_version() == "tree-sitter-java"
+    assert _parse.parser_version().startswith("tree-sitter-java;pack=")
     assert _parse.query_version() == "tree-sitter-query-v1"
 
 

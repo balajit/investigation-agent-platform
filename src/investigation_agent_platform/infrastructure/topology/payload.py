@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+from investigation_agent_platform.domain.code.lines import split_source_lines
+
 logger = logging.getLogger(__name__)
 
 SKIP_DIRS = frozenset(
@@ -169,7 +171,7 @@ async def build_payload_for_repo(
                 ParseDiagnostic(file_path=rel[:1024], message=f"unreadable: {exc}"[:1024])
             )
             continue
-        lines = text.splitlines()
+        lines = split_source_lines(text)
         file_lines[rel] = lines
         content_hash = hashlib.sha256(raw).hexdigest()
         language = ext_map.get(path.suffix.lower(), "unknown")

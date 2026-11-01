@@ -73,6 +73,15 @@ Versions:
   analyzed window completed, gave up, or was blocked; it only relabels an
   advisory recommendation and cannot publish a verdict.
 
+- ``lv12``: lv11 plus the authorization-aware gathering surface (review R8)
+  and the capability-denied terminal handoff (review R9). The prompt offers
+  only actions both gates allow, the cascade withholds forced overrides for
+  unavailable actions without burning counters, denials are recorded as
+  retrieval attempts with their typed reason, and a claim whose every
+  acquiring action is unavailable concludes ``CAPABILITY_DENIED`` with a
+  resumable fetch. It only withholds a forced override and records a denial;
+  it cannot publish a verdict.
+
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
 """
@@ -91,7 +100,8 @@ LOOP_VERSION_LV8 = "lv8"
 LOOP_VERSION_LVW = "lv9"
 LOOP_VERSION_LVH = "lv10"
 LOOP_VERSION_LVJ = "lv11"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LVJ
+LOOP_VERSION_LVR = "lv12"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LVR
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -104,6 +114,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LVW,
         LOOP_VERSION_LVH,
         LOOP_VERSION_LVJ,
+        LOOP_VERSION_LVR,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -118,6 +129,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LVW: 9,
     LOOP_VERSION_LVH: 10,
     LOOP_VERSION_LVJ: 11,
+    LOOP_VERSION_LVR: 12,
 }
 
 

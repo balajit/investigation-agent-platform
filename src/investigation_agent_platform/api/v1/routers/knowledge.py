@@ -76,13 +76,25 @@ async def list_knowledge(
     fingerprint = getattr(investigation, "code_issue_fingerprint", None)
     other_sessions: list[dict[str, Any]] = []
     if fingerprint:
-        index_rows = await ctx.code_issue_index.sessions_for_fingerprint(fingerprint)
-        own_numbers = {s.session_number for s in own_sessions}
-        other_sessions = [
-            {"session_number": num, "occurred_at": ts.isoformat(), "tenant": "[redacted]"}
-            for (num, _inv_id, ts) in index_rows
-            if num not in own_numbers
-        ]
+        from investigation_agent_platform.application.knowledge.sharing import (
+            sharing_opted_in,
+        )
+
+        try:
+            profile_repo = getattr(ctx, "profile_repo", None)
+            opted_in = await sharing_opted_in(
+                profile_repo, x_tenant_id, getattr(investigation, "application_id", None)
+            )
+        except Exception:
+            opted_in = False
+        if opted_in:
+            index_rows = await ctx.code_issue_index.sessions_for_fingerprint(fingerprint)
+            own_numbers = {s.session_number for s in own_sessions}
+            other_sessions = [
+                {"session_number": num, "occurred_at": ts.isoformat(), "tenant": "[redacted]"}
+                for (num, _inv_id, ts) in index_rows
+                if num not in own_numbers
+            ]
 
     return KnowledgeResponse.model_validate(
         {

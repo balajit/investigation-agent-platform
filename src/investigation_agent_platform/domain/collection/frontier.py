@@ -55,6 +55,8 @@ class EvidenceState(StrEnum):
     ROWS_WITHOUT_MATCH = "ROWS_WITHOUT_MATCH"
     STALE_MATCH = "STALE_MATCH"
     LOCAL_COMPLETE = "LOCAL_COMPLETE"
+    ANALYSIS_INCOMPLETE = "ANALYSIS_INCOMPLETE"  # rows banked; the analyzer gave up, a wider or other read can help
+    ANALYSIS_BLOCKED = "ANALYSIS_BLOCKED"  # rows banked; the analyzer gave up, source reads cannot help
 
 
 class FailureCharacter(BaseModel):
@@ -89,6 +91,10 @@ class FailureCharacter(BaseModel):
             return FrontierDimension.ASSUMPTION_SPREAD
         if evidence_state == EvidenceState.STALE_MATCH:
             return FrontierDimension.TIME_SPREAD
+        if evidence_state == EvidenceState.ANALYSIS_INCOMPLETE:
+            return FrontierDimension.ASSUMPTION_SPREAD
+        if evidence_state == EvidenceState.ANALYSIS_BLOCKED:
+            return FrontierDimension.LAYER_SPREAD
         return None
 
 
