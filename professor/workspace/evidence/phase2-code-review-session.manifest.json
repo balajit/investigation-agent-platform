@@ -1,0 +1,60 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e6a63a6edffe1Rp5eDLLAxcNwm",
+  "workflow": "code-review",
+  "qualification_test_id": "WP2-R5-code-review-static",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T01:16:58Z",
+  "end_timestamp": "2026-11-01T01:20:26Z",
+  "status": "PARTIAL",
+  "repository": {
+    "identity": "investigation-agent-platform/professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time dirty state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/workflows/code-review.md", "sha256": "37d4c190b1f9726014a6627ded33ac85f5774f0b3736e21a2ef6c3fa4d8a5d4d"},
+      {"path": ".opencode/schemas/task-package.schema.json", "sha256": "36b27c2433d57481a198d6171439e385ac4cfc83bf41b2d4cf666f7a9901f198"},
+      {"path": ".opencode/schemas/agent-result.schema.json", "sha256": "dab51751bfacadc4f3feca4281485ae7397b5d34ae51ecfe2cd0eeff92f4942c"},
+      {"path": "scripts/acceptance_tests.py", "sha256": "047883c98a947a580dbf4e1552c8d411602bd10fd8d538d3604c42ddb8cc43a3"},
+      {"path": "scripts/phase2_qualification.py", "sha256": "1d9dd8f0f98839d4c5fdc4e2964f23845ee162a69d4a5c55dc8acb8165de1fb2"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "code-analyst:subagent", "adversarial-reviewer:subagent", "validation-agent:subagent"],
+    "capabilities": {"shell_runtime_review": "NOT_USED", "websearch": "NOT_USED"}
+  },
+  "execution": {
+    "scenario": "Static Code Review of the current Professor project-local files.",
+    "acceptance_criteria": ["Source-grounded findings", "Adversarial challenge", "Validation of final report", "Explicit runtime limitations"],
+    "delegated_specialists": ["code-analyst", "adversarial-reviewer", "validation-agent"],
+    "task_ids": ["CR-CA-001", "CR-AR-001", "CR-VA-001"],
+    "result_statuses": ["COMPLETED", "FAIL_REVISE_OBSERVED"],
+    "failed_attempts": ["Validation returned FAIL/REVISE for an earlier draft."],
+    "timeouts_or_blocks": ["No shell commands or runtime reproduction; dirty-state correspondence not established."],
+    "final_disposition": "PARTIAL static review; runtime qualification NOT_VERIFIED."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-code-review-session.json",
+    "transcript_sha256": "6e151a385c30b64fbee1e8fe15d934caec258a9128980180e5b0a600a1ee6926",
+    "classification": "MIXED",
+    "direct_observations": ["Project files were globbed/read", "task events and final review text exist", "validation failure is recorded"],
+    "specialist_reported": ["Code Analyst findings", "Adversarial Reviewer challenge", "Validation Agent result"],
+    "independent_verification": ["Professor session inspected project files and preserved the final returned review"],
+    "sanitization": "Credential-shaped URLs were previously redacted; current evidence scan reports zero matches."
+  },
+  "qualification": {
+    "expected_outcome": "Operationally qualified Code Review with known revision and source-grounded findings.",
+    "actual_outcome": "Static specialist chain with explicit runtime and provenance limitations.",
+    "status": "PARTIAL",
+    "explanation": "The review is useful static evidence but does not qualify runtime execution or clean revision correspondence.",
+    "limitations": ["No session-time manifest existed before G2.", "Professor-scope Git state was not verified.", "No runtime reproduction was performed."]
+  }
+}

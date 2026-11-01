@@ -1,0 +1,76 @@
+{
+  "phase": "Phase 2",
+  "scope": "professor/ and descendants only",
+  "final_classification": "NOT_READY",
+  "g8_gate_result": "FAIL",
+  "g8_adversarial_result": "REJECT",
+  "g8_validation_result": "FAIL_REVISE",
+  "mandatory_criteria": {
+    "p2_001_remediated": "PARTIAL",
+    "p2_002_remediated": "PARTIAL",
+    "p2_003_remediated": "PARTIAL",
+    "readonly_validation_proven": "LOCAL_TEST_REPORTED",
+    "local_schema_validation": "LOCAL_TEST_REPORTED",
+    "per_session_manifests": "PARTIAL",
+    "research_workflow": "PARTIAL",
+    "research_and_design_workflow": "NOT_VERIFIED",
+    "code_review_workflow": "NOT_VERIFIED",
+    "eight_live_failure_scenarios": "NOT_VERIFIED",
+    "actual_task_result_enforcement": "PARTIAL",
+    "malformed_result_rejected": "NOT_VERIFIED",
+    "partial_and_blocked_preserved": "NOT_VERIFIED",
+    "independent_adversarial_review": "REJECT",
+    "independent_validation": "FAIL",
+    "critical_or_high_findings": "UNRESOLVED",
+    "security_evidence": "PARTIAL",
+    "scope_boundaries": "MET",
+    "phase3_started": "NO"
+  },
+  "work_packages": {
+    "WP2-R1": "PASS_WITH_GAPS",
+    "WP2-R2": "PASS_WITH_GAPS",
+    "WP2-R3": "PARTIAL",
+    "WP2-R4": "NOT_VERIFIED",
+    "WP2-R5": "NOT_VERIFIED",
+    "WP2-R6": "PARTIAL_NOT_VERIFIED",
+    "WP2-R7": "PARTIAL",
+    "WP2-R8": "FAIL"
+  },
+  "evidence": [
+    "workspace/deliverables/phase-2-remediation-baseline.md",
+    "workspace/deliverables/phase-2-g1-recapture.md",
+    "workspace/deliverables/phase-2-harness-remediation.md",
+    "workspace/deliverables/phase-2-evidence-manifest-specification.md",
+    "workspace/deliverables/phase-2-research-qualification.md",
+    "workspace/deliverables/phase-2-research-and-design-qualification.md",
+    "workspace/deliverables/phase-2-code-review-qualification.md",
+    "workspace/deliverables/phase-2-live-failure-qualification.md",
+    "workspace/deliverables/phase-2-contract-enforcement-qualification.md",
+    "workspace/deliverables/phase-2-adversarial-review.md",
+    "workspace/deliverables/phase-2-validation-report.md",
+    "workspace/deliverables/phase-2-completion-report.md",
+    "workspace/evidence/phase2-g8-validation-session.json",
+    "workspace/evidence/phase2-g8-adversarial-session.json"
+  ],
+  "contradictions": [
+    {
+      "id": "G8-C-001",
+      "claim": "The Phase 2 completion report describes Code Review as including Validation Agent completion.",
+      "counterevidence": "The G5 qualification report and manifest state that Validation Agent completion was not observed.",
+      "disposition": "RETAIN_CONSERVATIVE_STATUS_NOT_VERIFIED"
+    },
+    {
+      "id": "G8-C-002",
+      "claim": "The G4 manifest lists an Adversarial Reviewer task event among completed direct observations.",
+      "counterevidence": "The G4 qualification report states no completed Adversarial Reviewer event was observed.",
+      "disposition": "RETAIN_CONSERVATIVE_STATUS_NOT_VERIFIED"
+    }
+  ],
+  "security": {
+    "credential_shaped_url_scan": "CLEAN_REPORTED",
+    "credential_owner_rotation": "NOT_VERIFIED",
+    "archive_semantic_inspection": "NOT_VERIFIED"
+  },
+  "decision_reason": "Mandatory live failure handling, complete Research and Design, complete Code Review, live result enforcement, and independent acceptance remain failed or unverified. The bounded prompt requires NOT_READY when any mandatory criterion remains unverified.",
+  "next_action": "Do not start Phase 3. Correct contradictory summaries, resolve security-owner and archive gaps, and repeat only the failed or unverified qualification gates with fresh independent review."
+}

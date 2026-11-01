@@ -1,0 +1,62 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e66f71d34ffeicM2Nfst4kNjjH",
+  "workflow": "contract-enforcement-qualification",
+  "qualification_test_id": "WP2-R7-g7-contract-enforcement",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T21:55:22Z",
+  "end_timestamp": "2026-11-01T21:58:56Z",
+  "status": "PARTIAL",
+  "repository": {
+    "identity": "professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time Git state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/agents/prompt-gen.md", "sha256": "2fe5fbce890552b96244624729be0234e2a80acf67f6d59ea14f5bc4a9ebaea8"},
+      {"path": ".opencode/workflows/research.md", "sha256": "0beb6016fa1b76d9462d9d4c507e91313b31ed74e73c3dd35d94b4bfdb55ce89"},
+      {"path": ".opencode/schemas/task-package.schema.json", "sha256": "36b27c2433d57481a198d6171439e385ac4cfc83bf41b2d4cf666f7a9901f198"},
+      {"path": ".opencode/schemas/agent-result.schema.json", "sha256": "dab51751bfacadc4f3feca4281485ae7397b5d34ae51ecfe2cd0eeff92f4942c"},
+      {"path": "scripts/acceptance_tests.py", "sha256": "047883c98a947a580dbf4e1552c8d411602bd10fd8d538d3604c42ddb8cc43a3"},
+      {"path": "scripts/validate_manifests.py", "sha256": "fc7d2c96d80cbc8c62a7f4e8855acb803cce978ceadd26eaa637c3e9e4c568f3"},
+      {"path": "workspace/evidence/session-manifest.schema.json", "sha256": "7bfac4324d08d6851d4057a06b89bd66ee8071a5699c321715b8bc9b9db56029"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "prompt-gen:subagent"],
+    "capabilities": {"result_injection": "NOT_VERIFIED", "schema_enforcement": "NOT_VERIFIED"}
+  },
+  "execution": {
+    "scenario": "Attempt valid task creation and actual task/result contract enforcement through the supported Professor boundary.",
+    "acceptance_criteria": ["Valid task package", "Acceptance criteria preserved", "Typed result handling", "Malformed-result rejection", "PARTIAL/BLOCKED/FAILED preservation"],
+    "delegated_specialists": ["prompt-gen"],
+    "task_ids": [],
+    "result_statuses": ["VALID_TASK_PACKAGE_OBSERVED", "RESULT_BOUNDARY_NOT_VERIFIED"],
+    "failed_attempts": [],
+    "timeouts_or_blocks": ["No supported result-injection or malformed-result-control surface was exposed."],
+    "final_disposition": "PARTIAL; valid task boundary observed, live result enforcement not verified; G8 not started."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-g7-contract-enforcement-session.json",
+    "transcript_sha256": "88f16af60698f508b9cd79c299949f847032158c3287bdf3d30bcf48285cd156",
+    "classification": "MIXED",
+    "direct_observations": ["Professor inspected scoped contracts", "Prompt-gen task event completed", "final boundary matrix was emitted"],
+    "specialist_reported": ["Prompt-gen returned task package"],
+    "independent_verification": ["Professor inspected the returned task shape in the session"],
+    "sanitization": "Evidence directory was scanned; no recognized credential-shaped URLs remain."
+  },
+  "qualification": {
+    "expected_outcome": "Live task/result contract enforcement, including malformed-result rejection and status preservation.",
+    "actual_outcome": "Valid task creation and task identity preservation observed; result-boundary enforcement not exposed or tested.",
+    "status": "PARTIAL",
+    "explanation": "The runtime boundary demonstrates task creation but not result validation or rejection behavior.",
+    "limitations": ["Professor-scope Git revision/dirty state was not captured in-session.", "Working-tree hashes are perishable.", "G8 is not started."]
+  }
+}

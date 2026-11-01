@@ -1,0 +1,60 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e66f07228ffeGKGtw9gYOmO1dt",
+  "workflow": "final-qualification-validation",
+  "qualification_test_id": "WP2-R8-g8-validation",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T22:21:43Z",
+  "end_timestamp": "2026-11-01T22:23:44Z",
+  "status": "FAIL",
+  "repository": {
+    "identity": "professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time Git state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/agents/adversarial-reviewer.md", "sha256": "a3b3e8ee0c6939d41e71958bc23dd7bac0eabb09581f183bb5fa9b58901d2eed"},
+      {"path": ".opencode/agents/validation-agent.md", "sha256": "7a7cc0f790e3ebe8d52be902d3648693cff6c0e1d85ae8f7dd8ef2153eb484e2"},
+      {"path": ".opencode/workflows/research.md", "sha256": "0beb6016fa1b76d9462d9d4c507e91313b31ed74e73c3dd35d94b4bfdb55ce89"},
+      {"path": "scripts/validate_manifests.py", "sha256": "fc7d2c96d80cbc8c62a7f4e8855acb803cce978ceadd26eaa637c3e9e4c568f3"},
+      {"path": "workspace/evidence/session-manifest.schema.json", "sha256": "7bfac4324d08d6851d4057a06b89bd66ee8071a5699c321715b8bc9b9db56029"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "validation-agent:subagent", "adversarial-reviewer:subagent"],
+    "capabilities": {"validation": "OBSERVED", "adversarial_review": "SPECIALIST_REPORTED"}
+  },
+  "execution": {
+    "scenario": "Independent validation of the actual Professor-scoped G0-G7 Phase 2 evidence package.",
+    "acceptance_criteria": ["Scope compliance", "Mandatory criterion matrix", "Evidence traceability", "Security handling", "Final readiness decision"],
+    "delegated_specialists": ["validation-agent", "adversarial-reviewer"],
+    "task_ids": [],
+    "result_statuses": ["VALIDATION_FAIL_REVISE", "ADVERSARIAL_REJECT"],
+    "failed_attempts": ["Direct CLI invocation of subagents fell back to the default agent and was not counted as independent review."],
+    "timeouts_or_blocks": [],
+    "final_disposition": "FAIL; retain NOT_READY and do not advance to Phase 3."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-g8-validation-session.json",
+    "transcript_sha256": "d6453e993275d64e02f8d824b8e0c8e071d4366cbfcc69bc2fb8013b9e47a824",
+    "classification": "MIXED",
+    "direct_observations": ["Validation session inspected Professor-scoped artifacts", "final Validation Agent result returned FAIL", "Adversarial Reviewer task result returned REJECT"],
+    "specialist_reported": ["Adversarial Reviewer findings and Validation Agent assessment"],
+    "independent_verification": ["Professor-mediated G8 session preserved both delegated outcomes"],
+    "sanitization": "Evidence directory was scanned; no recognized credential-shaped URLs remain."
+  },
+  "qualification": {
+    "expected_outcome": "Independent acceptance or rejection of Phase 2 operational readiness.",
+    "actual_outcome": "Validation FAIL/REVISE and Adversarial Review REJECT; final readiness NOT_READY.",
+    "status": "FAIL",
+    "explanation": "Mandatory live criteria remain failed or unverified, and the independent reviewers rejected operational readiness.",
+    "limitations": ["Professor-scope Git revision/dirty state was not captured in-session.", "Working-tree hashes are perishable.", "Credential owner rotation remains external and unverified."]
+  }
+}

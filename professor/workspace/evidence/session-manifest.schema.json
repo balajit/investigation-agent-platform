@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session-manifest.schema.json",
+  "title": "Professor Qualification Session Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "session_id",
+    "workflow",
+    "qualification_test_id",
+    "status",
+    "repository",
+    "runtime",
+    "execution",
+    "evidence_integrity",
+    "qualification"
+  ],
+  "properties": {
+    "manifest_version": { "const": "1.0" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "workflow": { "type": "string", "minLength": 1 },
+    "qualification_test_id": { "type": "string", "minLength": 1 },
+    "operator_identity": { "type": "string", "minLength": 1 },
+    "start_timestamp": { "type": "string", "minLength": 1 },
+    "end_timestamp": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["PASS", "FAIL", "PARTIAL", "BLOCKED", "NOT_VERIFIED"] },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "revision", "branch", "dirty_state", "relevant_changes", "file_hashes"],
+      "properties": {
+        "identity": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "dirty_state": { "enum": ["CLEAN", "DIRTY", "NOT_VERIFIED"] },
+        "relevant_changes": { "type": "array", "items": { "type": "string" } },
+        "file_hashes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["opencode_version", "provider", "model", "discovered_agents", "capabilities"],
+      "properties": {
+        "opencode_version": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "agent_configuration_revision": { "type": "string" },
+        "discovered_agents": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "capabilities": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario", "acceptance_criteria", "delegated_specialists", "task_ids", "result_statuses", "failed_attempts", "timeouts_or_blocks", "final_disposition"],
+      "properties": {
+        "scenario": { "type": "string", "minLength": 1 },
+        "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+        "delegated_specialists": { "type": "array", "items": { "type": "string" } },
+        "task_ids": { "type": "array", "items": { "type": "string" } },
+        "result_statuses": { "type": "array", "items": { "type": "string" } },
+        "failed_attempts": { "type": "array", "items": { "type": "string" } },
+        "timeouts_or_blocks": { "type": "array", "items": { "type": "string" } },
+        "final_disposition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence_integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript_path", "transcript_sha256", "classification", "direct_observations", "specialist_reported", "independent_verification", "sanitization"],
+      "properties": {
+        "transcript_path": { "type": "string", "minLength": 1 },
+        "transcript_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "classification": { "enum": ["DIRECTLY_OBSERVED", "SPECIALIST_REPORTED", "MIXED"] },
+        "direct_observations": { "type": "array", "items": { "type": "string" } },
+        "specialist_reported": { "type": "array", "items": { "type": "string" } },
+        "independent_verification": { "type": "array", "items": { "type": "string" } },
+        "sanitization": { "type": "string", "minLength": 1 }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_outcome", "actual_outcome", "status", "explanation", "limitations"],
+      "properties": {
+        "expected_outcome": { "type": "string", "minLength": 1 },
+        "actual_outcome": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["PASS", "FAIL", "PARTIAL", "BLOCKED", "NOT_VERIFIED"] },
+        "explanation": { "type": "string", "minLength": 1 },
+        "limitations": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

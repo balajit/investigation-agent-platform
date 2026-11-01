@@ -1,0 +1,63 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e67c30ac6ffeFF4lRLbPoQrKoP",
+  "workflow": "research",
+  "qualification_test_id": "WP2-R3-research-g3",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T13:51:43Z",
+  "end_timestamp": "2026-11-01T13:53:35Z",
+  "status": "PARTIAL",
+  "repository": {
+    "identity": "professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time Git state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/agents/research-assistant.md", "sha256": "04862f9ce805ddcad1b13f082314b801fd1f66c3400e25840204e7bcb380f744"},
+      {"path": ".opencode/agents/validation-agent.md", "sha256": "7a7cc0f790e3ebe8d52be902d3648693cff6c0e1d85ae8f7dd8ef2153eb484e2"},
+      {"path": ".opencode/workflows/research.md", "sha256": "0beb6016fa1b76d9462d9d4c507e91313b31ed74e73c3dd35d94b4bfdb55ce89"},
+      {"path": ".opencode/schemas/task-package.schema.json", "sha256": "36b27c2433d57481a198d6171439e385ac4cfc83bf41b2d4cf666f7a9901f198"},
+      {"path": ".opencode/schemas/agent-result.schema.json", "sha256": "dab51751bfacadc4f3feca4281485ae7397b5d34ae51ecfe2cd0eeff92f4942c"},
+      {"path": "scripts/acceptance_tests.py", "sha256": "047883c98a947a580dbf4e1552c8d411602bd10fd8d538d3604c42ddb8cc43a3"},
+      {"path": "scripts/validate_manifests.py", "sha256": "fc7d2c96d80cbc8c62a7f4e8855acb803cce978ceadd26eaa637c3e9e4c568f3"},
+      {"path": "workspace/evidence/session-manifest.schema.json", "sha256": "7bfac4324d08d6851d4057a06b89bd66ee8071a5699c321715b8bc9b9db56029"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "research-assistant:subagent", "validation-agent:subagent"],
+    "capabilities": {"webfetch": "OBSERVED", "websearch": "NOT_VERIFIED", "atlassian_search": "SPECIALIST_REPORTED_NOT_EXERCISED", "context7": "SPECIALIST_REPORTED_NOT_EXERCISED"}
+  },
+  "execution": {
+    "scenario": "Bounded Research qualification for official OpenCode v1.19.x Markdown agent configuration and delegation.",
+    "acceptance_criteria": ["Explicit questions", "One Research Assistant delegation", "Two official sources", "Professor source inspection", "Validation Agent review", "Limitations disclosed"],
+    "delegated_specialists": ["research-assistant", "validation-agent"],
+    "task_ids": ["RA-G3-WP2-R3", "VA-G3-WP2-R3"],
+    "result_statuses": ["COMPLETED", "PARTIAL"],
+    "failed_attempts": [],
+    "timeouts_or_blocks": ["websearch was not exposed", "alternative search tools were reported but not exercised"],
+    "final_disposition": "PARTIAL; known-URL research qualified, source discovery NOT_VERIFIED."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-g3-research-session.json",
+    "transcript_sha256": "fb347488aa72b972c0d1f06de54859cdb45b0aa56ab5c0edd609e77476ed81bf",
+    "classification": "MIXED",
+    "direct_observations": ["Professor fetched both required URLs", "Research Assistant and Validation Agent task events completed", "final Professor synthesis event exists"],
+    "specialist_reported": ["Research Assistant source analysis", "Research Assistant capability report for Atlassian search and Context7" , "Validation Agent findings"],
+    "independent_verification": ["Professor directly inspected both fetched source outputs before synthesis"],
+    "sanitization": "Evidence directory was scanned; no recognized credential-shaped URLs remain."
+  },
+  "qualification": {
+    "expected_outcome": "End-to-end bounded Research qualification including source discovery, retrieval, synthesis, and independent validation.",
+    "actual_outcome": "Known-URL retrieval, evidence inspection, synthesis, and validation completed; websearch/source discovery unavailable.",
+    "status": "PARTIAL",
+    "explanation": "The required Research workflow behavior was demonstrated except for unavailable source discovery capability.",
+    "limitations": ["Working-tree hashes are perishable; G4+ must prefer committed blobs or reverify at gate close.", "Professor-scope Git revision/dirty state was not captured in-session.", "Alternative search tools were not independently exercised."]
+  }
+}

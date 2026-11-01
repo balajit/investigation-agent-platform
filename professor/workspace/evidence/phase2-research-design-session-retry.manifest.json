@@ -1,0 +1,60 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e6a5ed4ccffePmUFL3WbaIDc3A",
+  "workflow": "research-and-design",
+  "qualification_test_id": "WP2-R4-research-design-retry",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T01:22:14Z",
+  "end_timestamp": "2026-11-01T01:26:07Z",
+  "status": "NOT_VERIFIED",
+  "repository": {
+    "identity": "investigation-agent-platform/professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time dirty state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/workflows/research-and-design.md", "sha256": "353c3f90321b76a75e506052a8bb8ad29b347bb1d1e021f9ab2791c261178f9e"},
+      {"path": ".opencode/schemas/task-package.schema.json", "sha256": "36b27c2433d57481a198d6171439e385ac4cfc83bf41b2d4cf666f7a9901f198"},
+      {"path": ".opencode/schemas/agent-result.schema.json", "sha256": "dab51751bfacadc4f3feca4281485ae7397b5d34ae51ecfe2cd0eeff92f4942c"},
+      {"path": "scripts/acceptance_tests.py", "sha256": "047883c98a947a580dbf4e1552c8d411602bd10fd8d538d3604c42ddb8cc43a3"},
+      {"path": "scripts/phase2_qualification.py", "sha256": "1d9dd8f0f98839d4c5fdc4e2964f23845ee162a69d4a5c55dc8acb8165de1fb2"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "prompt-gen:subagent", "research-assistant:subagent", "code-analyst:subagent", "architecture-agent:subagent", "adversarial-reviewer:subagent", "validation-agent:subagent"],
+    "capabilities": {"webfetch": "NOT_VERIFIED_IN_THIS_SESSION", "websearch": "NOT_VERIFIED_IN_THIS_SESSION"}
+  },
+  "execution": {
+    "scenario": "Retry of bounded evidence-management design qualification.",
+    "acceptance_criteria": ["Complete specialist chain", "Final synthesis", "Adversarial review", "Independent validation"],
+    "delegated_specialists": ["prompt-gen", "research-assistant", "code-analyst", "architecture-agent"],
+    "task_ids": [],
+    "result_statuses": ["PARTIAL_CHAIN", "FINAL_SYNTHESIS_NOT_OBSERVED"],
+    "failed_attempts": ["Retry ended during the design chain before adversarial and validation closure."],
+    "timeouts_or_blocks": ["Terminal timeout/interruption classification was not emitted by the session."],
+    "final_disposition": "NOT_VERIFIED; preserve failed/retried attempt."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-research-design-session-retry.json",
+    "transcript_sha256": "b1101884cac25793426899e9421c628c388c34e3263a733212b8efdf9c7f1251",
+    "classification": "MIXED",
+    "direct_observations": ["Professor read workflow/schema/project files", "partial task events exist"],
+    "specialist_reported": ["Any nested task results present in returned event payloads"],
+    "independent_verification": [],
+    "sanitization": "Evidence directory was scanned; no recognized credential-shaped URLs remain."
+  },
+  "qualification": {
+    "expected_outcome": "Completed research/design chain and validated deliverable.",
+    "actual_outcome": "Partial retry without final synthesis or validation closure.",
+    "status": "NOT_VERIFIED",
+    "explanation": "The retry is preserved as negative/incomplete evidence and is not promoted to PASS.",
+    "limitations": ["No session manifest existed at execution time.", "Dirty-state correspondence is not established."]
+  }
+}

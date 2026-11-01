@@ -1,0 +1,67 @@
+{
+  "manifest_version": "1.0",
+  "session_id": "ses_e67ac6c0bffeuxSFZhrtJx6CWC",
+  "workflow": "research-and-design",
+  "qualification_test_id": "WP2-R4-research-design-g4",
+  "operator_identity": "local-session",
+  "start_timestamp": "2026-11-01T18:16:25Z",
+  "end_timestamp": "2026-11-01T18:21:09Z",
+  "status": "NOT_VERIFIED",
+  "repository": {
+    "identity": "professor",
+    "revision": "NOT_VERIFIED",
+    "branch": "NOT_VERIFIED",
+    "dirty_state": "NOT_VERIFIED",
+    "relevant_changes": ["Professor-scope session-time Git state was not captured."],
+    "file_hashes": [
+      {"path": "opencode.json", "sha256": "77bde2d92260c2da99218e2787f0049fdc4de1b527032249805ec05158055981"},
+      {"path": ".opencode/agents/professor.md", "sha256": "0fa39dfe341dd62a073ca26922aef1aa396e91f71e8faf3b710ca7341a41b3a4"},
+      {"path": ".opencode/agents/prompt-gen.md", "sha256": "2fe5fbce890552b96244624729be0234e2a80acf67f6d59ea14f5bc4a9ebaea8"},
+      {"path": ".opencode/agents/research-assistant.md", "sha256": "04862f9ce805ddcad1b13f082314b801fd1f66c3400e25840204e7bcb380f744"},
+      {"path": ".opencode/agents/code-analyst.md", "sha256": "2c1f5536fb6b8b9e48382c334b61fedb649829a326d91aec87c2bf6ffbb09acb"},
+      {"path": ".opencode/agents/architecture-agent.md", "sha256": "ed1eab921409e5e27101c9b5da86ebaf4f189af766698f0c6e94439463288e12"},
+      {"path": ".opencode/agents/adversarial-reviewer.md", "sha256": "a3b3e8ee0c6939d41e71958bc23dd7bac0eabb09581f183bb5fa9b58901d2eed"},
+      {"path": ".opencode/agents/validation-agent.md", "sha256": "7a7cc0f790e3ebe8d52be902d3648693cff6c0e1d85ae8f7dd8ef2153eb484e2"},
+      {"path": ".opencode/workflows/research-and-design.md", "sha256": "353c3f90321b76a75e506052a8bb8ad29b347bb1d1e021f9ab2791c261178f9e"},
+      {"path": ".opencode/schemas/task-package.schema.json", "sha256": "36b27c2433d57481a198d6171439e385ac4cfc83bf41b2d4cf666f7a9901f198"},
+      {"path": ".opencode/schemas/agent-result.schema.json", "sha256": "dab51751bfacadc4f3feca4281485ae7397b5d34ae51ecfe2cd0eeff92f4942c"},
+      {"path": "scripts/acceptance_tests.py", "sha256": "047883c98a947a580dbf4e1552c8d411602bd10fd8d538d3604c42ddb8cc43a3"},
+      {"path": "scripts/validate_manifests.py", "sha256": "fc7d2c96d80cbc8c62a7f4e8855acb803cce978ceadd26eaa637c3e9e4c568f3"},
+      {"path": "workspace/evidence/session-manifest.schema.json", "sha256": "7bfac4324d08d6851d4057a06b89bd66ee8071a5699c321715b8bc9b9db56029"}
+    ]
+  },
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "provider": "github-copilot",
+    "model": "github-copilot/gpt-5.6-luna",
+    "agent_configuration_revision": "NOT_VERIFIED",
+    "discovered_agents": ["professor:primary", "prompt-gen:subagent", "research-assistant:subagent", "code-analyst:subagent", "architecture-agent:subagent", "adversarial-reviewer:subagent", "validation-agent:subagent"],
+    "capabilities": {"websearch": "NOT_VERIFIED", "webfetch": "NOT_VERIFIED_IN_THIS_SESSION"}
+  },
+  "execution": {
+    "scenario": "Bounded design of a session-first evidence-management subsystem with no persistent orchestration infrastructure.",
+    "acceptance_criteria": ["Requirements traceability", "Two alternatives", "Architecture recommendation", "Adversarial review", "Independent validation", "Final synthesis"],
+    "delegated_specialists": ["prompt-gen", "research-assistant", "code-analyst", "architecture-agent"],
+    "task_ids": ["G4-WP2-R4-PG", "G4-WP2-R4-RA", "G4-WP2-R4-CA", "G4-WP2-R4-AA"],
+    "result_statuses": ["COMPLETED_TASK_EVENTS_RECORDED", "FINAL_CHAIN_INCOMPLETE"],
+    "failed_attempts": ["Provider session exceeded the bounded execution window before final design synthesis."],
+    "timeouts_or_blocks": ["Adversarial Reviewer and Validation Agent were not observed as completed; final Professor synthesis was not observed."],
+    "final_disposition": "NOT_VERIFIED; preserve incomplete Research and Design attempt."
+  },
+  "evidence_integrity": {
+    "transcript_path": "workspace/evidence/phase2-g4-research-design-session.json",
+    "transcript_sha256": "356e115c1324940b6787cfb315246566d76c65de5029a989422bd5d05f42e16c",
+    "classification": "MIXED",
+    "direct_observations": ["Professor read Professor-scope workflow/schema/project files", "completed task events for Prompt-gen, Research Assistant, Code Analyst, Architecture Agent, and Adversarial Reviewer are recorded", "no final synthesis text was observed"],
+    "specialist_reported": ["Nested specialist task outputs"],
+    "independent_verification": [],
+    "sanitization": "Evidence directory was scanned; no recognized credential-shaped URLs remain."
+  },
+  "qualification": {
+    "expected_outcome": "Complete Research and Design chain through final synthesis, adversarial review, and validation.",
+    "actual_outcome": "Partial specialist chain; final design, adversarial closure, validation, and final Professor synthesis were not observed.",
+    "status": "NOT_VERIFIED",
+    "explanation": "A timeout/incomplete transcript cannot be promoted to a completed design qualification.",
+    "limitations": ["Professor-scope Git revision/dirty state was not captured in-session.", "Working-tree hashes are perishable; future gates must prefer committed blobs or reverify at gate close."]
+  }
+}
