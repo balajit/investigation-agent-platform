@@ -7651,6 +7651,16 @@ class VerificationEngine:
         if len(groups) > 1:
             by_id = {str(getattr(e, "evidence_id", "")): e for e in evidence_items or []}
             failures: list[str] = []
+            # R4 (H17/H11): cited rows per group, computed once so a linked
+            # contradiction is attributable to exactly one group.
+            _group_cited: dict[tuple[str, str], set[str]] = {}
+            for (_gk, _gt), _gasms in groups.items():
+                _cited_set: set[str] = set()
+                for _gasm in _gasms:
+                    _geid = getattr(_gasm, "evidence_id", None)
+                    if _geid is not None:
+                        _cited_set.add(str(_geid))
+                _group_cited[(_gk, _gt)] = _cited_set
             for (kind, target_key), asms in groups.items():
                 cited: list[str] = []
                 for asm in asms:
@@ -7687,6 +7697,23 @@ class VerificationEngine:
                     continue
                 if not self._group_verifies(view, kind, rows, contradictions, causal_chain, policy):
                     failures.append(f"{kind}|{target_key}: not verified over its cited rows")
+                    continue
+                # R4 (H17/H11, LV_H via policy.cross_claim_checks): an
+                # unresolved linked contradiction blocks the one group it
+                # names. Faults fail closed at group granularity.
+                if getattr(policy, "cross_claim_checks", False):
+                    try:
+                        from investigation_agent_platform.application.investigation.cross_claim import (
+                            contradiction_blocks_group,
+                        )
+
+                        _r4_detail = contradiction_blocks_group(
+                            (kind, target_key), _group_cited, contradictions
+                        )
+                    except Exception:
+                        _r4_detail = "contradiction inspection faulted"
+                    if _r4_detail is not None:
+                        failures.append(f"{kind}|{target_key}: {_r4_detail}")
             if failures:
                 try:
                     hid = getattr(hypothesis, "id", None) or result.hypothesis_id

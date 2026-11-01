@@ -17,6 +17,49 @@ from investigation_agent_platform.application.investigation.claim_identity impor
 _POSITIVE = {"DEFINITION", "CALL_EDGE"}
 
 
+# Severities that can block a group (R4). Model-reported contradictions can
+# never exceed MEDIUM (H11a caps them); HIGH/CRITICAL stay reserved for
+# deterministic detectors.
+_BLOCKING_SEVERITIES = frozenset({"MEDIUM", "HIGH", "CRITICAL"})
+
+
+def contradiction_blocks_group(
+    key: tuple[str, str],
+    group_cited: Mapping[tuple[str, str], set[str]],
+    contradictions: list[Any],
+) -> str | None:
+    """R4 (H17/H11): an unresolved MEDIUM-or-worse contradiction whose cited
+    evidence intersects exactly one group's rows blocks that group.
+
+    Returns the failure detail, or None when nothing blocks. May raise on
+    hostile input; callers fail closed."""
+    own = set(group_cited.get(key, ()))
+    if not own:
+        return None
+    others: set[str] = set()
+    for other_key, cited in group_cited.items():
+        if other_key != key:
+            others |= set(cited)
+    for contradiction in contradictions or []:
+        if str(getattr(contradiction, "resolution_status", "")) != "UNRESOLVED":
+            continue
+        severity = getattr(contradiction, "severity", None)
+        if str(getattr(severity, "value", severity)) not in _BLOCKING_SEVERITIES:
+            continue
+        links = {str(e) for e in (getattr(contradiction, "evidence_ids", None) or [])}
+        hit = links & own
+        if not hit:
+            continue
+        if links & others:
+            continue  # shared across groups: not attributable to exactly one
+        return (
+            "unresolved contradiction cites this group's evidence "
+            f"({min(hit)[:36]}): "
+            f"{str(getattr(contradiction, 'statement', ''))[:120]}"
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class ClaimConflict:
     code: str  # REVISION_MIXED (non-blocking) or CLAIM_CONFLICT (blocking)

@@ -232,3 +232,101 @@ async def test_usage_of_failed_attempts_is_not_lost_when_the_decision_is_unavail
     decision = await coord.reason("tenant-a", state)
     assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
     assert decision.metadata["llm_usage"]["prompt_tokens"] == 150
+
+
+# --- H6-D1: resample outcomes are stamped, forwarded, summed, derived --------
+
+
+async def test_h6t01_recovered_outcome_stamped() -> None:
+    coord, state, _ = _coord([_resp(_schema_invalid()), _resp(_valid())])
+    decision = await coord.reason("tenant-a", state)
+    assert decision.metadata["resample_count"] == 1
+    assert decision.metadata["resample_outcome"] == "recovered"
+
+
+async def test_h6t02_exhausted_outcome_stamped() -> None:
+    coord, state, _ = _coord([_resp(_schema_invalid()) for _ in range(3)])
+    decision = await coord.reason("tenant-a", state)
+    assert decision.metadata["status"] == "REASONING_UNAVAILABLE"
+    assert decision.metadata["resample_count"] == 2
+    assert decision.metadata["resample_outcome"] == "exhausted"
+
+
+async def test_h6t03_no_resample_leaves_no_outcome() -> None:
+    coord, state, _ = _coord([_resp(_valid())])
+    decision = await coord.reason("tenant-a", state)
+    assert "resample_count" not in decision.metadata
+    assert "resample_outcome" not in decision.metadata
+
+
+async def test_h6t04_activity_forwards_the_counts() -> None:
+    from types import SimpleNamespace
+
+    import test_h7_reasoning_degrade as h7t
+
+    def _ok_decision():  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            metadata={"resample_count": 1, "resample_outcome": "recovered"},
+            reasoning_chain="ok",
+            conclusion_readiness=0.1,
+            observations=[],
+            hypotheses_evaluated=[],
+            claims=[],
+            contradictions_found=[],
+            information_gaps=[],
+            action=None,
+            disposition=None,
+            defer_gathering=None,
+        )
+
+    h7t._reason_ctx(_ok_decision())
+    ok = await h7t._reason()
+    assert ok.data["resample"] == {"count": 1, "outcome": "recovered"}
+
+    h7t._reason_ctx(
+        SimpleNamespace(
+            metadata={
+                "status": "REASONING_UNAVAILABLE",
+                "reason": "r",
+                "failure_kind": "model_output",
+                "resample_count": 2,
+                "resample_outcome": "exhausted",
+            },
+            reasoning_chain="REASONING_UNAVAILABLE",
+        )
+    )
+    bad = await h7t._reason()
+    assert bad.data["resample"] == {"count": 2, "outcome": "exhausted"}
+
+
+def test_h6t05_workflow_sums_totals() -> None:
+    from investigation_agent_platform.application.worker.workflows.run_investigation import (
+        accumulate_resample_totals,
+    )
+
+    totals = {"attempts": 0, "recovered": 0, "exhausted": 0}
+    accumulate_resample_totals(totals, {"resample": {"count": 1, "outcome": "recovered"}})
+    accumulate_resample_totals(totals, {"resample": {"count": 2, "outcome": "exhausted"}})
+    accumulate_resample_totals(totals, {})
+    assert totals == {"attempts": 3, "recovered": 1, "exhausted": 1}
+
+
+def test_h6t06_telemetry_keeps_the_totals() -> None:
+    from investigation_agent_platform.application.worker.activities.inputs import (
+        _derive_loop_telemetry,
+    )
+
+    tele = _derive_loop_telemetry(
+        {
+            "llm_tokens_total": 10,
+            "resample_attempts_total": 3,
+            "resample_recovered_total": 1,
+            "resample_exhausted_total": 2,
+        },
+        {},
+        0,
+    )
+    assert tele is not None
+    assert tele["resample_attempts_total"] == 3
+    assert tele["resample_recovered_total"] == 1
+    assert tele["resample_exhausted_total"] == 2

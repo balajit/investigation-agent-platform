@@ -1976,6 +1976,19 @@ async def _gate_conclusion_or_fail(
             caller_edge_validated
             and _lv_h_enabled(getattr(_inv, "metadata", None))
         )
+        # H4-D1: build the published statement from the checkable groups
+        # only, under LV_H. Older pins ship the raw statement exactly as
+        # today; with no excluded NC claim the builder returns it unchanged.
+        from investigation_agent_platform.application.investigation.verdict_statement import (
+            VerdictStatement,
+            build_verdict_statement,
+        )
+
+        if _lv_h_enabled(getattr(_inv, "metadata", None)):
+            _vs = build_verdict_statement(hyp, causal_chain)
+        else:
+            _vs = VerdictStatement(text=str(hyp.statement)[:2048], redacted=False)
+        _published_title = _vs.text[:256] if _vs.redacted else hyp.title
         finding = Finding(
             # H14/T12: deterministic id so a conclude retry after a committed
             # finding is a no-op instead of a duplicate.
@@ -1985,8 +1998,8 @@ async def _gate_conclusion_or_fail(
             tenant_id=tenant_id,
             investigation_id=investigation_id,
             finding_type=FindingType.OBSERVATION if _finding_as_observation else FindingType.ROOT_CAUSE,
-            title=hyp.title,
-            statement=hyp.statement,
+            title=_published_title,
+            statement=_vs.text,
             evidence_ids=dedupe_and_cap_ids(supporting_ids, _FINDING_MAX_EVIDENCE_IDS),
             related_hypothesis_ids=[hyp.id],
             causal_chain=causal_ids,
@@ -2046,8 +2059,10 @@ async def _gate_conclusion_or_fail(
             f"{getattr(c, 'cause', '')} {getattr(c, 'mechanism', '')} {getattr(c, 'effect', '')}"
             for c in (causal_chain or [])
         ]
+        # H4-D1: map the published text, not the raw statement, so the
+        # removed opinion cannot cause an UNMAPPED limitation.
         _unmapped = _VerificationEngine.map_conclusion_sentences(
-            str(getattr(hyp, "statement", "") or ""), list(bound or []), _causal_texts
+            _vs.text, list(bound or []), _causal_texts
         )
         verification = _VerificationEngine.apply_conclusion_mapping(verification, _unmapped)
     except Exception:
@@ -2240,7 +2255,7 @@ async def _gate_conclusion_or_fail(
         limitations=_verification_limitations,
         next_check=_next_check,
         status=_conclusion_status,
-        root_cause=hyp.statement,
+        root_cause=_vs.text,
         supporting_evidence_ids=supporting_ids,
         supporting_hypothesis_ids=[hyp.id],
         contradicting_evidence_ids=dedupe_and_cap_ids(
@@ -2343,7 +2358,7 @@ async def _gate_conclusion_or_fail(
                         target_id=str(eid),
                         type="CORROBORATES",
                         confidence=verification.confidence.overall_confidence,
-                        metadata={"reason": hyp.statement[:500]},
+                        metadata={"reason": _vs.text[:500]},
                     )
                     for eid in evidence_ids
                 ]

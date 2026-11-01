@@ -783,6 +783,12 @@ async def reason_activity(params: ReasonInput) -> GenericActivityResult:
                         "failure_kind": _failure_kind,
                         # H6: tokens spent on the failed attempts still count.
                         "llm_usage": dict(_decision_meta.get("llm_usage") or {}),
+                        # H6-D1: the resample outcome rides the unavailable
+                        # result too, so exhausted runs still count.
+                        "resample": {
+                            "count": int(_decision_meta.get("resample_count", 0) or 0),
+                            "outcome": _decision_meta.get("resample_outcome"),
+                        },
                         "conclusion_readiness": 0.0,
                         "observations": [],
                         "iteration": iteration,

@@ -36,6 +36,9 @@ class Script:
     reason: list[dict[str, Any]] = field(default_factory=list)
     execute: Callable[[ExecuteActionInput], dict[str, Any]] | None = None
     verify: list[dict[str, Any]] = field(default_factory=list)
+    # H7b-T14: when set, the reason stub raises it on every turn (an exhausted
+    # retryable outage degrades the run instead of failing it).
+    reason_error: Exception | None = None
     # T12.12: when set, the capture stub calls it (may raise to prove the
     # workflow survives a post-conclude capture failure).
     capture: Callable[[CaptureKnowledgeInput], dict[str, Any]] | None = None
@@ -79,6 +82,8 @@ def build_stubs(
     async def reason(p: ReasonInput) -> GenericActivityResult:
         script.calls.append(("reason", p.iteration))
         await _tick("reason")
+        if script.reason_error is not None:
+            raise script.reason_error
         data = dict(script.reason[min(p.iteration, len(script.reason) - 1)])
         # Production normalizes through the Decision model
         # (hypotheses_evaluated: list[str]); the harness stub emits the
