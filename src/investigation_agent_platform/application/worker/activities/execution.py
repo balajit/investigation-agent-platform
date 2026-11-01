@@ -4050,6 +4050,42 @@ async def execute_action_activity(
                 CodeHistoryRequest,
             )
 
+            before_revision = str(parameters.get("before_revision", "") or "").strip()
+            after_revision = str(parameters.get("after_revision", "") or "").strip()
+            target_file = str(parameters.get("file_path", "") or "").strip()
+            if before_revision and after_revision and target_file:
+                try:
+                    delta_result = await gateway.compare_code_versions(
+                        tenant_id,
+                        investigation_id,
+                        application_id or "example-app",
+                        before_revision,
+                        after_revision,
+                        target_file,
+                    )
+                    delta_rows = _bank(delta_result.items)
+                    if evidence_repo is not None and delta_rows:
+                        await evidence_repo.save_batch(tenant_id, delta_rows, investigation_id)
+                    return _record_outcome(delta_rows)
+                except Exception as exc:
+                    outcome_detail["status"] = "DEGRADED"
+                    outcome_detail["miss_reason"] = "delta_diff_unavailable"
+                    story_log(
+                        logger,
+                        logging.WARNING,
+                        "GET_CODE_HISTORY delta witness unavailable",
+                        comp=COMP_ACTVTY,
+                        func="execute_action_activity",
+                        stage="execute",
+                        step="get_code_history_delta",
+                        outcome=OUTCOME_SKIPPED,
+                        tenant_id=tenant_id,
+                        investigation_id=inv_id_str,
+                        event="delta diff unavailable",
+                        error=type(exc).__name__,
+                    )
+                    return 0
+
             def _build(path: str | None = None) -> CodeHistoryRequest:
                 return CodeHistoryRequest(
                     repository=application_id or "example-app",

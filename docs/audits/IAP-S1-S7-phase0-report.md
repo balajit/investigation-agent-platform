@@ -31,7 +31,7 @@ Phase 0 source revalidation is complete. WP-01 was explicitly authorized and its
 | WP-02 | IMPLEMENTED; LIVE REPLAY PARTIALLY UNVERIFIED | S4 now emits typed outcomes and forcing requires explicit `READY`; exceptions and missing outcomes fail closed. |
 | WP-03 | IMPLEMENTED; LIVE ACCEPTANCE PARTIALLY UNVERIFIED | State-aware handoff validation and classifier fail-closed handling are implemented; live workflow/database acceptance remains outstanding. |
 | WP-04 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | Typed exact-fetch continuation, tenant-scoped CAS/leases, API dispatch, dedicated Temporal workflows, lifecycle creation/reconciliation, and continuation-only conclusion history replacement are implemented. Focused tests pass; live database/Temporal acceptance remains outstanding. |
-| WP-05 | PARTIALLY IMPLEMENTED | Range is production-called and tested; Contrast is incomplete as a final S6 proof; Delta and Mechanism-shift are not established. |
+| WP-05 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | Range remains production-called; cbv4 adds Delta diff witnesses, final-gate Contrast binding, and data-gated Mechanism-shift validation. Focused tests pass; live provider/telemetry acceptance remains outstanding. |
 | WP-06 | IMPLEMENTED BUT NOT PRODUCTION-WIRED | Frontier domain logic exists, while production scheduling uses gap-fill/smallest-fetch forcing. |
 | WP-07 | PARTIALLY IMPLEMENTED | Context selection, tiering, excerpts, provenance, and budgeting exist; accepted rerank/prune/brief/recall/faithfulness/feedback requirements are not established. |
 | WP-08 | VERIFIED DEFECT | Production coordinator builder injects `_DefaultPromptSafetyPolicy`, whose validator always returns `True`. |

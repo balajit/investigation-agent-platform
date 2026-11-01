@@ -1587,6 +1587,81 @@ class AsyncEvidenceGateway(EvidenceGatewayProtocol):
             return EvidenceQueryResult(items=deduped, total_count=len(deduped))
 
     @traced("gateway", extra_from=_gateway_extra)
+    async def compare_code_versions(
+        self,
+        tenant_id: str,
+        investigation_id: UUID,
+        application_id: str,
+        source_ref: str,
+        target_ref: str,
+        target_path: str,
+    ) -> EvidenceQueryResult:
+        """Fetch one bounded, tenant-authorized diff witness for cbv4 Delta."""
+        await self._enforce_authorization(tenant_id, "GET_CODE_HISTORY", target_path, application_id=application_id)
+        provider = await self._provider_selector.get_code_provider(tenant_id, application_id)
+        if not provider or not callable(getattr(provider, "compare_versions", None)):
+            raise ProviderNotConfiguredError("Code diff provider is unavailable")
+        profile = await self._effective_profile(provider, tenant_id, application_id)
+        if profile is None:
+            raise ProviderNotConfiguredError("Application profile is unavailable")
+        result = await asyncio.wait_for(
+            provider.compare_versions(
+                tenant_id, source_ref, target_ref, profile, investigation_id=investigation_id
+            ),
+            timeout=self._timeout_seconds,
+        )
+        diff = str((getattr(result, "diff_contents", {}) or {}).get(target_path, ""))
+        if not diff:
+            return EvidenceQueryResult(items=[], total_count=0)
+        from investigation_agent_platform.domain.evidence.models import EvidenceType
+        from investigation_agent_platform.domain.provenance.models import (
+            EvidenceFreshness,
+            EvidenceProvenance,
+            QueryFingerprint,
+            SourceLocation,
+        )
+        now = datetime.now(UTC)
+        evidence = Evidence(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            evidence_type=EvidenceType.DIVERGENCE,
+            provider="code-diff",
+            source=target_path,
+            title=f"Diff {source_ref}..{target_ref} {target_path}",
+            summary=diff[:2048],
+            content_snippet=diff[:4096],
+            fingerprint=f"delta:{source_ref}:{target_ref}:{target_path}",
+            observed_at=now,
+            retrieved_at=now,
+            provenance=EvidenceProvenance(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                provider_type="code",
+                requested_provider_id=application_id,
+                actual_provider_id="code-diff",
+                source_system="git",
+                retrieval_timestamp=now,
+                query_fingerprint=QueryFingerprint(
+                    provider_type="code", operation="COMPARE_VERSIONS", normalized_query_hash=target_path
+                ),
+                source_location=SourceLocation(
+                    system="git",
+                    identifier=target_path,
+                    file_path=target_path,
+                    revision=target_ref,
+                ),
+            ),
+            freshness=EvidenceFreshness(observed_at=now, retrieved_at=now),
+            attributes={
+                "delta_witness": True,
+                "target_path": target_path,
+                "source_ref": source_ref,
+                "target_ref": target_ref,
+            },
+        )
+        return EvidenceQueryResult(items=[await self._sanitizer.sanitize_evidence(tenant_id, evidence)], total_count=1)
+
+    @traced("gateway", extra_from=_gateway_extra)
     async def probe_api(
         self,
         tenant_id: str,

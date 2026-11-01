@@ -55,9 +55,9 @@ Findings below were revalidated against the current source at HEAD `8d2c13fd004e
 ### F-05 — S6 four-dimensional binding is incomplete
 
 - **Work package:** WP-05
-- **Classification:** PARTIALLY IMPLEMENTED
+- **Classification:** IMPLEMENTED; live acceptance unverified
 - **Severity:** P2
-- **Evidence:** Range is implemented in `application/investigation/verification.py:3399-3421,3878-3915,5201-5334` and called by `application/worker/activities/verification.py:682-727`. Contrast qualification exists in `domain/evidence/qualification.py:348-428`, but complete S6 conclusion binding is not established. No distinct Delta binding for hydrated before/after target-path change was found. No Mechanism-shift validator tying architecture-derived parents, incident boundaries, and conditional metric shift to the production path was found. The accepted definitions are in `docs/design/DES-S6-binding-v1.0.md:7-24`.
+- **Evidence:** Range remains implemented and production-called. cbv4 now adds typed Delta anchors and explicit diff-witness validation, gateway/provider diff acquisition through `compare_versions`, final-gate Contrast binding requiring a cited pinned code row, and a data-gated Mechanism-shift validator with parent stability, incident boundaries, sample bounds, rate-ratio threshold, and typed abstention outcomes. The accepted definitions remain in `docs/design/DES-S6-binding-v1.0.md:7-24`.
 - **Tests:** Focused S6/Java/frontier tests passed, but do not cover the complete four-dimensional contract.
 - **Runtime:** Full production semantics not verified.
 - **Risk:** History or contrast evidence may be mistaken for complete S6 proof.

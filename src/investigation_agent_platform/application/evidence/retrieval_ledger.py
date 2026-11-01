@@ -576,16 +576,28 @@ def _normalize_target_mapping(target: object) -> dict[str, object]:
     plain dict — ``model_dump()`` is preferred so model instances and
     dict-shaped targets normalize to the same mapping. ``None``-valued
     entries are dropped so ``ClaimTarget(symbol="f")`` fingerprints
-    identically to ``{"symbol": "f"}``. Anything unrecognizable yields {}.
+    identically to ``{"symbol": "f"}``. Empty lists/dicts are dropped for
+    the same reason: an empty evidence-id list carries no claim identity,
+    so a target with ``delta_evidence_ids=[]`` fingerprints identically to
+    one without the field (WP-05: new optional list fields must not perturb
+    existing target keys). Anything unrecognizable yields {}.
     """
     try:
         dump = getattr(target, "model_dump", None)
         if callable(dump):
             dumped = dump()
             if isinstance(dumped, dict):
-                return {k: v for k, v in dumped.items() if v is not None}
+                return {
+                    k: v
+                    for k, v in dumped.items()
+                    if v is not None and v != [] and v != {}
+                }
         if isinstance(target, dict):
-            return {k: v for k, v in target.items() if v is not None}
+            return {
+                k: v
+                for k, v in target.items()
+                if v is not None and v != [] and v != {}
+            }
     except Exception:
         pass
     return {}

@@ -1115,7 +1115,7 @@ class TestPinMatrix:
             "pinned",
         )
         assert CLAIM_BINDING_CURRENT == "cbv1"
-        assert KNOWN_CLAIM_BINDING_VERSIONS == {"cbv1", "cbv2", "cbv3"}
+        assert KNOWN_CLAIM_BINDING_VERSIONS == {"cbv1", "cbv2", "cbv3", "cbv4"}
 
     def test_engine_accepts_cbv3_rejects_unknown(self):
         assert VerificationEngine(claim_binding_version="cbv3").claim_binding_version == "cbv3"

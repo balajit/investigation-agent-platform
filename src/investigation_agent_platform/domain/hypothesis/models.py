@@ -79,6 +79,25 @@ class ClaimTarget(BaseModel):
     scope: str | None = Field(default=None, max_length=512)
     declaring_type: str | None = Field(default=None, max_length=512)
     commit_id: str | None = Field(default=None, max_length=64)
+    # WP-05 Delta anchor: the before-change revision for a claimed diff.
+    # None = unanchored (a Delta claim without it is unprovable, never
+    # defaulted). Never inferred from prose or from the after side.
+    base_commit_id: str | None = Field(default=None, max_length=64)
+    # WP-05 cbv4: evidence IDs that carry the hydrated diff/statistics witness
+    # for a Delta claim. Missing IDs are unprovable, never inferred.
+    delta_evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    # WP-05 cbv4: old/new observation and broken-assumption code evidence for
+    # a Contrast claim. The final gate requires all cited rows to resolve.
+    contrast_old_evidence_id: UUID | None = None
+    contrast_new_evidence_id: UUID | None = None
+    contrast_code_evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    # WP-05 cbv4: optional data-gated mechanism-shift specification. Missing
+    # fields are an abstention, never a heuristic causal proof.
+    mechanism_metric: str | None = Field(default=None, max_length=256)
+    mechanism_parent_symbols: list[str] = Field(default_factory=list, max_length=20)
+    mechanism_stable_parent_symbols: list[str] = Field(default_factory=list, max_length=20)
+    mechanism_boundary_start: datetime | None = None
+    mechanism_boundary_end: datetime | None = None
     # Phase 1 (claim binding): structured commit subject the HISTORY claim
     # asserts. Compared deterministically against the cited COMMIT_HISTORY
     # row summary; never matched by substring against freeform model prose.

@@ -46,7 +46,7 @@ The working tree included modifications to `docs/IAP_Arch_Eng_Recommendations.lo
 | WP-02 | IMPLEMENTED; LIVE REPLAY PARTIALLY UNVERIFIED | Typed qualification outcomes now fail closed; live Temporal/replay evidence remains outstanding |
 | WP-03 | IMPLEMENTED; LIVE ACCEPTANCE PARTIALLY UNVERIFIED | P1: state-aware validation and classifier fail-closed handling pass focused tests; live workflow/database evidence remains outstanding |
 | WP-04 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | P1: v1.4 typed continuation, persistence, API, Temporal, lifecycle, and archive-then-replace paths are implemented; live database/Temporal acceptance remains outstanding |
-| WP-05 | PARTIALLY IMPLEMENTED | P2: Range is strong; Delta and Mechanism-shift are not established; Contrast is incomplete as an S6 proof |
+| WP-05 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | P2: cbv4 Delta, Contrast, and data-gated Mechanism-shift contracts are implemented; live provider/telemetry acceptance remains outstanding |
 | WP-06 | IMPLEMENTED BUT NOT PRODUCTION-WIRED | P2: frontier domain exists, production uses gap-fill/smallest-fetch path |
 | WP-07 | PARTIALLY IMPLEMENTED | P2: deterministic context compilation exists, accepted distillation quality/feedback contract is incomplete |
 | WP-08 | VERIFIED DEFECT | P1 security blocker: production builder injects an unconditional allow policy |

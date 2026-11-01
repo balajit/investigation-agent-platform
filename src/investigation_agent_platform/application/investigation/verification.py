@@ -41,6 +41,7 @@ from investigation_agent_platform.domain.code.models import (
     detect_dual_resolution_conflict,
 )
 from investigation_agent_platform.domain.evidence.models import Evidence
+from investigation_agent_platform.domain.evidence.qualification import qualify_contrast_pair
 from investigation_agent_platform.domain.hypothesis.models import (
     ClaimKind,
     ClaimTarget,
@@ -1024,12 +1025,17 @@ CLAIM_BINDING_CBV2 = "cbv2"
 # repair. Stamped only via a separate owner amendment after the
 # shadow-first gate; no creation path emits it.
 CLAIM_BINDING_CBV3 = "cbv3"
+# WP-05 (claim binding): completed S6 semantics — Delta diff proof,
+# Contrast final-gate code-row binding, data-gated Mechanism-shift.
+# Recorded pin only; CURRENT stays cbv1 and no creation path emits cbv4
+# without a separate owner amendment.
+CLAIM_BINDING_CBV4 = "cbv4"
 # Rollout value: unmarked rows resolve here, preserving byte-identical
 # pre-Phase-1 behavior. Repointing to CLAIM_BINDING_CBV2 requires a
 # separate owner amendment, never a silent constant change.
 CLAIM_BINDING_CURRENT = CLAIM_BINDING_CBV1
 KNOWN_CLAIM_BINDING_VERSIONS = frozenset(
-    {CLAIM_BINDING_CBV1, CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3}
+    {CLAIM_BINDING_CBV1, CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3, CLAIM_BINDING_CBV4}
 )
 
 
@@ -2031,6 +2037,107 @@ class HistorySubjectInput(BaseModel):
     investigation_id: UUID
 
 
+class DeltaBindingInput(BaseModel):
+    """WP-05 Delta claim: a claimed change anchored to before/after revisions.
+
+    The change assertion is steering text only — proof comes from hydrated
+    COMMIT_HISTORY rows for the target path at the cited revisions, never
+    from matching this string against row content.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    target_file: str = Field(max_length=512)
+    before_revision: str = Field(max_length=64)
+    after_revision: str = Field(max_length=64)
+    change_assertion: str = Field(default="", max_length=1024)
+    diff_evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    investigation_id: UUID
+
+
+class ContrastBindingInput(BaseModel):
+    """WP-05 Contrast final-gate binding: the window-ordered pair plus the
+    code row that encodes the broken assumption and the assumption text
+    itself (recorded for audit; the validator checks structure, the
+    reasoner owns the semantic encoding judgment)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    broken_assumption: str = Field(max_length=1024)
+    old_evidence_id: UUID | None = None
+    new_evidence_id: UUID | None = None
+    code_evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    investigation_id: UUID
+
+
+class MechanismShiftInput(BaseModel):
+    """WP-05 (cbv4) Mechanism-shift claim: metric conditional on parents
+    across an incident boundary.
+
+    Parent stability is a set relation, not a boolean: ``stable_parents``
+    names the architecture-derived parents observed holding across the
+    boundary. The shift rule itself lives in
+    :data:`MECHANISM_SHIFT_THRESHOLDS_CBV4` so tuning changes numbers,
+    never this contract or the validator logic.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    metric_name: str = Field(max_length=256)
+    parent_symbols: list[str] = Field(max_length=20)
+    stable_parent_symbols: list[str] = Field(default_factory=list, max_length=20)
+    boundary_start: datetime | None = Field(default=None)
+    boundary_end: datetime | None = Field(default=None)
+    telemetry_available: bool = False
+    investigation_id: UUID
+
+
+@dataclass(frozen=True)
+class MechanismShiftThresholds:
+    """Tunable numbers for the Mechanism-shift gate (cbv4).
+
+    Frozen logic reads these values; tuning is a data change (new
+    versioned record), never a logic change. Initial values and their
+    live-learning provenance:
+    - ``min_samples_per_side=2``: dev-DB survey of 1071 investigations —
+      88% bank zero telemetry rows and the telemetry-bearing p90 holds a
+      single row, so a before/after comparison needs >=1/side to exist
+      and >=2/side to be non-vacuous. Abstains on ~all current runs,
+      which matches today's telemetry reality. Re-tune as row density grows.
+    - ``min_rate_ratio=2.0``: NOT yet calibrated — no boundary-anchored
+      live run with counted sides exists. Conservative initial doubling
+      rule; every evaluation records before/after counts and the observed
+      ratio so the calibration set accumulates. Re-tune from that set.
+    - ``required_parent_hold_fraction=1.0``: conservative; CALL_GRAPH rows
+      exist in only 6% of surveyed runs, so the NO_PARENTS gate already
+      abstains 94% — the fraction is rarely reached. Relax only with
+      topology-coverage learnings.
+    """
+
+    min_samples_per_side: int = 2
+    min_rate_ratio: float = 2.0
+    required_parent_hold_fraction: float = 1.0
+
+
+MECHANISM_SHIFT_THRESHOLDS_CBV4 = MechanismShiftThresholds()
+
+
+@dataclass(frozen=True)
+class MechanismShiftOutcome:
+    """Mechanism-shift verdict plus the learning statistics.
+
+    ``before_count`` / ``after_count`` / ``rate_ratio`` are recorded on
+    every evaluation — including abstentions — so live runs accumulate
+    the calibration set the next tuning round reads.
+    """
+
+    proved: bool
+    code: str
+    before_count: int
+    after_count: int
+    rate_ratio: float | None
+
+
 def resolve_verifier_version(metadata: Any) -> tuple[str, str]:
     """Resolve the recorded verifier version for an investigation.
 
@@ -2093,17 +2200,25 @@ class VerificationEngine:
         self,
         verifier_version: str = VERIFIER_VERSION_CURRENT,
         claim_binding_version: str = CLAIM_BINDING_CURRENT,
+        mechanism_thresholds: MechanismShiftThresholds | None = None,
     ) -> None:
         # Kept as API-compatible arguments for shadow/protocol callers. The
         # verifier version does not select behavior in the unified dev
         # runtime; the claim binding version selects Phase 1 strictness
         # (cbv1 bank-path legacy vs cbv2 authoritative partitions).
+        # mechanism_thresholds is data, not logic: tuning the gate means
+        # passing a different record, never changing the validator.
         self.verifier_version = VERIFIER_VERSION_CURRENT
         if claim_binding_version not in KNOWN_CLAIM_BINDING_VERSIONS:
             raise UnknownVerifierVersion(
                 f"unrecognized claim binding pin: {claim_binding_version!r}"
             )
         self.claim_binding_version = claim_binding_version
+        self.mechanism_thresholds = (
+            mechanism_thresholds
+            if mechanism_thresholds is not None
+            else MECHANISM_SHIFT_THRESHOLDS_CBV4
+        )
         # Phase 3 (claim binding): counts repair evaluations actually
         # executed (per-group helper calls). Tests assert cbv1 runs
         # execute zero repair paths via this counter plus the absence
@@ -4468,15 +4583,19 @@ class VerificationEngine:
     ) -> tuple[bool, str]:
         """A cited commit row must identify the claimed file and commit.
 
-        Under pin ``cbv2`` the row must additionally match the structured
-        ``target.commit_subject`` (deterministic comparison, never
-        freeform-prose substring); an empty structured subject never
+        Under pins ``cbv2``/``cbv3``/``cbv4`` the row must additionally match
+        the structured ``target.commit_subject`` (deterministic comparison,
+        never freeform-prose substring); an empty structured subject never
         matches. Under ``cbv1``/unmarked the legacy predicate applies
         byte-identically (path + commit prefix + non-empty description).
         """
         if target is None or not target.file_path or not target.commit_id:
             return (False, "history claim must identify target.file_path and target.commit_id")
-        strict_subject = claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3)
+        strict_subject = claim_binding_version in (
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
+            CLAIM_BINDING_CBV4,
+        )
         if strict_subject and not str(getattr(target, "commit_subject", "") or "").strip():
             return (False, "history claim must identify target.commit_subject")
         path_rows: list[Any] = []
@@ -4540,6 +4659,206 @@ class VerificationEngine:
             False,
             f"no cited COMMIT_HISTORY row matches {target.file_path} at commit {target.commit_id}",
         )
+
+    @staticmethod
+    def delta_proof(
+        evidence_items: list[Any],
+        target: ClaimTarget | None,
+    ) -> tuple[bool, str]:
+        """WP-05 (cbv4) Delta proof: the claimed change sits in hydrated rows.
+
+        Requires a typed target path plus before/after revisions, and at
+        least one hydrated diff witness (DIVERGENCE with ``delta_witness``
+        set) whose attributes name the same path and the same before/after
+        pair — the producer contract in
+        ``AsyncEvidenceGateway.compare_code_versions``. Commit-history rows
+        are pointers, not witnesses, and prose is never consulted.
+        """
+        try:
+            if target is None or not (target.file_path or "").strip():
+                return (False, "delta claim must identify target.file_path")
+            after = str(target.commit_id or "").strip()
+            before = str(getattr(target, "base_commit_id", "") or "").strip()
+            if not after:
+                return (False, "delta claim must identify target.commit_id")
+            if not before:
+                return (False, "delta claim must identify target.base_commit_id")
+            if after.lower() == before.lower():
+                return (False, "delta claim before/after revisions must differ")
+            for item in evidence_items or []:
+                try:
+                    if VerificationEngine._item_type(item) != "DIVERGENCE":
+                        continue
+                    _attrs = getattr(item, "attributes", None) or {}
+                    if not isinstance(_attrs, dict):
+                        continue
+                    if _attrs.get("delta_witness") is not True:
+                        continue
+                    if _attrs.get("match_count") == 0:
+                        continue
+                    if not VerificationEngine._paths_match(
+                        target.file_path or "", VerificationEngine._item_file(item)
+                    ):
+                        continue
+                    witness_path = str(_attrs.get("target_path") or "")
+                    if not VerificationEngine._paths_match(target.file_path or "", witness_path):
+                        continue
+                    witness_before = str(_attrs.get("source_ref") or "").strip()
+                    witness_after = str(_attrs.get("target_ref") or "").strip()
+                    if not witness_before or not witness_after:
+                        continue
+                    if witness_before == before and witness_after == after:
+                        return (True, "")
+                except Exception:
+                    continue
+            return (False, f"no hydrated diff witness for {target.file_path} at {before}..{after}")
+        except Exception as exc:
+            return (False, f"delta proof failed closed: {type(exc).__name__}")
+
+    @staticmethod
+    def contrast_binding_proof(
+        old_item: Any,
+        new_item: Any,
+        code_rows: list[Any] | None,
+        cited_ids: list[str] | None,
+        broken_assumption: str,
+        g: Any = None,
+        t: Any = None,
+        target_path: str | None = None,
+    ) -> tuple[bool, str]:
+        """WP-05 (cbv4) Contrast final-gate binding.
+
+        The observation pair must window-qualify, the broken assumption must
+        be stated, and at least one cited, pinned SOURCE_CODE row must back
+        it — retrieved in-window (unpinned rows prove nothing) and, when a
+        claim target path is given, naming that path. The semantic judgment
+        that the row *encodes* the assumption stays with the reasoner and is
+        recorded in the binding; this validator enforces the structure that
+        makes that judgment checkable. Fails closed on any fault.
+        """
+        try:
+            if not (broken_assumption or "").strip():
+                return (False, "contrast binding must state the broken assumption")
+            pair = qualify_contrast_pair(old_item, new_item, g, t)
+            if not getattr(pair, "qualified", False):
+                return (False, f"contrast pair does not qualify: {pair.reason}")
+            cited = set(cited_ids or [])
+            for row in code_rows or []:
+                try:
+                    if VerificationEngine._item_type(row) != "SOURCE_CODE":
+                        continue
+                    row_id = str(getattr(row, "evidence_id", "") or "")
+                    if not row_id or row_id not in cited:
+                        continue
+                    try:
+                        file_path = VerificationEngine._item_file(row)
+                        revision = str(
+                            getattr(
+                                getattr(getattr(row, "provenance", None), "source_location", None),
+                                "revision",
+                                "",
+                            )
+                            or ""
+                        ).strip()
+                    except Exception:
+                        continue
+                    if not file_path or not revision:
+                        continue
+                    if target_path and not VerificationEngine._paths_match(target_path, file_path):
+                        continue
+                    return (True, "")
+                except Exception:
+                    continue
+            return (False, "contrast binding requires a cited, pinned code row")
+        except Exception as exc:
+            return (False, f"contrast binding failed closed: {type(exc).__name__}")
+
+    _TELEMETRY_TYPES = frozenset({"RUNTIME_LOG", "DATABASE_STATE", "LOG"})
+
+    @staticmethod
+    def mechanism_shift_proof(
+        binding: MechanismShiftInput | None,
+        telemetry_items: list[Any] | None = None,
+        thresholds: MechanismShiftThresholds = MECHANISM_SHIFT_THRESHOLDS_CBV4,
+    ) -> MechanismShiftOutcome:
+        """WP-05 (cbv4) Mechanism-shift gate.
+
+        Frozen rule; only ``thresholds`` tunes. Before/after sides split on
+        the incident boundary (rows strictly before the start vs at/after
+        the end; in-window rows are transitional and excluded). Each side
+        needs ``min_samples_per_side`` timestamped telemetry rows, and the
+        after-side hourly rate must exceed the before-side rate by
+        ``min_rate_ratio``. Counts and the observed ratio ride every
+        outcome so live runs build the calibration set. Fails closed.
+        """
+        try:
+            if binding is None:
+                return MechanismShiftOutcome(False, "MECHSHIFT_NO_INPUT", 0, 0, None)
+            if not (binding.metric_name or "").strip():
+                return MechanismShiftOutcome(False, "MECHSHIFT_NO_METRIC", 0, 0, None)
+            parents = [str(p or "").strip() for p in (binding.parent_symbols or [])]
+            parents = [p for p in parents if p]
+            if not parents:
+                return MechanismShiftOutcome(False, "MECHSHIFT_NO_PARENTS", 0, 0, None)
+            stable = {str(p or "").strip() for p in (binding.stable_parent_symbols or [])}
+            hold_fraction = len(set(parents) & stable) / len(set(parents))
+            if hold_fraction < thresholds.required_parent_hold_fraction:
+                return MechanismShiftOutcome(
+                    False,
+                    f"MECHSHIFT_PARENTS_UNSTABLE: {len(set(parents) & stable)}/{len(set(parents))} hold",
+                    0,
+                    0,
+                    None,
+                )
+            start, end = binding.boundary_start, binding.boundary_end
+            if start is None or end is None or end <= start:
+                return MechanismShiftOutcome(False, "MECHSHIFT_NO_BOUNDARY", 0, 0, None)
+            if not binding.telemetry_available:
+                return MechanismShiftOutcome(False, "MECHSHIFT_NO_TELEMETRY", 0, 0, None)
+            before_ts: list[Any] = []
+            after_ts: list[Any] = []
+            for item in telemetry_items or []:
+                try:
+                    if VerificationEngine._item_type(item) not in (
+                        VerificationEngine._TELEMETRY_TYPES
+                    ):
+                        continue
+                    ts = getattr(item, "observed_at", None)
+                    if ts is None:
+                        continue
+                    if ts < start:
+                        before_ts.append(ts)
+                    elif ts >= end:
+                        after_ts.append(ts)
+                except Exception:
+                    continue
+            need = max(int(thresholds.min_samples_per_side), 1)
+            if len(before_ts) < need or len(after_ts) < need:
+                return MechanismShiftOutcome(
+                    False,
+                    "MECHSHIFT_INSUFFICIENT_SAMPLES",
+                    len(before_ts),
+                    len(after_ts),
+                    None,
+                )
+            before_span_h = max((start - min(before_ts)).total_seconds() / 3600.0, 1.0 / 3600.0)
+            after_span_h = max((max(after_ts) - end).total_seconds() / 3600.0, 1.0 / 3600.0)
+            ratio = (len(after_ts) / after_span_h) / (len(before_ts) / before_span_h)
+            if ratio >= thresholds.min_rate_ratio:
+                return MechanismShiftOutcome(
+                    True, "MECHSHIFT_SHIFT_PROVED", len(before_ts), len(after_ts), ratio
+                )
+            return MechanismShiftOutcome(
+                False,
+                "MECHSHIFT_SHIFT_BELOW_THRESHOLD",
+                len(before_ts),
+                len(after_ts),
+                ratio,
+            )
+        except Exception as exc:
+            return MechanismShiftOutcome(
+                False, f"mechanism-shift gate failed closed: {type(exc).__name__}", 0, 0, None
+            )
 
     @staticmethod
     def history_absence_outcome(
@@ -4678,7 +4997,11 @@ class VerificationEngine:
         # new verdict unreachable. Commit-naming targets skip absence and
         # continue to the positive path, where they may still verify a
         # positive commit claim. cbv1 keeps today's fall-through.
-        if self.claim_binding_version in (CLAIM_BINDING_CBV2, CLAIM_BINDING_CBV3) and not getattr(
+        if self.claim_binding_version in (
+            CLAIM_BINDING_CBV2,
+            CLAIM_BINDING_CBV3,
+            CLAIM_BINDING_CBV4,
+        ) and not getattr(
             target, "commit_id", ""
         ):
             outcome, _, qualifying = VerificationEngine.history_absence_outcome(
@@ -4724,11 +5047,20 @@ class VerificationEngine:
         )
         if not proof_ok or target is None:
             return None
+        # WP-05 (cbv4): HISTORY claims naming a commit additionally require
+        # the Delta diff proof — hydrated rows at both anchors, subject text
+        # never sufficient. Dormant until a row is explicitly pinned cbv4;
+        # CURRENT stays cbv1 so no existing path changes behavior.
+        if self.claim_binding_version == CLAIM_BINDING_CBV4 and target.commit_id:
+            delta_ok, _ = VerificationEngine.delta_proof(evidence_items, target)
+            if not delta_ok:
+                return None
         strict_subject = self.claim_binding_version in (
             CLAIM_BINDING_CBV2,
             CLAIM_BINDING_CBV3,
+            CLAIM_BINDING_CBV4,
         )
-        # Under cbv2/cbv3 the structured subject decides; the claim text is
+        # Under cbv2/cbv3/cbv4 the structured subject decides; the claim text is
         # never consulted. Under cbv1 the legacy statement-substring
         # check applies byte-identically (see history_proof branch).
         claimed_subject = (
@@ -7596,6 +7928,62 @@ class VerificationEngine:
         a hypothesis view holding only this group's assessments.
         """
         try:
+            if self.claim_binding_version == CLAIM_BINDING_CBV4:
+                target = getattr(getattr(view, "assessments", [None])[0], "claim_target", None)
+                if target is None:
+                    return False
+                by_id = {str(getattr(row, "evidence_id", "")): row for row in rows or []}
+                if kind == ClaimKind.HISTORY.value and getattr(target, "base_commit_id", None):
+                    delta_ids = {str(value) for value in (getattr(target, "delta_evidence_ids", None) or [])}
+                    delta_rows = [by_id[value] for value in delta_ids if value in by_id]
+                    delta_ok, _ = self.delta_proof(delta_rows, target)
+                    if not delta_ok:
+                        return False
+                contrast_ids = {
+                    str(value)
+                    for value in (
+                        [getattr(target, "contrast_old_evidence_id", None), getattr(target, "contrast_new_evidence_id", None)]
+                        + list(getattr(target, "contrast_code_evidence_ids", None) or [])
+                    )
+                    if value is not None
+                }
+                if contrast_ids:
+                    old = by_id.get(str(getattr(target, "contrast_old_evidence_id", "")))
+                    new = by_id.get(str(getattr(target, "contrast_new_evidence_id", "")))
+                    code = [by_id[value] for value in contrast_ids if value in by_id]
+                    if old is None or new is None:
+                        return False
+                    contrast_ok, _ = self.contrast_binding_proof(
+                        old,
+                        new,
+                        code,
+                        list(contrast_ids),
+                        str(getattr(target, "mechanism_metric", "") or getattr(view, "statement", "")),
+                        target_path=getattr(target, "file_path", None),
+                    )
+                    if not contrast_ok:
+                        return False
+                mechanism_metric = str(getattr(target, "mechanism_metric", "") or "").strip()
+                if mechanism_metric:
+                    telemetry_present = any(
+                        VerificationEngine._item_type(row) in VerificationEngine._TELEMETRY_TYPES
+                        for row in rows or []
+                    )
+                    outcome = self.mechanism_shift_proof(
+                        MechanismShiftInput(
+                            metric_name=mechanism_metric,
+                            parent_symbols=list(getattr(target, "mechanism_parent_symbols", None) or []),
+                            stable_parent_symbols=list(getattr(target, "mechanism_stable_parent_symbols", None) or []),
+                            boundary_start=getattr(target, "mechanism_boundary_start", None),
+                            boundary_end=getattr(target, "mechanism_boundary_end", None),
+                            telemetry_available=bool(telemetry_present),
+                            investigation_id=view.investigation_id,
+                        ),
+                        rows,
+                        self.mechanism_thresholds,
+                    )
+                    if not outcome.proved:
+                        return False
             if kind in (ClaimKind.DEFINITION.value, ClaimKind.CALL_EDGE.value):
                 verdict = self.validate_location_claim(view, rows, contradictions)
             elif kind == ClaimKind.HISTORY.value:
@@ -7700,7 +8088,7 @@ class VerificationEngine:
         if getattr(result, "status", None) != VerificationStatus.VERIFIED:
             return result
         groups, not_checkable = VerificationEngine.typed_claim_groups(hypothesis)
-        if len(groups) > 1:
+        if len(groups) > 1 or self.claim_binding_version == CLAIM_BINDING_CBV4:
             by_id = {str(getattr(e, "evidence_id", "")): e for e in evidence_items or []}
             failures: list[str] = []
             # R4 (H17/H11): cited rows per group, computed once so a linked
