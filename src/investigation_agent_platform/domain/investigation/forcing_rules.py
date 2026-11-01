@@ -294,6 +294,8 @@ LOOP_TELEMETRY_SCALARS: tuple[str, ...] = (
     "fetches_dispatched",  # lv4 (was dropped)
     "defer_repairs_used",  # was dropped
     "defer_repairs_limit",  # was dropped
+    "stall_streak_max",  # T4-D7 (was dropped)
+    "stall_exits",  # T4-D7 (was dropped)
     "checkability_floor_retyped_total",  # H5 reopen detector numerator pieces
     "nc_kept_total",
     "nc_kept_with_identifier_total",

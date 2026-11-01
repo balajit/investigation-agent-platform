@@ -256,6 +256,15 @@ def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> st
         return "INPUT_EXPIRED"
     if normalized == "verification_failed_or_limit_reached":
         return "UNVERIFIED"
+    try:
+        from investigation_agent_platform.application.worker.reasoning_failure import (
+            REASON_STALLED,
+        )
+
+        if normalized == REASON_STALLED:
+            return "UNVERIFIED"
+    except Exception:
+        pass
     if normalized.startswith(
         (
             "reasoning_provider_unavailable",

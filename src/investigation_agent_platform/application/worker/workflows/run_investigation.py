@@ -101,6 +101,7 @@ from investigation_agent_platform.application.worker.reasoning_failure import (
 )
 
 from .forcing import (
+    STALL_REASON,
     PostReasonCascadeState,
     _absence_disconfirmation_target,
     _callsite_target,
@@ -116,6 +117,7 @@ from .forcing import (
     _investigation_plan,
     _is_auth_blocked,
     _is_gathering_action,
+    _lv_t,
     _reason_summary,
     _reread_target,
     _resolve_max_iterations,
@@ -123,8 +125,11 @@ from .forcing import (
     _should_force_synthesis,
     _should_force_walk_stack,
     apply_post_reason_cascade,
+    dispatch_fingerprint,
     dispatched_parameters,
     history_params,
+    overconfident_turn,
+    stall_step,
     turn_view,
 )
 
@@ -660,6 +665,12 @@ class RunInvestigationWorkflow:
         resample_exhausted_total = 0
         counters = new_counters()
         overconfident_turns = 0
+        # T4-D7: stall streak state (plain ints, replay-safe). stall_exits
+        # counts runs ended early by the exit (0 or 1 per run).
+        stall_streak = 0
+        stall_streak_max = 0
+        stall_exits = 0
+        _prev_dispatch_fp: str | None = None
         defer_repairs_used = 0
         max_defer_repairs = 2
         # Phase 1 (claim binding): cumulative per-turn binding counts from
@@ -695,6 +706,14 @@ class RunInvestigationWorkflow:
             await workflow.wait_condition(lambda: not self._is_paused)
             if self._is_cancelled:
                 break
+
+            # T4-D7: per-turn stall tracking. _turn_rows_banked stays None
+            # when the turn never reaches the execute update (an unknown
+            # count never extends the streak); _turn_outcome is the raw
+            # execute status for the EMPTY/DEGRADED read.
+            _banked_at_turn_start = evidence_banked_total
+            _turn_rows_banked: int | None = None
+            _turn_outcome: str = ""
 
             # Part 6 Slice 0: validity-gated knowledge retrieval before
             # reasoning. Degrades to unassisted reasoning on store trouble;
@@ -1197,6 +1216,10 @@ class RunInvestigationWorkflow:
                     _exec_banked = int(_exec_banked) if _exec_banked is not None else None
                 except (TypeError, ValueError):
                     _exec_banked = None
+                # T4-D7: this turn's banked rows and raw outcome for the
+                # stall read (only set when the turn reached execute).
+                _turn_rows_banked = len(_outcome.get("evidence_ids", []) or [])
+                _turn_outcome = str(_outcome.get("status") or "")
                 # R10b: history parameters are typed at LV_R and above
                 # (booleans and numbers survive; truncation is flagged
                 # lossy so the requery matcher skips the entry
@@ -1317,6 +1340,10 @@ class RunInvestigationWorkflow:
                 # A defer turn gathers exactly once and returns to reasoning;
                 # a disconfirmation read must not verify the stale ABSENCE claim
                 # on the same turn.
+                # T4-D7: defer/absence turns neither extend nor end a stall,
+                # but a turn that banked rows resets it.
+                if evidence_banked_total > _banked_at_turn_start:
+                    stall_streak = 0
                 iteration += 1
                 continue
 
@@ -1512,14 +1539,32 @@ class RunInvestigationWorkflow:
             # readiness, but verification refused. Counts the turns a
             # critic would have overturned; a high rate across runs is the
             # build signal for Shape-1 critic. No extra LLM calls.
+            # T4-D7: the read is pre-override — _shadow_proposal is the
+            # frozen pre-cascade decision, not the dispatched action. The
+            # old post-cascade read under-counted forced turns (a forced
+            # SEARCH hides a CONCLUDE proposal).
             try:
-                _proposed = str((_reason_data or {}).get("next_action", "") or "").upper()
-                _readiness = (reason_res.data or {}).get("conclusion_readiness", 0.0)
-                _readiness_value = float(_readiness or 0.0)
-            except (TypeError, ValueError):
-                _proposed, _readiness_value = "", 0.0
-            if _proposed in ("VERIFY_HYPOTHESIS", "CONCLUDE") or _readiness_value >= 0.8:
+                _readiness_raw = (reason_res.data or {}).get("conclusion_readiness", 0.0)
+                _overconfident = overconfident_turn(_shadow_proposal, _readiness_raw)
+            except Exception:
+                _overconfident = False
+            if _overconfident:
                 overconfident_turns += 1
+            _fp = dispatch_fingerprint(_reason_data)
+            stall_streak, _stalled = stall_step(
+                stall_streak,
+                overconfident=_overconfident,
+                rows_banked=_turn_rows_banked,
+                outcome=_turn_outcome,
+                fingerprint=_fp,
+                previous_fingerprint=_prev_dispatch_fp,
+            )
+            _prev_dispatch_fp = _fp
+            stall_streak_max = max(stall_streak_max, stall_streak)
+            if _stalled and _lv_t(loop_version):
+                last_error = STALL_REASON
+                stall_exits += 1
+                break
 
             # Loop back: VERIFYING -> HYPOTHESIZING or INVESTIGATING for next iteration
             if iteration < max_iterations - 1 and not self._is_cancelled:
@@ -1565,7 +1610,10 @@ class RunInvestigationWorkflow:
             # INSUFFICIENT_EVIDENCE (and an INPUT_DEFERRED handoff) instead of
             # taking the FAILED path. Nothing banked stays FAILED.
             final_status = "COMPLETED"
-        elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted"}:
+        elif last_error in {"budget_exceeded", "defer_repair_budget_exhausted", STALL_REASON}:
+            # T4: the stall exit lands here explicitly (readability + the
+            # exit-contract pin); the conclude activity converts all three
+            # to an abstention, never FAILED.
             final_status = "FAILED"
         else:
             # Not verified: reached max_iterations or readiness threshold without verification -> FAILED with limitations
@@ -1614,6 +1662,9 @@ class RunInvestigationWorkflow:
                     "overconfident_turns": overconfident_turns,
                     "defer_repairs_used": defer_repairs_used,
                     "defer_repairs_limit": max_defer_repairs,
+                    # T4-D7: stall telemetry (D4 whitelist).
+                    "stall_streak_max": stall_streak_max,
+                    "stall_exits": stall_exits,
                     "claim_binding_kept": claim_binding_kept_total,
                     "claim_binding_evaporated": claim_binding_evaporated_total,
                     "claim_binding_unmapped": claim_binding_unmapped_total,

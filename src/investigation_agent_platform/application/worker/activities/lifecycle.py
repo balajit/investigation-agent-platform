@@ -2417,6 +2417,19 @@ def _epistemic_next_check(reason_lower: str) -> str:
         return "Raise the iteration or evidence budget and resume, then re-verify."
     if reason_lower == "defer_repair_budget_exhausted":
         return "Gather the missing proof kind within the bounded repair budget, then re-verify."
+    try:
+        from investigation_agent_platform.application.worker.reasoning_failure import (
+            REASON_STALLED,
+        )
+
+        if reason_lower == REASON_STALLED:
+            return (
+                "Change the retrieval approach (a different action, scope or query): "
+                "the last two confident turns repeated a fetch that banked nothing. "
+                "Then re-verify."
+            )
+    except Exception:
+        pass
     if reason_lower.startswith(REASON_REASONING_BLOCKED):
         return "Restore access to the reasoning provider (credentials or configuration), then resume and re-verify."
     if REASON_PROVIDER_BLOCKED in reason_lower:
@@ -2838,11 +2851,14 @@ async def conclude_investigation_activity(
                         # platform/workflow errors. A blocked provider fetch
                         # is a telemetry-deferred handoff, not a crash.
                         _epistemic_reason_lower = (reason or "").strip().lower()
-                        epistemic = _epistemic_reason_lower in (
-                            "verification_failed_or_limit_reached",
-                            "budget_exceeded",
-                            "defer_repair_budget_exhausted",
-                        ) or _epistemic_reason_lower.startswith("provider_blocked")
+                        from investigation_agent_platform.application.worker.reasoning_failure import (
+                            EPISTEMIC_BUDGET_REASONS,
+                        )
+
+                        epistemic = (
+                            _epistemic_reason_lower in EPISTEMIC_BUDGET_REASONS
+                            or _epistemic_reason_lower.startswith("provider_blocked")
+                        )
                         # H7/T7: reasoning that could not complete degrades to a
                         # named abstention instead of FAILED. A transient outage
                         # that exhausted its retries degrades only when evidence

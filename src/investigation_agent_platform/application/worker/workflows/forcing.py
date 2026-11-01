@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import uuid
@@ -44,6 +45,7 @@ with workflow.unsafe.imports_passed_through():
         LOOP_VERSION_LV7,
         LOOP_VERSION_LV8,
         LOOP_VERSION_LVR,
+        LOOP_VERSION_LVT,
         LOOP_VERSION_LVW,
         loop_version_at_least,
     )
@@ -2493,6 +2495,93 @@ def _forced_conclude_break(reason_data: dict[str, Any] | None) -> bool:
     """
     try:
         return bool((reason_data or {}).get("forced_not_checkable", False))
+    except Exception:
+        return False
+
+
+#: Consecutive qualifying turns that trip the stall exit (T4-D7).
+STALL_STREAK_LIMIT = 2
+#: Terminal reason when the stall exit fires (T4-D7; vocabulary lives in
+#: reasoning_failure with the other terminal reasons).
+STALL_REASON = "overconfident_no_progress"
+_STALL_OUTCOMES = frozenset({"EMPTY", "DEGRADED"})
+_OVERCONFIDENT_ACTIONS = frozenset({"VERIFY_HYPOTHESIS", "CONCLUDE"})
+_OVERCONFIDENT_READINESS = 0.8
+
+
+def overconfident_turn(proposal: Any, readiness: Any) -> bool:
+    """Whether the model's own proposal pushed for a verdict (pure, pre-override, never raises).
+
+    ``proposal`` is the frozen pre-cascade decision (``_shadow_proposal``), not the dispatched one.
+    """
+    try:
+        action = str((proposal or {}).get("next_action", "") or "").strip().upper()
+    except AttributeError:
+        action = ""
+    try:
+        value = float(readiness or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0  # unreadable readiness is not evidence of confidence; the action still counts
+    return action in _OVERCONFIDENT_ACTIONS or value >= _OVERCONFIDENT_READINESS
+
+
+def dispatch_fingerprint(reason_data: Any) -> str:
+    """Stable fingerprint of what was dispatched: action plus bounded parameters (pure)."""
+    if not isinstance(reason_data, dict):
+        return ""  # never "repeated": stall_step ignores an empty fingerprint
+    try:
+        data = reason_data
+        params = data.get("action_parameters") or {}
+        params = (
+            {str(k): str(v)[:200] for k, v in sorted(params.items())}
+            if isinstance(params, dict)
+            else {}
+        )
+        blob = hashlib.sha1(
+            json.dumps(
+                [str(data.get("next_action", "") or "").upper(), params], sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return blob
+    except Exception:
+        return ""
+
+
+def stall_step(
+    streak: int,
+    *,
+    overconfident: bool,
+    rows_banked: int | None,
+    outcome: Any,
+    fingerprint: str,
+    previous_fingerprint: str | None,
+) -> tuple[int, bool]:
+    """Advance the stall streak by one failed-verify turn. Returns ``(streak, tripped)`` (pure).
+
+    A turn extends the streak only when the model was overconfident, the turn banked nothing
+    (an unknown count never extends), and the dispatch repeated the previous one or came back
+    EMPTY/DEGRADED. Any other turn resets it.
+    """
+    try:
+        repeated = bool(fingerprint) and fingerprint == previous_fingerprint
+        degraded = str(outcome or "").strip().upper() in _STALL_OUTCOMES
+        if overconfident and rows_banked == 0 and (repeated or degraded):
+            streak += 1
+        else:
+            streak = 0
+    except Exception:
+        streak = 0
+    return streak, streak >= STALL_STREAK_LIMIT
+
+
+def _lv_t(loop_version: Any) -> bool:
+    """Whether the LV_T stall-exit semantics apply (pure, replay-safe).
+
+    Reads only the recorded pin, like every other version gate; unmarked
+    resolves to current. Older pins keep the old loop exactly.
+    """
+    try:
+        return loop_version_at_least({"loop_version": loop_version}, LOOP_VERSION_LVT)
     except Exception:
         return False
 

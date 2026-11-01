@@ -35,6 +35,29 @@ REASON_PROVIDER_UNAVAILABLE = "reasoning_provider_unavailable"
 REASON_UNAVAILABLE = "reasoning_unavailable"
 REASON_DEFER_INVALID = "defer_gathering_invalid"
 
+#: Stall-exit terminal reason (T4-D7): the last two confident turns repeated
+#: a fetch that banked nothing. Budget reasons (T5-D9/D11) live here too so
+#: the epistemic set has one home; their producers land with T5.
+REASON_STALLED = "overconfident_no_progress"
+REASON_DURATION = "duration_budget_exceeded"
+REASON_TOKENS = "token_budget_exceeded"
+REASON_PAUSE_TIMEOUT = "pause_timeout"
+
+#: Terminal reasons that degrade to an abstention instead of FAILED.
+#: ``provider_blocked`` is matched by prefix at the call site; the rest
+#: are exact.
+EPISTEMIC_BUDGET_REASONS = frozenset(
+    {
+        "verification_failed_or_limit_reached",
+        "budget_exceeded",
+        "defer_repair_budget_exhausted",
+        REASON_STALLED,
+        REASON_DURATION,
+        REASON_TOKENS,
+        REASON_PAUSE_TIMEOUT,
+    }
+)
+
 #: Name of the retryable activity failure the workflow recognises when retries
 #: exhaust (the SDK wraps it in ActivityError).
 TRANSIENT_FAILURE_TYPE = "ReasoningProviderTransient"

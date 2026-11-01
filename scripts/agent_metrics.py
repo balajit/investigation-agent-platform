@@ -64,6 +64,33 @@ def readiness_calibration(
     return established, answered, overconfident
 
 
+def summarize_loop_telemetry(investigations: list) -> dict[str, int]:
+    """T4-D8: pre-override overconfident turns + stall exits per turn. Pure.
+
+    Reads stamped metadata["loop_telemetry"] (rows without it contribute
+    nothing); malformed counts are skipped, never zeroed into the totals.
+    """
+    overconfident_turns = 0
+    turns = 0
+    stall_exits = 0
+    for inv in investigations or []:
+        try:
+            tele = (getattr(inv, "metadata_json", None) or {}).get("loop_telemetry") or {}
+        except Exception:
+            continue
+        try:
+            turns += int(tele.get("iterations") or 0)
+            overconfident_turns += int(tele.get("overconfident_turns") or 0)
+            stall_exits += int(tele.get("stall_exits") or 0)
+        except (TypeError, ValueError):
+            continue
+    return {
+        "overconfident_turns": overconfident_turns,
+        "turns": turns,
+        "stall_exits": stall_exits,
+    }
+
+
 def parse_reason_trace(description: str) -> dict | None:
     """Parse one persisted per-turn trace one-liner.
 
@@ -243,6 +270,8 @@ async def main() -> int:
     established_runs, answered_only, overconfident_runs = readiness_calibration(
         peak_by_inv, status_by_inv
     )
+
+    tele_summary = summarize_loop_telemetry(investigations)
 
     # --- auto-claim + stale-score rates from hypothesis rows ---
     unbound = 0
@@ -441,6 +470,9 @@ async def main() -> int:
     )
     print(
         f"established conclusions: {established_runs} (of which ANSWERED: {answered_only}), overconfident runs (peak>=0.8, not established): {overconfident_runs}"
+    )
+    print(
+        f"overconfident turns (pre-override): {tele_summary['overconfident_turns']}/{tele_summary['turns']}; stall exits: {tele_summary['stall_exits']}"
     )
     print(f"hypotheses: {n_hyp}, unbound: {unbound}", end="")
     print(f" => unbound_rate={unbound / n_hyp:.2f}" if n_hyp else " => unbound_rate=n/a")
