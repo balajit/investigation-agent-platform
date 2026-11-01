@@ -1,6 +1,7 @@
 # IAP S1–S7 re-engineering — implementation plan v1.0
 
 - Status: DRAFT
+- WP-06 reconciliation status: REVIEW (`docs/design/DES-production-collection-frontier-v1.0.md`)
 - Satisfies: `docs/requirements/REQ-investigation-loop-reengineering-v1.0.md` (G1–G4)
 - Implements: `docs/architecture/IAP-investigation-architecture-v2.0.md`, `DES-measurement-v1.0.md` §4 (chunk gates)
 - Codebase anchor: Temporal `RunInvestigationWorkflow` (`application/worker/workflows/run_investigation.py`), not an S1–S7 pipeline — no stage modules exist; stages are built as new domain/application components wired into the workflow's caller edges.
@@ -81,6 +82,8 @@ Chunk acceptance (per `DES-measurement` §4): record current-code-shape battery 
 - Work orders: reasoner output becomes verdicts-with-citations or hypothesis-plus-discriminating-fetch seeds back into the frontier (replaces today's `action_history` marker handoffs `_carry_ledger_directive` / `_carry_claim_gap_feed` with typed entities). Done in 2b steps 5–6 (loop-l1-reread session, merged to `iap-s1s7-reengineering-v1.0`): carried REQUERY/GAP_FILL orders dispatch from their slots; markers and feeds retired; live battery 5 PASS / 1 FAIL with no stage worse than baseline.
 - P9 hook: `BLOCKED_ON_TELEMETRY`/`WAITING`/`DEFERRED` + backoff/heartbeat/resume land here (Phase A already logs ERROR + typed errors).
 - Battery movement: G1 bound-or-priced-handoff rate; forcing-pile deletion must not regress targeted stages.
+
+WP-06 design reconciliation is recorded in `docs/design/DES-production-collection-frontier-v1.0.md`. The first authorized implementation slice establishes lv14 frontier selection for locatable smallest-fetch work orders; full authority migration, replay/live acceptance, and G1 evidence remain required before WP-06 closure.
 
 ### P7 — Distill brief + brief-only reason + escalation (`DES-distill-brief`)
 

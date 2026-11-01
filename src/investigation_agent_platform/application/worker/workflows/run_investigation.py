@@ -1338,6 +1338,22 @@ class RunInvestigationWorkflow:
                         "forced_smallest_fetch_reason": str(
                             (_reason_data.get("smallest_fetch_context") or {}).get("reason", "") or ""
                         ),
+                        "frontier_selected": bool(
+                            loop_version_at_least({"loop_version": loop_version}, "lv14")
+                            and _reason_data.get("forced_smallest_fetch")
+                        ),
+                        # Gated on the same condition as frontier_selected:
+                        # empty means no frontier selection (pre-lv14 or no
+                        # smallest-fetch fire), never a missing value.
+                        "frontier_candidate_id": (
+                            str(
+                                (_reason_data.get("smallest_fetch_context") or {}).get("gap_id", "")
+                                or ""
+                            )
+                            if loop_version_at_least({"loop_version": loop_version}, "lv14")
+                            and _reason_data.get("forced_smallest_fetch")
+                            else ""
+                        ),
                         "forced_not_checkable": bool(
                             _reason_data.get("forced_not_checkable", False)
                         ),

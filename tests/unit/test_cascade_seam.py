@@ -8,7 +8,9 @@ and deterministic multi-turn focus state.
 """
 
 from investigation_agent_platform.application.worker.workflows.forcing import (
+    SMALLEST_FETCH_ORDER,
     PostReasonCascadeState,
+    _pick_frontier_gap_order,
     apply_post_reason_cascade,
 )
 
@@ -44,6 +46,7 @@ def _state(**over):  # type: ignore[no-untyped-def]
         formulated_count=0,
         tenant_id="tenant-a",
         investigation_id="inv-1",
+        loop_version="lv13",
     )
     for key, value in over.items():
         setattr(base, key, value)
@@ -80,6 +83,71 @@ class TestPivotDispatch:
 
 
 class TestCompetingRules:
+    def test_lv14_frontier_prefers_smaller_locatable_fetch(self) -> None:
+        def order(order_id: str, kind: str, path: str, end: int) -> dict:
+            return {
+                "work_order_id": order_id,
+                "kind": "GAP_FILL",
+                "action_type": "GET_CODE",
+                "action_parameters": {"file_path": path, "start_line": 1, "end_line": end},
+                "addresses": {"triage_route": "BUG", "claim_kind": kind, "has_unbeaten_rival": False},
+                "cost_estimate": 1,
+                "ttl_rounds": 3,
+                "gap_id": f"{kind}|{path}",
+                "status": "PENDING",
+            }
+
+        carrier = {
+            "kind": "work_order_feed",
+            "order_kind": "GAP_FILL",
+            "turn_issued": 3,
+            "orders": [
+                order("00000000-0000-0000-0000-000000000001", "DEFINITION", "svc/large.py", 500),
+                order("00000000-0000-0000-0000-000000000002", "CAUSAL", "svc/small.py", 20),
+            ],
+        }
+        out = apply_post_reason_cascade(
+            _state(
+                action_history=[carrier],
+                loop_version="lv14",
+                iteration=4,
+                prev_focus={"surface": "svc/new.py", "surface_kind": "file"},
+            )
+        )
+        assert out.reason_data["forced_smallest_fetch"] is True
+        assert out.reason_data["action_parameters"]["file_path"] == "svc/small.py"
+        assert out.reason_data["smallest_fetch_context"]["gap_id"] == "CAUSAL|svc/small.py"
+
+    def test_lv14_cap_is_not_bypassed(self) -> None:
+        orders = [
+            {
+                "work_order_id": "00000000-0000-0000-0000-000000000001",
+                "kind": "GAP_FILL",
+                "action_type": "GET_CODE",
+                "action_parameters": {"file_path": "svc/small.py", "start_line": 1, "end_line": 20},
+                "addresses": {"triage_route": "BUG", "claim_kind": "CAUSAL", "has_unbeaten_rival": False},
+                "cost_estimate": 1,
+                "ttl_rounds": 3,
+                "gap_id": "CAUSAL|svc/small.py",
+                "status": "PENDING",
+                "reason": "",
+                "claim_ref": "",
+            }
+        ]
+        at_cap = {kind: 2 for kind in SMALLEST_FETCH_ORDER}
+        assert (
+            _pick_frontier_gap_order(
+                orders, forced_counts=at_cap, history=[], policy=None, carrier_turn=3
+            )
+            is None
+        )
+        zeros = {kind: 0 for kind in SMALLEST_FETCH_ORDER}
+        picked = _pick_frontier_gap_order(
+            orders, forced_counts=zeros, history=[], policy=None, carrier_turn=3
+        )
+        assert picked is not None
+        assert picked.action_parameters["file_path"] == "svc/small.py"
+
     def test_pivot_beats_formulate(self) -> None:
         state = _state(
             reason_data={
@@ -298,6 +366,7 @@ class TestCompetingRules:
             prev_focus=None,
             action_history=[carrier],
             formulated_count=1,
+            loop_version="lv13",
         )
         out = apply_post_reason_cascade(state)
         assert out.reason_data.get("forced_smallest_fetch") is True

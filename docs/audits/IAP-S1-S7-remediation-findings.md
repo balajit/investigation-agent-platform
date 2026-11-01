@@ -66,13 +66,13 @@ Findings below were revalidated against the current source at HEAD `8d2c13fd004e
 ### F-06 — Collection frontier is not production-wired
 
 - **Work package:** WP-06
-- **Classification:** IMPLEMENTED BUT NOT PRODUCTION-WIRED
+- **Classification:** IMPLEMENTED SLICE; LIVE ACCEPTANCE UNVERIFIED
 - **Severity:** P2
-- **Evidence:** `domain/collection/frontier.py:1-10` explicitly documents no production caller. Frontier candidate ordering/exit logic is present at `:101-312`; work-order translation is present in `domain/collection/work_orders.py:153-215`. Production instead follows `verify_root_cause_activity -> _carry_gap_orders -> action_history -> _t_smallest_fetch -> execute_action_activity` across `application/worker/activities/verification.py:1159-1203`, `application/worker/workflows/forcing.py:2384-2449,3046-3099`, and execution activity wiring.
+- **Evidence:** `domain/collection/frontier.py:1-10` remains the retained pure contract. `lv14` now provides deterministic provisional frontier selection for locatable smallest-fetch work orders in `application/worker/workflows/forcing.py`; unlocatable orders retain fixed kind-order fallback, and older pins preserve existing behavior. The workflow records frontier selection identity beside the existing action outcome. Full replacement of all collection-producing forcing rules remains open. The design and implementation boundary are recorded in `docs/design/DES-production-collection-frontier-v1.0.md`.
 - **Tests:** Frontier unit tests passed; no production scheduler integration was established.
 - **Runtime:** Not verified.
 - **Risk:** Two different scheduling models exist conceptually, with no established authoritative frontier/fixpoint scheduler.
-- **Required evidence before closure:** design reconciliation, one authoritative scheduler, replay-safe integration, budget/novelty/failure distinctions, restart behavior.
+- **Required evidence before closure:** complete authority migration for all collection-producing forcing rules; replay-safe integration; budget/novelty/failure distinctions; restart behavior; Temporal replay; and targeted G1 battery movement with negative-probe protection.
 
 ### F-07 — Accepted distillation contract is only partially implemented
 

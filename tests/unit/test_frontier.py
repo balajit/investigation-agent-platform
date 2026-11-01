@@ -33,6 +33,7 @@ from investigation_agent_platform.domain.hypothesis.templates import (
     classify_banked_sites,
     instantiate_templates,
 )
+from investigation_agent_platform.domain.investigation.loop_version import LOOP_VERSION_CURRENT
 
 
 def _site(kind=SuspectSiteKind.FLAG_GATE, file_path="tenant/svc/a.py", line=10):
@@ -354,3 +355,4 @@ class TestVersionPin:
         assert DEFAULT_CANDIDATE_TTL_ROUNDS == 10
         assert MAX_FRONTIER_DEPTH == 4
         assert _candidate().version == "frontier-v1"
+        assert LOOP_VERSION_CURRENT == "lv14"

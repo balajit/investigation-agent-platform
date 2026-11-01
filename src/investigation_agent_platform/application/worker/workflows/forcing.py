@@ -373,6 +373,14 @@ def _work_orders_hardened(loop_version: Any) -> bool:
         return False
 
 
+def _frontier_enabled(loop_version: Any) -> bool:
+    """Whether lv14 production frontier selection is active."""
+    try:
+        return bool(loop_version_at_least({"loop_version": loop_version}, "lv14"))
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class WorkOrderPolicy:
     """What the carrier readers may assume this turn (pure value, JSON-free).
@@ -2254,6 +2262,7 @@ def _pick_gap_order(
             return None
     except Exception:
         return None
+
     try:
         want = str(kind or "")
         if want not in SMALLEST_FETCH_ORDER:
@@ -2303,6 +2312,60 @@ def _pick_gap_order(
         return None
     except Exception:
         return None
+
+
+def _frontier_candidate_key(order: WorkOrder) -> tuple[int, int, str]:
+    """Deterministic provisional frontier key for a locatable work order."""
+    params = dict(order.action_parameters or {})
+    file_path = str(params.get("file_path") or "").strip()
+    start = params.get("start_line")
+    end = params.get("end_line")
+    try:
+        span = max(0, int(end) - int(start) + 1) if start is not None and end is not None else 400
+    except (TypeError, ValueError, OverflowError):
+        span = 400
+    cost = max(1, min(1000, 1 + span // 100))
+    kind_order = {"DEFINITION": 0, "HISTORY": 1, "BEHAVIOR": 2, "ABSENCE": 3, "CAUSAL": 4}
+    return (cost, kind_order.get(str(order.addresses.claim_kind or ""), 99), f"{file_path}\x00{order.work_order_id.hex}")
+
+
+def _pick_frontier_gap_order(
+    orders: list[dict[str, Any]],
+    *,
+    forced_counts: dict[str, int] | None = None,
+    **kwargs: Any,
+) -> WorkOrder | None:
+    """Pick locatable gap work by deterministic provisional frontier order.
+
+    ``forced_counts`` carries this turn's per-kind fire counts so the same
+    run-cap gate as the legacy kind-order loop applies; without it a hard
+    ``forced_count=0`` would silently disable the cap for frontier picks.
+    """
+    kwargs = dict(kwargs)
+    kwargs.pop("kind", None)
+    candidates: list[WorkOrder] = []
+    for raw in list(orders or []):
+        try:
+            order = WorkOrder.model_validate(raw)
+            params = dict(order.action_parameters or {})
+            if not str(params.get("file_path") or "").strip():
+                continue
+            kind = str(order.addresses.claim_kind or "")
+            if kind not in SMALLEST_FETCH_ORDER:
+                continue
+            kind_count = 0
+            try:
+                kind_count = int((forced_counts or {}).get(kind, 0))
+            except (TypeError, ValueError):
+                kind_count = 0
+            picked = _pick_gap_order(
+                [order.model_dump(mode="json")], kind=kind, forced_count=kind_count, **kwargs
+            )
+            if picked is not None:
+                candidates.append(picked)
+        except Exception:
+            continue
+    return min(candidates, key=_frontier_candidate_key) if candidates else None
 
 
 def _smallest_fetch_dispatchable(kind: str, action: str, params: dict[str, Any]) -> bool:
@@ -3068,7 +3131,39 @@ def _t_smallest_fetch(ctx: CascadeContext) -> Fire | None:
                     "turn_issued": carrier_turn,
                 },
             )
+    frontier = _frontier_enabled(ctx.state.loop_version)
     for _allow_retry in (False, True) if ctx.policy.hardened else (False,):
+        if frontier:
+            picked = _pick_frontier_gap_order(
+                orders,
+                kind="",
+                history=ctx.history,
+                forced_counts={
+                    kind: ctx.count(f"smallest_fetch_{kind.lower()}")
+                    for kind in SMALLEST_FETCH_ORDER
+                },
+                policy=ctx.policy,
+                carrier_turn=carrier_turn,
+                allow_retry=_allow_retry,
+            )
+            if picked is not None:
+                gap_id = str(picked.gap_id or "")
+                return Fire(
+                    picked.action_type,
+                    dict(picked.action_parameters or {}),
+                    counter=f"smallest_fetch_{str(picked.addresses.claim_kind).lower()}",
+                    extra={
+                        ForcePayload.SMALLEST_FETCH_KIND.value: str(picked.addresses.claim_kind),
+                        ForcePayload.SMALLEST_FETCH_GAP_ID.value: gap_id,
+                        "smallest_fetch_context": {
+                            "kind": str(picked.addresses.claim_kind),
+                            "gap_id": gap_id,
+                            "claim_ref": str(picked.claim_ref or ""),
+                            "reason": str(picked.gap_reason or ""),
+                        },
+                    },
+                )
+            # Unlocatable orders retain the legacy fixed kind-order fallback.
         for kind in SMALLEST_FETCH_ORDER:
             picked = _pick_gap_order(orders, kind=kind, history=ctx.history,
                                      forced_count=ctx.count(f"smallest_fetch_{kind.lower()}"),

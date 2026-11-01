@@ -86,8 +86,13 @@ Versions:
   The D6 turn's evaluated statements ride to conclude; the gate honors D6's
   own decision by selecting the persisted hypothesis the turn evaluated when
   one exists, and otherwise abstains with ``NOT_CHECKABLE_SKIPPED`` instead
-  of failing the run or laundering a stale checkable candidate. It only ends
-  opinion-only runs earlier or more honestly; it cannot publish a verdict.
+   of failing the run or laundering a stale checkable candidate. It only ends
+   opinion-only runs earlier or more honestly; it cannot publish a verdict.
+
+- ``lv14``: lv13 plus production collection-frontier selection for the
+  smallest-fetch work-order slot. Locatable candidates use deterministic
+  frontier ordering; unlocatable candidates retain fixed kind-order fallback.
+  It only selects collection work and cannot publish a verdict.
 
 ``lv1`` (the slot ignored defer/absence turns) was retired after a DB check
 found zero investigations stamped with it; unmarked rows resolve to current.
@@ -109,7 +114,8 @@ LOOP_VERSION_LVH = "lv10"
 LOOP_VERSION_LVJ = "lv11"
 LOOP_VERSION_LVR = "lv12"
 LOOP_VERSION_LVT = "lv13"
-LOOP_VERSION_CURRENT = LOOP_VERSION_LVT
+LOOP_VERSION_LVF = "lv14"
+LOOP_VERSION_CURRENT = LOOP_VERSION_LVF
 KNOWN_LOOP_VERSIONS = frozenset(
     {
         LOOP_VERSION_LV2,
@@ -124,6 +130,7 @@ KNOWN_LOOP_VERSIONS = frozenset(
         LOOP_VERSION_LVJ,
         LOOP_VERSION_LVR,
         LOOP_VERSION_LVT,
+        LOOP_VERSION_LVF,
     }
 )
 # Release order: a later version includes every earlier version's semantics.
@@ -140,6 +147,7 @@ _LOOP_VERSION_ORDER = {
     LOOP_VERSION_LVJ: 11,
     LOOP_VERSION_LVR: 12,
     LOOP_VERSION_LVT: 13,
+    LOOP_VERSION_LVF: 14,
 }
 
 
