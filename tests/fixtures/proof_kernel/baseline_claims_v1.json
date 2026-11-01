@@ -25,6 +25,18 @@
       "note": "abstention shape: no provable claim expected"
     },
     {
+      "case_id": "L17",
+      "expected_terminal": "ABSTAIN",
+      "live": false,
+      "note": "abstention shape: no provable claim expected"
+    },
+    {
+      "case_id": "L19",
+      "expected_terminal": "ABSTAIN",
+      "live": false,
+      "note": "abstention shape: no provable claim expected"
+    },
+    {
       "case_id": "L8",
       "expected_terminal": "ABSTAIN",
       "live": true,
@@ -106,6 +118,22 @@
         "cited_path": "OrderServiceHandler.java",
         "expect_symbol": "OrderServiceHandler"
       }
+    },
+    {
+      "attribution": {
+        "bucket": null,
+        "evidence": null,
+        "status": "offline-gradable"
+      },
+      "case_id": "L18",
+      "claim_id": "L18.behavior",
+      "claim_kind": "BEHAVIOR",
+      "expected_terminal": "ANSWERED",
+      "live": false,
+      "proof_requirements": [
+        "code path + runtime observation; code-only demotes"
+      ],
+      "target": {}
     },
     {
       "attribution": {

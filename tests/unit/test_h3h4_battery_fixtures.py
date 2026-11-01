@@ -4,11 +4,9 @@ Nothing here executes a run. The fixtures are loaded through the same loader
 the battery uses (``battery.load_cases``) and graded as pure functions on
 hand-built conclusion dicts.
 
-Where the current grader cannot score an intended assertion (review T9 gaps),
-the intended assertion is written as a strict xfail: it documents the exact
-failing grader call, and it flips to a hard failure the day the grader learns
-to score it, so the fixture's ``known_grader_gaps`` note gets updated. The
-grader itself is not touched here.
+Where the T9 grader now scores an intended assertion (review T9 gaps, fixed),
+the assertion is a plain test; the fixture's ``known_grader_gaps`` entries
+record the fix. The grader itself lives in scripts, not here.
 """
 
 from __future__ import annotations
@@ -175,7 +173,9 @@ def test_l14_a_combined_answer_is_caught() -> None:
 
 
 def test_l14_an_abstention_passes() -> None:
-    assert _score("L14", _concl("INSUFFICIENT_EVIDENCE"), []) == "PASS"
+    named = _concl("INSUFFICIENT_EVIDENCE", limitations=("UNVERIFIED_CLAIM_GROUP: CAUSAL",))
+    assert _score("L14", named, []) == "PASS"
+    assert _score("L14", _concl("INSUFFICIENT_EVIDENCE"), []) == "PARTIAL"
 
 
 def test_l16_a_combined_answer_is_caught() -> None:
@@ -185,41 +185,48 @@ def test_l16_a_combined_answer_is_caught() -> None:
 
 
 def test_l16_an_abstention_passes() -> None:
-    assert _score("L16", _concl("INSUFFICIENT_EVIDENCE"), []) == "PASS"
+    naming = _concl("INSUFFICIENT_EVIDENCE", limitations=("validateOrder ungrounded",))
+    assert _score("L16", naming, []) == "PASS"
+    assert _score("L16", _concl("INSUFFICIENT_EVIDENCE"), []) == "PARTIAL"
 
 
 def test_l15_the_checkable_half_is_graded() -> None:
     rows = [_row("e1", HANDLER_PATH, "98| public class OrderServiceHandler {")]
-    ok = _concl("ANSWERED", "OrderServiceHandler is implemented in OrderServiceHandler.java.", ("e1",))
+    ok = _concl(
+        "ANSWERED",
+        "OrderServiceHandler is implemented in OrderServiceHandler.java.",
+        ("e1",),
+        limitations=("NOT_CHECKABLE_EXCLUDED: 1 claim",),
+    )
     assert _score("L15", ok, rows) == "PASS"
     wrong_file = _row("e1", FILTER_PATH, "72| public class SampleOrderFilter")
     assert _score("L15", ok, [wrong_file]) == "PARTIAL"
     assert _score("L15", _concl("INSUFFICIENT_EVIDENCE"), []) == "FAIL"
 
 
-# --- intended assertions the grader cannot score yet (T9): strict xfail ----------------
-
-_GAP = "T9 grader gap, see the fixture's known_grader_gaps; flips when the grader scores it"
+# --- intended assertions, now scored by the T9 grader (were strict xfails) --------
 
 
-@pytest.mark.xfail(strict=True, reason=_GAP)
 def test_l14_abstention_must_name_the_unverified_claim_group() -> None:
-    # mixed-kind-limitation-unchecked
-    verdict = _score("L14", _concl("INSUFFICIENT_EVIDENCE"), [])  # no limitation at all
-    assert verdict != "PASS"
+    # mixed-kind-limitation-unchecked: fixed by T9-D21 required_limitations.
+    bare = _concl("INSUFFICIENT_EVIDENCE")  # no limitation at all
+    assert _score("L14", bare, []) == "PARTIAL"
+    named = _concl("INSUFFICIENT_EVIDENCE", limitations=("UNVERIFIED_CLAIM_GROUP: CAUSAL",))
+    assert _score("L14", named, []) == "PASS"
 
 
-@pytest.mark.xfail(strict=True, reason=_GAP)
 def test_l14_abstention_with_its_limitation_is_a_g1_handoff() -> None:
-    # mixed-kind-g1-miss
+    # mixed-kind-g1-miss: fixed by the T9-D21 named-gap tier.
     concl = _concl("INSUFFICIENT_EVIDENCE", limitations=("UNVERIFIED_CLAIM_GROUP: CAUSAL",))
-    ok, _, _ = battery.score_g1(concl, {"items": []})
-    assert ok is True
+    ok, kind, _ = battery.score_g1(concl, {"items": []})
+    assert (ok, kind) == (True, "named_gap")
+    summary = battery.g1_summary([("L14", ok, kind, "")])
+    assert summary["strict_rate"] == 0.0
+    assert summary["rate"] == 1.0
 
 
-@pytest.mark.xfail(strict=True, reason=_GAP)
 def test_l15_opinion_in_the_verdict_must_not_pass() -> None:
-    # nc-opinion-in-verdict-unchecked
+    # nc-opinion-in-verdict-unchecked: fixed by T9-D22 forbid_root_text.
     rows = [_row("e1", HANDLER_PATH, "98| public class OrderServiceHandler {")]
     concl = _concl(
         "ANSWERED",
@@ -228,20 +235,20 @@ def test_l15_opinion_in_the_verdict_must_not_pass() -> None:
         ("e1",),
         limitations=("NOT_CHECKABLE_EXCLUDED: 1 claim",),
     )
-    assert _score("L15", concl, rows) != "PASS"
+    assert _score("L15", concl, rows) == "PARTIAL"
 
 
-@pytest.mark.xfail(strict=True, reason=_GAP)
 def test_l15_answered_without_the_exclusion_limitation_must_not_pass() -> None:
-    # nc-limitation-unchecked
+    # nc-limitation-unchecked: fixed by T9-D21 required_limitations on ANSWERED.
     rows = [_row("e1", HANDLER_PATH, "98| public class OrderServiceHandler {")]
     concl = _concl(
         "ANSWERED", "OrderServiceHandler is implemented in OrderServiceHandler.java.", ("e1",)
     )
-    assert _score("L15", concl, rows) != "PASS"
+    assert _score("L15", concl, rows) == "PARTIAL"
 
 
-@pytest.mark.xfail(strict=True, reason=_GAP)
 def test_l16_abstention_must_name_the_false_target() -> None:
-    # multi-target-limitation-unchecked
-    assert _score("L16", _concl("INSUFFICIENT_EVIDENCE"), []) != "PASS"
+    # multi-target-limitation-unchecked: fixed by T9-D22 targets.
+    assert _score("L16", _concl("INSUFFICIENT_EVIDENCE"), []) == "PARTIAL"
+    naming = _concl("INSUFFICIENT_EVIDENCE", limitations=("validateOrder ungrounded",))
+    assert _score("L16", naming, []) == "PASS"

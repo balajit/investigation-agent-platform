@@ -35,16 +35,22 @@
         "id": "nc-opinion-in-verdict-unchecked",
         "assertion": "root_cause must not contain the NOT_CHECKABLE statement",
         "grader": "scripts/tranche_b_battery.py score_supported -> _check_definition",
-        "current_behavior": "_check_definition only requires the expected path in the prose and one cited range row naming the symbol; an answer that also asserts 'best-designed' passes",
-        "t9": "grader never reads the root prose beyond containment of the expected token"
+        "current_behavior": "FIXED in r2: _check_definition only requires the expected path in the prose and one cited range row naming the symbol; an answer that also asserts 'best-designed' passes",
+        "t9": "fixed by the T9 grader (r2): grader never reads the root prose beyond containment of the expected token"
       },
       {
         "id": "nc-limitation-unchecked",
         "assertion": "limitations must include NOT_CHECKABLE_EXCLUDED when an ANSWERED verdict excluded an opinion claim",
         "grader": "scripts/tranche_b_battery.py score_supported (ANSWERED path)",
-        "current_behavior": "limitations are read only for RIVAL_UNTESTED (rival exemption) and, on abstention, NOT_CHECKABLE_SKIPPED; an ANSWERED verdict with no limitations passes",
-        "t9": "limitations are not graded for answered cases"
+        "current_behavior": "FIXED in r2: limitations are read only for RIVAL_UNTESTED (rival exemption) and, on abstention, NOT_CHECKABLE_SKIPPED; an ANSWERED verdict with no limitations passes",
+        "t9": "fixed by the T9 grader (r2): limitations are not graded for answered cases"
       }
+    ],
+    "required_limitations": [
+      "NOT_CHECKABLE_EXCLUDED"
+    ],
+    "forbid_root_text_from_groups": [
+      "NOT_CHECKABLE"
     ]
   }
 }

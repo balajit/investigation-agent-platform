@@ -1,0 +1,12 @@
+{
+  "id": "L19",
+  "symptom": "Is there any record of order 999 in the archive?",
+  "context": "T9-D24 offline-only: a telemetry-absence case. No rows banked, no fetch dispatched; the abstention must still earn its label only when a search ran (strict_abstention with min_turns 1 refuses the no-search run).",
+  "live": false,
+  "offline_reason": "Documents the strict-abstention boundary with an empty evidence set. Offline-only.",
+  "expect": {
+    "status": "ABSTAIN",
+    "strict_abstention": true,
+    "min_turns": 1
+  }
+}

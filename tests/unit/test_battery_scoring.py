@@ -110,6 +110,9 @@ class TestFixtureIntegrity:
             "L14",
             "L15",
             "L16",
+            "L17",
+            "L18",
+            "L19",
         }
         live = {c["id"] for c in cases if c.get("live", True)}
         assert live == {"L1", "L2", "L3", "L4", "L5", "L8"}

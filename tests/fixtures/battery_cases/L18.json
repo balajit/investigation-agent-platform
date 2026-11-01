@@ -1,0 +1,12 @@
+{
+  "id": "L18",
+  "symptom": "What crashed the worker at 02:14 according to the logs?",
+  "context": "T9-D24 offline-only: a log-evidence root-cause case. A banked log row plus a code row; expect a bound answer or a LIKELY verdict with the rival bar noted.",
+  "live": false,
+  "offline_reason": "The live sample environment has no indexed log source (operator task). Offline-only until a log source is indexed.",
+  "expect": {
+    "status": "ANSWERED",
+    "claim": "values",
+    "expect_values": ["NullPointer", "OrderService"]
+  }
+}

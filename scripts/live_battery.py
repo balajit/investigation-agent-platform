@@ -411,11 +411,8 @@ def diagnose(concl, findings, evidence, hyps):
             by_id[str(row.get("evidence_id", ""))] = row
         except Exception:
             continue
+    # T8-D16: the conclusion's own rows only (same rule as the grader).
     supporting = set((concl or {}).get("supporting_evidence_ids") or [])
-    for hid in (concl or {}).get("supporting_hypothesis_ids") or []:
-        for hyp in (hyps or {}).get("items", []) or []:
-            if str(hyp.get("id", "")) == str(hid):
-                supporting.update(hyp.get("supporting_evidence_ids") or [])
     unresolvable = sorted(i for i in supporting if i not in by_id)
     by_type: dict = {}
     for row in (evidence or {}).get("items", []) or []:

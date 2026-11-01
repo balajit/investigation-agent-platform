@@ -1,0 +1,14 @@
+{
+  "id": "L17",
+  "symptom": "Why is the order pipeline stalled with no error and no rows?",
+  "context": "T9-D24 offline-only: a denied-capability case. The profile lacks a capability the question needs; expect an abstention whose limitations name the denial and a provider_blocked/TELEMETRY_DEFERRED handoff.",
+  "live": false,
+  "offline_reason": "Needs a capability-denied profile, which the live sample environment does not model. Offline-only.",
+  "expect": {
+    "status": "ABSTAIN",
+    "claim": "capability_denied",
+    "strict_abstention": true,
+    "required_limitations": ["CAPABILITY_DENIED"],
+    "min_turns": 0
+  }
+}

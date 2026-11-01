@@ -18,6 +18,7 @@ The profile additionally declares Oracle state, which cases never query.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -32,6 +33,11 @@ from investigation_agent_platform.domain.finding.models import names_concrete_fe
 
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
 APP_ID = "spring-sample-service"
+
+#: T9-D19: rubric version, bumped whenever any scoring dimension changes.
+#: Printed in every report header; battery_stats.compare refuses to compare
+#: cells stamped with different rubrics. The pre-rubric history reads as r0.
+RUBRIC_VERSION = "r2"
 
 ANSWERED_SET = {"ANSWERED", "ROOT_CAUSE_ESTABLISHED", "ROOT_CAUSE_LIKELY"}
 ABSTAIN_SET = {"INSUFFICIENT_EVIDENCE", "NO_ROOT_CAUSE_FOUND"}
@@ -161,17 +167,9 @@ def _rows_by_id(evidence: dict) -> dict:
 
 
 def _supporting_rows(conclusion: dict, hypotheses: dict, by_id: dict) -> list:
-    ids: set = set((conclusion or {}).get("supporting_evidence_ids") or [])
-    hyps_by_id = {}
-    for hyp in (hypotheses or {}).get("items", []) or []:
-        try:
-            hyps_by_id[str(hyp.get("id", ""))] = hyp
-        except Exception:
-            continue
-    for hid in (conclusion or {}).get("supporting_hypothesis_ids") or []:
-        hyp = hyps_by_id.get(str(hid))
-        if hyp:
-            ids.update(hyp.get("supporting_evidence_ids") or [])
+    # T8-D16: only the conclusion's own evidence. A linked hypothesis is
+    # unverified prose; its cited rows must not rescue the conclusion.
+    ids = {str(i) for i in (conclusion or {}).get("supporting_evidence_ids") or []}
     return [by_id[i] for i in ids if i in by_id]
 
 
@@ -201,7 +199,7 @@ def _word_in(name: str, text: str) -> bool:
     if not name:
         return False
     return (
-        re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", text or "")
+        re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", text or "", re.IGNORECASE)
         is not None
     )
 
@@ -240,16 +238,28 @@ def _row_texts(row: dict) -> str:
     return "\n".join(parts)
 
 
+_DECLARES = re.compile(r"\b(?:class|interface|enum|record|def|function|func)\s+{name}\b")
+
+
+def _declares(symbol: str, snippet: str) -> bool:
+    """The window declares the symbol; a mere mention (a call, an import, a comment) does not count."""
+    return re.search(_DECLARES.pattern.format(name=re.escape(symbol)), snippet or "") is not None
+
+
 def _check_definition(expect: dict, root: str, rows: list) -> tuple:
     want = expect.get("cited_path", "")
-    if want.lower() not in root.lower():
+    base = want.rsplit("/", 1)[-1]
+    if not _word_in(base, root):                                  # word boundary, not substring
         return (False, f"conclusion names no {want}")
     symbol = expect.get("expect_symbol", "")
     for row in rows:
-        file_path, line_start, _, _ = _row_location(row)
+        file_path, line_start, line_end, _ = _row_location(row)
         if not _path_matches(want, file_path) or not isinstance(line_start, int):
             continue
-        if symbol and not _word_in(symbol, str(row.get("content_snippet") or "")):
+        snippet = str(row.get("content_snippet") or "")
+        if symbol and not (_declares(symbol, snippet) or _word_in(symbol, snippet)):
+            continue
+        if expect.get("declaration_required") and not _declares(symbol, snippet):
             continue
         return (True, "")
     return (False, f"no cited range read of {want}")
@@ -283,6 +293,17 @@ def _check_callers(expect: dict, root: str, rows: list) -> tuple:
             ):
                 grounded.append(caller)
                 break
+    # T9-D20: prose must name each grounded caller it claims (word boundary,
+    # callee stem), and every required caller must be grounded and named.
+    required = [c for c in (expect.get("expect_all") or []) if str(c).strip()]
+    need = int(expect.get("min_callers", len(required) or 1))
+    named = [c for c in grounded if _word_in(c.rsplit(".", 1)[-1], root)]
+    if required:
+        missing = [c for c in required if c not in named]
+        if missing:
+            return (False, f"callers not both grounded and named: missing {missing} (grounded {grounded}, named {named})")
+    elif len(named) < need:
+        return (False, f"{len(named)} of {need} expected callers grounded and named in the conclusion")
     if not grounded:
         if not candidates:
             return (False, "no expected caller candidates configured")
@@ -314,19 +335,34 @@ def _check_history(expect: dict, root: str, rows: list) -> tuple:
     return (True, "")
 
 
-def _check_values(expect: dict, root: str, rows: list) -> tuple:
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _check_values(case: dict, expect: dict, root: str, rows: list) -> tuple:
     # A cited row's identity (file path) is evidence of WHERE, same as its
     # snippet is evidence of what — method-anchored windows legitimately omit
     # the enclosing class declaration (live L5: the 6-19 window never names
     # LegacyCodeMapper in prose, but its path does). Same helper as the
     # caller check uses (_row_texts), so prose-against-row matching is one
     # rule everywhere instead of two.
+    symptom = str(case.get("symptom") or "")
     texts = [_row_texts(r) for r in rows]
     for value in expect.get("expect_values") or []:
-        if value.lower() not in root.lower():
+        if not _word_in(value, root):                              # whole word, case-insensitive
             return (False, f"value '{value}' not in conclusion")
-        if not any(value.lower() in s.lower() for s in texts):
+        if not any(_word_in(value, t) for t in texts):
             return (False, f"value '{value}' in prose but no cited row shows it")
+    # a token the question already contains proves nothing; require at least one answer token it does not
+    answer_tokens = [v for v in expect.get("expect_values") or [] if not _word_in(v, symptom)]
+    if (expect.get("expect_values") or []) and not answer_tokens:
+        return (False, "every expected token is already in the question; fixture cannot discriminate")
+    for rel in expect.get("relations") or []:                      # subject, predicate_any, object in one sentence
+        if not any(
+            _word_in(rel["subject"], s) and _word_in(rel["object"], s)
+            and any(p.lower() in s.lower() for p in rel.get("predicate_any") or [""])
+            for s in _SENTENCE.split(root)
+        ):
+            return (False, f"conclusion does not relate {rel['subject']} to {rel['object']}")
     return (True, "")
 
 
@@ -422,8 +458,91 @@ def _check_rival_exemption(case: dict, expect: dict, conclusion: dict, hypothese
     return (True, "")
 
 
+def _abstention_earned(expect: dict, concl: dict, evidence: dict, investigation: dict | None) -> tuple[bool, str]:
+    """L8-style: an honest abstention shows that evidence was attempted and says why it stopped.
+
+    Uses only fields present on both sides of a before/after comparison (iterations, evidence rows);
+    ``fetches_dispatched`` is read when D4 has stamped it."""
+    tele = ((investigation or {}).get("metadata") or {}).get("loop_telemetry") or {}
+    iterations = tele.get("iterations")
+    rows = len((evidence or {}).get("items") or [])
+    fetches = tele.get("fetches_dispatched")
+    attempted = (fetches or 0) > 0 or rows > 0
+    if iterations is not None and int(iterations) < int(expect.get("min_turns", 1)):
+        return (False, f"abstained after {iterations} turn(s); expected at least {expect.get('min_turns', 1)}")
+    if investigation is not None and not attempted:
+        return (False, "abstained with no fetch dispatched and no evidence banked (no search shown)")
+    if not (concl.get("limitations") or (concl.get("handoff") or {}).get("state")):
+        return (False, "abstained with no stated reason (no limitation, no handoff state)")
+    return (True, "")
+
+
+def _check_required_limitations(expect: dict, concl: dict) -> tuple[bool, str]:
+    text = " ".join(str(x) for x in (concl.get("limitations") or []))
+    for code in expect.get("required_limitations") or []:
+        if code not in text:
+            return (False, f"limitation {code} missing")
+    for token in expect.get("limitation_mentions") or []:                  # e.g. the false target's symbol
+        if not _word_in(token, text):
+            return (False, f"limitations do not name '{token}'")
+    return (True, "")
+
+
+def _check_forbidden_root_text(expect: dict, root: str) -> tuple[bool, str]:
+    """An opinion claim's statement must not appear in the verdict (>= 60% of its content words)."""
+    for group in expect.get("claim_groups") or []:
+        if group.get("kind") not in expect.get("forbid_root_text_from_groups", []):
+            continue
+        words = {w for w in re.findall(r"[a-z0-9]+", str(group.get("statement", "")).lower()) if len(w) > 3}
+        if words and sum(1 for w in words if _word_in(w, root)) / len(words) >= 0.6:
+            return (False, "verdict repeats an excluded opinion claim")
+    return (True, "")
+
+
+def _check_targets(expect: dict, concl: dict, root: str) -> tuple[str, str] | None:
+    """Per-target grading for multi-target DEFINITION. ABSTAIN naming the false
+    target passes; ANSWERED passes only when root names every grounded target
+    and no ungrounded one. Returns (verdict, detail) or None to fall through."""
+    targets = expect.get("targets") or []
+    if not targets:
+        return None
+    grounded = [t for t in targets if t.get("grounded")]
+    ungrounded = [t for t in targets if not t.get("grounded")]
+    cstatus = str(concl.get("status", "") or "")
+    accept = expect.get("accept") or []
+    if cstatus in ABSTAIN_SET:
+        if "abstain_naming_false_target" not in accept:
+            return None
+        for target in ungrounded:
+            if _word_in(str(target.get("symbol", "")), root):
+                return ("PASS", f"abstention names the false target {target.get('symbol')}")
+            text = " ".join(str(x) for x in (concl.get("limitations") or []))
+            if target.get("symbol") and str(target["symbol"]) in text:
+                return ("PASS", f"abstention names the false target {target.get('symbol')}")
+        return ("PARTIAL", "abstention does not name the false target")
+    if cstatus in ANSWERED_SET:
+        for target in ungrounded:
+            if _word_in(str(target.get("symbol", "")), root):
+                return ("FAIL", f"answer names ungrounded target {target.get('symbol')}")
+        if "answered_grounded_only" in accept:
+            if not grounded:
+                return None
+            if all(_word_in(str(t.get("symbol", "")), root) for t in grounded):
+                return ("PASS", "answer names every grounded target and no ungrounded one")
+            return ("PARTIAL", "answer does not name every grounded target")
+    return None
+
+
+def _named_gap(concl: dict) -> tuple[bool, str]:
+    for lim in concl.get("limitations") or []:
+        if str(lim).startswith(("UNVERIFIED_CLAIM_GROUP", "NOT_CHECKABLE_EXCLUDED")):
+            return (True, f"names its unproven group: {str(lim)[:60]}")
+    return (False, "")
+
+
 def score_supported(
-    case: dict, conclusion: dict, findings: dict, evidence: dict, hyps: dict
+    case: dict, conclusion: dict, findings: dict, evidence: dict, hyps: dict,
+    investigation: dict | None = None,
 ) -> tuple:
     """Grade the conclusion, not the corpus.
 
@@ -437,9 +556,23 @@ def score_supported(
     concl = conclusion or {}
     cstatus = str(concl.get("status", "") or "")
     root = str(concl.get("root_cause") or "")
+    # T9-D22: per-target expectations decide first (they PASS/FAIL outright,
+    # e.g. L16's answered-grounded-only verdict under an ABSTAIN expectation).
+    targeted = _check_targets(expect, concl, root)
+    if targeted is not None:
+        return targeted
     if want_status == "ABSTAIN":
         if cstatus in ABSTAIN_SET:
             rows = _supporting_rows(concl, hyps, _rows_by_id(evidence))
+            # T9-D21: an abstention must be earned and carry required limitations.
+            if expect.get("strict_abstention"):
+                ok, reason = _abstention_earned(expect, concl, evidence, investigation)
+                if not ok:
+                    return ("PARTIAL", reason)
+            if expect.get("required_limitations") or expect.get("limitation_mentions"):
+                ok, reason = _check_required_limitations(expect, concl)
+                if not ok:
+                    return ("PARTIAL", reason)
             # Phase 4 (claim binding): opinion-probe dimension. The
             # hypothesis API items carry no assessments, so the check is
             # made on the conclusion surface the verify activity controls:
@@ -469,6 +602,16 @@ def score_supported(
                 return ("PASS", reason)
         return ("FAIL", f"status={cstatus or 'missing'}, want answered")
 
+    # T9-D22/D21: limitation and forbidden-text gates decide before
+    # the row dimensions (they PASS/FAIL outright where they apply).
+    if expect.get("forbid_root_text_from_groups"):
+        ok, reason = _check_forbidden_root_text(expect, root)
+        if not ok:
+            return ("PARTIAL", reason)
+    if expect.get("required_limitations") or expect.get("limitation_mentions"):
+        ok, reason = _check_required_limitations(expect, concl)
+        if not ok:
+            return ("PARTIAL", reason)
     by_id = _rows_by_id(evidence)
     rows = _supporting_rows(concl, hyps, by_id)
     if not rows:
@@ -478,7 +621,7 @@ def score_supported(
         "definition": lambda: _check_definition(expect, root, rows),
         "callers": lambda: _check_callers(expect, root, rows),
         "history": lambda: _check_history(expect, root, rows),
-        "values": lambda: _check_values(expect, root, rows),
+        "values": lambda: _check_values(case, expect, root, rows),
         "absence": lambda: _check_absence(expect, root, rows),
         "no_failure_citation": lambda: _check_no_failure(rows),
     }
@@ -564,7 +707,14 @@ def score_g1(conclusion: dict | None, evidence: dict | None) -> tuple[bool, str,
         return (True, "bound", f"{len(cited)} cited row(s)")
     if status in ABSTAIN_SET:
         ok, detail = _concrete_handoff(concl)
-        return (ok, "handoff" if ok else "miss", detail)
+        if ok:
+            return (True, "handoff", detail)
+        # T9-D21: a named gap is a G1 tier of its own, reported separately so
+        # the headline stays strict.
+        named, named_detail = _named_gap(concl)
+        if named:
+            return (True, "named_gap", named_detail)
+        return (False, "miss", detail)
     return (False, "miss", f"status={status}")
 
 
@@ -582,11 +732,87 @@ def g1_summary(g1_rows: list[tuple[str, bool, str, str]]) -> dict:
     for _, _, kind, _ in g1_rows:
         kinds[kind] = kinds.get(kind, 0) + 1
     satisfied = sum(1 for _, ok, _, _ in g1_rows if ok)
+    strict = sum(1 for _, ok, kind, _ in g1_rows if ok and kind in ("bound", "handoff"))
     return {
         "satisfied": satisfied,
         "total": total,
         "rate": (satisfied / total) if total else 0.0,
+        # T9-D21: the headline stays strict (bound + priced handoff only);
+        # named gaps are reported, not counted.
+        "strict_rate": (strict / total) if total else 0.0,
         "kinds": kinds,
+    }
+
+
+def run_validity(case: dict, inv: dict, strict_fresh: bool) -> tuple[bool, str]:
+    """T9-D23/GT6: a run that is not startable or is served from cache/duplicate
+    is INVALID (excluded from the denominator, counted, re-run in a fresh tenant).
+    Non-strict mode keeps today's _follow_primary behavior."""
+    if not strict_fresh:
+        return (True, "")
+    meta = (inv.get("metadata") or {}) if isinstance(inv, dict) else {}
+    disp = meta.get("disposition") or {}
+    if disp.get("action") in ("serve_cached", "duplicate"):
+        return (False, f"strict-fresh: {disp.get('action')} run excluded, not graded")
+    return (True, "")
+
+
+async def presweep_scope(conn_provider, tenant: str, app_id: str, tag_prefix: str, execute: bool) -> tuple[dict, int]:
+    """T9-D23: dry-run the doomed-row counts (print), delete only with --execute.
+
+    Refuses a non-battery tenant for deletes. conn_provider is a zero-arg
+    async callable returning a connection with fetchval/execute.
+    """
+    from clean_battery import count_scope
+
+    if execute and tenant != "n-batt" and not str(tenant).startswith("n-"):
+        raise ValueError(f"presweep --execute refuses non-battery tenant {tenant!r}")
+    conn = await conn_provider()
+    try:
+        counts = await count_scope(conn, tenant, app_id, tag_prefix, "tagged")
+    finally:
+        try:
+            await conn.close()
+        except Exception:
+            pass
+    deleted = 0
+    if execute:
+        import clean_battery as _cb
+        from clean_battery import cleanup_scope
+
+        deleted = await cleanup_scope(_cb.db_dsn(), tenant, app_id, tag_prefix, False)
+    return counts, deleted
+
+
+def leakage_report() -> dict:
+    """T9-D21: document (not hide) expected-token circularity.
+
+    Lists live fixtures whose symptom already contains the expected symbol,
+    and asserts no cited_path appears in any symptom except L4's deliberate typo.
+    """
+    symbols_in_symptom = []
+    cited_in_symptom = []
+    for case in CASES:
+        if not case.get("live", True):
+            continue
+        expect = case.get("expect", {}) or {}
+        symptom = str(case.get("symptom") or "")
+        for key in ("expect_symbol",):
+            symbol = str(expect.get(key) or "")
+            if symbol and _word_in(symbol, symptom):
+                symbols_in_symptom.append(case["id"])
+        for token in str(expect.get("callee") or "").split():
+            if token and _word_in(token, symptom):
+                symbols_in_symptom.append(case["id"])
+        for value in expect.get("expect_values") or []:
+            if value and _word_in(str(value), symptom):
+                symbols_in_symptom.append(f"{case['id']}:{value}")
+        cited = str(expect.get("cited_path") or "")
+        if cited and _word_in(cited, symptom):
+            cited_in_symptom.append(case["id"])
+    return {
+        "symbols_in_symptom": sorted(set(symbols_in_symptom)),
+        "cited_path_in_symptom": sorted(set(cited_in_symptom)),
     }
 
 
@@ -631,7 +857,9 @@ def score_case(base: str, tenant: str, case: dict, inv: dict) -> tuple[str, str]
     _, evidence = api(base, tenant, "GET", f"/api/v1/investigations/{iid}/evidence?limit=100")
     _, hyps = api(base, tenant, "GET", f"/api/v1/investigations/{iid}/hypotheses")
     concl = conclusion.get("conclusion") or {}
-    return score_supported(case, concl, findings, evidence, hyps)
+    # T9-D21: the scored investigation rides along so the abstention check
+    # can read loop telemetry (iterations, fetches dispatched).
+    return score_supported(case, concl, findings, evidence, hyps, investigation=inv)
 
 
 def main() -> int:
@@ -649,93 +877,189 @@ def main() -> int:
             "(operator DB stamp; needs IAP_DATABASE_URI). Default: leave the server default."
         ),
     )
+    # T9-D23 comparability flags. All additive; defaults reproduce today's behavior.
+    ap.add_argument("--repeat", type=int, default=1, help="Run each selected case N times (default 1).")
+    ap.add_argument("--fresh-tenant", action="store_true", help="Per repeat, use a new tenant id n-<cell>-r<k>-<utc> (ensure an ACTIVE profile first).")
+    ap.add_argument("--cell", default="single", help="Record the cell label in the output (before/after x cbv).")
+    ap.add_argument("--json", default="", help="Write machine-readable per-run records (case, verdict, g1, disposition, loop_version, pin, rubric, git sha).")
+    ap.add_argument("--expect-rubric", default="", help="Exit 2 if the grader RUBRIC_VERSION differs.")
+    ap.add_argument("--strict-fresh", action="store_true", help="Grade only a run that executed itself; a serve_cached/duplicate disposition marks the run INVALID (no primary followed) and it is re-run.")
+    ap.add_argument("--presweep", action="store_true", help="Print the doomed-row counts for the battery tenant (dry run; needs IAP_DATABASE_URI).")
+    ap.add_argument("--execute", action="store_true", help="With --presweep: actually delete (destructive: refuses non-battery tenants).")
     args = ap.parse_args()
+    print(f"rubric: {RUBRIC_VERSION}")
+    if args.expect_rubric and args.expect_rubric != RUBRIC_VERSION:
+        print(f"rubric mismatch: grader is {RUBRIC_VERSION}, expected {args.expect_rubric}", file=sys.stderr)
+        return 2
+    if args.presweep:
+        import asyncio
+
+        async def _conn_provider():  # type: ignore[no-untyped-def]
+            import asyncpg
+            from clean_battery import db_dsn
+
+            return await asyncpg.connect(db_dsn())
+
+        counts, deleted = asyncio.run(
+            presweep_scope(_conn_provider, args.tenant, APP_ID, "live-", args.execute)
+        )
+        print(f"presweep counts: {counts} deleted: {deleted}")
+        if not args.execute:
+            pass  # dry run only
     only = {c.strip() for c in args.only.split(",") if c.strip()}
     results = []
     skipped = []
     g1_rows: list[tuple[str, bool, str, str]] = []
+    records: list[dict] = []
     # case id -> (graded investigation id, recorded claim-binding pin)
     pins: dict[str, tuple[str, str]] = {}
-    for case in CASES:
-        if only and case["id"] not in only:
-            continue
-        if not case.get("live", True):
-            skipped.append(case["id"])
-            print(f"--- {case['id']}: SKIP (offline-only fixture)", flush=True)
-            continue
-        print(f"--- {case['id']}: {case['symptom'][:70]}", flush=True)
-        st, data = api(
-            args.api_base,
-            args.tenant,
-            "POST",
-            "/api/v1/investigations",
-            {
-                "application_id": APP_ID,
-                "problem_description": case["symptom"],
-                "initial_context": case["context"],
-            },
-        )
-        iid = data.get("id")
-        if not iid:
-            print(f"  CREATE FAILED: {st} {str(data)[:200]}")
-            results.append((case["id"], "FAIL", "create failed", "-"))
-            g1_rows.append((case["id"], False, "miss", "create failed"))
-            continue
-        if args.claim_binding_version:
-            stamped = stamp_claim_binding_version(args.tenant, iid, args.claim_binding_version)
-            print(f"  pin {args.claim_binding_version}: {'stamped' if stamped else 'NOT stamped'}")
-        api(args.api_base, args.tenant, "POST", f"/api/v1/investigations/{iid}/start")
-        try:
-            inv = poll(args.api_base, args.tenant, iid, args.timeout)
-        except TimeoutError as exc:
-            print(f"  {exc}")
-            results.append((case["id"], "FAIL", "timeout", iid))
-            g1_rows.append((case["id"], False, "miss", "timeout"))
-            continue
-        if inv.get("status") == "CANCELLED":
-            # P0 create-race fix: a duplicate-of-active close must follow
-            # the primary and grade its answer, not fail as "status=missing".
-            followed = _follow_primary(args.api_base, args.tenant, case, inv, args.timeout)
-            if followed is not None:
-                pid, verdict, detail = followed
-                print(f"  {verdict}: followed primary {pid[:8]}: {detail} ({iid[:8]})")
-                results.append((case["id"], verdict, detail, iid))
-                pins[case["id"]] = (
-                    pid,
-                    pinned_claim_binding_version(args.api_base, args.tenant, pid),
-                )
-                g1_ok, g1_kind, g1_detail = g1_for_investigation(args.api_base, args.tenant, pid)
-                g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
+    git_sha = _git_sha()
+
+    for rep in range(1, max(1, args.repeat) + 1):
+        tenant = args.tenant
+        if args.fresh_tenant:
+            tenant = f"n-{args.cell}-r{rep}-{datetime.datetime.now(datetime.UTC).strftime('%Y%m%dT%H%M%S')}"
+            print(f"--- repeat {rep}: fresh tenant {tenant} (ensure an ACTIVE profile first)")
+        for case in CASES:
+            if only and case["id"] not in only:
                 continue
-            results.append((case["id"], "FAIL", "run CANCELLED, no followable primary", iid))
-            g1_rows.append((case["id"], False, "miss", "run CANCELLED, no followable primary"))
-            print(f"  run CANCELLED, no followable primary {iid}")
-            continue
-        if inv.get("status") == "FAILED":
-            results.append((case["id"], "FAIL", "run FAILED", iid))
-            g1_rows.append((case["id"], False, "miss", "run FAILED"))
-            print(f"  run FAILED {iid}")
-            continue
-        verdict, detail = score_case(args.api_base, args.tenant, case, inv)
-        print(f"  {verdict}: {detail} ({iid[:8]})")
-        results.append((case["id"], verdict, detail, iid))
-        pins[case["id"]] = (
-            iid,
-            pinned_claim_binding_version(args.api_base, args.tenant, iid),
+            if not case.get("live", True):
+                skipped.append(case["id"])
+                print(f"--- {case['id']}: SKIP (offline-only fixture)", flush=True)
+                continue
+            _run_case(
+                args.api_base, tenant, args.timeout, args.claim_binding_version,
+                args.strict_fresh, args.cell, git_sha, case,
+                results, g1_rows, pins, records,
+            )
+    return _print_summary(args, results, skipped, g1_rows, pins, records)
+
+
+def _git_sha() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parents[1]), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False,
         )
-        g1_ok, g1_kind, g1_detail = g1_for_investigation(args.api_base, args.tenant, iid)
-        g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
-    print("\nTranche B scoreboard (tenant n-a, app spring-sample-service):")
+        return (out.stdout or "").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _run_case(api_base: str, tenant: str, timeout: int, claim_binding_version: str | None,
+              strict_fresh: bool, cell: str, git_sha: str, case: dict,
+              results: list, g1_rows: list, pins: dict, records: list) -> None:
+    """Run and grade one case (T9-D23: strict-fresh invalid rule lives here)."""
+
+    def _record(case_id: str, verdict: str, detail: str, iid: str, g1: tuple, valid: bool) -> dict:
+        ok, kind, gdetail = g1
+        return {
+            "case": case_id, "verdict": verdict, "detail": detail[:200],
+            "investigation_id": iid, "valid": valid,
+            "g1": ok, "g1_kind": kind, "g1_detail": gdetail[:200],
+            "cell": cell, "rubric": RUBRIC_VERSION,
+            "tenant": tenant, "pin": pins.get(case_id, ("", ""))[1] if pins.get(case_id) else "",
+            "git_sha": git_sha, "loop_version": "", "disposition": "",
+        }
+
+    print(f"--- {case['id']}: {case['symptom'][:70]}", flush=True)
+    st, data = api(
+        api_base,
+        tenant,
+        "POST",
+        "/api/v1/investigations",
+        {
+            "application_id": APP_ID,
+            "problem_description": case["symptom"],
+            "initial_context": case["context"],
+        },
+    )
+    iid = data.get("id")
+    if not iid:
+        print(f"  CREATE FAILED: {st} {str(data)[:200]}")
+        results.append((case["id"], "FAIL", "create failed", "-"))
+        g1_rows.append((case["id"], False, "miss", "create failed"))
+        records.append(_record(case["id"], "FAIL", "create failed", "-", (False, "miss", "create failed"), True))
+        return
+    if claim_binding_version:
+        stamped = stamp_claim_binding_version(tenant, iid, claim_binding_version)
+        print(f"  pin {claim_binding_version}: {'stamped' if stamped else 'NOT stamped'}")
+    api(api_base, tenant, "POST", f"/api/v1/investigations/{iid}/start")
+    try:
+        inv = poll(api_base, tenant, iid, timeout)
+    except TimeoutError as exc:
+        print(f"  {exc}")
+        results.append((case["id"], "FAIL", "timeout", iid))
+        g1_rows.append((case["id"], False, "miss", "timeout"))
+        records.append(_record(case["id"], "FAIL", "timeout", iid, (False, "miss", "timeout"), True))
+        return
+    if inv.get("status") == "CANCELLED":
+        # T9-D23 strict-fresh: a cache-served/duplicate run is INVALID:
+        # excluded, counted, no primary followed.
+        valid, why = run_validity(case, inv, strict_fresh)
+        if not valid:
+            print(f"  INVALID: {why} ({iid[:8]})")
+            results.append((case["id"], "FAIL", f"invalid: {why}", iid))
+            g1_rows.append((case["id"], False, "miss", f"invalid: {why}"))
+            rec = _record(case["id"], "FAIL", f"invalid: {why}", iid, (False, "miss", f"invalid: {why}"), False)
+            disp = ((inv.get("metadata") or {}).get("disposition") or {})
+            rec["disposition"] = str(disp.get("action", ""))
+            records.append(rec)
+            return
+        # P0 create-race fix: a duplicate-of-active close must follow
+        # the primary and grade its answer, not fail as "status=missing".
+        followed = _follow_primary(api_base, tenant, case, inv, timeout)
+        if followed is not None:
+            pid, verdict, detail = followed
+            print(f"  {verdict}: followed primary {pid[:8]}: {detail} ({iid[:8]})")
+            results.append((case["id"], verdict, detail, iid))
+            pins[case["id"]] = (
+                pid,
+                pinned_claim_binding_version(api_base, tenant, pid),
+            )
+            g1_ok, g1_kind, g1_detail = g1_for_investigation(api_base, tenant, pid)
+            g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
+            records.append(_record(case["id"], verdict, detail, iid, (g1_ok, g1_kind, g1_detail), True))
+            return
+        results.append((case["id"], "FAIL", "run CANCELLED, no followable primary", iid))
+        g1_rows.append((case["id"], False, "miss", "run CANCELLED, no followable primary"))
+        print(f"  run CANCELLED, no followable primary {iid}")
+        return
+    if inv.get("status") == "FAILED":
+        results.append((case["id"], "FAIL", "run FAILED", iid))
+        g1_rows.append((case["id"], False, "miss", "run FAILED"))
+        print(f"  run FAILED {iid}")
+        records.append(_record(case["id"], "FAIL", "run FAILED", iid, (False, "miss", "run FAILED"), True))
+        return
+    verdict, detail = score_case(api_base, tenant, case, inv)
+    print(f"  {verdict}: {detail} ({iid[:8]})")
+    results.append((case["id"], verdict, detail, iid))
+    pins[case["id"]] = (
+        iid,
+        pinned_claim_binding_version(api_base, tenant, iid),
+    )
+    g1_ok, g1_kind, g1_detail = g1_for_investigation(api_base, tenant, iid)
+    g1_rows.append((case["id"], g1_ok, g1_kind, g1_detail))
+    rec = _record(case["id"], verdict, detail, iid, (g1_ok, g1_kind, g1_detail), True)
+    rec["loop_version"] = str((inv.get("metadata") or {}).get("loop_version") or "")
+    records.append(rec)
+
+
+def _print_summary(args, results, skipped, g1_rows, pins, records) -> int:
+    print(f"\nTranche B scoreboard (tenant {args.tenant}, app {APP_ID}, rubric {RUBRIC_VERSION}):")
     for cid, verdict, detail, iid in results:
         print(f"  {cid}: {verdict} — {detail} [{iid[:8] if len(iid) > 8 else iid}]")
     counts = {}
     for _, verdict, _, _ in results:
         counts[verdict] = counts.get(verdict, 0) + 1
-    print(f"Totals: {counts} (skipped offline-only: {skipped})")
+    invalid = sum(1 for r in records if not r.get("valid", True))
+    print(f"Totals: {counts} (skipped offline-only: {skipped}; invalid: {invalid})")
     g1 = g1_summary(g1_rows)
     print(
-        f"G1 (bound-or-concrete-handoff): {g1['satisfied']}/{g1['total']} "
-        f"= {g1['rate']:.0%}  kinds={g1['kinds']}"
+        f"G1 strict (bound-or-priced-handoff): {g1['strict_rate']:.0%}  "
+        f"all: {g1['satisfied']}/{g1['total']} = {g1['rate']:.0%}  kinds={g1['kinds']}"
     )
     for cid, ok, kind, detail in g1_rows:
         print(f"  G1 {cid}: {'OK ' if ok else 'MISS'} [{kind}] {detail}")
@@ -747,6 +1071,10 @@ def main() -> int:
                 flag = f"  <-- MISMATCH (wanted {args.claim_binding_version}; run was reused or not stamped)"
             print(f"  {cid}: {pin} [{gid[:8]}]{flag}")
     print("Note: L6 (logs) / L7 (refdocs) N/A — code-only application by design.")
+    if getattr(args, "json", ""):
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(records, fh, indent=2, default=str)
+        print(f"records: {len(records)} -> {args.json}")
     # PARTIAL never counts as pass: a right answer on wrong evidence is a
     # grading failure, not a near-miss.
     bad = counts.get("FAIL", 0) + counts.get("PARTIAL", 0)

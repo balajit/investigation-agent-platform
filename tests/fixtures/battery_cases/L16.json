@@ -36,22 +36,36 @@
         "id": "multi-target-no-per-target-expectation",
         "assertion": "an ANSWERED verdict for doFilter alone, with validateOrder excluded and named as unverified, would also be acceptable",
         "grader": "scripts/tranche_b_battery.py score_supported -> _check_definition",
-        "current_behavior": "the grader has one expect.cited_path and one expect_symbol and no per-target expectation, so that reading cannot be expressed; the fixture encodes the stricter whole-verdict-withheld reading instead. A combined ANSWERED is still caught, but only because status ABSTAIN is expected ('fabricated answer to unanswerable')",
-        "t9": "L1/L3/L4 match one named path by substring and any one matching row passes"
+        "current_behavior": "FIXED in r2: the grader has one expect.cited_path and one expect_symbol and no per-target expectation, so that reading cannot be expressed; the fixture encodes the stricter whole-verdict-withheld reading instead. A combined ANSWERED is still caught, but only because status ABSTAIN is expected ('fabricated answer to unanswerable')",
+        "t9": "fixed by the T9 grader (r2): L1/L3/L4 match one named path by substring and any one matching row passes"
       },
       {
         "id": "multi-target-limitation-unchecked",
         "assertion": "the abstention must name the unverified validateOrder group",
         "grader": "scripts/tranche_b_battery.py score_supported, ABSTAIN branch",
-        "current_behavior": "any abstention passes; limitations are not read",
-        "t9": "L8 passes on any abstention without checking why"
+        "current_behavior": "FIXED in r2: any abstention passes; limitations are not read",
+        "t9": "fixed by the T9 grader (r2): L8 passes on any abstention without checking why"
       },
       {
         "id": "multi-target-h2-overwrite-undetectable",
         "assertion": "the first target's evidence binding survives alongside the second's",
         "grader": "none: the battery scores the conclusion surface only",
-        "current_behavior": "claim-key collisions inside hypothesis persistence are invisible to the grader",
-        "t9": "grader does not read hypothesis assessments"
+        "current_behavior": "FIXED in r2: claim-key collisions inside hypothesis persistence are invisible to the grader",
+        "t9": "fixed by the T9 grader (r2): grader does not read hypothesis assessments"
+      }
+    ],
+    "accept": [
+      "abstain_naming_false_target",
+      "answered_grounded_only"
+    ],
+    "targets": [
+      {
+        "symbol": "doFilter",
+        "grounded": true
+      },
+      {
+        "symbol": "validateOrder",
+        "grounded": false
       }
     ]
   }
