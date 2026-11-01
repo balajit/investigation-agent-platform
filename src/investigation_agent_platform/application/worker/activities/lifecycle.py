@@ -21,6 +21,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from investigation_agent_platform.application.proof.kernel_conclude_wiring import (
+    kernel_blockers_are_infrastructure,
+    kernel_gate_for_conclusion,
+)
 from investigation_agent_platform.application.worker.reasoning_failure import (
     REASON_DEFER_INVALID,
     REASON_MODEL_OUTPUT_INVALID,
@@ -808,6 +812,7 @@ async def _gate_conclusion_or_fail(
     triage_route: str = "",
     preferred_candidate_id: str = "",
     opinion_only_statements: list[str] | None = None,
+    kernel_blockers: list[str] | None = None,
 ) -> Any:
     """Evaluate ConclusionGate for a requested COMPLETED conclusion (F-051).
 
@@ -817,6 +822,10 @@ async def _gate_conclusion_or_fail(
     approval, also persists the Finding + InvestigationConclusion that
     justify COMPLETED (Part 11.2) — the conclusion read path and clustering
     (Part 11.7+) depend on this corpus actually existing.
+
+    T6-kernel: ``kernel_blockers`` carries an evaluated enforcing deny. The
+    deny is applied only at this approval point (never before the gate, so
+    it cannot hide the gate's own reasons) as an honest abstention.
     """
     from investigation_agent_platform.application.investigation.verification import (
         CLAIM_BINDING_CBV1,
@@ -1898,6 +1907,18 @@ async def _gate_conclusion_or_fail(
         await _persist_abstention("insufficient", _denial_reasons)
         return InvestigationStatus.COMPLETED
 
+    # T6-kernel: the gate approved, but an enforcing kernel deny was
+    # evaluated. Publish it as an honest abstention with the kernel's
+    # reason in the limitations — never a FAILED run with no conclusion,
+    # and never a link to a hypothesis the gate did not verify (the
+    # abstention closure takes no hypothesis id).
+    if decision.approved and kernel_blockers:
+        await _persist_abstention(
+            "insufficient",
+            ["KERNEL_DENIED: " + str(b)[:300] for b in kernel_blockers[:5]],
+        )
+        return InvestigationStatus.COMPLETED
+
     # P0-3: persist the Finding + InvestigationConclusion that back this
     # approval. Atomic correctness boundary with COMPLETED: a persistence
     # failure raises (the investigation retries/fails loudly) instead of
@@ -2820,23 +2841,21 @@ async def conclude_investigation_activity(
                         # authority. Denied conclusions become FAILED with the
                         # blockers recorded, never silent COMPLETED.
                         _conclude_shadow_notes = []
-                        # B2 kernel wiring (R3b/R3c): shadow evaluates + logs
-                        # (never blocks); enforcing denies here, pre-persistence,
-                        # on any evaluated kernel DENY. Off mode is a no-op.
-                        try:
-                            from investigation_agent_platform.application.proof.kernel_conclude_wiring import (
-                                kernel_gate_for_conclusion,
-                            )
-
-                            _kernel_allowed, _kernel_blockers = await kernel_gate_for_conclusion(
-                                tenant_id, investigation_id, ctx
-                            )
-                        except Exception:
-                            _kernel_allowed = False
-                            _kernel_blockers = ["kernel-gate-import-failed"]
-                        if not _kernel_allowed:
+                        # B2 kernel wiring (T6-kernel D14): shadow evaluates +
+                        # logs (never blocks, including on a fault); enforcing
+                        # denies are applied at the approval point as an
+                        # abstention, and enforcing faults fail closed with a
+                        # distinct code. Off mode is a no-op.
+                        _kernel_allowed, _kernel_blockers = await kernel_gate_for_conclusion(
+                            tenant_id, investigation_id, ctx
+                        )
+                        if not _kernel_allowed and kernel_blockers_are_infrastructure(
+                            _kernel_blockers
+                        ):
                             target = InvestigationStatus.FAILED
-                            reason = "kernel_promotion_denied: " + "; ".join(_kernel_blockers[:5])
+                            reason = "kernel_gate_unavailable: " + "; ".join(
+                                _kernel_blockers[:5]
+                            )
                         else:
                             from investigation_agent_platform.application.worker.opinion_only import (
                                 OPINION_STATEMENT_CAP as _OPINION_CAP,
@@ -2855,6 +2874,9 @@ async def conclude_investigation_activity(
                                     str(s)
                                     for s in (data.get("opinion_only_statements") or [])
                                 ][:_OPINION_CAP],
+                                kernel_blockers=(
+                                    None if _kernel_allowed else list(_kernel_blockers)
+                                ),
                             )
                     failure_code: str | None = None
                     conclude_reason = f"Workflow concluded with {target.value}"

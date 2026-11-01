@@ -37,6 +37,17 @@ MODE_OFF = "off"
 MODE_SHADOW = "shadow"
 MODE_ENFORCING = "enforcing"
 
+# T6-kernel (D14): blocker vocabulary. An evaluated policy verdict carries
+# the denied prefix; every other prefix is a fault or misconfiguration
+# (infrastructure), never a verdict about the evidence.
+KERNEL_DENIED_PREFIX = "kernel-denied:"
+_INFRASTRUCTURE_PREFIXES = ("kernel-gate-failure:", "kernel-evidence-unavailable:", "kernel-no-policy")
+
+
+def kernel_blockers_are_infrastructure(blockers: list[str]) -> bool:
+    """True when every blocker is a fault or misconfiguration, not a policy verdict (pure)."""
+    return bool(blockers) and all(str(b).startswith(_INFRASTRUCTURE_PREFIXES) for b in blockers)
+
 POLICY_REPOS_ENV_VAR = "IAP_KERNEL_POLICY_REPOSITORIES"
 POLICY_AUTHORITIES_ENV_VAR = "IAP_KERNEL_POLICY_AUTHORITIES"
 
@@ -459,5 +470,9 @@ async def kernel_gate_for_conclusion(
             return False, blockers
         return True, []
     except Exception as exc:
-        logger.warning("kernel wiring: gate failed closed: %r", exc)
-        return False, [f"kernel-gate-failure:{type(exc).__name__}"]
+        # T6-kernel (D14): "shadow never blocks" holds including on an
+        # internal fault. Only enforcing fails closed; off/shadow allow.
+        logger.warning("kernel wiring: gate fault (mode=%s): %r", mode, exc)
+        if mode == MODE_ENFORCING:
+            return False, [f"kernel-gate-failure:{type(exc).__name__}"]
+        return True, []

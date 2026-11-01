@@ -247,6 +247,11 @@ def _failure_code_for(reason: str, concluded_from_completed_request: bool) -> st
     request that lands FAILED was denied by the conclusion gate
     (ConclusionGate blockers), which takes precedence as the proximate cause.
     """
+    # T6-kernel: an enforcing-mode kernel infrastructure fault fails before
+    # the gate runs, so it outranks the gate-denial code (never
+    # CONCLUSION_DENIED, which would claim a verdict was judged).
+    if (reason or "").strip().lower().startswith("kernel_gate_unavailable"):
+        return "KERNEL_GATE_ERROR"
     if concluded_from_completed_request:
         return "CONCLUSION_DENIED"
     normalized = (reason or "").strip().lower()
