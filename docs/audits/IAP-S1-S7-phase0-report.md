@@ -35,7 +35,7 @@ Phase 0 source revalidation is complete. WP-01 was explicitly authorized and its
 | WP-06 | IMPLEMENTED SLICE; LIVE ACCEPTANCE UNVERIFIED | `lv14` adds deterministic frontier selection for locatable smallest-fetch work orders while preserving fixed-order fallback and older pins. Full forcing-to-frontier migration and live acceptance remain outstanding. |
 | WP-07 | IMPLEMENTED SLICE; QUALITY ACCEPTANCE UNVERIFIED | Structural `EvidenceBrief` projection, citations, dissent metadata, compression accounting, digest, and structural faithfulness status are implemented; semantic quality and feedback acceptance remain outstanding. |
 | WP-08 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | Default prompt safety now fails closed on instruction-like markers and missing policies; focused no-provider-call tests pass, while live production composition/provider acceptance remains outstanding. |
-| WP-09 | UNVERIFIED | Unit tests, bounded DB evidence, and partial replay harness exist; no actual end-to-end S1-S7 acceptance battery was established. |
+| WP-09 | ACCEPTANCE HARNESS FOUNDATION; LIVE SCENARIOS UNVERIFIED | A-I scenario registry/result contract and explicit all-NOT_VERIFIED baseline are implemented; existing live, disposable-DB, provider, and replay harnesses are mapped but no integrated scenario has been claimed passed. |
 
 Detailed evidence is in `IAP-S1-S7-remediation-findings.md`, `IAP-S6-binding-contract-matrix.md`, and `IAP-distillation-contract-matrix.md`.
 

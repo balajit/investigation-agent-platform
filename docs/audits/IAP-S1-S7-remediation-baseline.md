@@ -50,7 +50,7 @@ The working tree included modifications to `docs/IAP_Arch_Eng_Recommendations.lo
 | WP-06 | IMPLEMENTED SLICE; LIVE ACCEPTANCE UNVERIFIED | P2: lv14 frontier selection is wired into the locatable smallest-fetch work-order slot; full forcing migration and live frontier acceptance remain open |
 | WP-07 | IMPLEMENTED SLICE; QUALITY ACCEPTANCE UNVERIFIED | P2: structural EvidenceBrief projection is implemented; reranking, pruning, semantic faithfulness, recall calibration, and feedback remain open |
 | WP-08 | IMPLEMENTED; LIVE ACCEPTANCE UNVERIFIED | P1 security fix: production default policy rejects instruction-like prompt injection markers and missing policies fail closed; live composition/provider proof remains open |
-| WP-09 | UNVERIFIED | P1 acceptance gap: no actual end-to-end S1-S7 battery was established |
+| WP-09 | ACCEPTANCE HARNESS FOUNDATION; LIVE SCENARIOS UNVERIFIED | P1 acceptance gap: A-I registry and explicit NOT_VERIFIED baseline exist, but no actual end-to-end S1-S7 scenario has been established as passed |
 
 ## Test evidence
 

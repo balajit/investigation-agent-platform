@@ -100,12 +100,13 @@ Findings below were revalidated against the current source at HEAD `8d2c13fd004e
 ### F-09 — Integrated S1-S7 acceptance is not evidenced
 
 - **Work package:** WP-09
-- **Classification:** UNVERIFIED
+- **Classification:** ACCEPTANCE HARNESS FOUNDATION; LIVE SCENARIOS UNVERIFIED
 - **Severity:** P1 acceptance blocker
-- **Evidence:** The required scenarios and evidence standard are defined in `professor/luna_iap_rev.md:930-972`. Unit tests cover isolated S1/S2/S4/S6/S7 behavior. `tests/integration/test_s2_flow_battery_db.py:1-34` explicitly excludes model calls and Temporal. `tests/replay/iap_replay_harness.py:1-11` explicitly labels full `RunInvestigationWorkflow` replay open. No scenario matrix proving actual composition, real persistence, Temporal, fresh-context readback, tenant isolation, prompt safety, and replay was found.
-- **Runtime:** No tests executed for WP-09.
+- **Evidence:** The required scenarios and evidence standard are defined in `professor/luna_iap_rev.md:930-972`. `application/acceptance/wp09.py` now defines the exact A-I registry, required execution modes, existing evidence references, acceptance assertions, and explicit `PASS`/`NOT_VERIFIED`/`BLOCKED` results. Existing unit, disposable-DB, live-battery, continuation, prompt-safety, and replay harnesses remain fragmented; `tests/integration/test_s2_flow_battery_db.py:1-34` explicitly excludes model calls and Temporal, and `tests/replay/iap_replay_harness.py:1-11` explicitly leaves full workflow replay open.
+- **Runtime:** No live WP-09 scenario executed. Registry foundation tests pass (`4 passed`).
 - **Risk:** The system cannot be classified accepted or operationally ready from the current evidence.
-- **Required evidence before closure:** scenarios A-I with traceable results and explicit `NOT VERIFIED` for unavailable environments.
+- **Required evidence before closure:** scenario runner results for A-I with traceable production-equivalent evidence; every unavailable environment must remain explicit `NOT_VERIFIED`, and the matrix cannot pass unless all nine scenarios have observed `PASS` results.
+- **Current verification:** `application/acceptance/wp09.py` defines the A-I registry, execution modes, result vocabulary, and explicit all-NOT_VERIFIED initial matrix. Focused registry tests pass (`4 passed`); no live A-I scenario is claimed.
 
 ## Security observation
 
