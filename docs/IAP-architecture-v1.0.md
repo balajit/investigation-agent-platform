@@ -790,3 +790,15 @@ Unit-proven only: 176 focused tests green, full unit 5016 passed / 4 skipped / 1
 **Ops execution.** Roles provisioned + passwords set + logins verified; 040 applied on dev **as `iap_migrator`** (039→040, migrator path proven: version 040, function owned by `iap_tenant_directory`, 7 tables forced, app EXECUTE). Full platform start under least-privilege DSNs: API READY, worker Temporal CONNECTED. Direct guard evaluation as `iap_app`: not superuser, no bypass, zero unprotected tables — `warn` verdict **ok** (and `enforce` ok). End-to-end smoke: investigation created (INSERT as `iap_app`) + workflow dispatched + worker turns to COMPLETED with zero permission errors. S0 dry-run test extended with the migrator-path prerequisites (ownership/membership/schema-CREATE). Full unit 5489 green, ruff clean.
 
 **S4 gated, not flipped.** Default-`enforce` + deleting `off` is a separate owner gate: the test harness boots contexts as superuser (disposable), so a global enforce default would halt the suite without harness updates. `warn` remains the default; S4 needs its own tranche.
+
+## 99. First live battery + dev conclude split-brain fix (no loop version, 2026-11-01)
+
+**Version pinning.** None (dev wiring bug + first live measurement at `f644ad8`, model azure gpt-4.1, temp 0.7, loop lv12).
+
+**The defect.** `AppContext.__init__` builds `conclusion_uow` around the raw in-memory repos; dev buffered wiring later swaps `ctx.hypothesis_repo`/`ctx.finding_repo` for write-through proxies but left the UoW pointing at the empty fallbacks. Every dev conclude with a banked hypothesis (version >= 1 on Postgres, empty store) died on `Hypothesis version mismatch` — deterministic on first attempt and unrecoverable on retry. Production never hit it (durable repos injected before construction). First live battery (10-run plan, tenant `n-batt`, cleanup-prior, report `reports/live_battery_20261031T235206.md`) measured 1/10: 6 FAILED runs from this crash, 3 INSUFFICIENT_EVIDENCE, 1 honest-abstention PASS.
+
+**What changed** (`bootstrap/buffered_dev.py`): rebuild `ctx.conclusion_uow` around the installed proxies in the existing "rebuild services" section, mirroring the constructor.
+
+**Tests.** `test_conclusion_uow_rebuilt_around_proxies` (offline-primary path: identity pins + commit_verdict round-trip through the UoW; verified to fail without the fix). Full unit 5490 green, ruff clean.
+
+**Live outcome.** Re-run after `--restart` (report `reports/live_battery_20261101T001028.md`): **7/10 PASS** (L1x2, L2x2, L4x2 incl. one serve-cached, L8 honest abstention), 0 platform errors. Remaining 3 FAILs are genuine verification-bar gaps, all INSUFFICIENT_EVIDENCE: L3 (recent-change history needs multi-commit fixtures the checkout cannot produce — same reason it is `live:false`-adjacent) and L5x2 (BEHAVIOR claim with code only, no runtime observation — policy bucket, by design). No baseline exists to claim improvement against; this is the post-tranche reference measurement for T-group paired comparisons (same cases, same model, same temperature).
