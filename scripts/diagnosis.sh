@@ -211,14 +211,13 @@ asyncio.run(main())
 EOF
 fi
 
-echo "== log stage info (tmp/worker.log + rotated tmp/worker.*.log) =="
-# start-platform.sh rotates (never truncates) logs on restart: read the
-# rotated set oldest-first, then the live log, so a run that straddled a
-# restart is still visible.
+echo "== log stage info (logs/worker_*.log, archives oldest-first) =="
+# start-platform.sh rotates (never truncates) console logs on restart into
+# logs/<name>.log.<UTC timestamp>; the glob below covers the live log plus
+# every archive, oldest first by timestamped name.
 shopt -s nullglob
 LOGS=()
-for f in "$REPO_ROOT"/tmp/worker.*.log; do LOGS+=("$f"); done
-[[ -f "$REPO_ROOT/tmp/worker.log" ]] && LOGS+=("$REPO_ROOT/tmp/worker.log")
+for f in "$REPO_ROOT"/logs/worker.log "$REPO_ROOT"/logs/worker.log.*; do LOGS+=("$f"); done
 shopt -u nullglob
 if [[ ${#LOGS[@]} -eq 0 ]]; then
   echo "no worker log under $REPO_ROOT/tmp"

@@ -25,6 +25,10 @@ poc/
 data/*
 !data/.gitkeep
 
+# Application log files (hourly rotating file handler output). The console
+# redirect logs under tmp/ stay dev-only scratch (tmp/ is ignored above).
+logs/
+
 # Oracle/SQLcl connection material — credentials, never commit.
 # Root-anchored: Python packages named `secrets` under src/ hold code
 # (ports/secrets, infrastructure/secrets), not credentials, and must stay

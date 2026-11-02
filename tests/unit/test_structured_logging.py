@@ -1,8 +1,8 @@
 # tests/unit/test_structured_logging.py
-"""Structured JSON logging + date-seq rotation (infrastructure/telemetry/logging.py).
+"""Structured JSON logging + hourly rotation (infrastructure/telemetry/logging.py).
 
 Formatter: extras merge, trace injection, exception envelope, fallback.
-Handler: date-stamped active file + _v1.._vN cascade on size rollover.
+Handler: one hourly base file + .1...N size cascade inside the hour.
 """
 
 import json
@@ -91,8 +91,64 @@ def test_date_seq_cascade_on_size(tmp_path):
         log.info("line %03d padding padding padding padding", i)
     handler.close()
     names = sorted(p.name for p in tmp_path.iterdir())
-    assert any(n.startswith("iap_") and n.endswith(".log") and "_v" not in n for n in names)
-    assert any("_v1.log" in n for n in names)
+    assert any(n.startswith("iap_") and n.endswith(".log") and not n.endswith(".1") for n in names)
+    assert any(n.endswith(".log.1") for n in names)
+
+
+def test_same_hour_writes_never_spray_files(tmp_path):
+    """Regression: the old per-second date stamp created one file per second.
+
+    Same-hour writes under the size cap must land in exactly one base file.
+    """
+    handler = DateSeqRotatingFileHandler(
+        tmp_path, app_name="iap", max_bytes=10 * 1024 * 1024, backup_count=5
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log = logging.getLogger("no-spray-test")
+    log.handlers = [handler]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    for i in range(50):
+        log.info("line %03d", i)
+    handler.close()
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert len(names) == 1
+    assert names[0].startswith("iap_") and names[0].endswith(".log")
+
+
+def test_in_hour_cascade_evicts_past_backup_count(tmp_path):
+    handler = DateSeqRotatingFileHandler(tmp_path, app_name="iap", max_bytes=200, backup_count=2)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log = logging.getLogger("evict-test")
+    log.handlers = [handler]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    for i in range(60):
+        log.info("line %03d padding padding padding padding", i)
+    handler.close()
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert any(n.endswith(".log.1") for n in names)
+    assert any(n.endswith(".log.2") for n in names)
+    assert not any(n.endswith(".log.3") for n in names)
+
+
+def test_hour_change_starts_fresh_base(tmp_path):
+    handler = DateSeqRotatingFileHandler(tmp_path, app_name="iap", max_bytes=200, backup_count=5)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log = logging.getLogger("hour-test")
+    log.handlers = [handler]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    log.info("first hour line")
+    first_base = handler.baseFilename
+    handler._current_date_str = "010100_00"
+    handler._get_date_string = lambda: "010100_01"  # type: ignore[method-assign]
+    log.info("second hour line")
+    handler.close()
+    assert handler.baseFilename != first_base
+    assert handler.baseFilename.endswith("iap_010100_01.log")
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert sum(1 for n in names if n.endswith(".log") and ".log." not in n) == 2
 
 
 def test_resolve_file_target():

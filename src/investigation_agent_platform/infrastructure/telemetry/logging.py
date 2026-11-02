@@ -41,14 +41,17 @@ _CONFIGURED = False
 
 
 class DateSeqRotatingFileHandler(BaseRotatingHandler):
-    """File handler writing to an active date-stamped log file and shifting full logs
-
-    downward into versioned archives (_v1.log = prev current, _v2.log = prev prev current).
+    """Hourly-bucketed file handler with an in-hour size cascade.
 
     File Naming Rules:
-    - Active log:        {app_name}_{DDMMYY_HHMMSS}.log
-    - Most recent prev:  {app_name}_{DDMMYY_HHMMSS}_v1.log
-    - Older archives:    {app_name}_{DDMMYY_HHMMSS}_v2.log ... _v{N}.log
+    - Active log:        {app_name}_{DDMMYY_HH}.log (one base name per UTC hour)
+    - Size overflow:     {app_name}_{DDMMYY_HH}.log.1 ... .log.{N}
+
+    Overflow inside an hour cascades the active file down the numeric
+    suffixes, evicting past ``backup_count``. No second base name is ever
+    created inside an hour, so same-hour writes can never spray files the
+    way a per-second date stamp did. An hour change opens a fresh base
+    name; prior hours are untouched.
     """
 
     DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -61,7 +64,7 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
         backup_count: int = 5,
         encoding: str = "utf-8",
         delay: bool = False,
-        date_format: str = "%d%m%y_%H%M%S",
+        date_format: str = "%d%m%y_%H",
         use_utc: bool = True,
     ) -> None:
         self.base_dir = Path(base_dir)
@@ -92,17 +95,14 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
     def _get_active_filepath(self, date_str: str) -> Path:
         return self.base_dir / f"{self.app_name}_{date_str}.log"
 
-    def _get_versioned_filepath(self, date_str: str, seq: int) -> Path:
-        return self.base_dir / f"{self.app_name}_{date_str}_v{seq}.log"
+    def _get_backup_filepath(self, date_str: str, seq: int) -> Path:
+        return self.base_dir / f"{self.app_name}_{date_str}.log.{seq}"
 
-    def _get_temp_filepath(self, date_str: str) -> Path:
-        return self.base_dir / f"{self.app_name}_{date_str}_tmp.log"
-
-    def _get_highest_sequence_number(self, date_str: str) -> int:
-        seq = 1
-        while self._get_versioned_filepath(date_str, seq).exists():
+    def _get_highest_backup(self, date_str: str) -> int:
+        seq = 0
+        while self._get_backup_filepath(date_str, seq + 1).exists():
             seq += 1
-        return seq - 1
+        return seq
 
     def shouldRollover(self, record: logging.LogRecord) -> bool:
         """Determines if a rollover is required due to date boundary change or file size."""
@@ -122,7 +122,7 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
         return False
 
     def doRollover(self) -> None:
-        """Executes downward log cascade safely."""
+        """Open a fresh hourly base on hour change; cascade in-hour on size."""
         if self.stream:
             self.stream.close()
             self.stream = None
@@ -134,30 +134,21 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
             self.baseFilename = str(self._get_active_filepath(current_date))
         else:
             active_path = Path(self.baseFilename)
-            if active_path.exists() and active_path.stat().st_size > 0:
-                tmp_path = self._get_temp_filepath(current_date)
-
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                active_path.rename(tmp_path)
-
-                highest_seq = self._get_highest_sequence_number(current_date)
-                for i in range(highest_seq, 0, -1):
-                    src_file = self._get_versioned_filepath(current_date, i)
-                    dst_file = self._get_versioned_filepath(current_date, i + 1)
-
-                    if self.backupCount > 0 and (i + 1) > self.backupCount:
+            if self.backupCount <= 0:
+                # Stdlib parity: no backups kept — start the hour file over.
+                if active_path.exists():
+                    active_path.unlink()
+            elif active_path.exists() and active_path.stat().st_size > 0:
+                highest = self._get_highest_backup(current_date)
+                for i in range(highest, 0, -1):
+                    src_file = self._get_backup_filepath(current_date, i)
+                    dst_file = self._get_backup_filepath(current_date, i + 1)
+                    if i + 1 > self.backupCount:
                         if src_file.exists():
                             src_file.unlink()
-                    else:
-                        if src_file.exists():
-                            src_file.rename(dst_file)
-
-                v1_file = self._get_versioned_filepath(current_date, 1)
-                if self.backupCount > 0 or not v1_file.exists():
-                    tmp_path.rename(v1_file)
-                elif tmp_path.exists():
-                    tmp_path.unlink()
+                    elif src_file.exists():
+                        src_file.rename(dst_file)
+                active_path.rename(self._get_backup_filepath(current_date, 1))
 
         if not self.delay:
             self.stream = self._open()
@@ -373,7 +364,7 @@ def _resolve_file_target(candidate: str) -> tuple[Path, str]:
     """Split an IAP_LOG_FILE-style path into (base_dir, app_name).
 
     A ``.log`` path contributes its parent as base dir and stem as app name
-    (``data/iap.log`` → dir ``data``, app ``iap``); anything else is treated
+    (``logs/iap.log`` → dir ``logs``, app ``iap``); anything else is treated
     as a directory with the app name from ``IAP_LOG_APP_NAME``.
     """
     path = Path(candidate)
@@ -441,7 +432,7 @@ def configure_logging(
     active_file: Path | None = None
     file_enabled = bool(file_cfg.get("enabled", True))
     candidate = (
-        log_file or os.environ.get("IAP_LOG_FILE", "") or str(file_cfg.get("path", "data/iap.log"))
+        log_file or os.environ.get("IAP_LOG_FILE", "") or str(file_cfg.get("path", "logs/iap.log"))
     )
     if file_enabled and candidate:
         try:

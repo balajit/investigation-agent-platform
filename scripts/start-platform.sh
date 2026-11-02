@@ -27,14 +27,14 @@ RESTART_ONLY=false
 # sweep the distinctive command lines too. Workers stuck in bridge I/O
 # may ignore SIGTERM, hence the SIGKILL fallback.
 stop_app() {
-  [[ -f tmp/api.pid ]] && kill "$(cat tmp/api.pid)" 2>/dev/null || true
-  [[ -f tmp/worker.pid ]] && kill "$(cat tmp/worker.pid)" 2>/dev/null || true
+  [[ -f logs/api.pid ]] && kill "$(cat logs/api.pid)" 2>/dev/null || true
+  [[ -f logs/worker.pid ]] && kill "$(cat logs/worker.pid)" 2>/dev/null || true
   pkill -f "uvicorn investigation_agent_platform.main:app" 2>/dev/null || true
   pkill -f "investigation_agent_platform.main --worker" 2>/dev/null || true
   sleep 2
   pkill -9 -f "uvicorn investigation_agent_platform.main:app" 2>/dev/null || true
   pkill -9 -f "investigation_agent_platform.main --worker" 2>/dev/null || true
-  rm -f tmp/api.pid tmp/worker.pid
+  rm -f logs/api.pid logs/worker.pid
 }
 
 for arg in "$@"; do
@@ -109,22 +109,34 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
 fi
 command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 2; }
 
-mkdir -p tmp
+mkdir -p tmp logs
 
-# Rotate (never truncate) the application logs before each launch so a
-# --restart cannot destroy the evidence of the run that just ended. The
-# previous log is kept as tmp/<name>.<UTC timestamp>.log; the newest
-# IAP_LOG_KEEP rotated files per name are retained (default 10).
+# Console-log layout (dev): static names under logs/; the rotating file
+# handler owns hourly bucketing for structured records, while these
+# shell redirects stay restart-rotated below. Pid files hold the process
+# ID: logs/api.pid and logs/worker.pid.
+API_PID="logs/api.pid"
+WORKER_PID="logs/worker.pid"
+
+# Rotate (never truncate) the application console logs before each launch
+# so a --restart cannot destroy the evidence of the run that just ended.
+# The previous log is archived as logs/<name>-<MMDDYY>.log (UTC); a second
+# restart the same day falls back to logs/<name>-<MMDDYY>-<HHMMSS>.log.
+# The newest IAP_LOG_KEEP archives per name are retained (default 10).
 rotate_logs() {
-  local name ts keep="${IAP_LOG_KEEP:-10}"
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  local name keep="${IAP_LOG_KEEP:-10}" stamp archive old
+  stamp="$(date -u +%m%d%y)"
   for name in "$@"; do
-    if [[ -s "tmp/${name}.log" ]]; then
-      mv "tmp/${name}.log" "tmp/${name}.${ts}.log"
+    if [[ -s "logs/${name}.log" ]]; then
+      archive="logs/${name}-${stamp}.log"
+      if [[ -e "$archive" ]]; then
+        archive="logs/${name}-${stamp}-$(date -u +%H%M%S).log"
+      fi
+      mv "logs/${name}.log" "$archive"
     fi
-    # Timestamped names sort chronologically; drop all but the newest $keep.
+    # Newest first by mtime; drop all but the newest $keep archives.
     # shellcheck disable=SC2012
-    { ls -1 "tmp/${name}".*.log 2>/dev/null || true; } | sort -r | tail -n +"$((keep + 1))" | while read -r old; do
+    { ls -t "logs/${name}-"*.log 2>/dev/null || true; } | tail -n +"$((keep + 1))" | while read -r old; do
       rm -f -- "$old"
     done
   done
@@ -140,15 +152,15 @@ if [[ "$RESTART_ONLY" == true ]]; then
   [[ "$RUN_WORKER" == true ]] && rotate_logs worker
   if [[ "$RUN_API" == true ]]; then
     echo "Starting API on :$PORT ..."
-    IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
-    echo $! > tmp/api.pid
-    echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
+    IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> logs/api.log 2>&1 &
+    echo $! > "$API_PID"
+    echo "API pid $(cat "$API_PID") (log logs/api.log, pid $API_PID)"
   fi
   if [[ "$RUN_WORKER" == true ]]; then
     echo "Starting Temporal worker ..."
-    IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
-    echo $! > tmp/worker.pid
-    echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
+    IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> logs/worker.log 2>&1 &
+    echo $! > "$WORKER_PID"
+    echo "Worker pid $(cat "$WORKER_PID") (log logs/worker.log, pid $WORKER_PID)"
   fi
   echo "Application restarted. Health: curl -sf http://localhost:$PORT/api/v1/health/live"
   exit 0
@@ -192,15 +204,15 @@ IAP_PG_GUARD_OVERRIDE="start-platform.sh dev-stack migration on the dev database
 [[ "$RUN_WORKER" == true ]] && rotate_logs worker
 if [[ "$RUN_API" == true ]]; then
   echo "Starting API on :$PORT ..."
-  IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> tmp/api.log 2>&1 &
-  echo $! > tmp/api.pid
-  echo "API pid $(cat tmp/api.pid) (log tmp/api.log)"
+  IAP_DATABASE_URI="$IAP_API_DSN" nohup uv run uvicorn investigation_agent_platform.main:app --host 0.0.0.0 --port "$PORT" >> logs/api.log 2>&1 &
+  echo $! > "$API_PID"
+  echo "API pid $(cat "$API_PID") (log logs/api.log, pid $API_PID)"
 fi
 if [[ "$RUN_WORKER" == true ]]; then
   echo "Starting Temporal worker ..."
-  IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> tmp/worker.log 2>&1 &
-  echo $! > tmp/worker.pid
-  echo "Worker pid $(cat tmp/worker.pid) (log tmp/worker.log)"
+  IAP_DATABASE_URI="$IAP_WORKER_DSN" nohup uv run python -u -m investigation_agent_platform.main --worker >> logs/worker.log 2>&1 &
+  echo $! > "$WORKER_PID"
+  echo "Worker pid $(cat "$WORKER_PID") (log logs/worker.log, pid $WORKER_PID)"
 fi
 
 echo "Platform up. Health: curl -sf http://localhost:$PORT/api/v1/health/live"
