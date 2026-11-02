@@ -92,8 +92,8 @@ And one L2 flag-off control run must show:
 2. **Restart the worker with the shadow flag** and confirm single poller:
    ```bash
    pkill -f "investigation_agent_platform.main --worker"; sleep 2
-   IAP_SHADOW_TYPED_DEFINITIONS=1 nohup uv run python -u -m investigation_agent_platform.main --worker > tmp/worker.log 2>&1 &
-   echo $! > tmp/worker.pid
+   IAP_SHADOW_TYPED_DEFINITIONS=1 nohup uv run python -u -m investigation_agent_platform.main --worker > logs/worker.log 2>&1 &
+   echo $! > logs/worker.pid
    ps aux | grep "main --worker" | grep -v grep   # expect wrapper + child only
    curl -sf http://localhost:8080/api/v1/health/ready
    ```
