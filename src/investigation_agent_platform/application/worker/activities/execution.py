@@ -10,6 +10,9 @@ from uuid import UUID, uuid4
 
 from temporalio import activity
 
+from investigation_agent_platform.api.errors import sanitize_extra
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
+
 try:
     from temporalio.exceptions import ApplicationFailure  # type: ignore[attr-defined]
 except ImportError:
@@ -1377,6 +1380,7 @@ async def execute_action_activity(
                 error=str(exc),
                 error_type=type(exc).__name__,
                 action_type=action_type,
+                deny_reason=(getattr(exc, "details", None) or {}).get("deny_reason"),
             )
             try:
                 resolved = ActionType(action_type)
@@ -4774,6 +4778,22 @@ async def execute_action_activity(
         }
 
         handler = _HANDLERS.get(resolved_action_type)
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "execution handler resolved",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": inv_id_str,
+                        "event": "execution.dispatch",
+                        "outcome": (
+                            "handler_found" if handler is not None else "unhandled"
+                        ),
+                        "action_type": resolved_action_type.value,
+                    }
+                ),
+            )
         if handler is None:
             # Exhaustive registry: this should be unreachable given the
             # ActionType(action_type) resolution above, but fail closed if a
@@ -4785,6 +4805,20 @@ async def execute_action_activity(
             )
 
         if resolved_action_type in _ACTION_REQUIRED_EVIDENCE_TYPE_LOCAL and gateway is None:
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "execution provider missing",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": inv_id_str,
+                            "event": "execution.dispatch",
+                            "outcome": "provider_unavailable",
+                            "action_type": resolved_action_type.value,
+                        }
+                    ),
+                )
             raise ApplicationFailure(
                 "Evidence gateway is not configured; cannot execute evidence-producing action",
                 type="EVIDENCE_PROVIDER_UNAVAILABLE",

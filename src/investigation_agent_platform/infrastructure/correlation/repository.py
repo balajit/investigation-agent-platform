@@ -9,6 +9,7 @@ from opentelemetry import trace
 from sqlalchemy import ARRAY, Text, bindparam, text
 
 from investigation_agent_platform.domain.common.exceptions import ExecutionError
+from investigation_agent_platform.infrastructure.persistence.rls import rls_session
 from investigation_agent_platform.ports.persistence.repositories import (
     EvidenceRelationshipRecord,
 )
@@ -105,7 +106,7 @@ class PostgresRelationshipRepository:
             )
 
             try:
-                async with self._session_factory() as session:
+                async with rls_session(self._session_factory, tenant_id) as session:
                     result = await session.execute(
                         sql,
                         {
@@ -168,7 +169,7 @@ class PostgresRelationshipRepository:
         ]
         if not pending:
             return 0
-        async with self._session_factory() as session:
+        async with rls_session(self._session_factory, tenant_id) as session:
             existing = await session.scalars(
                 select(
                     EvidenceRelationshipORM.source_node_id,
@@ -212,7 +213,7 @@ class PostgresRelationshipRepository:
             EvidenceRelationshipORM,
         )
 
-        async with self._session_factory() as session:
+        async with rls_session(self._session_factory, tenant_id) as session:
             rows = (
                 await session.scalars(
                     select(EvidenceRelationshipORM)

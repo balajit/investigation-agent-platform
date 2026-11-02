@@ -12,6 +12,7 @@ from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.timeline.models import TimelineEvent, TimelineEventType
 from investigation_agent_platform.infrastructure.persistence.models import TimelineEventORM
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,43 @@ class SqlAlchemyTimelineRepository:
                 )
                 .order_by(TimelineEventORM.timestamp)
             )
-            return [self._from_orm(row) for row in result.all()]
+            rows = result.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "timeline event row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": (
+                                    str(row.investigation_id)
+                                    if row.investigation_id is not None
+                                    else None
+                                ),
+                                "event": "timeline.find_by_investigation_id",
+                                "outcome": "row",
+                                "event_type": row.event_type,
+                                "timestamp": row.timestamp.isoformat(),
+                                "description": row.description[:120],
+                                "evidence_ids": list(row.evidence_ids or []),
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "timeline find by investigation completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "timeline.find_by_investigation_id",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
+            return [self._from_orm(row) for row in rows]
 
     async def find_by_time_range(
         self, tenant_id: str, investigation_id: UUID, start: datetime, end: datetime
@@ -168,7 +205,39 @@ class SqlAlchemyTimelineRepository:
                 )
                 .order_by(TimelineEventORM.timestamp)
             )
-            return [self._from_orm(row) for row in result.all()]
+            rows = result.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "timeline event row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "event": "timeline.find_by_time_range",
+                                "outcome": "row",
+                                "event_type": row.event_type,
+                                "timestamp": row.timestamp.isoformat(),
+                                "description": row.description[:120],
+                                "evidence_ids": list(row.evidence_ids or []),
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "timeline find by time range completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "timeline.find_by_time_range",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
+            return [self._from_orm(row) for row in rows]
 
     async def purge_expired(self, tenant_id: str, cutoff: datetime, limit: int = 500) -> int:
         """Hard-delete orphan timeline rows (NULL investigation) at/before cutoff.

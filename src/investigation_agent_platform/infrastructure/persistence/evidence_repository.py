@@ -19,6 +19,7 @@ from investigation_agent_platform.infrastructure.persistence.models import (
     EvidenceORM,
 )
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +329,26 @@ class SqlAlchemyEvidenceRepository:
                 )
             )
             row = result.first()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "evidence get by id completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "evidence_id": str(evidence_id),
+                            "event": "evidence.get_by_id",
+                            "outcome": "completed",
+                            "found": row is not None,
+                            "evidence_key": row.evidence_key if row is not None else None,
+                            "evidence_type": row.type if row is not None else None,
+                            "source_type": row.source_type if row is not None else None,
+                            "source_id": (
+                                row.source_id[:120] if row is not None else None
+                            ),
+                        }
+                    ),
+                )
             return self._from_orm(row) if row else None
 
     async def get_by_ids(self, tenant_id: str, evidence_ids: list[UUID]) -> list[Evidence]:
@@ -338,7 +359,44 @@ class SqlAlchemyEvidenceRepository:
                     EvidenceORM.evidence_key.in_([str(e) for e in evidence_ids]),
                 )
             )
-            return [self._from_orm(row) for row in result.all()]
+            rows = result.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "evidence row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": (
+                                    str(row.investigation_id)
+                                    if row.investigation_id is not None
+                                    else None
+                                ),
+                                "event": "evidence.get_by_ids",
+                                "outcome": "row",
+                                "evidence_key": row.evidence_key,
+                                "evidence_type": row.type,
+                                "source_type": row.source_type,
+                                "source_id": row.source_id[:120],
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "evidence get by ids completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "evidence.get_by_ids",
+                            "outcome": "completed",
+                            "requested_count": len(evidence_ids),
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
+            items = [self._from_orm(row) for row in rows]
+            return items
 
     async def find_by_investigation_id(
         self, tenant_id: str, investigation_id: UUID
@@ -373,13 +431,66 @@ class SqlAlchemyEvidenceRepository:
                     )
                 )
                 items.extend(shared.all())
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in items:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "evidence row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": (
+                                    str(row.investigation_id)
+                                    if row.investigation_id is not None
+                                    else None
+                                ),
+                                "event": "evidence.find_by_investigation_id",
+                                "outcome": "row",
+                                "evidence_key": row.evidence_key,
+                                "evidence_type": row.type,
+                                "source_type": row.source_type,
+                                "source_id": row.source_id[:120],
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "evidence find by investigation completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "evidence.find_by_investigation_id",
+                            "outcome": "completed",
+                            "row_count": len(items),
+                            "shared_count": len(shared_keys),
+                        }
+                    ),
+                )
             return [self._from_orm(row) for row in items]
 
     async def get_for_investigation(
         self, tenant_id: str, investigation_id: UUID, evidence_id: UUID
     ) -> Evidence | None:
         rows = await self.find_by_investigation_id(tenant_id, investigation_id)
-        return next((e for e in rows if str(e.evidence_id) == str(evidence_id)), None)
+        found = next((e for e in rows if str(e.evidence_id) == str(evidence_id)), None)
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "evidence get for investigation completed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(investigation_id),
+                        "evidence_id": str(evidence_id),
+                        "event": "evidence.get_for_investigation",
+                        "outcome": "completed",
+                        "found": found is not None,
+                        "scanned_count": len(rows),
+                    }
+                ),
+            )
+        return found
 
     async def sharing_info(
         self, tenant_id: str, evidence_keys: list[str]
@@ -405,6 +516,20 @@ class SqlAlchemyEvidenceRepository:
             for key, inv_id in rows.all():
                 entry = info.setdefault(key, {"shared": True, "investigations": []})
                 entry["investigations"].append(str(inv_id))
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "evidence sharing info completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "evidence.sharing_info",
+                            "outcome": "completed",
+                            "requested_count": len(evidence_keys),
+                            "matched_count": len(info),
+                        }
+                    ),
+                )
             return info
 
     async def purge_expired(self, tenant_id: str, cutoff: datetime, limit: int = 500) -> int:

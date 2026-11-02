@@ -56,3 +56,17 @@ loggers:
   # investigation_agent_platform.application.worker: INFO
   # investigation_agent_platform.application.worker.activities.execution: DEBUG
   # investigation_agent_platform.infrastructure.evidence: WARNING
+  # Scoped-TRACE triage preset (L2-style live triage): root stays INFO while
+  # only the decision/persistence path emits TRACE. Records still propagate
+  # to the console/file handlers, so no handler changes are needed. Enable
+  # per run via env (takes effect at process start). NOTE: scope to the
+  # modules that emit trace lines, never a whole package — a package-level
+  # TRACE also opens the gate for that subtree's pre-existing DEBUG lines
+  # (e.g. the buffered.py steady-state heartbeat).
+  #   IAP_LOG_LOGGERS="investigation_agent_platform.infrastructure.persistence.continuation_repository=TRACE,investigation_agent_platform.infrastructure.persistence.investigation_repository=TRACE,investigation_agent_platform.infrastructure.persistence.evidence_repository=TRACE,investigation_agent_platform.infrastructure.persistence.hypothesis_repository=TRACE,investigation_agent_platform.infrastructure.persistence.timeline_repository=TRACE,investigation_agent_platform.infrastructure.persistence.finding_repository=TRACE,investigation_agent_platform.infrastructure.persistence.idempotency_repository=TRACE,investigation_agent_platform.infrastructure.persistence.checkpoint_repository=TRACE,investigation_agent_platform.infrastructure.persistence.action_execution_repository=TRACE,investigation_agent_platform.application.investigation=TRACE,investigation_agent_platform.application.evidence.gateway=TRACE,investigation_agent_platform.application.worker.activities.execution=TRACE,investigation_agent_platform.application.worker.workflows.forcing=TRACE"
+  # Or uncomment the lines below for a persistent dev default:
+  # investigation_agent_platform.infrastructure.persistence: TRACE
+  # investigation_agent_platform.application.investigation: TRACE
+  # investigation_agent_platform.application.evidence.gateway: TRACE
+  # investigation_agent_platform.application.worker.activities.execution: TRACE
+  # investigation_agent_platform.application.worker.workflows.forcing: TRACE

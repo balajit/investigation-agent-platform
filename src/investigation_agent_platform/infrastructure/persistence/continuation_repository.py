@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -10,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.domain.common.exceptions import ConcurrencyError
 from investigation_agent_platform.domain.continuation.models import S7Continuation
 from investigation_agent_platform.domain.finding.models import InvestigationConclusion
@@ -20,6 +22,9 @@ from investigation_agent_platform.infrastructure.persistence.models import (
     S7ContinuationORM,
 )
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
+
+logger = logging.getLogger(__name__)
 
 
 class SqlAlchemyContinuationRepository:
@@ -95,6 +100,22 @@ class SqlAlchemyContinuationRepository:
     async def insert(self, tenant_id: str, continuation: S7Continuation) -> S7Continuation:
         if continuation.tenant_id != tenant_id:
             raise ConcurrencyError("Continuation tenant mismatch")
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "continuation insert started",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "investigation_id": str(continuation.investigation_id),
+                        "continuation_id": str(continuation.continuation_id),
+                        "event": "continuation.insert",
+                        "outcome": "started",
+                        "action": continuation.action,
+                        "idempotency_key": continuation.idempotency_key,
+                    }
+                ),
+            )
         async with rls_session(self._session_factory, tenant_id) as session:
             values = self._continuation_values(continuation)
             stmt = insert(S7ContinuationORM).values(**values).on_conflict_do_nothing(
@@ -117,6 +138,22 @@ class SqlAlchemyContinuationRepository:
                 )
             if row is None:
                 raise ConcurrencyError("Continuation insert was not observable")
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "continuation insert completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(continuation.investigation_id),
+                            "continuation_id": str(row.continuation_id),
+                            "event": "continuation.insert",
+                            "outcome": "completed",
+                            "status": row.status,
+                            "attempt_count": row.attempt_count,
+                        }
+                    ),
+                )
             return self._continuation_from_orm(row)
 
     async def supersede_pending(
@@ -133,7 +170,22 @@ class SqlAlchemyContinuationRepository:
                 )
                 .values(status="SUPERSEDED", last_error_code="CONTINUATION_SUPERSEDED")
             )
-            return int(getattr(result, "rowcount", 0) or 0)
+            superseded = int(getattr(result, "rowcount", 0) or 0)
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "continuation supersede pending completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "continuation.supersede_pending",
+                            "outcome": "completed",
+                            "superseded_count": superseded,
+                        }
+                    ),
+                )
+            return superseded
 
     async def get(self, tenant_id: str, continuation_id: UUID) -> S7Continuation | None:
         async with rls_session(self._session_factory, tenant_id) as session:
@@ -143,6 +195,26 @@ class SqlAlchemyContinuationRepository:
                     S7ContinuationORM.continuation_id == continuation_id,
                 )
             )
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "continuation get completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "continuation_id": str(continuation_id),
+                            "event": "continuation.get",
+                            "outcome": "completed",
+                            "found": row is not None,
+                            "status": row.status if row is not None else None,
+                            "action": row.action if row is not None else None,
+                            "attempt_count": row.attempt_count if row is not None else None,
+                            "investigation_id": (
+                                str(row.investigation_id) if row is not None else None
+                            ),
+                        }
+                    ),
+                )
             return self._continuation_from_orm(row) if row is not None else None
 
     async def claim(
@@ -187,7 +259,24 @@ class SqlAlchemyContinuationRepository:
                     ),
                 ),
             )
-            return result.rowcount == 1
+            granted = result.rowcount == 1
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "continuation claim completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "continuation_id": str(continuation_id),
+                            "event": "continuation.claim",
+                            "outcome": "completed",
+                            "granted": granted,
+                            "max_attempts": max_attempts,
+                        }
+                    ),
+                )
+            return granted
 
     async def set_status(
         self,
@@ -216,7 +305,24 @@ class SqlAlchemyContinuationRepository:
                     ),
                 ),
             )
-            return result.rowcount == 1
+            applied = result.rowcount == 1
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "continuation set status completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "continuation_id": str(continuation_id),
+                            "event": "continuation.set_status",
+                            "outcome": "completed",
+                            "status": status,
+                            "applied": applied,
+                            "error_code": error_code,
+                        }
+                    ),
+                )
+            return applied
 
     async def acquire_reasoning_lease(
         self,
@@ -248,6 +354,22 @@ class SqlAlchemyContinuationRepository:
                 ),
             )
             if result.rowcount == 1:
+                if logger.isEnabledFor(TRACE_LEVEL):
+                    logger.log(
+                        TRACE_LEVEL,
+                        "reasoning lease acquire completed",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "continuation_id": str(continuation_id),
+                                "event": "continuation.acquire_reasoning_lease",
+                                "outcome": "completed",
+                                "path": "renew",
+                                "attempt": attempt,
+                            }
+                        ),
+                    )
                 return True
             result = cast(
                 CursorResult[Any],
@@ -265,7 +387,25 @@ class SqlAlchemyContinuationRepository:
                     .on_conflict_do_nothing(index_elements=["investigation_id"]),
                     ),
             )
-            return result.rowcount == 1
+            acquired = result.rowcount == 1
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "reasoning lease acquire completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "continuation_id": str(continuation_id),
+                            "event": "continuation.acquire_reasoning_lease",
+                            "outcome": "completed",
+                            "path": "insert",
+                            "acquired": acquired,
+                            "attempt": attempt,
+                        }
+                    ),
+                )
+            return acquired
 
     async def release_reasoning_lease(self, tenant_id: str, investigation_id: UUID) -> bool:
         async with rls_session(self._session_factory, tenant_id) as session:
@@ -278,7 +418,22 @@ class SqlAlchemyContinuationRepository:
                     )
                 ),
             )
-            return result.rowcount == 1
+            released = result.rowcount == 1
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "reasoning lease release completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "continuation.release_reasoning_lease",
+                            "outcome": "completed",
+                            "released": released,
+                        }
+                    ),
+                )
+            return released
 
     async def replace_conclusion_with_history(
         self,
@@ -349,6 +504,22 @@ class SqlAlchemyContinuationRepository:
             )
             if result.rowcount != 1:
                 raise ConcurrencyError("Conclusion row lost during replacement")
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "conclusion replace with history completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(conclusion.investigation_id),
+                            "continuation_id": str(continuation_id),
+                            "event": "continuation.replace_conclusion_with_history",
+                            "outcome": "completed",
+                            "history_id": str(history.id),
+                            "status": row.status,
+                        }
+                    ),
+                )
             return history.id
 
     async def list_conclusion_history(
@@ -363,6 +534,47 @@ class SqlAlchemyContinuationRepository:
                 )
                 .order_by(ConclusionHistoryORM.archived_at)
             )
+            rows = rows.all()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for row in rows:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "conclusion history row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(investigation_id),
+                                "event": "continuation.list_conclusion_history",
+                                "outcome": "row",
+                                "history_id": str(row.id),
+                                "status": row.status,
+                                "archived_at": (
+                                    row.archived_at.isoformat()
+                                    if row.archived_at is not None
+                                    else None
+                                ),
+                                "superseded_by_continuation_id": (
+                                    str(row.superseded_by_continuation_id)
+                                    if row.superseded_by_continuation_id is not None
+                                    else None
+                                ),
+                                "handoff_version": row.handoff_version,
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "conclusion history list completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "continuation.list_conclusion_history",
+                            "outcome": "completed",
+                            "row_count": len(rows),
+                        }
+                    ),
+                )
             return [
                 {
                     "id": row.id,
@@ -372,5 +584,5 @@ class SqlAlchemyContinuationRepository:
                     "handoff_version": row.handoff_version,
                     "snapshot": row.snapshot,
                 }
-                for row in rows.all()
+                for row in rows
             ]

@@ -86,11 +86,18 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
         )
 
     def _get_date_string(self) -> str:
-        if self.use_utc:
-            now = datetime.datetime.now(datetime.UTC)
-        else:
-            now = datetime.datetime.now()  # noqa: DTZ005 - local wall-clock when use_utc=False (upstream semantics preserved)
-        return now.strftime(self.date_format)
+        # Shutdown-safe: datetime.strftime can touch the import machinery,
+        # which is gone during interpreter finalization (ImportError:
+        # sys.meta_path is None). Fall back to the frozen bucket so logging
+        # during shutdown degrades to "no rollover" instead of raising.
+        try:
+            if self.use_utc:
+                now = datetime.datetime.now(datetime.UTC)
+            else:
+                now = datetime.datetime.now()  # noqa: DTZ005 - local wall-clock when use_utc=False (upstream semantics preserved)
+            return now.strftime(self.date_format)
+        except Exception:
+            return self._current_date_str
 
     def _get_active_filepath(self, date_str: str) -> Path:
         return self.base_dir / f"{self.app_name}_{date_str}.log"
@@ -105,21 +112,28 @@ class DateSeqRotatingFileHandler(BaseRotatingHandler):
         return seq
 
     def shouldRollover(self, record: logging.LogRecord) -> bool:
-        """Determines if a rollover is required due to date boundary change or file size."""
-        if self.stream is None:
-            self.stream = self._open()
+        """Determines if a rollover is required due to date boundary change or file size.
 
-        current_date = self._get_date_string()
-        if current_date != self._current_date_str:
-            return True
+        Never raises: logging during interpreter shutdown must degrade to
+        "no rollover" instead of printing handler tracebacks.
+        """
+        try:
+            if self.stream is None:
+                self.stream = self._open()
 
-        if self.maxBytes > 0:
-            msg = f"{self.format(record)}\n"
-            self.stream.seek(0, os.SEEK_END)
-            if self.stream.tell() + len(msg.encode(self.encoding or "utf-8")) >= self.maxBytes:
+            current_date = self._get_date_string()
+            if current_date != self._current_date_str:
                 return True
 
-        return False
+            if self.maxBytes > 0:
+                msg = f"{self.format(record)}\n"
+                self.stream.seek(0, os.SEEK_END)
+                if self.stream.tell() + len(msg.encode(self.encoding or "utf-8")) >= self.maxBytes:
+                    return True
+
+            return False
+        except Exception:
+            return False
 
     def doRollover(self) -> None:
         """Open a fresh hourly base on hour change; cascade in-hour on size."""

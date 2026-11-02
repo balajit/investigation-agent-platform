@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.application.investigation.verification import (
     CLAIM_BINDING_CURRENT,
 )
@@ -34,6 +35,7 @@ from investigation_agent_platform.domain.investigation.models import (
 from investigation_agent_platform.domain.profile.models import ApplicationProfile
 from investigation_agent_platform.domain.timeline.models import TimelineEvent
 from investigation_agent_platform.infrastructure.observability.tracing import traced
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 from investigation_agent_platform.ports.messaging.publisher import EventPublisher
 from investigation_agent_platform.ports.observability.telemetry import ObservabilityPort
 from investigation_agent_platform.ports.persistence.repositories import (
@@ -73,7 +75,40 @@ async def _authorizer_deny_reason(
         if callable(decide):
             decision = await authorizer.decide(tenant_id, capability, target_resource, context)
             reason = decision.reason
-            return reason.value if reason is not None else "authorization_denied"
+            reason_value = reason.value if reason is not None else "authorization_denied"
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "authorizer decision computed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "services.authorize_action",
+                            "outcome": "denied",
+                            "capability": capability,
+                            "target_resource": target_resource,
+                            "application_id": (context or {}).get("application_id"),
+                            "deny_reason": reason_value,
+                        }
+                    ),
+                )
+            return reason_value
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "authorizer decision computed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "services.authorize_action",
+                        "outcome": "denied",
+                        "capability": capability,
+                        "target_resource": target_resource,
+                        "application_id": (context or {}).get("application_id"),
+                        "deny_reason": "authorization_denied",
+                    }
+                ),
+            )
         return "authorization_denied"
     return None
 

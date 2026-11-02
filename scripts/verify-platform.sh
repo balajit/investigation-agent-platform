@@ -17,7 +17,7 @@ if [[ -f .env.local && -z "${IAP_DATABASE_URI:-}" ]]; then
 fi
 
 export IAP_LIVE_TESTS=1
-export IAP_LIVE_BASE_URL="${IAP_LIVE_BASE_URL:-http://localhost:${PORT:-8000}}"
+export IAP_LIVE_BASE_URL="${IAP_LIVE_BASE_URL:-http://localhost:${PORT:-8080}}"
 
 if ! curl -sf "${IAP_LIVE_BASE_URL}/api/v1/health/live" >/dev/null 2>&1; then
   echo "error: API not reachable at ${IAP_LIVE_BASE_URL} (start it first: ./scripts/start-platform.sh)" >&2

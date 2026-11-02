@@ -23,6 +23,7 @@ from investigation_agent_platform.infrastructure.persistence.models import (
     InvestigationORM,
 )
 from investigation_agent_platform.infrastructure.persistence.rls import rls_session
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,26 @@ class SqlAlchemyInvestigationRepository:
                 )
             )
             row = result.first()
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "investigation get by id completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "investigation.get_by_id",
+                            "outcome": "completed",
+                            "found": row is not None,
+                            "status": row.status if row is not None else None,
+                            "phase": row.phase if row is not None else None,
+                            "version": row.version if row is not None else None,
+                            "application_id": (
+                                row.application_id if row is not None else None
+                            ),
+                        }
+                    ),
+                )
             return self._from_orm(row) if row else None
 
     async def save(
@@ -367,7 +388,22 @@ class SqlAlchemyInvestigationRepository:
                     InvestigationORM.tenant_id == tenant_id,
                 )
             )
-            return result.first() is not None
+            found = result.first() is not None
+            if logger.isEnabledFor(TRACE_LEVEL):
+                logger.log(
+                    TRACE_LEVEL,
+                    "investigation exists completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "investigation_id": str(investigation_id),
+                            "event": "investigation.exists",
+                            "outcome": "completed",
+                            "found": found,
+                        }
+                    ),
+                )
+            return found
 
     async def list_open_ids(self, tenant_id: str) -> list[UUID]:
         """IDs of investigations not yet in a terminal status (ISSUE-4)."""
@@ -383,7 +419,34 @@ class SqlAlchemyInvestigationRepository:
                     InvestigationORM.status.notin_(terminal),
                 )
             )
-            return list(result.all())
+            ids = list(result.all())
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for open_id in ids:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "investigation open id row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(open_id),
+                                "event": "investigation.list_open_ids",
+                                "outcome": "row",
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "investigation list open ids completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "investigation.list_open_ids",
+                            "outcome": "completed",
+                            "row_count": len(ids),
+                        }
+                    ),
+                )
+            return ids
 
     async def list_filtered(
         self,
@@ -400,7 +463,35 @@ class SqlAlchemyInvestigationRepository:
                 stmt = stmt.where(InvestigationORM.application_id == application_id)
             stmt = stmt.order_by(InvestigationORM.created_at.desc()).limit(max(0, limit))
             result = await session.scalars(stmt)
-            return list(result.all())
+            ids = list(result.all())
+            if logger.isEnabledFor(TRACE_LEVEL):
+                for filtered_id in ids:
+                    logger.log(
+                        TRACE_LEVEL,
+                        "investigation filtered id row",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "investigation_id": str(filtered_id),
+                                "event": "investigation.list_filtered",
+                                "outcome": "row",
+                            }
+                        ),
+                    )
+                logger.log(
+                    TRACE_LEVEL,
+                    "investigation list filtered completed",
+                    extra=sanitize_extra(
+                        {
+                            "tenant_id": tenant_id,
+                            "event": "investigation.list_filtered",
+                            "outcome": "completed",
+                            "row_count": len(ids),
+                            "limit": limit,
+                        }
+                    ),
+                )
+            return ids
 
     async def _rehome_reference_evidence(
         self, session: Any, tenant_id: str, purged_ids: list[Any]
