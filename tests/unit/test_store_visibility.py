@@ -144,18 +144,27 @@ def _disabled_config() -> SimpleNamespace:
 
 class TestBufferedDevSplitBrainGuard:
     @pytest.mark.asyncio
-    async def test_disabled_with_reachable_postgres_refuses_boot(self) -> None:
+    async def test_disabled_with_reachable_postgres_wires_direct_sql(self) -> None:
         from investigation_agent_platform.bootstrap import buffered_dev
-        from investigation_agent_platform.domain.common.exceptions import (
-            SplitBrainStoreError,
+        from investigation_agent_platform.infrastructure.persistence.investigation_repository import (
+            SqlAlchemyInvestigationRepository,
         )
 
-        ctx = SimpleNamespace()
+        ctx = SimpleNamespace(
+            investigation_repo=object(),
+            profile_repo=object(),
+            topology_adapter=None,
+            evidence_repo=object(),
+            outbox_queue=None,
+            hypothesis_repo=object(),
+            finding_repo=object(),
+            _buffered=False,
+        )
         with patch.object(buffered_dev, "_postgres_reachable", return_value=True):
-            with pytest.raises(SplitBrainStoreError, match="SPLIT-BRAIN REFUSED"):
-                await buffered_dev.ensure_buffered_dev_context(ctx, _disabled_config())
-        assert getattr(ctx, "_store_divergence_risk", None) is True
-        assert getattr(ctx, "_buffered", False) is False
+            out = await buffered_dev.ensure_buffered_dev_context(ctx, _disabled_config())
+        assert getattr(out, "_store_divergence_risk", None) is False
+        assert getattr(out, "_buffered", False) is False
+        assert isinstance(out.investigation_repo, SqlAlchemyInvestigationRepository)
 
     @pytest.mark.asyncio
     async def test_disabled_without_reachable_postgres_is_quiet_offline(self) -> None:

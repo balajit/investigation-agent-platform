@@ -21,15 +21,22 @@ from investigation_agent_platform.infrastructure.correlation.repository import (
 
 
 def _repo(captured: list):  # type: ignore[no-untyped-def]
-    async def _execute(sql, params):  # type: ignore[no-untyped-def]
-        captured.append((str(sql), dict(params)))
+    async def _execute(sql, params=None):  # type: ignore[no-untyped-def]
+        # rls_session issues a bare SET LOCAL (single-arg execute) before the
+        # business statement; record both so tests can assert tenant scoping.
+        captured.append((str(sql), dict(params or {})))
+        if "SET LOCAL" in str(sql):
+            return SimpleNamespace()
 
         def _empty():  # type: ignore[no-untyped-def]
             return SimpleNamespace(all=lambda rows=[]: rows)
 
         return SimpleNamespace(mappings=_empty)
 
-    session = SimpleNamespace(execute=_execute)
+    async def _commit():  # type: ignore[no-untyped-def]
+        return None
+
+    session = SimpleNamespace(execute=_execute, commit=_commit)
 
     class _CM:
         async def __aenter__(self):  # type: ignore[no-untyped-def]
@@ -50,14 +57,18 @@ class TestRelationshipQueryShape:
             "tenant-a", "my-app", [str(uuid4())], 2
         )
         assert result == []
-        assert len(captured) == 1
-        sql, params = captured[0]
+        business = [(s, p) for s, p in captured if "SET LOCAL" not in s]
+        assert len(business) == 1
+        sql, params = business[0]
         assert "JOIN investigations" in sql
         assert "evidence_relationships.application_id" not in sql
         assert "r.application_id" not in sql
         assert params["tenant_id"] == "tenant-a"
         assert params["application_id"] == "my-app"
         assert params["max_depth"] == 2
+        assert any(
+            "SET LOCAL" in s and "tenant-a" in s for s, _ in captured
+        ), "RLS tenant session must be established before the business query"
 
     @pytest.mark.asyncio
     async def test_invalid_uuid_rejected_before_io(self) -> None:
@@ -86,11 +97,15 @@ class TestRecordEdges:
         async def _scalars(stmt):  # type: ignore[no-untyped-def]
             return _Result(existing)
 
+        async def _execute(stmt, params=None):  # type: ignore[no-untyped-def]
+            # rls_session SET LOCAL probe: accept the single-arg form.
+            return SimpleNamespace()
+
         async def _commit():  # type: ignore[no-untyped-def]
             committed.append(True)
 
         committed: list = []
-        session = SimpleNamespace(scalars=_scalars, add=added.append, commit=_commit)
+        session = SimpleNamespace(scalars=_scalars, execute=_execute, add=added.append, commit=_commit)
 
         class _CM:
             async def __aenter__(self):  # type: ignore[no-untyped-def]

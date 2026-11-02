@@ -1380,6 +1380,7 @@ async def execute_action_activity(
                 error=str(exc),
                 error_type=type(exc).__name__,
                 action_type=action_type,
+                deny_reason=(getattr(exc, "details", None) or {}).get("deny_reason"),
             )
             try:
                 resolved = ActionType(action_type)

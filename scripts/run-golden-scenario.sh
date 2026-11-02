@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ENV_FILE=""
-API_BASE="${IAP_API_BASE:-http://localhost:8000}"
+API_BASE="${IAP_API_BASE:-http://localhost:8080}"
 TENANT="${IAP_GOLDEN_TENANT:-tenant-a}"
 APP_ID="${IAP_GOLDEN_APP_ID:-example-app}"
 TIMEOUT="${TIMEOUT:-10}"

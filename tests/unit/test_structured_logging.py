@@ -156,3 +156,26 @@ def test_resolve_file_target():
     assert app == "iap" and str(base) == "data"
     base, app = _resolve_file_target("data/logs")
     assert str(base) == "data/logs"
+
+
+def test_shutdown_import_failure_never_rolls_over(tmp_path):
+    """Interpreter shutdown (sys.meta_path is None) must degrade to no-rollover.
+
+    Regression: an asyncio shutdown complaint routed through the handler
+    raised ImportError from _get_date_string and printed a handler
+    traceback. shouldRollover must return False and emit must not raise.
+    """
+    handler = DateSeqRotatingFileHandler(tmp_path, app_name="iap", max_bytes=200, backup_count=5)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    def _dead_import():
+        raise ImportError("sys.meta_path is None, Python is likely shutting down")
+
+    handler._get_date_string = _dead_import  # type: ignore[method-assign]
+    assert handler.shouldRollover(_record()) is False
+    log = logging.getLogger("shutdown-test")
+    log.handlers = [handler]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    log.info("shutdown line")  # must not raise
+    handler.close()

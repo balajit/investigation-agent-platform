@@ -371,24 +371,45 @@ def _plain_ctx():
     return SimpleNamespace(_buffered=False)
 
 
-def test_split_brain_boot_refuses_amnesiac_store(monkeypatch) -> None:
-    """Buffering disabled with a reachable Postgres must fail loud."""
+def test_disabled_flag_wires_direct_sql_without_proxies(monkeypatch) -> None:
+    """Buffering disabled with a reachable Postgres wires direct-SQL stores.
+
+    No BufferedProxy, no SQLite WAL: the context converges on the shared
+    Postgres exactly like production.
+    """
     import asyncio
 
     from investigation_agent_platform.bootstrap import buffered_dev
-    from investigation_agent_platform.domain.common.exceptions import (
-        SplitBrainStoreError,
+    from investigation_agent_platform.infrastructure.persistence.investigation_repository import (
+        SqlAlchemyInvestigationRepository,
     )
 
     async def _reachable(uri: str, timeout_seconds: float = 3.0) -> bool:
         return True
 
     async def _run() -> None:
+        from types import SimpleNamespace
+
+        # Unroutable port: _postgres_reachable is mocked True, but the real
+        # SQLAlchemy stores must never touch a live database in unit tests.
+        # The seed upsert fails closed on connection-refused and is skipped.
         cfg = _SplitBrainConfig(
-            buffering_enabled=False, db_uri="postgresql://iap:iap@localhost:5452/iap"
+            buffering_enabled=False, db_uri="postgresql://iap:iap@localhost:59999/iap"
         )
-        with pytest.raises(SplitBrainStoreError, match="SPLIT-BRAIN REFUSED"):
-            await buffered_dev.ensure_buffered_dev_context(_plain_ctx(), cfg)
+        ctx = SimpleNamespace(
+            investigation_repo=object(),
+            profile_repo=object(),
+            topology_adapter=None,
+            evidence_repo=object(),
+            outbox_queue=None,
+            hypothesis_repo=object(),
+            finding_repo=object(),
+            _buffered=False,
+        )
+        out = await buffered_dev.ensure_buffered_dev_context(ctx, cfg)
+        assert getattr(out, "_store_divergence_risk", None) is False
+        assert getattr(out, "_buffered", False) is False
+        assert isinstance(out.investigation_repo, SqlAlchemyInvestigationRepository)
 
     monkeypatch.setattr(buffered_dev, "_postgres_reachable", _reachable)
     asyncio.run(_run())

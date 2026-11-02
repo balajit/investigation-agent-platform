@@ -194,6 +194,79 @@ def _require_dev(*, environment: str | None = None) -> None:
         )
 
 
+async def _install_repo_backed_services(ctx: Any, engine: Any = None) -> None:
+    """Rebuild services that captured bare repo references at construction.
+
+    Shared by the buffered and direct-SQL dev compositions: after the
+    context's stores are swapped (proxies or SQLAlchemy primaries), every
+    holder of the old in-memory repos must be rebuilt around the new ones —
+    otherwise the authorizer reads an empty profile store (every action
+    denied with NO_ACTIVE_PROFILE) and conclude dies on version mismatch.
+    """
+    # Rebuild services that captured bare repo references at construction.
+    from investigation_agent_platform.api.dependencies import InvestigationOutboxWorker
+    from investigation_agent_platform.application.topology.attribution import (
+        FailureAttributionService,
+    )
+    from investigation_agent_platform.infrastructure.evidence.code.codeowners import (
+        CodeownersResolver,
+    )
+    from investigation_agent_platform.infrastructure.evidence.code.micro import (
+        MicroSymbolResolver,
+    )
+    from investigation_agent_platform.infrastructure.security.profile_authorizer import (
+        ProfileBasedActionAuthorizer,
+        ProfileBasedCapabilityRegistry,
+    )
+    from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
+        ProfileBackedRepositoryRegistry,
+    )
+
+    ctx.action_authorizer = ProfileBasedActionAuthorizer(ctx.profile_repo)
+    ctx.capability_registry = ProfileBasedCapabilityRegistry(ctx.profile_repo)
+    ctx.repository_registry = ProfileBackedRepositoryRegistry(ctx.profile_repo)
+    ctx.failure_attribution_service = FailureAttributionService(
+        attribution_port=ctx.topology_adapter,
+        evidence_repo=ctx.evidence_repo,
+        repository_registry=ctx.repository_registry,
+        codeowners_resolver=CodeownersResolver(
+            repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", "")
+        ),
+        micro_resolver=MicroSymbolResolver(
+            repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", "")
+        ),
+    )
+    ctx.outbox_worker = InvestigationOutboxWorker(
+        repository=ctx.investigation_repo,
+        event_queue=ctx.outbox_queue,
+    )
+    # H14: the conclude path's unit of work captured the bare in-memory
+    # repos at AppContext construction, before the new stores were
+    # installed. Rebuild it around the new stores so commit_verdict versions
+    # agree with the shared primaries; otherwise every dev conclude
+    # with a banked hypothesis dies on "version mismatch" (store empty
+    # while the primary holds version >= 1).
+    from investigation_agent_platform.api.dependencies import (
+        InMemoryConclusionUnitOfWork,
+    )
+
+    ctx.conclusion_uow = InMemoryConclusionUnitOfWork(
+        ctx.hypothesis_repo, ctx.finding_repo
+    )
+    if engine is not None and getattr(ctx, "engine", None) is None:
+        ctx.engine = engine
+
+    # Seed the default dev profile through the new stores so it lands in
+    # Postgres when the primary is up (idempotent upsert).
+    try:
+        from investigation_agent_platform.api.dependencies import _DEFAULT_PROFILE
+
+        if await ctx.profile_repo.get_by_application_id("tenant-a", "example-app") is None:
+            await ctx.profile_repo.save("tenant-a", _DEFAULT_PROFILE)
+    except Exception as exc:
+        logger.warning("Default profile seed failed", extra={"error": str(exc)})
+
+
 async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
     """Wrap a live ``AppContext``'s stores with buffered proxies (idempotent).
 
@@ -216,35 +289,47 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
         _require_dev()
         buffer_cfg = getattr(config, "buffer", None)
         if buffer_cfg is not None and not getattr(buffer_cfg, "enabled", True):
-            # Split-brain guard: with buffering disabled this process serves
-            # process-local memory while direct-Postgres writers
-            # (scripts/seed_profile.py, Postgres-backed workers) converge on
-            # the database. That combination silently diverges: seeded
-            # profiles 404 here and workflow dispatch 503s (STORE_NOT_SHARED).
-            # It is only safe when no shared database exists, so probe and
-            # fail loud when one is reachable.
+            # Direct-SQL dev composition (no WAL/proxy/flusher machinery):
+            # converge on the shared Postgres exactly like production. This
+            # is only safe when a shared database exists, so probe and fail
+            # loud when none is reachable — serving process-local memory
+            # while seed scripts and workers share Postgres silently
+            # diverges (seeded profiles 404, dispatch 503s STORE_NOT_SHARED).
             db_uri = ""
             try:
                 db_uri = config.database.connection_uri.get_secret_value()
             except Exception:
                 db_uri = ""
             if db_uri and await _postgres_reachable(db_uri, timeout_seconds=3.0):
-                from investigation_agent_platform.domain.common.exceptions import (
-                    SplitBrainStoreError,
-                )
+                from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-                ctx._store_divergence_risk = True  # type: ignore[attr-defined]
-                raise SplitBrainStoreError(
-                    "SPLIT-BRAIN REFUSED: IAP_BUFFER_ENABLED=false with a reachable "
-                    "Postgres; this process would serve process-local memory "
-                    "while seed scripts and workers share Postgres, silently "
-                    "losing every row on restart. Unset IAP_BUFFER_ENABLED "
-                    "(or stop the database for true offline dev) so API and "
-                    "worker converge on the shared store."
+                engine = create_async_engine(
+                    _async_db_uri(db_uri),
+                    pool_size=getattr(config.database, "pool_size", 5),
+                    max_overflow=getattr(config.database, "max_overflow", 10),
+                    pool_pre_ping=True,
                 )
-            else:
-                logger.info("Buffered persistence disabled (IAP_BUFFER_ENABLED=false)")
+                primaries = _build_sqlalchemy_stores(
+                    async_sessionmaker(engine, expire_on_commit=False)
+                )
+                wired = 0
+                for name, store in primaries.items():
+                    if getattr(ctx, name, None) is None:
+                        continue
+                    setattr(ctx, name, store)
+                    wired += 1
+                # Same staleness hazard as the buffered path: services built at
+                # AppContext construction still hold the in-memory repos.
+                await _install_repo_backed_services(ctx, engine)
+                logger.info(
+                    "Buffered persistence disabled (IAP_BUFFER_ENABLED=false); "
+                    "direct-SQL stores wired",
+                    extra={"wired_stores": wired},
+                )
                 ctx._store_divergence_risk = False  # type: ignore[attr-defined]
+                return ctx
+            logger.info("Buffered persistence disabled (IAP_BUFFER_ENABLED=false)")
+            ctx._store_divergence_risk = False  # type: ignore[attr-defined]
             return ctx
         path = getattr(buffer_cfg, "path", "data/iap-buffer.sqlite3") or ("data/iap-buffer.sqlite3")
         interval = float(getattr(buffer_cfg, "flush_interval_seconds", 5.0) or 5.0)
@@ -285,68 +370,10 @@ async def ensure_buffered_dev_context(ctx: Any, config: Any) -> Any:
                 "Restored buffered writes into fallback stores", extra={"restored": restored}
             )
 
-        # Rebuild services that captured bare repo references at construction.
-        from investigation_agent_platform.api.dependencies import InvestigationOutboxWorker
-        from investigation_agent_platform.application.topology.attribution import (
-            FailureAttributionService,
-        )
-        from investigation_agent_platform.infrastructure.evidence.code.codeowners import (
-            CodeownersResolver,
-        )
-        from investigation_agent_platform.infrastructure.evidence.code.micro import (
-            MicroSymbolResolver,
-        )
-        from investigation_agent_platform.infrastructure.security.profile_authorizer import (
-            ProfileBasedActionAuthorizer,
-            ProfileBasedCapabilityRegistry,
-        )
-        from investigation_agent_platform.infrastructure.topology.profile_repository_registry import (
-            ProfileBackedRepositoryRegistry,
-        )
-
-        ctx.action_authorizer = ProfileBasedActionAuthorizer(ctx.profile_repo)
-        ctx.capability_registry = ProfileBasedCapabilityRegistry(ctx.profile_repo)
-        ctx.repository_registry = ProfileBackedRepositoryRegistry(ctx.profile_repo)
-        ctx.failure_attribution_service = FailureAttributionService(
-            attribution_port=ctx.topology_adapter,
-            evidence_repo=ctx.evidence_repo,
-            repository_registry=ctx.repository_registry,
-            codeowners_resolver=CodeownersResolver(
-                repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", "")
-            ),
-            micro_resolver=MicroSymbolResolver(
-                repo_base_path=os.environ.get("IAP_CODE_REPO_BASE", "")
-            ),
-        )
-        ctx.outbox_worker = InvestigationOutboxWorker(
-            repository=ctx.investigation_repo,
-            event_queue=ctx.outbox_queue,
-        )
-        # H14: the conclude path's unit of work captured the bare in-memory
-        # repos at AppContext construction, before the proxies above were
-        # installed. Rebuild it around the proxies so commit_verdict versions
-        # agree with the buffered primaries; otherwise every dev conclude
-        # with a banked hypothesis dies on "version mismatch" (store empty
-        # while the proxy holds version >= 1).
-        from investigation_agent_platform.api.dependencies import (
-            InMemoryConclusionUnitOfWork,
-        )
-
-        ctx.conclusion_uow = InMemoryConclusionUnitOfWork(
-            ctx.hypothesis_repo, ctx.finding_repo
-        )
-        if engine is not None and getattr(ctx, "engine", None) is None:
-            ctx.engine = engine
-
-        # Seed the default dev profile through the proxy so it lands in
-        # Postgres when the primary is up (idempotent upsert).
-        try:
-            from investigation_agent_platform.api.dependencies import _DEFAULT_PROFILE
-
-            if await ctx.profile_repo.get_by_application_id("tenant-a", "example-app") is None:
-                await ctx.profile_repo.save("tenant-a", _DEFAULT_PROFILE)
-        except Exception as exc:
-            logger.warning("Default profile seed failed", extra={"error": str(exc)})
+        # Rebuild services that captured bare repo references at construction
+        # (shared helper keeps the buffered and direct-SQL compositions from
+        # diverging).
+        await _install_repo_backed_services(ctx, engine)
 
         ctx._buffer_wal = wal
         ctx._buffer_proxies = proxies

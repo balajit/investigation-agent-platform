@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
+def _scrubbed_provider_message(exc: BaseException, limit: int = 300) -> str:
+    """Provider error text safe for logs: scrub credential-shaped tokens, truncate.
+
+    SDK error bodies carry the diagnosis (e.g. which model/path a 404 names)
+    and never carry the key (it travels in headers). Scrub defensively anyway.
+    """
+    try:
+        text = str(exc) or ""
+    except Exception:
+        return ""
+    text = re.sub(
+        r"(?i)(api[_-]?key|bearer|token)\s*[:=]\s*\S+", r"\1=[REDACTED]", text
+    )
+    return text[:limit]
+
+
 def _decision_extra(decision: Any) -> dict[str, Any]:
     """Counts + readiness from the decision (never prompt/response text)."""
     try:
@@ -1505,8 +1521,12 @@ class ReasoningCoordinator(InvestigationReasoner):
 
             suffix = ":rate_limited" if isinstance(exc, RateLimitException) else ""
             _kind, _retry_after = classify_reasoning_failure(exc)
+            _detail = _scrubbed_provider_message(exc)
+            _reason = f"llm_gateway_error:{type(exc).__name__}{suffix}"
+            if _detail:
+                _reason = f"{_reason} :: {_detail}"
             return self._unavailable_decision(
-                f"llm_gateway_error:{type(exc).__name__}{suffix}",
+                _reason,
                 kind=_kind,
                 retry_after=_retry_after,
             )
