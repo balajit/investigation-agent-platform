@@ -9,6 +9,7 @@ from typing import Any
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from investigation_agent_platform.api.errors import sanitize_extra
 from investigation_agent_platform.infrastructure.configuration.config import LLMConfig
 from investigation_agent_platform.infrastructure.reasoning.pricing import (
     estimate_cost as _estimate_cost_versioned,
@@ -16,6 +17,7 @@ from investigation_agent_platform.infrastructure.reasoning.pricing import (
 from investigation_agent_platform.infrastructure.reasoning.streaming_adapters import (
     count_text_tokens,
 )
+from investigation_agent_platform.infrastructure.telemetry.story import TRACE_LEVEL
 from investigation_agent_platform.ports.observability.telemetry import LLMCallMetadata
 from investigation_agent_platform.ports.reasoning.llm_gateway import (
     LLMGateway,
@@ -45,7 +47,15 @@ def _estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) 
 
 def _is_unsupported_format_error(exc: BaseException) -> bool:
     message = str(exc).lower()
-    return "response_format" in message or "json_schema" in message
+    if "response_format" in message or "json_schema" in message:
+        return True
+    # Schema-shape enforcement: some providers reject the schema shape
+    # itself (e.g. strict-mode required[] coverage) rather than the
+    # json_schema mode. Same fallback applies — the error names the
+    # schema as the problem.
+    if "invalid_request_error" in message and "schema" in message:
+        return True
+    return "required" in message and "properties" in message and "schema" in message
 
 
 # Data classifications that must never leave the platform boundary toward an
@@ -302,14 +312,19 @@ class OpenAIGateway(LLMGateway):
         }
         if request.response_schema is not None:
             # F-027: enforce the supplied JSON schema at the provider layer via
-            # strict structured outputs — not a generic json_object mode with
-            # only post-hoc Pydantic validation. Falls back to json_object only
-            # for API versions that reject the json_schema response format.
+            # structured outputs — not a generic json_object mode with only
+            # post-hoc Pydantic validation. Non-strict mode: the decision
+            # contract carries open maps (dict[str, Any] parameters/metadata)
+            # that strict mode cannot represent (verified live: strict rejects
+            # the schema while non-strict accepts it byte-identical). The
+            # provider still type-checks the shape; Pydantic model_validate in
+            # reasoning.py remains the hard boundary. Falls back to json_object
+            # only for API versions that reject the json_schema response format.
             kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "investigation_decision",
-                    "strict": True,
+                    "strict": False,
                     "schema": request.response_schema,
                 },
             }
@@ -318,8 +333,23 @@ class OpenAIGateway(LLMGateway):
         # char fallback) so every LLM call logs its input size even when the
         # provider omits usage telemetry. Counts only — never prompt text.
         wire_model = str(kwargs["model"])
-        system_content = str(request.system_prompt or "You are an investigation assistant.")
+        system_content = request.system_prompt or "You are an investigation assistant."
         schema_content = json.dumps(request.response_schema) if request.response_schema else ""
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "llm call started",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "llm.complete",
+                        "outcome": "started",
+                        "model": wire_model,
+                        "has_schema": request.response_schema is not None,
+                        "temperature": request.temperature,
+                    }
+                ),
+            )
         estimated_input_tokens = (
             count_text_tokens(wire_model, system_content)
             + count_text_tokens(wire_model, request.prompt)
@@ -342,14 +372,27 @@ class OpenAIGateway(LLMGateway):
         try:
             resp: object = await self._call_with_retry(client, kwargs)
         except Exception as exc:
-            # Older API versions reject json_schema response_format: retry once
-            # with generic json_object mode rather than failing the call, but
-            # keep strict Pydantic validation downstream as the second boundary.
+        # Older API versions reject json_schema response_format: retry once
+        # with generic json_object mode rather than failing the call, but
+        # keep Pydantic validation downstream as the hard boundary.
             if request.response_schema is not None and _is_unsupported_format_error(exc):
                 logger.warning(
-                    "Provider rejected strict json_schema mode; falling back to json_object",
+                    "Provider rejected json_schema mode; falling back to json_object",
                     extra={"tenant_id": tenant_id},
                 )
+                if logger.isEnabledFor(TRACE_LEVEL):
+                    logger.log(
+                        TRACE_LEVEL,
+                        "llm schema fallback engaged",
+                        extra=sanitize_extra(
+                            {
+                                "tenant_id": tenant_id,
+                                "event": "llm.complete",
+                                "outcome": "fallback_json_object",
+                                "model": wire_model,
+                            }
+                        ),
+                    )
                 kwargs["response_format"] = {"type": "json_object"}
                 try:
                     resp = await self._call_with_retry(client, kwargs)
@@ -392,6 +435,27 @@ class OpenAIGateway(LLMGateway):
                 pass
 
         latency_ms = (time.perf_counter() - start) * 1000
+        if logger.isEnabledFor(TRACE_LEVEL):
+            logger.log(
+                TRACE_LEVEL,
+                "llm call completed",
+                extra=sanitize_extra(
+                    {
+                        "tenant_id": tenant_id,
+                        "event": "llm.complete",
+                        "outcome": (
+                            "parsed"
+                            if parsed is not None
+                            else ("empty" if not content else "unparsed")
+                        ),
+                        "model": wire_model,
+                        "content_chars": len(content),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "latency_ms": round(latency_ms, 1),
+                    }
+                ),
+            )
         estimated_cost, pricing_version = _estimate_cost_versioned(
             self._config.model_name, prompt_tokens, completion_tokens
         )
